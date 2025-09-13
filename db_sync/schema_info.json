@@ -1,0 +1,614 @@
+{
+    "database": {
+        "name": "stream2",
+        "tables": [
+            {
+                "name": "glmst",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_code",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_name",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_type",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_lv1",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_lv2",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_lv3",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_lv4",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "usage",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "gldetail",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_code",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ac_sub",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "project",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "voucher",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "value",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "glheader",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "voucher",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "date",
+                        "type": "DATE",
+                        "constraints": []
+                    },
+                    {
+                        "name": "year",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "month",
+                        "type": "INT",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "purchase",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "combinedate",
+                        "type": "DATE",
+                        "constraints": []
+                    },
+                    {
+                        "name": "povoucher",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "grnvoucher",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "itemcode",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "shipmentname",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "quantity",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cost",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name": "status",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "sales",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "ordernumber",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "date",
+                        "type": "DATE",
+                        "constraints": []
+                    },
+                    {
+                        "name": "sp_id",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cusid",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "itemcode",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "quantity",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name": "altsales",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name": "proddiscount",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name": "totalsales",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cost",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "return",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "revoucher",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "date",
+                        "type": "DATE",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cusid",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "sp_id",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "itemcode",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "returnqty",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name": "treturnamt",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name":"returncost",
+                        "type": "NUMERIC",
+                        "constraints":[]
+                    }
+                ]
+            },
+            {
+                "name": "stock",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "itemcode",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "stockqty",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    },
+                    {
+                        "name": "stockvalue",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "stock_value",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "year",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "month",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "warehouse",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "stockvalue",
+                        "type": "NUMERIC",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "cacus",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cusid",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cusname",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cusadd",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cuscity",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cusstate",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cusmobile",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "cusmobile2",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "caitem",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "itemcode",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "itemname",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "itemgroup",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "itemgroup2",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "packcode",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "employee",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "spid",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "spname",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "department",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "designation",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    }
+                ]
+            }
+        ]
+    }
+}

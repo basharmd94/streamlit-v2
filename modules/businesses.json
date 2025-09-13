@@ -1,0 +1,65 @@
+{
+    "businesses": {
+      "100000": {
+        "zorg": "GI Corporation",
+        "projects": [
+          "GI Corporation"
+        ]
+      },
+      "100001": {
+        "zorg": "HMBR T & C Ltd.",
+        "projects": [
+          "GULSHAN TRADING"
+        ]
+      },
+      "100002": {
+        "zorg": "Gulshan Chemical",
+        "projects": [
+          "Gulshan Chemical"
+        ]
+      },
+      "100003": {
+        "zorg": "Gulshan Thread Tape",
+        "projects": [
+          "Gulshan Thread Tape"
+        ]
+      },
+      "100004": {
+        "zorg": "Gulshan Plastic",
+        "projects": [
+          "Gulshan Plastic"
+        ]
+      },
+      "100005": {
+        "zorg": "Zepto Chemicals",
+        "projects": [
+          "Zepto Chemicals"
+        ]
+      },
+      "100006": {
+        "zorg": "HMBR GROCERY SHOP",
+        "projects": [
+          "HMBR Grocery Shop"
+        ]
+      },
+      "100007": {
+        "zorg": "HMBR Paint Roller Co.",
+        "projects": [
+          "HMBR Paint Roller Co."
+        ]
+      },
+      "100008": {
+        "zorg": "HMBR Steel Scrubber Co.",
+        "projects": [
+          "Steel Scrubber Co."
+        ]
+      },
+      "100009": {
+        "zorg": "Gulshan Packaging Co.",
+        "projects": [
+          "Gulshan Packaging"
+        ]
+      }
+    }
+  }
+  

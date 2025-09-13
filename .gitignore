@@ -1,0 +1,61 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.egg-info/
+.eggs/
+
+# Distribution / packaging
+.Python
+build/
+dist/
+venv/
+env/
+.venv/
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store # macOS specific
+Thumbs.db # Windows specific
+
+# Virtual environment
+# If you use a different name for your virtual environment, add it here.
+# For example, if your venv is named 'my_env', add 'my_env/'
+# venv/
+# env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Database
+*.sqlite3
+*.db
+*.bak
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Uploaded media (if applicable)
+# For Django projects, you might want to ignore the 'media' directory
+# media/
+
+# Configuration files with sensitive data
+*.ini
+*.env
+.env.local
+.env.*.local
+config.py # or any other file containing sensitive configurations
+
+# Jupyter Notebook specific
+.ipynb_checkpoints/
+
+# Miscellaneous
+*._
