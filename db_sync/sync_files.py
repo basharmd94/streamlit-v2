@@ -312,3 +312,20 @@ class SyncManager:
         """
         self.execute_sync(select_sql_prmst, insert_sql_prmst, 'employee', clear_table_first=True)
 
+         # Items (caitem)
+        select_sql_casup = """
+            SELECT
+                casup.ztime AS itime,
+                casup.zutime AS utime,
+                casup.zid AS zid,
+                casup.xsup AS supid,
+                casup.xorg AS supname,
+                casup.xcity AS supadd
+            FROM casup
+        """
+        insert_sql_casup = """
+            INSERT INTO casup (
+                uuid, itime, utime, zid, supid, supname, supadd
+            ) VALUES %s
+        """
+        self.execute_sync(select_sql_casup, insert_sql_casup, 'casup', clear_table_first=True)

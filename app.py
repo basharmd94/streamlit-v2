@@ -8,6 +8,7 @@ from utils.loggin_config import LogManager
 from utils.utils import timed
 from auth import auth_utils
 
+
 @timed
 @st.cache_data
 def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str]):
@@ -161,7 +162,8 @@ class BaseApp:
             "Purchase Analysis",
             "Basket Analysis",
             "Financial Statements",
-            "Manufacturing Analysis"
+            "Manufacturing Analysis",
+            "Accounting Analysis"
         ]
 
          # Filter menu based on user's role
@@ -291,6 +293,9 @@ class BaseApp:
             self.call_if_data_loaded(self.basket_analysis)
         elif self.current_page == "Financial Statements":
             self.financials()
+        elif self.current_page == "Accounting Analysis":
+            self.accounting_analysis()
+
 
     @timed
     def overall_sales_analysis(self, data_dict):
@@ -315,6 +320,10 @@ class BaseApp:
     @timed
     def financials(self):
         views.display_financial_statements(self.current_page, st.session_state.zid)
+
+    @timed
+    def accounting_analysis(self):
+        views.display_accounting_analysis_main(self.current_page, st.session_state.zid)
 
 if __name__ == "__main__":
     app = BaseApp()

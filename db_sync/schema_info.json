@@ -563,6 +563,48 @@
                 ]
             },
             {
+                "name": "casup",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "itime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "utime",
+                        "type": "TIMESTAMP",
+                        "constraints": []
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "supid",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "supname",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "supadd",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
                 "name": "employee",
                 "columns": [
                     {

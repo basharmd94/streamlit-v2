@@ -1,6 +1,6 @@
 # db/sql_scripts.py
 
-from typing import Iterable, Tuple, Dict, Any
+from typing import Iterable, Tuple, Dict, Any, List
 
 def _build_in_clause(id_iterable: Iterable[int]) -> Tuple[str, Tuple[int, ...]]:
     # 1) Remove duplicates while preserving order
@@ -352,3 +352,87 @@ def get_payment_data():
             ORDER BY
                 SUM(gldetail.value) DESC"""
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Simple table fetchers (one table each; let pandas do the work)
+# ─────────────────────────────────────────────────────────────────────────────
+from typing import Dict, Any, Tuple
+
+def get_cacus_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
+    """
+    Return all customers for a zid.
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            zid,
+            cusid::text AS cusid,
+            cusname,
+            COALESCE(cuscity,'') AS cuscity
+        FROM cacus
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
+    """
+    Return raw GL detail (no joins, no filters) for a zid.
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            zid,
+            voucher,
+            ac_code,
+            ac_sub::text AS ac_sub,
+            value::numeric AS value
+        FROM gldetail
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+def get_glheader_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
+    """
+    Return GL headers for a zid (date + year/month).
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            zid,
+            voucher,
+            date::date AS date,
+            year::int  AS year,
+            month::int AS month
+        FROM glheader
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+def get_glmst_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
+    """
+    Return account master for a zid.
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            zid,
+            ac_code,
+            ac_name,
+            ac_type,
+            COALESCE(ac_lv1, '') AS ac_lv1,
+            COALESCE(ac_lv2, '') AS ac_lv2
+        FROM glmst
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+def get_casup_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            zid,
+            supid::text  AS supid,
+            supname
+        FROM casup
+        WHERE zid = %s
+    """
+    return sql, (zid,)

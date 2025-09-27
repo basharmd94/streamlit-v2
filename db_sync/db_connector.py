@@ -3,7 +3,6 @@ from config import local_db_credentials, global_db_credentials
 import json
 from psycopg2 import sql
 from loggin_config import LogManager
-from pathlib import Path
 
 def connect_to_local_db():
     return psycopg2.connect(**local_db_credentials)
@@ -13,13 +12,7 @@ def connect_to_global_db():
 
 def create_schema(conn, schema_name):
     # Read the schema_info.json file to get the schema information
-    json_path = (Path(__file__).parent / "schema_info.json").resolve()
-
-    # Optional: helpful debug if something is off
-    if not json_path.exists():
-        raise FileNotFoundError(f"schema_info.json not found at: {json_path}")
-
-    with json_path.open("r", encoding="utf-8-sig") as f:
+    with open('schema_info.json', 'r') as f:
         schema_info = json.load(f)
         
     cur = conn.cursor()
@@ -99,7 +92,7 @@ def check_data_exists_in_all_tables(conn, schema_name):
             table_info = {"itime": None, "utime": None}
             
             # Skip querying itime and utime for specific tables
-            if table_name in ['stock', 'stock_value']:
+            if table_name in ['stock', 'stock_value','page_permissions','users']:
                 LogManager.logger.info(f"Skipping itime and utime check for table {table_name} in schema {schema_name}.")
                 tables_dict[table_name] = table_info
                 continue

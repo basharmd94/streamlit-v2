@@ -45,7 +45,13 @@ class Analytics:
             "purchase":   sql_scripts.get_purchase_data,
             "collection": sql_scripts.get_collection_data,
             "ar":         sql_scripts.get_ar_data,
-            "payments":   sql_scripts.get_payment_data
+            "payments":   sql_scripts.get_payment_data,
+            # New Entries 27/09/2025
+            "cacus_simple":     sql_scripts.get_cacus_simple,
+            "gldetail_simple":  sql_scripts.get_gldetail_simple,
+            "glheader_simple":  sql_scripts.get_glheader_simple,
+            "glmst_simple":     sql_scripts.get_glmst_simple,
+            "casup_simple":     sql_scripts.get_casup_simple,
         }
         query_func = query_map.get(table_name)
         if not query_func:
