@@ -58,4 +58,5 @@ config.py # or any other file containing sensitive configurations
 .ipynb_checkpoints/
 
 # Miscellaneous
-*._
+*._.DS_Store
+**/.DS_Store
