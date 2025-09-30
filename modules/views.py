@@ -12,6 +12,7 @@ from utils.utils import timed
 from db import db_utils
 
 
+
 @timed
 def render_top_download_buttons(data_dict: dict):
     """
@@ -1512,7 +1513,9 @@ def _load_cacus(zid: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def _load_gldetail(zid: str) -> pd.DataFrame:
-    df = Analytics("gldetail_simple", zid=zid, filters={"zid": (str(zid),)}).data
+    project = st.session_state.proj
+    filters = {"zid": (str(zid),)}
+    df = Analytics("gldetail_simple", zid=zid, project=project, filters=filters).data
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
@@ -1550,7 +1553,7 @@ def _compute_ar_balances(zid: str, year: int, month: int) -> tuple[pd.DataFrame,
     lines = lines.merge(glm[["zid","ac_code","ac_type","ac_name"]], on=["zid","ac_code"], how="left")
 
     # Keep AR-related lines (Asset + linked to a customer)
-    lines = lines[(lines["ac_type"] == "Asset") & lines["ac_sub"].notna()]
+    lines = lines[lines["ac_code"] == "01030001"]
 
     # IGNORE all OB vouchers globally (closing, period, trail)
     vup = lines["voucher"].astype(str).str.upper()
@@ -1614,7 +1617,7 @@ def _compute_ap_balances(zid: str, year: int, month: int) -> tuple[pd.DataFrame,
     lines = lines.merge(glm[["zid","ac_code","ac_type","ac_name"]], on=["zid","ac_code"], how="left")
 
     # Keep AP-related lines: Liability accounts + supplier-linked subledger
-    lines = lines[(lines["ac_type"] == "Liability") & lines["ac_sub"].notna()]
+    lines = lines[lines["ac_code"].isin(["09030001", "09030004"])]
 
     # Ignore all OB vouchers
     vup = lines["voucher"].str.upper()
@@ -1656,16 +1659,6 @@ def _compute_ap_balances(zid: str, year: int, month: int) -> tuple[pd.DataFrame,
     trail_asof = lines[asof_cond].copy().sort_values(["date","voucher","ac_code"])
 
     return out, trail_asof
-
-import streamlit as st
-import pandas as pd
-import numpy as np
-from .analytics import Analytics
-from utils.utils import timed
-
-# ---------- helpers you already have ----------
-# _load_gldetail(zid), _load_glheader(zid), _load_glmst(zid)
-# (Make sure _load_glmst returns ac_lv1, ac_lv2 after step 1.)
 
 @st.cache_data(show_spinner=False)
 def _ledger_accounts_by_type(zid: str, ac_type: str) -> pd.DataFrame:
@@ -1766,12 +1759,13 @@ def display_accounting_analysis_main(current_page, zid: str):
                 st.info("No AR balances found for the selected period.")
             else:
                 st.caption("AR balances as of selected month-end (OB included automatically)")
-                st.dataframe(summary, use_container_width=True, height=440)
-                st.download_button(
-                    "Download AR balances (CSV)",
-                    summary.to_csv(index=False).encode("utf-8"),
-                    "ar_balances.csv", "text/csv"
+                total_ar = float(pd.to_numeric(summary["closing_balance"], errors="coerce").sum())
+                st.caption(
+                    f"AR balances as of selected month-end — OB vouchers (OB--) are ignored in all calculations and trails. "
+                    f"Total closing: **{total_ar:,.2f}**"
                 )
+                st.dataframe(summary, use_container_width=True, height=440)
+                st.write(common.create_download_link(summary,"ar_balances.xlsx"), unsafe_allow_html=True)
 
                 # Drill-down for a single customer (up to month-end)
                 st.markdown("### Customer Trail (up to selected month)")
@@ -1790,11 +1784,7 @@ def display_accounting_analysis_main(current_page, zid: str):
                             .reset_index(drop=True),
                             use_container_width=True, height=420
                         )
-                        st.download_button(
-                            f"Download trail for {pick_id} (CSV)",
-                            cust_trail.to_csv(index=False).encode("utf-8"),
-                            f"ar_trail_{pick_id}.csv", "text/csv"
-                        )
+                        st.write(common.create_download_link(cust_trail,"ar_trail.xlsx"), unsafe_allow_html=True)
 
     # ───────────────────────────── AP Analysis (placeholder) ──────────────────
     with tab_ap:
@@ -1815,12 +1805,13 @@ def display_accounting_analysis_main(current_page, zid: str):
                 st.info("No AP balances found for the selected period.")
             else:
                 st.caption("AP balances as of selected month-end — OB vouchers (OB--) are ignored in all calculations and trails.")
-                st.dataframe(ap_summary, use_container_width=True, height=440)
-                st.download_button(
-                    "Download AP balances (CSV)",
-                    ap_summary.to_csv(index=False).encode("utf-8"),
-                    "ap_balances.csv", "text/csv"
+                total_ap = float(pd.to_numeric(ap_summary["closing_balance"], errors="coerce").sum())
+                st.caption(
+                    f"AP balances as of selected month-end — OB vouchers (OB--) are ignored in all calculations and trails. "
+                    f"Total closing: **{total_ap:,.2f}**"
                 )
+                st.dataframe(ap_summary, use_container_width=True, height=440)
+                st.write(common.create_download_link(ap_summary,"ap_balances.xlsx"), unsafe_allow_html=True)
 
                 st.markdown("### Supplier Trail (up to selected month)")
                 pick_sup = st.selectbox(
@@ -1838,11 +1829,7 @@ def display_accounting_analysis_main(current_page, zid: str):
                             .reset_index(drop=True),
                             use_container_width=True, height=420
                         )
-                        st.download_button(
-                            f"Download trail for {pick_sup} (CSV)",
-                            sup_trail.to_csv(index=False).encode("utf-8"),
-                            f"ap_trail_{pick_sup}.csv", "text/csv"
-                        )
+                        st.write(common.create_download_link(sup_trail,"ap_trail.xlsx"), unsafe_allow_html=True)
 
     # ───────────────────────── Ledger Entries (placeholder) ───────────────────
     with tab_ledger:
@@ -1894,7 +1881,5 @@ def display_accounting_analysis_main(current_page, zid: str):
                 else:
                     st.caption("Line entries (no narration)")
                     st.dataframe(lines, use_container_width=True, height=420)
-                    st.download_button("Download line entries (CSV)",
-                                        lines.to_csv(index=False).encode("utf-8"),
-                                        "ledger_lines.csv", "text/csv")
+                    st.write(common.create_download_link(lines,"ledger_lines.xlsx"), unsafe_allow_html=True)
 

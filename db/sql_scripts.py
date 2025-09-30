@@ -377,7 +377,9 @@ def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
     """
     Return raw GL detail (no joins, no filters) for a zid.
     """
+
     zid = filters["zid"][0]
+    project = filters.get("project")
     sql = """
         SELECT
             zid,
@@ -387,8 +389,9 @@ def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
             value::numeric AS value
         FROM gldetail
         WHERE zid = %s
+        AND project = %s
     """
-    return sql, (zid,)
+    return sql, (zid, project)
 
 def get_glheader_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
     """

@@ -48,7 +48,7 @@ def get_data(query, *args):
 
 def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None, is_bs=False, is_project=False):
     DB_CONFIG = config()  # Fetch the database configuration using the config function
-
+    print(zid, project, 'get_gl_details')
     # Create the engine using the configuration
     engine = create_engine('postgresql://{user}:{password}@{host}:{port}/{database}'.format(**DB_CONFIG))
     where_clauses = [
@@ -113,8 +113,6 @@ def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None, is_bs
         df = pd.read_sql(query, con=engine, params=params)
     finally:
         engine.dispose()
-    print(query, "query from get gl details")
-    print(df.describe(), "df from get gl details")
     return df
 
 def get_gl_details_ap_project(zid, project, year, xacc, emonth, sup_list):
