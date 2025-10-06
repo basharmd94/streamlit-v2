@@ -5,15 +5,6 @@ from db.db_utils import config
 import extra_streamlit_components as stx
 import json
 
-# Initialize cookie manager at module level
-cookie_manager = None
-
-def get_cookie_manager():
-    global cookie_manager
-    if cookie_manager is None:
-        cookie_manager = stx.CookieManager()
-    return cookie_manager
-
 def init_auth():
     """Initialize authentication state"""
     # Initialize session state variables if they don't exist
@@ -23,22 +14,7 @@ def init_auth():
         st.session_state.username = None
     if 'user_role' not in st.session_state:
         st.session_state.user_role = None
-    
-    # Only check cookie if not already authenticated
-    if not st.session_state.authenticated:
-        try:
-            cm = get_cookie_manager()
-            auth_cookie = cm.get('auth_data')
-            if auth_cookie:
-                auth_data = json.loads(auth_cookie)
-                st.session_state.authenticated = True
-                st.session_state.username = auth_data['username']
-                st.session_state.user_role = auth_data['role']
-        except Exception as e:
-            print(f"Cookie error: {e}")
-            st.session_state.authenticated = False
-            st.session_state.username = None
-            st.session_state.user_role = None
+    # Important: Do NOT auto-authenticate from cookies to prevent cross-user leakage
 
 def hash_password(password):
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
@@ -76,13 +52,6 @@ def login(username, password):
                 st.session_state.username = username
                 st.session_state.user_role = result[2]
                 
-                # Store authentication data in cookie
-                cm = get_cookie_manager()
-                auth_data = {
-                    'username': username,
-                    'role': result[2]
-                }
-                cm.set('auth_data', json.dumps(auth_data), expires_at=None)
                 return True
         return False
         
@@ -101,10 +70,6 @@ def logout():
         st.session_state.authenticated = False
         st.session_state.username = None
         st.session_state.user_role = None
-        
-        # Clear cookie
-        cm = get_cookie_manager()
-        cm.delete('auth_data')
     except Exception as e:
         print(f"Logout error: {e}")
 
@@ -236,7 +201,11 @@ def render_login_page():
                 st.success("Login successful!")
                 # Clear form state after successful login
                 st.session_state.login_form = {'username': '', 'password': ''}
-                st.experimental_rerun()
+                # Use new API if available; fallback for older Streamlit
+                try:
+                    st.rerun()
+                except AttributeError:
+                    st.experimental_rerun()
             else:
                 st.error("Invalid username or password")
         

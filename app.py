@@ -139,7 +139,10 @@ class BaseApp:
             st.sidebar.markdown("---")
             if st.sidebar.button("Logout", key='logout_button'):
                 auth_utils.logout()
-                st.experimental_rerun()
+                try:
+                    st.rerun()
+                except AttributeError:
+                    st.experimental_rerun()
 
 
     @timed

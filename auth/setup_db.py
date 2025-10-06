@@ -55,7 +55,7 @@ def setup_auth_tables():
         # Insert default permissions
         print("Setting up default permissions...")
         cur.execute("""
-        INSERT INTO page_permissions (role, page_name) VALUES
+            INSERT INTO page_permissions (role, page_name) VALUES
             ('admin', 'Home'),
             ('admin', 'Overall Sales Analysis'),
             ('admin', 'Overall Margin Analysis'),
