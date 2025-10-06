@@ -163,7 +163,8 @@ class BaseApp:
             "Basket Analysis",
             "Financial Statements",
             "Manufacturing Analysis",
-            "Accounting Analysis"
+            "Accounting Analysis",
+            "Inventory Analysis"
         ]
 
          # Filter menu based on user's role
@@ -295,6 +296,8 @@ class BaseApp:
             self.financials()
         elif self.current_page == "Accounting Analysis":
             self.accounting_analysis()
+        elif self.current_page == "Inventory Analysis":
+            self.inventory_analysis()
 
 
     @timed
@@ -324,6 +327,10 @@ class BaseApp:
     @timed
     def accounting_analysis(self):
         views.display_accounting_analysis_main(self.current_page, st.session_state.zid)
+
+    @timed
+    def inventory_analysis(self):
+        views.display_inventory_analysis_main(self.current_page, st.session_state.zid)
 
 if __name__ == "__main__":
     app = BaseApp()

@@ -24,7 +24,7 @@ class Analytics:
             else [str(zid)]                          # single value
         )
 
-        if table_name in ("purchase", "stock"):
+        if table_name == "purchase":
             # use string literals for the test
             if "100001" in zid_list and "100009" not in zid_list:
                 zid_list.append("100009")
@@ -66,7 +66,7 @@ class Analytics:
             sql = result
 
             # ─── NEW: choose param style by table ───────────────────────
-            if table_name in ("purchase", "stock"):
+            if table_name == "purchase":
                 
                 params = list(filters["zid"])        # e.g. ['100001', '100009']
             else:

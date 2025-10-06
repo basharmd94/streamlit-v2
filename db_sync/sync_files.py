@@ -217,15 +217,18 @@ class SyncManager:
         select_sql_stock = """
             SELECT
                 imtrn.zid AS zid,
+                imtrn.xyear AS year,
+                imtrn.xper AS month,
                 imtrn.xitem AS itemcode,
+                imtrn.xwh AS warehouse,
                 SUM(imtrn.xqty * imtrn.xsign) AS stockqty,
                 SUM(imtrn.xval * imtrn.xsign) AS stockvalue
             FROM imtrn
-            GROUP BY imtrn.zid, imtrn.xitem
+            GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper
         """
         insert_sql_stock = """
             INSERT INTO stock (
-                uuid, zid, itemcode, stockqty, stockvalue
+                uuid, zid, year, month, itemcode, warehouse, stockqty, stockvalue
             ) VALUES %s
         """
         self.execute_sync(select_sql_stock, insert_sql_stock, 'stock', clear_table_first=True)

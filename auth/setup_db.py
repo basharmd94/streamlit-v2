@@ -68,6 +68,7 @@ def setup_auth_tables():
             ('admin', 'Financial Statements'),
             ('admin', 'Manufacturing Analysis'),
             ('admin', 'Accounting Analysis'),
+            ('admin','Inventory Analysis'),
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
             ('sales', 'YOY Analysis'),
@@ -77,10 +78,12 @@ def setup_auth_tables():
             ('finance', 'Financial Statements'),
             ('finance', 'Collection Analysis'),
             ('finance', 'Accounting Analysis'),
+            ('finance','Inventory Analysis'),
             ('purchase', 'Home'),
             ('purchase', 'Purchase Analysis'),
             ('purchase', 'YOY Analysis'),
-            ('purchase', 'Distribution & Histograms')
+            ('purchase', 'Distribution & Histograms'),
+            ('purchase','Inventory Analysis')
         ON CONFLICT DO NOTHING
         """)
         

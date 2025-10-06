@@ -395,7 +395,22 @@
                         "constraints": []
                     },
                     {
+                        "name": "year",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "month",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
                         "name": "itemcode",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "warehouse",
                         "type": "VARCHAR",
                         "constraints": []
                     },

@@ -1883,3 +1883,216 @@ def display_accounting_analysis_main(current_page, zid: str):
                     st.dataframe(lines, use_container_width=True, height=420)
                     st.write(common.create_download_link(lines,"ledger_lines.xlsx"), unsafe_allow_html=True)
 
+# ---------- Inventory Analysis (updated for single-zid SQL + 100001→+100009 merge) ----------
+
+
+def _effective_zids(primary_zid: str) -> list[str]:
+    """
+    If 100001 is chosen, auto-include 100009 (packaging) as well.
+    Otherwise, just use the primary zid.
+    """
+    p = str(primary_zid)
+    return [p, "100009"] if p == "100001" else [p]
+
+
+@st.cache_data(show_spinner=False)
+def _load_product_inventory(zid: str) -> pd.DataFrame:
+    """
+    Loads monthly product-level inventory transactions from `stock` joined to `caitem`.
+    Your SQL now uses: WHERE stock.zid = (%s)
+    We therefore call once per effective zid and concatenate.
+    The SQL already returns itemcode with packcode CASE logic applied.
+    """
+    zids = _effective_zids(zid)
+    frames = []
+    for z in zids:
+        try:
+            # IMPORTANT: Single parameter tuple (z,) to match "= (%s)"
+            df = Analytics("stock", zid=z, filters={"zid": (str(z),)}).data
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                frames.append(df.assign(_src_zid=str(z)))
+        except Exception as e:
+            st.error(f"Error loading product inventory for zid={z}: {e}")
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def _load_inventory_value(zid: str) -> pd.DataFrame:
+    """
+    Loads warehouse-level monthly stock value snapshots from `stock_value`.
+    The SQL uses: WHERE zid = (%s)
+    We will mirror the product logic and include 100009 when the primary zid is 100001,
+    so that packaging warehouses are reflected in warehouse snapshot/value too.
+    """
+    zids = _effective_zids(zid)
+    frames = []
+    for z in zids:
+        try:
+            df = Analytics("stock_value", zid=z, filters={"zid": (str(z),)}).data
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                frames.append(df.assign(_src_zid=str(z)))
+        except Exception as e:
+            st.error(f"Error loading stock_value for zid={z}: {e}")
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+@timed
+def display_inventory_analysis_main(current_page, zid: str):
+    st.title("Inventory Analysis")
+
+    inv_df = _load_product_inventory(zid)
+    val_df = _load_inventory_value(zid)
+
+    if inv_df is None or inv_df.empty:
+        st.info("No product inventory data found for the selected company (zid).")
+        return
+
+    # --- Normalize dtypes ---
+    if "zid" in inv_df.columns:
+        inv_df["zid"] = inv_df["zid"].astype(str)
+    for col in ["year", "month"]:
+        if col in inv_df.columns:
+            inv_df[col] = pd.to_numeric(inv_df[col], errors="coerce").astype("Int64")
+    for c in ["warehouse", "itemgroup", "itemcode", "itemname"]:
+        if c in inv_df.columns:
+            inv_df[c] = inv_df[c].astype(str)
+    if "stockqty" in inv_df.columns:
+        inv_df["stockqty"] = pd.to_numeric(inv_df["stockqty"], errors="coerce").fillna(0.0)
+    if "stockvalue" in inv_df.columns:
+        inv_df["stockvalue"] = pd.to_numeric(inv_df["stockvalue"], errors="coerce").fillna(0.0)
+
+    # Helper year-month key for comparisons
+    inv_df["ym"] = inv_df["year"].fillna(0).astype(int) * 100 + inv_df["month"].fillna(0).astype(int)
+    inv_df["year_month"] = inv_df.apply(
+        lambda r: f"{int(r['year']):04d}-{int(r['month']):02d}"
+        if pd.notna(r['year']) and pd.notna(r['month']) else None, axis=1
+    )
+
+    # --- Build filter options from data ---
+    years = sorted(inv_df["year"].dropna().astype(int).unique().tolist())
+    months = list(range(1, 13))
+    warehouses = sorted(inv_df["warehouse"].dropna().unique().tolist())
+    itemgroups = sorted(inv_df["itemgroup"].dropna().unique().tolist())
+
+    # Product selector label: "code — name"
+    inv_df["product_label"] = inv_df.apply(
+        lambda r: f"{r['itemcode']} — {r['itemname']}" if pd.notna(r.get("itemname")) else str(r['itemcode']),
+        axis=1
+    )
+    products = (
+        inv_df[["itemcode", "product_label"]]
+        .drop_duplicates()
+        .sort_values("itemcode")["product_label"]
+        .tolist()
+    )
+
+    # --- UI: Filters ---
+    st.subheader("Filters")
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1.4])
+
+    with c1:
+        year_sel = st.selectbox("Year (cutoff)", years, index=len(years) - 1 if years else 0, key="inv_year")
+    with c2:
+        month_sel = st.selectbox(
+            "Month (cutoff)", months,
+            index=(pd.Timestamp.today().month - 1),
+            format_func=lambda m: calendar.month_abbr[m],
+            key="inv_month"
+        )
+    with c3:
+        use_latest = st.toggle(
+            "Use Max Year–Month", value=False,
+            help="If ON, uses the latest available period in data (considering auto-included packaging zid when applicable)."
+        )
+    with c4:
+        st.caption("🔎 Item code already applies packcode CASE logic in SQL (no extra toggle needed).")
+
+    wh_sel = st.multiselect("Warehouse(s)", options=warehouses, default=warehouses)
+    ig_sel = st.multiselect("Item Group(s)", options=itemgroups, default=itemgroups)
+
+    prod_sel_labels = st.multiselect("Product(s)", options=products, default=[],
+                                     placeholder="Type to search code/name…")
+    label_to_code = dict(inv_df[["product_label", "itemcode"]].drop_duplicates().values.tolist())
+    prod_codes = [label_to_code.get(lbl) for lbl in prod_sel_labels]
+
+    # Determine cutoff based on toggle (on merged dataset)
+    if use_latest:
+        latest_row = inv_df.loc[inv_df["ym"].idxmax()]
+        cutoff_year, cutoff_month = int(latest_row["year"]), int(latest_row["month"])
+    else:
+        cutoff_year, cutoff_month = int(year_sel), int(month_sel)
+    cutoff_ym = cutoff_year * 100 + cutoff_month
+    st.markdown(f"**Cutoff:** {cutoff_year}-{cutoff_month:02d}")
+
+    # Apply filters
+    df_f = inv_df.copy()
+    if wh_sel:
+        df_f = df_f[df_f["warehouse"].isin(wh_sel)]
+    if ig_sel:
+        df_f = df_f[df_f["itemgroup"].isin(ig_sel)]
+    if prod_codes:
+        df_f = df_f[df_f["itemcode"].isin(prod_codes)]
+    df_f = df_f[df_f["ym"] <= cutoff_ym]  # up to & including cutoff
+
+    if df_f.empty:
+        st.warning("No rows match the current filters.")
+        return
+
+    # ------ Report 1: Product Inventory Ledger (Monthly Qty) ------
+    st.subheader("1) Product Inventory Ledger (Monthly Qty)")
+    ledger_cols = ["year", "month", "warehouse", "itemcode", "itemname", "itemgroup", "stockqty"]
+    # Keep zid in the ledger to trace packaging vs primary if desired; not grouped by zid when running totals
+    if "zid" in df_f.columns and "zid" not in ledger_cols:
+        ledger_cols = ["zid"] + ledger_cols
+
+    ledger = (
+        df_f[ledger_cols]
+        .sort_values(["itemcode", "warehouse", "year", "month"])
+        .reset_index(drop=True)
+    )
+    # Running cumulative qty per itemcode×warehouse across combined zids
+    ledger["running_qty"] = ledger.groupby(["itemcode", "warehouse"])["stockqty"].cumsum()
+
+    st.dataframe(ledger, use_container_width=True, height=420)
+    st.write(common.create_download_link(ledger, "inventory_ledger.xlsx"), unsafe_allow_html=True)
+
+    # ------ Report 2: Final Stock by Product & Warehouse (Qty & Value as-of cutoff) ------
+    st.subheader("2) Final Stock — Qty & Value (as of cutoff)")
+    final = (
+        df_f
+        .groupby(["warehouse", "itemcode", "itemname", "itemgroup"], as_index=False)
+        .agg(final_qty=("stockqty", "sum"),
+             final_value=("stockvalue", "sum"))
+        .sort_values(["warehouse", "itemcode"])
+        .reset_index(drop=True)
+    )
+    st.dataframe(final, use_container_width=True, height=420)
+    st.write(common.create_download_link(final, "final_stock_by_product.xlsx"), unsafe_allow_html=True)
+
+    # ------ Report 3: Warehouse Value Transactions per Month (flow up to cutoff) ------
+    st.subheader("3) Warehouse Value Transactions (Monthly, up to cutoff)")
+    flow = (
+        df_f
+        .groupby(["year", "month", "warehouse"], as_index=False)
+        .agg(value_txn=("stockvalue", "sum"))
+        .sort_values(["year", "month", "warehouse"])
+    )
+    flow["year_month"] = flow.apply(lambda r: f"{int(r['year']):04d}-{int(r['month']):02d}", axis=1)
+    flow = flow[["year_month", "warehouse", "value_txn"]]
+    st.dataframe(flow, use_container_width=True, height=360)
+    st.write(common.create_download_link(flow, "warehouse_value_flow.xlsx"), unsafe_allow_html=True)
+
+   # ------ Report 4: Warehouse Ending Stock Value (as of cutoff) ------
+    st.subheader("4) Warehouse Ending Stock Value (as of cutoff)")
+
+    # df_f already contains all rows up to the cutoff (and only selected warehouses/products/groups)
+    warehouse_ending = (
+        df_f.groupby(["warehouse"], as_index=False)
+            .agg(ending_value=("stockvalue", "sum"))
+            .sort_values("warehouse")
+            .reset_index(drop=True)
+    )
+
+    st.dataframe(warehouse_ending, use_container_width=True, height=300)
+    st.write(common.create_download_link(warehouse_ending, "warehouse_ending_stock_value.xlsx"),
+            unsafe_allow_html=True)

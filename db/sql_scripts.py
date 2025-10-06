@@ -285,6 +285,8 @@ def get_purchase_data(filters=None):
 def get_product_inventory_data(filters=None):
     query = """SELECT 
                 stock.zid,
+                stock.year,
+                stock.month,
                 CASE
                     WHEN caitem.packcode IS NOT NULL 
                     AND caitem.packcode <> '' 
@@ -294,6 +296,7 @@ def get_product_inventory_data(filters=None):
                 END AS itemcode,
                 caitem.itemname,
                 caitem.itemgroup,
+                stock.warehouse,
                 stock.stockqty,
                 stock.stockvalue
             FROM 
@@ -301,11 +304,11 @@ def get_product_inventory_data(filters=None):
             JOIN
                 caitem ON stock.itemcode = caitem.itemcode AND stock.zid = caitem.zid
             WHERE 
-                stock.zid IN  (%s,%s)"""
+                stock.zid = (%s)"""
 
     return query
 
-def get_inventory_value_data():
+def get_inventory_value_data(filters=None):
     return """SELECT 
                 stock_value.zid,
                 stock_value.year,
@@ -355,7 +358,6 @@ def get_payment_data():
 # ─────────────────────────────────────────────────────────────────────────────
 # Simple table fetchers (one table each; let pandas do the work)
 # ─────────────────────────────────────────────────────────────────────────────
-from typing import Dict, Any, Tuple
 
 def get_cacus_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
     """
