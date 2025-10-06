@@ -19,11 +19,15 @@ def calculate_summary_statistics(filtered_data, filtered_data_r):
     Returns:
     - Dictionary containing the summary statistics.
     """
+    units_sold     = float(filtered_data["quantity"].sum()) if len(filtered_data) else 0.0
+    units_returned = float(filtered_data_r["returnqty"].sum()) if len(filtered_data_r) else 0.0
+    net_units      = units_sold - units_returned
     return {
         "Net Sales": filtered_data['final_sales'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2),
         "Total Returns": filtered_data_r['treturnamt'].sum().round(2),
         "Total Discounts": filtered_data['proddiscount'].sum().round(2),
         "Net Margin": filtered_data['gross_margin'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2),
+        "Net Units Sold": round(net_units, 2)
     }
 
 @timed
@@ -71,7 +75,8 @@ def display_cross_relation_pivot(filtered_data, filtered_data_r, current_page):
         "Net Sales", 
         "Total Returns", 
         "Total Discounts",
-        "Net Margin"
+        "Net Margin",
+        "Net Units Sold"
     ]
 
     col1, col2, col3 = st.columns(3)
@@ -114,7 +119,8 @@ def display_entity_metric_pivot(filtered_data, filtered_data_r, current_page):
         "Net Sales", 
         "Total Returns", 
         "Total Discounts",
-        "Net Margin"
+        "Net Margin",
+        "Net Units Sold"
     ]
 
     col1, col2 = st.columns(2)

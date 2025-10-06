@@ -7,6 +7,8 @@ import plotly.express as px
 from utils.utils import timed
 
 ### for display overall analysis
+
+
 @timed
 def calculate_summary_statistics(filtered_data, filtered_data_r):
     """
@@ -19,6 +21,10 @@ def calculate_summary_statistics(filtered_data, filtered_data_r):
     Returns:
     - Dictionary containing the summary statistics.
     """
+    units_sold     = float(filtered_data["quantity"].sum()) if len(filtered_data) else 0.0
+    units_returned = float(filtered_data_r["returnqty"].sum()) if len(filtered_data_r) else 0.0
+    net_units      = units_sold - units_returned
+
     return {
         "Total Sales": filtered_data['final_sales'].sum().round(2),
         "Total Returns": filtered_data_r['treturnamt'].sum().round(2),
@@ -28,7 +34,10 @@ def calculate_summary_statistics(filtered_data, filtered_data_r):
         "Number of Customers": filtered_data['cusid'].nunique(),
         "Number of Customer Returned": filtered_data_r['cusid'].nunique(),
         "Number of Products": filtered_data['itemcode'].nunique(),
-        "Number of Products Returned": filtered_data_r['itemcode'].nunique()
+        "Number of Products Returned": filtered_data_r['itemcode'].nunique(),
+        "Units Sold": round(units_sold, 2),
+        "Units Returned": round(units_returned, 2),
+        "Net Units Sold": round(net_units, 2)
     }
 
 @timed
@@ -81,7 +90,8 @@ def display_cross_relation_pivot(filtered_data, filtered_data_r, current_page):
         "Net Sales", "Total Returns", "Total Discounts",
         "Number of Orders", "Number of Returns", "Number of Discounts",
         "Number of Customers", "Number of Customer Returns",
-        "Number of Products", "Number of Product Returns"
+        "Number of Products", "Number of Product Returns",
+        "Units Sold", "Units Returned", "Net Units Sold"
     ]
 
     col1, col2, col3 = st.columns(3)
@@ -124,7 +134,8 @@ def display_entity_metric_pivot(filtered_data, filtered_data_r, current_page):
         "Net Sales", "Total Returns", "Total Discounts",
         "Number of Orders", "Number of Returns", "Number of Discounts",
         "Number of Customers", "Number of Customer Returns",
-        "Number of Products", "Number of Product Returns"
+        "Number of Products", "Number of Product Returns",
+        "Units Sold", "Units Returned", "Net Units Sold"
     ]
 
     col1, col2 = st.columns(2)
@@ -1479,3 +1490,6 @@ def plot_number_of_product_returns(filtered_data_r, current_page):
     
     # Display in Streamlit
     st.plotly_chart(fig, use_container_width=True)
+
+
+

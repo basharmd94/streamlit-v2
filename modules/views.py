@@ -61,7 +61,8 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview", "Comparison", "Distributions", "Descriptive Stats"],horizontal=True)
     # st.write(common.create_download_link(filtered_data,"filtered_data.xlsx"), unsafe_allow_html=True)
     # st.write(common.create_download_link(filtered_data_r,"filtered_data_r.xlsx"), unsafe_allow_html=True)
-
+    # st.write(filtered_data.columns)
+    # st.write(filtered_data_r.columns)
 
     if analysis_mode == "Overview":
         st.subheader("📈 Select Plot Type")

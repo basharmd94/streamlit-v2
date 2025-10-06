@@ -183,6 +183,15 @@ def net_pivot(data1, data2, params, current_page=None, data3=None):
             if df_c is None:
                 raise ValueError("Collection data is required for 'Collection' metric.")
             result = df_c.groupby(index_cols + column_cols)["value"].sum()
+        
+        elif metric == "Net Units Sold":
+            result = df.groupby(index_cols + column_cols)["quantity"].sum() - df_r.groupby(index_cols + column_cols)["returnqty"].sum()
+
+        elif metric == "Units Returned":
+            result = df_r.groupby(index_cols + column_cols)["returnqty"].sum()
+
+        elif metric == "Units Sold":
+            result = df.groupby(index_cols + column_cols)["quantity"].sum()
 
         else:
             raise ValueError(f"Unsupported metric: {metric}")

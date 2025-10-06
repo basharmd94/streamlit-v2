@@ -669,12 +669,16 @@ def calculate_summary_statistics(filtered_data_c, filtered_data_s, filtered_data
     Returns:
     - Dictionary containing the summary statistics.
     """
+    units_sold     = float(filtered_data_s["quantity"].sum()) if len(filtered_data_s) else 0.0
+    units_returned = float(filtered_data_r["returnqty"].sum()) if len(filtered_data_r) else 0.0
+    net_units      = units_sold - units_returned
     return {
         "Net Sales": filtered_data_s['final_sales'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2),
         "Total Returns": filtered_data_r['treturnamt'].sum().round(2),
         "Total Discounts": filtered_data_s['proddiscount'].sum().round(2),
         "Net Margin": filtered_data_s['gross_margin'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2),
-        "Net Collection": filtered_data_c['value'].sum().round(2)
+        "Net Collection": filtered_data_c['value'].sum().round(2),
+        "Net Units Sold": round(net_units, 2)
     }
 
 @timed
@@ -724,6 +728,7 @@ def display_cross_relation_pivot(filtered_data_c, filtered_data_s, filtered_data
         "Total Returns", 
         "Total Discounts",
         "Net Margin",
+        "Net Units Sold",
         "Collection"  # Collection only for customer/salesman/area
     ]
 
@@ -750,7 +755,8 @@ def display_cross_relation_pivot(filtered_data_c, filtered_data_s, filtered_data
             "Net Sales", 
             "Total Returns", 
             "Total Discounts",
-            "Net Margin"
+            "Net Margin",
+            "Net Units Sold"
         ]
     else:
         metric_options = full_metric_options
@@ -798,6 +804,7 @@ def display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_
         "Total Returns", 
         "Total Discounts",
         "Net Margin",
+        "Net Units Sold",
         "Collection"  # Collection allowed only if entity is customer/salesman/area
     ]
 
@@ -815,7 +822,8 @@ def display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_
             "Net Sales", 
             "Total Returns", 
             "Total Discounts",
-            "Net Margin"
+            "Net Margin",
+            "Net Units Sold"
         ]
     else:
         metric_options = full_metric_options
