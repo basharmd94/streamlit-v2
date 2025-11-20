@@ -59,10 +59,6 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
     st.title("Overall Sales Analysis")
     filtered_data, filtered_data_r = common.data_copy_add_columns(data_dict['sales'], data_dict['return'])
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview", "Comparison", "Distributions", "Descriptive Stats"],horizontal=True)
-    # st.write(common.create_download_link(filtered_data,"filtered_data.xlsx"), unsafe_allow_html=True)
-    # st.write(common.create_download_link(filtered_data_r,"filtered_data_r.xlsx"), unsafe_allow_html=True)
-    # st.write(filtered_data.columns)
-    # st.write(filtered_data_r.columns)
 
     if analysis_mode == "Overview":
         st.subheader("📈 Select Plot Type")
@@ -113,7 +109,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
         # Summary stats
         summary_stats = overall_sales.calculate_summary_statistics(filtered_data, filtered_data_r)
         overall_sales.display_summary_statistics(summary_stats)
-
+        
         # Expandable section for pivot tables
         overall_sales.display_entity_metric_pivot(filtered_data, filtered_data_r, current_page)
 

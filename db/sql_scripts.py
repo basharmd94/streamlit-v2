@@ -82,6 +82,7 @@ def get_return_data(filters=None):
                 cacus.cusname,
                 cacus.cuscity as area,
                 return.itemcode,
+                return.reason,
                 caitem.itemname,
                 caitem.itemgroup2 as itemgroup,
                 return.returnqty,

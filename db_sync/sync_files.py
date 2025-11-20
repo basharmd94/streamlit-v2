@@ -193,6 +193,7 @@ class SyncManager:
                 opcrn.xcus AS cusid,
                 opcrn.xemp AS sp_id,
                 opcdt.xitem AS itemcode,
+                opcrn.xreason AS reason,
                 opcdt.xqty AS returnqty,
                 opcdt.xlineamt AS treturnamt,
                 imtrn.xval AS returncost
@@ -208,7 +209,7 @@ class SyncManager:
         insert_sql_return = """
             INSERT INTO return (
                 uuid, itime, utime, zid, revoucher, date, cusid, sp_id,
-                itemcode, returnqty, treturnamt, returncost
+                itemcode, reason, returnqty, treturnamt, returncost
             ) VALUES %s
         """
         self.execute_sync(select_sql_return, insert_sql_return, 'return', clear_table_first=True)

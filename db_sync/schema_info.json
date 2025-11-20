@@ -363,6 +363,11 @@
                         "constraints": []
                     },
                     {
+                        "name":"reason",
+                        "type": "VARCHAR",
+                        "constraints":[]
+                    },
+                    {
                         "name": "returnqty",
                         "type": "NUMERIC",
                         "constraints": []

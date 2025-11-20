@@ -140,7 +140,9 @@ def net_pivot(data1, data2, params, current_page=None, data3=None):
     df = data1.copy()
     df_r = data2.copy()
     df_c = data3.copy() if data3 is not None else None  # collections (optional)
-
+    print(index_cols, 'index_cols')
+    print(column_cols, 'column_cols')
+    # print(metric, 'metric')
     try:
         if metric == "Net Sales":
             grouped_sales = df.groupby(index_cols + column_cols)["final_sales"].sum()

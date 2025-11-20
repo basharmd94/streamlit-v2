@@ -6,8 +6,6 @@ import calendar
 import plotly.express as px
 from utils.utils import timed
 
-### for display overall analysis
-
 
 @timed
 def calculate_summary_statistics(filtered_data, filtered_data_r):
@@ -83,7 +81,8 @@ def display_cross_relation_pivot(filtered_data, filtered_data_r, current_page):
         'Customer': ['cusid', 'cusname'],
         'Product': ['itemcode', 'itemname'],
         'Product Group': ['itemgroup'],
-        'Area': ['area']
+        'Area': ['area'],
+        'Reason':['reason']
     }
 
     metric_options = [
@@ -121,13 +120,14 @@ def display_cross_relation_pivot(filtered_data, filtered_data_r, current_page):
 @timed
 def display_entity_metric_pivot(filtered_data, filtered_data_r, current_page):
     st.subheader("📊 Pivot Table Analysis")
-
+    
     entity_options = {
         "Salesman": ["spid", "spname"],
         "Customer": ["cusid", "cusname"],
         "Product": ["itemcode", "itemname"],
         "Product Group": ["itemgroup"],
-        "Area": ["area"]
+        "Area": ["area"],
+        "Reason":["reason"]
     }
 
     metric_options = [
