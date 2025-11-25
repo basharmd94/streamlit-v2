@@ -73,6 +73,8 @@ def setup_auth_tables():
             ('sales', 'Overall Sales Analysis'),
             ('sales', 'YOY Analysis'),
             ('sales', 'Basket Analysis'),
+            ('crm', 'Collection Analysis'),
+            ('crm', 'Overall Sales Analysis'),
             ('finance', 'Home'),
             ('finance', 'Overall Margin Analysis'),
             ('finance', 'Financial Statements'),
@@ -92,7 +94,8 @@ def setup_auth_tables():
             ('admin_user', 'admin123', 'admin'),
             ('sales_user', 'sales123', 'sales'),
             ('finance_user', 'finance123', 'finance'),
-            ('purchase_user', 'purchase123', 'purchase')
+            ('purchase_user', 'purchase123', 'purchase'),
+            ('crm_user', 'crm3210', 'crm')
         ]
         
         # Clear existing users to avoid duplicates
@@ -129,7 +132,10 @@ def setup_auth_tables():
         print("   - Username: purchase_user")
         print("   - Password: purchase123")
         print("   - Access: Home, Purchase Analysis, YOY Analysis, Distribution & Histograms")
-        
+        print("\n5. CRM User:")
+        print("   - Username: crm_user")
+        print("   - Password: crm3210")
+        print("   - Access: Home, Collection Analysis, Overall Sales Analysis")
     except (Exception, psycopg2.DatabaseError) as error:
         print(f"Error: {error}")
         if conn:
