@@ -23,8 +23,41 @@ def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str])
     if combined_df is None or combined_df.empty:
         return {}
     filter_options = {}
+    cols_set = set(combined_df.columns)
+
     for col in filter_columns:
-        if col in combined_df.columns:
+        if col not in cols_set:
+            continue
+
+        # 🔍 For these three, build "id - name" so Streamlit search works by either
+        if col == "spname" and {"spid", "spname"} <= cols_set:
+            tmp = (
+                combined_df[["spid", "spname"]]
+                .dropna()
+                .drop_duplicates()
+                .sort_values(["spid", "spname"])
+            )
+            values = (tmp["spid"].astype(str) + " - " + tmp["spname"].astype(str)).tolist()
+
+        elif col == "cusname" and {"cusid", "cusname"} <= cols_set:
+            tmp = (
+                combined_df[["cusid", "cusname"]]
+                .dropna()
+                .drop_duplicates()
+                .sort_values(["cusid", "cusname"])
+            )
+            values = (tmp["cusid"].astype(str) + " - " + tmp["cusname"].astype(str)).tolist()
+
+        elif col == "itemname" and {"itemcode", "itemname"} <= cols_set:
+            tmp = (
+                combined_df[["itemcode", "itemname"]]
+                .dropna()
+                .drop_duplicates()
+                .sort_values(["itemcode", "itemname"])
+            )
+            values = (tmp["itemcode"].astype(str) + " - " + tmp["itemname"].astype(str)).tolist()
+
+        else:
             values = combined_df[col].dropna().unique().tolist()
             # Normalize year/month to integers to avoid decimals like 2024.0
             if col in ("year", "month"):
@@ -34,7 +67,9 @@ def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str])
                     values = sorted(values)
             else:
                 values = sorted(values)
-            filter_options[col] = list(values)
+
+        filter_options[col] = list(values)
+
     return filter_options
 
 @timed
@@ -301,7 +336,6 @@ class BaseApp:
             self.accounting_analysis()
         elif self.current_page == "Inventory Analysis":
             self.inventory_analysis()
-
 
     @timed
     def overall_sales_analysis(self, data_dict):

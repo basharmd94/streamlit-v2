@@ -46,19 +46,93 @@ def get_sales_data(filters=None):
                 sales.zid = %s"""
                 
     # Append filters to the WHERE clause
+    # Append filters to the WHERE clause
     if filters.get("year"):
         query += f" AND EXTRACT(YEAR FROM sales.date) IN ({','.join(map(str, filters['year']))})"
     if filters.get("month"):
         query += f" AND EXTRACT(MONTH FROM sales.date) IN ({','.join(map(str, filters['month']))})"
+
+    # Salesman: accept "spid - spname" or plain spname
     if filters.get("spname"):
-        names = "','".join(filters["spname"])
-        query += f" AND employee.spname IN ('{names}')"
+        raw_vals = [str(v) for v in filters["spname"]]
+        spids, spnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                code, name = code.strip(), name.strip()
+                if code:
+                    spids.append(code)
+                if name:
+                    spnames.append(name)
+            else:
+                name = v.strip()
+                if name:
+                    spnames.append(name)
+
+        conditions = []
+        if spids:
+            spid_list = "','".join(spids)
+            conditions.append(f"sales.sp_id IN ('{spid_list}')")
+        if spnames:
+            spname_list = "','".join(spnames)
+            conditions.append(f"employee.spname IN ('{spname_list}')")
+        if conditions:
+            query += " AND (" + " OR ".join(conditions) + ")"
+
+    # Customer: accept "cusid - cusname" or plain cusname
     if filters.get("cusname"):
-        names = "','".join(filters["cusname"])
-        query += f" AND cacus.cusname IN ('{names}')"
+        raw_vals = [str(v) for v in filters["cusname"]]
+        cusids, cusnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                code, name = code.strip(), name.strip()
+                if code:
+                    cusids.append(code)
+                if name:
+                    cusnames.append(name)
+            else:
+                name = v.strip()
+                if name:
+                    cusnames.append(name)
+
+        conditions = []
+        if cusids:
+            id_list = "','".join(cusids)
+            conditions.append(f"sales.cusid IN ('{id_list}')")
+        if cusnames:
+            name_list = "','".join(cusnames)
+            conditions.append(f"cacus.cusname IN ('{name_list}')")
+        if conditions:
+            query += " AND (" + " OR ".join(conditions) + ")"
+
+    # Product: accept "itemcode - itemname" or plain itemname
     if filters.get("itemname"):
-        names = "','".join(filters["itemname"])
-        query += f" AND caitem.itemname IN ('{names}')"
+        raw_vals = [str(v) for v in filters["itemname"]]
+        itemcodes, itemnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                code, name = code.strip(), name.strip()
+                if code:
+                    itemcodes.append(code)
+                if name:
+                    itemnames.append(name)
+            else:
+                name = v.strip()
+                if name:
+                    itemnames.append(name)
+
+        conditions = []
+        if itemcodes:
+            code_list = "','".join(itemcodes)
+            conditions.append(f"sales.itemcode IN ('{code_list}')")
+        if itemnames:
+            name_list = "','".join(itemnames)
+            conditions.append(f"caitem.itemname IN ('{name_list}')")
+        if conditions:
+            query += " AND (" + " OR ".join(conditions) + ")"
+
     if filters.get("area"):
         names = "','".join(filters["area"])
         query += f" AND cacus.cuscity IN ('{names}')"
@@ -104,15 +178,88 @@ def get_return_data(filters=None):
         query += f" AND EXTRACT(YEAR FROM return.date) IN ({','.join(map(str, filters['year']))})"
     if filters.get("month"):
         query += f" AND EXTRACT(MONTH FROM return.date) IN ({','.join(map(str, filters['month']))})"
+
+    # Salesman: "spid - spname" or plain spname
     if filters.get("spname"):
-        names = "','".join(filters["spname"])
-        query += f" AND employee.spname IN ('{names}')"
+        raw_vals = [str(v) for v in filters["spname"]]
+        spids, spnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                code, name = code.strip(), name.strip()
+                if code:
+                    spids.append(code)
+                if name:
+                    spnames.append(name)
+            else:
+                name = v.strip()
+                if name:
+                    spnames.append(name)
+
+        conditions = []
+        if spids:
+            spid_list = "','".join(spids)
+            conditions.append(f"return.sp_id IN ('{spid_list}')")
+        if spnames:
+            spname_list = "','".join(spnames)
+            conditions.append(f"employee.spname IN ('{spname_list}')")
+        if conditions:
+            query += " AND (" + " OR ".join(conditions) + ")"
+
+    # Customer: "cusid - cusname" or plain cusname
     if filters.get("cusname"):
-        names = "','".join(filters["cusname"])
-        query += f" AND cacus.cusname IN ('{names}')"
+        raw_vals = [str(v) for v in filters["cusname"]]
+        cusids, cusnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                code, name = code.strip(), name.strip()
+                if code:
+                    cusids.append(code)
+                if name:
+                    cusnames.append(name)
+            else:
+                name = v.strip()
+                if name:
+                    cusnames.append(name)
+
+        conditions = []
+        if cusids:
+            id_list = "','".join(cusids)
+            conditions.append(f"return.cusid IN ('{id_list}')")
+        if cusnames:
+            name_list = "','".join(cusnames)
+            conditions.append(f"cacus.cusname IN ('{name_list}')")
+        if conditions:
+            query += " AND (" + " OR ".join(conditions) + ")"
+
+    # Product: "itemcode - itemname" or plain itemname
     if filters.get("itemname"):
-        names = "','".join(filters["itemname"])
-        query += f" AND caitem.itemname IN ('{names}')"
+        raw_vals = [str(v) for v in filters["itemname"]]
+        itemcodes, itemnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                code, name = code.strip(), name.strip()
+                if code:
+                    itemcodes.append(code)
+                if name:
+                    itemnames.append(name)
+            else:
+                name = v.strip()
+                if name:
+                    itemnames.append(name)
+
+        conditions = []
+        if itemcodes:
+            code_list = "','".join(itemcodes)
+            conditions.append(f"return.itemcode IN ('{code_list}')")
+        if itemnames:
+            name_list = "','".join(itemnames)
+            conditions.append(f"caitem.itemname IN ('{name_list}')")
+        if conditions:
+            query += " AND (" + " OR ".join(conditions) + ")"
+
     if filters.get("area"):
         names = "','".join(filters["area"])
         query += f" AND cacus.cuscity IN ('{names}')"
@@ -156,9 +303,35 @@ def get_collection_data(filters=None):
     if filters.get("month"):
         query += f" AND glheader.month IN ({','.join(map(str, filters['month']))})"
 
+  # Optional filters
     if filters.get("cusname"):
-        names = "','".join(filters["cusname"])
-        query += f" AND cacus.cusname IN ('{names}')"
+        raw_vals = [str(v) for v in filters["cusname"]]
+        cusids, cusnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                code, name = code.strip(), name.strip()
+                if code:
+                    cusids.append(code)
+                if name:
+                    cusnames.append(name)
+            else:
+                name = v.strip()
+                if name:
+                    cusnames.append(name)
+
+        conds_with_values = []
+        if cusids:
+            placeholders = ", ".join(["%s"] * len(cusids))
+            conds_with_values.append((f"gldetail.ac_sub IN ({placeholders})", cusids))
+        if cusnames:
+            placeholders = ", ".join(["%s"] * len(cusnames))
+            conds_with_values.append((f"cacus.cusname IN ({placeholders})", cusnames))
+
+        if conds_with_values:
+            query += "\n  AND (" + " OR ".join(cond for cond, _ in conds_with_values) + ")"
+            for _, vals in conds_with_values:
+                params.extend(vals)
 
     if filters.get("area"):
         areas = "','".join(filters["area"])
@@ -216,10 +389,33 @@ def get_ar_data(filters=None):
 
     # Optional filters
     if filters.get("cusname"):
-        names = filters["cusname"]
-        placeholders = ", ".join(["%s"] * len(names))
-        query += f"\n  AND cacus.cusname IN ({placeholders})"
-        params.extend(names)
+        raw_vals = [str(v) for v in filters["cusname"]]
+        cusids, cusnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                code, name = code.strip(), name.strip()
+                if code:
+                    cusids.append(code)
+                if name:
+                    cusnames.append(name)
+            else:
+                name = v.strip()
+                if name:
+                    cusnames.append(name)
+
+        conds_with_values = []
+        if cusids:
+            placeholders = ", ".join(["%s"] * len(cusids))
+            conds_with_values.append((f"gldetail.ac_sub IN ({placeholders})", cusids))
+        if cusnames:
+            placeholders = ", ".join(["%s"] * len(cusnames))
+            conds_with_values.append((f"cacus.cusname IN ({placeholders})", cusnames))
+
+        if conds_with_values:
+            query += "\n  AND (" + " OR ".join(cond for cond, _ in conds_with_values) + ")"
+            for _, vals in conds_with_values:
+                params.extend(vals)
 
     if filters.get("area"):
         areas = filters["area"]
