@@ -18,7 +18,8 @@
                                                             ["08050002","Scrap Sales"],
                                                             ["08050007","Sales From HMBR Canteen."],
                                                             ["08050008","Others Sales."],
-                                                            ["08050010","Sales From Agriculture Project"]]
+                                                            ["08050010","Sales From Agriculture Project"],
+                                                            ["08050011","Disable Payroll ID Reconciliation with additional Salary"]]
                                 },
                                 "04-Cost of Goods Sold":{
                                     "0401-DIRECT EXPENSES":[["04010020","Cost Of Goods Sold"],
@@ -495,6 +496,7 @@
                                                                 ["13020004","Accrued International Purchase"],
                                                                 ["13020005","Accrued Raw Material Purchase"],
                                                                 ["13020006","Accrued Local Purchase"],
+                                                                ["13020007","Reconciliation Adjustment - Others"],
                                                                 ["13021001","Cost Of Goods Sold"]]
                                 }
     }
