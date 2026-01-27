@@ -1891,6 +1891,18 @@ def _effective_zids(primary_zid: str) -> list[str]:
     p = str(primary_zid)
     return [p, "100009"] if p == "100001" else [p]
 
+@st.cache_data(show_spinner=False)
+def _load_stock_flow(zid: str) -> pd.DataFrame:
+    zids = _effective_zids(zid)  # keep your 100001 → also 100009 rule
+    frames = []
+    for z in zids:
+        try:
+            df = Analytics("stock_flow", zid=z, filters={"zid": (str(z),)}).data
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                frames.append(df.assign(_src_zid=str(z)))
+        except Exception as e:
+            st.error(f"Error loading stock_flow for zid={z}: {e}")
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
 def _load_product_inventory(zid: str) -> pd.DataFrame:
@@ -2093,3 +2105,146 @@ def display_inventory_analysis_main(current_page, zid: str):
     st.dataframe(warehouse_ending, use_container_width=True, height=300)
     st.write(common.create_download_link(warehouse_ending, "warehouse_ending_stock_value.xlsx"),
             unsafe_allow_html=True)
+
+   # ------ Report 5: Movement Analysis (Fast / Slow / Stagnant) ------
+    st.subheader("5) Movement Analysis (Fast / Slow / Stagnant)")
+
+    flow_df = _load_stock_flow(zid)
+
+    if flow_df is None or flow_df.empty:
+        st.info("No stock_flow data found for the effective zids.")
+    else:
+        import numpy as np
+
+        # 1) Normalize types
+        for col in ["year", "month"]:
+            if col in flow_df.columns:
+                flow_df[col] = pd.to_numeric(flow_df[col], errors="coerce")
+        for c in ["warehouse", "itemcode"]:
+            if c in flow_df.columns:
+                flow_df[c] = flow_df[c].astype(str)
+        for c in ["qty_in","qty_out","net_qty","val_in","val_out","net_val"]:
+            if c in flow_df.columns:
+                flow_df[c] = pd.to_numeric(flow_df[c], errors="coerce").fillna(0.0)
+
+        # 2) Attach minimal metadata from inv_df (no extra queries)
+        meta = inv_df[["itemcode","itemname","itemgroup"]].drop_duplicates()
+        flow_df = flow_df.merge(meta, on="itemcode", how="left")
+
+        # 3) Apply same user filters as the page
+        if wh_sel:
+            flow_df = flow_df[flow_df["warehouse"].isin(wh_sel)]
+        if ig_sel:
+            flow_df = flow_df[flow_df["itemgroup"].isin(ig_sel)]
+        if prod_codes:
+            flow_df = flow_df[flow_df["itemcode"].isin(prod_codes)]
+
+        # Base balances as-of cutoff (reuse Report 2)
+        if "final" not in locals():
+            final = (
+                df_f.groupby(["warehouse","itemcode","itemname","itemgroup"], as_index=False)
+                    .agg(final_qty=("stockqty","sum"),
+                        final_value=("stockvalue","sum"))
+            )
+        base = final.rename(columns={"final_qty":"ending_qty","final_value":"ending_value"})
+
+        # If no movement rows after filters: show balances with zeros
+        if flow_df.empty:
+            movement = base.copy()
+            for c in ["qty_in_K","qty_out_K","abs_qty_K","active_months_K","months_since_move","f2s_qty_K"]:
+                movement[c] = 0.0
+            movement["movement_class"] = np.where(movement["ending_qty"] > 0, "STAGNANT", "NORMAL")
+
+            out_cols = [
+                "warehouse","itemgroup","itemcode","itemname",
+                "abs_qty_K","qty_in_K","qty_out_K","active_months_K","months_since_move",
+                "ending_qty","ending_value","f2s_qty_K","movement_class"
+            ]
+            movement = movement[out_cols].sort_values(
+                ["warehouse","movement_class","abs_qty_K"], ascending=[True, True, False]
+            )
+            st.dataframe(movement, use_container_width=True, height=420)
+            st.write(common.create_download_link(movement, "movement_analysis_0m.xlsx"), unsafe_allow_html=True)
+        else:
+            # 4) Timing: history-to-cutoff + trailing window K months
+            y = pd.to_numeric(flow_df["year"], errors="coerce").fillna(0).astype("int64")
+            m = pd.to_numeric(flow_df["month"], errors="coerce").fillna(0).astype("int64")
+            flow_df["mi"] = y * 12 + m
+
+            cutoff_mi = int(cutoff_year) * 12 + int(cutoff_month)
+            flow_all  = flow_df[flow_df["mi"] <= cutoff_mi]
+
+            K = st.slider("Trailing window (months) for movement ranking", 3, 12, 6,
+                        help="Used for movement intensity (in/out) metrics only.")
+            window = flow_all[flow_all["mi"] >= (cutoff_mi - (K - 1))]
+
+            # 5) Movement over window (INTENSITY)
+            grp = ["warehouse","itemcode","itemname","itemgroup"]
+            window_agg = (
+                window.groupby(grp, as_index=False)
+                    .agg(qty_in_K=("qty_in","sum"),
+                        qty_out_K=("qty_out","sum"),
+                        active_months_K=("net_qty", lambda s: (s != 0).sum()))
+            )
+            window_agg["abs_qty_K"] = window_agg["qty_in_K"] + window_agg["qty_out_K"]
+
+            # 6) Last movement across full history to cutoff
+            moved = flow_all.loc[(flow_all["qty_in"] > 0) | (flow_all["qty_out"] > 0)]
+            last_move = (
+                moved.groupby(grp, as_index=False)["mi"].max()
+                    .rename(columns={"mi":"last_move_mi"})
+            )
+
+            # 7) LEFT-JOIN movement onto balances (so ending totals match Report 2)
+            agg = (base
+                .merge(window_agg, on=grp, how="left")
+                .merge(last_move,  on=grp, how="left"))
+
+            # Fill zeros for missing movement; ∞ months for never-moved
+            for c in ["qty_in_K","qty_out_K","abs_qty_K","active_months_K"]:
+                if c in agg.columns:
+                    agg[c] = agg[c].fillna(0.0)
+            agg["months_since_move"] = cutoff_mi - agg["last_move_mi"]
+            agg["months_since_move"] = agg["months_since_move"].where(agg["last_move_mi"].notna(), np.inf)
+
+            # 8) Ratios & classification
+            agg["f2s_qty_K"] = (agg["abs_qty_K"] / agg["ending_qty"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+            # Percentiles per (warehouse,itemgroup)
+            ref_75 = agg.groupby(["warehouse","itemgroup"])["abs_qty_K"].transform(lambda s: s.quantile(0.75) if len(s) else 0.0)
+            low_25 = agg.groupby(["warehouse","itemgroup"])["abs_qty_K"].transform(lambda s: s.quantile(0.25) if len(s) else 0.0)
+
+            agg["movement_class"] = np.where(
+                (agg["abs_qty_K"] >= ref_75) & (agg["months_since_move"] <= 1), "FAST",
+                np.where(
+                    (agg["active_months_K"] == 0) & (agg["ending_qty"] > 0), "STAGNANT",
+                    np.where(
+                        (agg["abs_qty_K"] <= low_25) | (agg["months_since_move"] >= 3), "SLOW",
+                        "NORMAL"
+                    )
+                )
+            )
+
+            # 9) Output
+            out_cols = [
+                "warehouse","itemgroup","itemcode","itemname",
+                "abs_qty_K","qty_in_K","qty_out_K","active_months_K","months_since_move",
+                "ending_qty","ending_value","f2s_qty_K","movement_class"
+            ]
+            movement = agg[out_cols].sort_values(
+                ["warehouse","movement_class","abs_qty_K"], ascending=[True, True, False]
+            )
+            st.dataframe(movement, use_container_width=True, height=420)
+            st.write(common.create_download_link(movement, f"movement_analysis_{K}m.xlsx"),
+                    unsafe_allow_html=True)
+
+            # Optional: quick coverage hint (helps spot pack-mapping mismatches without calling caitem)
+            try:
+                base_keys = set(tuple(x) for x in base[["warehouse","itemcode"]].drop_duplicates().to_numpy())
+                win_keys  = set(tuple(x) for x in window_agg[["warehouse","itemcode"]].drop_duplicates().to_numpy())
+                coverage  = (len(base_keys & win_keys) / max(1, len(base_keys))) * 100.0
+                if coverage < 95:
+                    st.caption(f"Note: {coverage:.1f}% of as-of SKUs matched recent movement keys. "
+                            f"If this is unexpectedly low, ensure `stock_flow.itemcode` uses the same pack mapping as `stock`.")
+            except Exception:
+                pass

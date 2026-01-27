@@ -1,41 +1,49 @@
-from db_connector import connect_to_local_db, connect_to_global_db, create_schema, check_data_exists_in_all_tables
+from db_connector import connect_to_local_db, connect_to_global_db, create_schema
 from loggin_config import LogManager
 from sync_files import SyncManager
 
 def main():
-    ###local connection
+    local_conn = None
+    global_conn = None
+
+    # Config
+    schema_name = "public"
+    DROP_AND_RECREATE = False  # set True to DROP+CREATE tables from schema_info.json before syncing
+
+    # ---- Connect ----
     try:
         local_conn = connect_to_local_db()
     except Exception as e:
-        LogManager.logger.info(f'Exception generated from local connection with error: {e}',exc_info = True)
-    
-    ###global connection
+        LogManager.logger.info(f"Exception from local connection: {e}", exc_info=True)
+        return
+
     try:
         global_conn = connect_to_global_db()
     except Exception as e:
-         LogManager.logger.info(f'Exception generated from local connection with error: {e}',exc_info = True)
+        LogManager.logger.info(f"Exception from global connection: {e}", exc_info=True)
+        if local_conn:
+            local_conn.close()
+        return
 
-    tables_dict = None
-    
     try:
-        schema_name = 'public'
-        create_schema(local_conn,schema_name) 
-        tables_dict = check_data_exists_in_all_tables(local_conn, schema_name)
-    except Exception as e:
-        LogManager.logger.info(f'Exception generated from local connection with error: {e}',exc_info = True)
+        # ---- Ensure schema/tables exist (create missing; optional drop+recreate) ----
+        create_schema(local_conn, schema_name, drop_and_recreate=DROP_AND_RECREATE)
 
-    if tables_dict:
+        # ---- Full replace sync for all tables ----
+        sync_manager = SyncManager(global_conn, local_conn, local_schema=schema_name)
+        sync_manager.sync_all()
+
+    except Exception as e:
+        LogManager.logger.info(f"Exception during sync: {e}", exc_info=True)
+    finally:
+        # ---- Always close connections ----
         try:
-            ###Sync database
-            sync_manager = SyncManager(global_conn, local_conn)
-            sync_manager.sync_all(tables_dict)
-        except Exception as e:
-            LogManager.logger.info(f'Exception generated from local connection with error: {e}',exc_info = True)
-            
-    local_conn.close()
-    global_conn.close()
-    LogManager.logger.info('Connection Closed')
+            if local_conn:
+                local_conn.close()
+        finally:
+            if global_conn:
+                global_conn.close()
+        LogManager.logger.info("Connection Closed")
 
 if __name__ == "__main__":
     main()
-

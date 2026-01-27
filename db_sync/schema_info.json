@@ -469,6 +469,73 @@
                 ]
             },
             {
+                "name": "stock_flow",
+                "columns": [
+                    {
+                            "name": "uuid",
+                            "type": "VARCHAR",
+                            "constraints": [
+                                "PRIMARY KEY"
+                            ]
+                    },
+                    {
+                            "name": "zid",
+                            "type": "INT",
+                            "constraints": []
+                    },
+                    {
+                            "name": "year",
+                            "type": "INT",
+                            "constraints": []
+                    },
+                    {
+                            "name": "month",
+                            "type": "INT",
+                            "constraints": []
+                    },
+                    {
+                            "name": "itemcode",
+                            "type": "VARCHAR",
+                            "constraints": []
+                    },
+                    {
+                            "name": "warehouse",
+                            "type": "VARCHAR",
+                            "constraints": []
+                    },
+                    {
+                            "name": "qty_in",
+                            "type": "NUMERIC",
+                            "constraints": []
+                    },
+                    {
+                            "name": "qty_out",
+                            "type": "NUMERIC",
+                            "constraints": []
+                    },
+                    {
+                            "name": "net_qty",
+                            "type": "NUMERIC",
+                            "constraints": []
+                    },
+                    {
+                            "name": "val_in",
+                            "type": "NUMERIC",
+                            "constraints": []
+                    },
+                    {
+                            "name": "val_out",
+                            "type": "NUMERIC",
+                            "constraints": []
+                    },
+                    {
+                            "name": "net_val",
+                            "type": "NUMERIC",
+                            "constraints": []
+                    }
+                ]
+            },
+            {
                 "name": "cacus",
                 "columns": [
                     {

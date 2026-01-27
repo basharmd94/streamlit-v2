@@ -514,6 +514,14 @@ def get_inventory_value_data(filters=None):
                 stock_value.stockvalue
             FROM stock_value WHERE zid = (%s)"""
 
+def get_stock_flow_data(filters=None):
+    return """SELECT
+                zid, year, month, warehouse, itemcode,
+                qty_in, qty_out, net_qty,
+                val_in, val_out, net_val
+              FROM stock_flow
+              WHERE zid = (%s)"""
+
 def get_payment_data():
     return """SELECT
                 glmst.zid as zid,

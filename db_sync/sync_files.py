@@ -3,60 +3,94 @@ import pandas as pd
 import uuid
 import numpy as np
 from loggin_config import LogManager
-import re
 
 class SyncManager:
-    def __init__(self, global_conn, local_conn):
+    def __init__(self, global_conn, local_conn, local_schema: str = "public", use_server_side_cursor: bool = False):
         self.global_conn = global_conn
         self.local_conn = local_conn
+        self.local_schema = local_schema
+        self.use_server_side_cursor = use_server_side_cursor
         LogManager.logger.info('SyncManager Initialized')
 
-    def execute_sync(self, select_sql, insert_sql, table_name, clear_table_first=False):
+    def execute_sync(self, select_sql: str, insert_sql: str, table_name: str, clear_table_first: bool = False):
         """
-        Syncs all data from the global database into the local table.
-        If clear_table_first is True, truncates the local table before inserting.
+        Full replace sync for a single table:
+          - SELECT from global
+          - TRUNCATE local table (if requested)
+          - INSERT all rows
+        Assumes insert_sql explicitly lists target columns (with uuid first).
         """
         LogManager.logger.info(f"Starting full sync for table: {table_name}")
 
-        # Fetch all records from global database
-        global_cur = self.global_conn.cursor()
-        global_cur.execute(select_sql)
-        records = global_cur.fetchall()
-        column_names = [desc[0] for desc in global_cur.description]
-        global_cur.close()
+        # --------------- FETCH FROM GLOBAL ----------------
+        global_cur = None
+        try:
+            if self.use_server_side_cursor:
+                # server-side cursor reduces memory usage for very large tables
+                global_cur = self.global_conn.cursor(name=f"csr_{table_name}")
+                global_cur.itersize = 10000
+            else:
+                global_cur = self.global_conn.cursor()
+
+            global_cur.execute(select_sql)
+            records = global_cur.fetchall()
+            column_names = [desc[0] for desc in global_cur.description]
+        finally:
+            if global_cur:
+                global_cur.close()
 
         if not records:
             LogManager.logger.info(f"No records found to sync for table: {table_name}")
             return
 
-        # Load into DataFrame
+        # --------------- PREPARE DATAFRAME ----------------
         df = pd.DataFrame(records, columns=column_names)
-        timestamp_columns = ['itime', 'utime']  
-        for col in timestamp_columns:
+
+        # Normalize timestamp columns if present (avoid chained assignment warnings)
+        for col in ("itime", "utime"):
             if col in df.columns:
-                df[col].replace({pd.NaT: None}, inplace=True)
+                # Replace NaT with None so psycopg2 can handle it
+                df[col] = df[col].replace({pd.NaT: None})
 
-        # Generate a new UUID4 for each row
+        # Generate UUIDs as first column
         df['uuid'] = [str(uuid.uuid4()) for _ in range(len(df))]
-
-        # Reorder columns: uuid first
         df = df[['uuid'] + column_names]
 
-        local_cur = self.local_conn.cursor()
-        # Clear table if requested
-        if clear_table_first:
-            LogManager.logger.info(f"Truncating local table: {table_name}")
-            local_cur.execute(f"TRUNCATE TABLE {table_name}")
+        # Convert numpy types that can upset psycopg2 (defensive)
+        for c in df.columns:
+            # Example: convert pandas Int64 to python int, etc.
+            if pd.api.types.is_integer_dtype(df[c]) and df[c].dtype.name != 'int64':
+                df[c] = df[c].astype('int64')
+            if pd.api.types.is_bool_dtype(df[c]):
+                df[c] = df[c].astype(bool)
 
-        # Insert all records into local database
         values = list(df.itertuples(index=False, name=None))
-        extras.execute_values(local_cur, insert_sql, values, page_size=100)
-        self.local_conn.commit()
-        local_cur.close()
 
-        LogManager.logger.info(f"Inserted {len(df)} records into {table_name}")
+        # --------------- WRITE TO LOCAL ----------------
+        local_cur = self.local_conn.cursor()
+        try:
+            if clear_table_first:
+                LogManager.logger.info(f"Truncating local table: {self.local_schema}.{table_name}")
+                local_cur.execute(
+                    sql.SQL("TRUNCATE TABLE {}.{}")
+                       .format(sql.Identifier(self.local_schema), sql.Identifier(table_name))
+                )
 
-    def sync_all(self, tables_dict):
+            extras.execute_values(local_cur, insert_sql, values, page_size=1000)
+            self.local_conn.commit()
+            LogManager.logger.info(f"Inserted {len(df)} records into {self.local_schema}.{table_name}")
+
+        except Exception as e:
+            self.local_conn.rollback()
+            LogManager.logger.error(f"Sync failed for {self.local_schema}.{table_name}: {e}")
+            raise
+        finally:
+            local_cur.close()
+
+    def sync_all(self, tables_dict=None):
+        """
+        Calls execute_sync for each table. Kept as-is except for using schema-qualified TRUNCATE via execute_sync.
+        """
         LogManager.logger.info("Starting full sync of all tables")
 
         # GL Master (glmst)
@@ -182,7 +216,7 @@ class SyncManager:
         """
         self.execute_sync(select_sql_sales, insert_sql_sales, 'sales', clear_table_first=True)
 
-        # Returns (returns)
+        # Returns (return)
         select_sql_return = """
             SELECT
                 opcdt.ztime AS itime,
@@ -252,6 +286,33 @@ class SyncManager:
         """
         self.execute_sync(select_sql_stock_value, insert_sql_stock_value, 'stock_value', clear_table_first=True)
 
+        # Stock Flow (stock_flow) — in/out split for movement analysis
+        select_sql_stock_flow = """
+            SELECT
+                imtrn.zid   AS zid,
+                imtrn.xyear AS year,
+                imtrn.xper  AS month,
+                imtrn.xitem AS itemcode,
+                imtrn.xwh   AS warehouse,
+                SUM(CASE WHEN imtrn.xsign > 0 THEN imtrn.xqty ELSE 0 END)  AS qty_in,
+                SUM(CASE WHEN imtrn.xsign < 0 THEN -imtrn.xqty ELSE 0 END) AS qty_out,
+                SUM(imtrn.xqty * imtrn.xsign)                              AS net_qty,
+                SUM(CASE WHEN imtrn.xsign > 0 THEN imtrn.xval ELSE 0 END)  AS val_in,
+                SUM(CASE WHEN imtrn.xsign < 0 THEN -imtrn.xval ELSE 0 END) AS val_out,
+                SUM(imtrn.xval * imtrn.xsign)                              AS net_val
+            FROM imtrn
+            GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper
+        """
+        # NOTE: If your ERP stores xsign as '+'/'-' strings, swap the CASE tests to:
+        #   CASE WHEN imtrn.xsign = '+' THEN ... WHEN imtrn.xsign = '-' THEN ...
+        insert_sql_stock_flow = """
+            INSERT INTO stock_flow (
+                uuid, zid, year, month, itemcode, warehouse,
+                qty_in, qty_out, net_qty, val_in, val_out, net_val
+            ) VALUES %s
+        """
+        self.execute_sync(select_sql_stock_flow, insert_sql_stock_flow, 'stock_flow', clear_table_first=True)
+
         # Customers (cacus)
         select_sql_cacus = """
             SELECT
@@ -296,7 +357,7 @@ class SyncManager:
         """
         self.execute_sync(select_sql_caitem, insert_sql_caitem, 'caitem', clear_table_first=True)
 
-        # For prmst table
+        # Employees (from prmst)
         select_sql_prmst = """
             SELECT 
                 prmst.ztime as itime,
@@ -308,7 +369,6 @@ class SyncManager:
                 prmst.xdesig as designation
             FROM prmst
         """
-
         insert_sql_prmst = """
             INSERT INTO employee (
                 uuid, itime, utime, zid, spid, spname, department, designation
@@ -316,7 +376,7 @@ class SyncManager:
         """
         self.execute_sync(select_sql_prmst, insert_sql_prmst, 'employee', clear_table_first=True)
 
-         # Items (caitem)
+        # Suppliers (casup)
         select_sql_casup = """
             SELECT
                 casup.ztime AS itime,

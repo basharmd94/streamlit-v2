@@ -42,6 +42,7 @@ class Analytics:
             "return":     sql_scripts.get_return_data,
             "stock":      sql_scripts.get_product_inventory_data,
             "stock_value":sql_scripts.get_inventory_value_data,
+            "stock_flow": sql_scripts.get_stock_flow_data,
             "purchase":   sql_scripts.get_purchase_data,
             "collection": sql_scripts.get_collection_data,
             "ar":         sql_scripts.get_ar_data,
