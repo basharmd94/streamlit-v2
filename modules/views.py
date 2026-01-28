@@ -2116,7 +2116,7 @@ def display_inventory_analysis_main(current_page, zid: str):
     else:
         import numpy as np
 
-        # 1) Normalize types
+        # ---- 1) Normalize types ----
         for col in ["year", "month"]:
             if col in flow_df.columns:
                 flow_df[col] = pd.to_numeric(flow_df[col], errors="coerce")
@@ -2127,11 +2127,48 @@ def display_inventory_analysis_main(current_page, zid: str):
             if c in flow_df.columns:
                 flow_df[c] = pd.to_numeric(flow_df[c], errors="coerce").fillna(0.0)
 
-        # 2) Attach minimal metadata from inv_df (no extra queries)
-        meta = inv_df[["itemcode","itemname","itemgroup"]].drop_duplicates()
-        flow_df = flow_df.merge(meta, on="itemcode", how="left")
+        # ---- 2) Make stock_flow pack-aware so keys align with Report 2 ----
+        # We mirror the same CASE logic used in your stock SQL.
+        # Load caitem for effective zids and build a raw->display mapping.
+        try:
+            zids_eff = _effective_zids(zid)
+            caitem_frames = []
+            for z in zids_eff:
+                try:
+                    ci = Analytics("caitem", zid=z, filters={"zid": (str(z),)}).data
+                    if isinstance(ci, pd.DataFrame) and not ci.empty:
+                        caitem_frames.append(ci[["itemcode", "itemname", "itemgroup", "packcode"]].copy())
+                except Exception as _e:
+                    pass
+            if caitem_frames:
+                caitem_map = pd.concat(caitem_frames, ignore_index=True).drop_duplicates()
+                # compute display_code = packcode (when valid) else raw itemcode
+                def _choose_code(row):
+                    pk = str(row.get("packcode") or "").strip()
+                    if pk and pk.upper() != "NO" and not pk.startswith("KH"):
+                        return pk
+                    return str(row.get("itemcode"))
+                caitem_map["display_code"] = caitem_map.apply(_choose_code, axis=1)
+                # Raw->display mapping
+                raw_to_display = dict(zip(caitem_map["itemcode"].astype(str), caitem_map["display_code"]))
+                # Apply mapping to flow_df item codes
+                flow_df["itemcode"] = flow_df["itemcode"].map(raw_to_display).fillna(flow_df["itemcode"]).astype(str)
+                # Build a lookup of display_code -> (name, group)
+                disp_lookup = (
+                    caitem_map[["display_code","itemname","itemgroup"]]
+                    .drop_duplicates()
+                    .rename(columns={"display_code":"itemcode"})
+                )
+            else:
+                disp_lookup = inv_df[["itemcode","itemname","itemgroup"]].drop_duplicates()
+        except Exception:
+            # Fallback: use metadata from inv_df if caitem load fails
+            disp_lookup = inv_df[["itemcode","itemname","itemgroup"]].drop_duplicates()
 
-        # 3) Apply same user filters as the page
+        # Attach itemname/itemgroup after mapping
+        flow_df = flow_df.merge(disp_lookup, on="itemcode", how="left")
+
+        # ---- 3) Apply the same user filters (warehouse / itemgroup / product) ----
         if wh_sel:
             flow_df = flow_df[flow_df["warehouse"].isin(wh_sel)]
         if ig_sel:
@@ -2139,7 +2176,8 @@ def display_inventory_analysis_main(current_page, zid: str):
         if prod_codes:
             flow_df = flow_df[flow_df["itemcode"].isin(prod_codes)]
 
-        # Base balances as-of cutoff (reuse Report 2)
+        # If nothing remains, still show balances with zeros
+        # Compute balances base from df_f (already filtered and <= cutoff)
         if "final" not in locals():
             final = (
                 df_f.groupby(["warehouse","itemcode","itemname","itemgroup"], as_index=False)
@@ -2148,8 +2186,8 @@ def display_inventory_analysis_main(current_page, zid: str):
             )
         base = final.rename(columns={"final_qty":"ending_qty","final_value":"ending_value"})
 
-        # If no movement rows after filters: show balances with zeros
         if flow_df.empty:
+            # No movement rows after filters: show base with zero movement
             movement = base.copy()
             for c in ["qty_in_K","qty_out_K","abs_qty_K","active_months_K","months_since_move","f2s_qty_K"]:
                 movement[c] = 0.0
@@ -2166,19 +2204,20 @@ def display_inventory_analysis_main(current_page, zid: str):
             st.dataframe(movement, use_container_width=True, height=420)
             st.write(common.create_download_link(movement, "movement_analysis_0m.xlsx"), unsafe_allow_html=True)
         else:
-            # 4) Timing: history-to-cutoff + trailing window K months
+            # ---- 4) Timing model: history to cutoff + trailing window K months ----
             y = pd.to_numeric(flow_df["year"], errors="coerce").fillna(0).astype("int64")
             m = pd.to_numeric(flow_df["month"], errors="coerce").fillna(0).astype("int64")
             flow_df["mi"] = y * 12 + m
 
             cutoff_mi = int(cutoff_year) * 12 + int(cutoff_month)
-            flow_all  = flow_df[flow_df["mi"] <= cutoff_mi]
+            flow_all = flow_df[flow_df["mi"] <= cutoff_mi]
 
+            # Trailing window size (months)
             K = st.slider("Trailing window (months) for movement ranking", 3, 12, 6,
                         help="Used for movement intensity (in/out) metrics only.")
             window = flow_all[flow_all["mi"] >= (cutoff_mi - (K - 1))]
 
-            # 5) Movement over window (INTENSITY)
+            # ---- 5) Aggregate movement over window (INTENSITY) ----
             grp = ["warehouse","itemcode","itemname","itemgroup"]
             window_agg = (
                 window.groupby(grp, as_index=False)
@@ -2188,14 +2227,14 @@ def display_inventory_analysis_main(current_page, zid: str):
             )
             window_agg["abs_qty_K"] = window_agg["qty_in_K"] + window_agg["qty_out_K"]
 
-            # 6) Last movement across full history to cutoff
+            # ---- 6) Last movement across full history to cutoff (not just window) ----
             moved = flow_all.loc[(flow_all["qty_in"] > 0) | (flow_all["qty_out"] > 0)]
             last_move = (
                 moved.groupby(grp, as_index=False)["mi"].max()
                     .rename(columns={"mi":"last_move_mi"})
             )
 
-            # 7) LEFT-JOIN movement onto balances (so ending totals match Report 2)
+            # ---- 7) LEFT-JOIN movement onto balances base ----
             agg = (base
                 .merge(window_agg, on=grp, how="left")
                 .merge(last_move,  on=grp, how="left"))
@@ -2207,7 +2246,7 @@ def display_inventory_analysis_main(current_page, zid: str):
             agg["months_since_move"] = cutoff_mi - agg["last_move_mi"]
             agg["months_since_move"] = agg["months_since_move"].where(agg["last_move_mi"].notna(), np.inf)
 
-            # 8) Ratios & classification
+            # ---- 8) Ratios & classification ----
             agg["f2s_qty_K"] = (agg["abs_qty_K"] / agg["ending_qty"].replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
             # Percentiles per (warehouse,itemgroup)
@@ -2225,7 +2264,7 @@ def display_inventory_analysis_main(current_page, zid: str):
                 )
             )
 
-            # 9) Output
+            # ---- 9) Output ----
             out_cols = [
                 "warehouse","itemgroup","itemcode","itemname",
                 "abs_qty_K","qty_in_K","qty_out_K","active_months_K","months_since_move",
@@ -2237,14 +2276,3 @@ def display_inventory_analysis_main(current_page, zid: str):
             st.dataframe(movement, use_container_width=True, height=420)
             st.write(common.create_download_link(movement, f"movement_analysis_{K}m.xlsx"),
                     unsafe_allow_html=True)
-
-            # Optional: quick coverage hint (helps spot pack-mapping mismatches without calling caitem)
-            try:
-                base_keys = set(tuple(x) for x in base[["warehouse","itemcode"]].drop_duplicates().to_numpy())
-                win_keys  = set(tuple(x) for x in window_agg[["warehouse","itemcode"]].drop_duplicates().to_numpy())
-                coverage  = (len(base_keys & win_keys) / max(1, len(base_keys))) * 100.0
-                if coverage < 95:
-                    st.caption(f"Note: {coverage:.1f}% of as-of SKUs matched recent movement keys. "
-                            f"If this is unexpectedly low, ensure `stock_flow.itemcode` uses the same pack mapping as `stock`.")
-            except Exception:
-                pass
