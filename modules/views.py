@@ -372,8 +372,9 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
 @timed
 def display_margin_analysis_page(current_page, zid, data_dict):
     st.sidebar.title("Overall Margin Analysis")
-
     filtered_data,filtered_data_r = common.data_copy_add_columns(data_dict['sales'], data_dict['return'])
+    st.write(common.create_download_link(filtered_data, "filtered_data.xlsx"), unsafe_allow_html=True)
+    st.write(common.create_download_link(filtered_data_r, "filtered_data_r.xlsx"), unsafe_allow_html=True)
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison"],horizontal=True)
 
     if analysis_mode == "Overview":
@@ -2276,3 +2277,141 @@ def display_inventory_analysis_main(current_page, zid: str):
             st.dataframe(movement, use_container_width=True, height=420)
             st.write(common.create_download_link(movement, f"movement_analysis_{K}m.xlsx"),
                     unsafe_allow_html=True)
+
+@timed
+def display_customer_data_view_page(current_page, zid, data_dict):
+    st.header("Customer Data View")
+
+    # -----------------------------
+    # Load & prepare data
+    # -----------------------------
+    sales, returns = common.data_copy_add_columns(data_dict["sales"],data_dict["return"])
+
+    # -----------------------------
+    # Build selector options
+    # -----------------------------
+    def build_code_name(df, code_col, name_col):
+        return (
+            df[[code_col, name_col]]
+            .dropna()
+            .drop_duplicates()
+            .assign(label=lambda x: x[code_col].astype(str) + " - " + x[name_col])
+        )
+
+    cus_opts = build_code_name(sales, "cusid", "cusname")
+    sp_opts = build_code_name(sales, "spid", "spname")
+    item_opts = build_code_name(sales, "itemcode", "itemname")
+    area_opts = (
+        sales[["area"]]
+        .dropna()
+        .drop_duplicates()
+        .assign(label=lambda x: x["area"])
+    )
+
+    # -----------------------------
+    # UI filters
+    # -----------------------------
+    col1, col2 = st.columns(2)
+
+    with col1:
+        customer = st.selectbox(
+            "Customer (mandatory)",
+            options=[""] + cus_opts["label"].tolist()
+        )
+
+        salesman = st.selectbox(
+            "Salesman (optional)",
+            options=[""] + sp_opts["label"].tolist()
+        )
+
+    with col2:
+        product = st.selectbox(
+            "Product (optional)",
+            options=[""] + item_opts["label"].tolist()
+        )
+
+        area = st.selectbox(
+            "Area (optional)",
+            options=[""] + area_opts["label"].tolist()
+        )
+
+    # -----------------------------
+    # Validation: customer first
+    # -----------------------------
+    if not customer:
+        if salesman or product or area:
+            st.warning("Select a customer first to view transactions.")
+        return
+
+    cusid = customer.split(" - ")[0]
+
+    # -----------------------------
+    # Filter sales
+    # -----------------------------
+    sales_f = sales[sales["cusid"] == cusid].copy()
+    returns_f = returns[returns["cusid"] == cusid].copy()
+
+    if salesman:
+        spid = salesman.split(" - ")[0]
+        sales_f = sales_f[sales_f["spid"] == spid]
+        returns_f = returns_f[returns_f["spid"] == spid]
+
+    if product:
+        itemcode = product.split(" - ")[0]
+        sales_f = sales_f[sales_f["itemcode"] == itemcode]
+        returns_f = returns_f[returns_f["itemcode"] == itemcode]
+
+    if area:
+        sales_f = sales_f[sales_f["area"] == area]
+        returns_f = returns_f[returns_f["area"] == area]
+
+    # -----------------------------
+    # Normalize to credit/debit rows
+    # -----------------------------
+    sales_txn = pd.DataFrame({
+        "Date": sales_f["date"],
+        "Voucher": sales_f["voucher"],
+        "Customer Code": sales_f["cusid"],
+        "Customer": sales_f["cusname"],
+        "Salesman Code": sales_f["spid"],
+        "Salesman": sales_f["spname"],
+        "Area": sales_f["area"],
+        "Product Code": sales_f["itemcode"],
+        "Product": sales_f["itemname"],
+        "Qty Sold": sales_f["quantity"],
+        "Qty Returned": 0,
+        "Sales Value": sales_f["final_sales"],
+        "Return Value": 0
+    })
+
+    return_txn = pd.DataFrame({
+        "Date": returns_f["date"],
+        "Voucher": returns_f["revoucher"],
+        "Customer Code": returns_f["cusid"],
+        "Customer": returns_f["cusname"],
+        "Salesman Code": returns_f["spid"],
+        "Salesman": returns_f["spname"],
+        "Area": returns_f["area"],
+        "Product Code": returns_f["itemcode"],
+        "Product": returns_f["itemname"],
+        "Qty Sold": 0,
+        "Qty Returned": returns_f["returnqty"],
+        "Sales Value": 0,
+        "Return Value": returns_f["treturnamt"]
+    })
+
+    txn = pd.concat([sales_txn, return_txn], ignore_index=True)
+
+    if txn.empty:
+        st.info("No transactions exist for the selected combination.")
+        return
+
+    txn = txn.sort_values("Date", ascending=False)
+
+    # -----------------------------
+    # Display
+    # -----------------------------
+    st.dataframe(
+        txn,
+        use_container_width=True
+    )

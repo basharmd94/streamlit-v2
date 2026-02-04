@@ -24,10 +24,12 @@ def calculate_summary_statistics(filtered_data, filtered_data_r):
     net_units      = units_sold - units_returned
     return {
         "Net Sales": filtered_data['final_sales'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2),
+        "Cost of Goods": filtered_data['cost'].sum().round(2) - filtered_data_r['returncost'].sum().round(2),
         "Total Returns": filtered_data_r['treturnamt'].sum().round(2),
+        "Total Returns Cost": filtered_data_r['returncost'].sum().round(2),
         "Total Discounts": filtered_data['proddiscount'].sum().round(2),
-        "Net Margin": filtered_data['gross_margin'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2),
-        "Net Units Sold": round(net_units, 2)
+        "Net Margin": filtered_data['gross_margin'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2) + filtered_data_r['returncost'].sum().round(2),
+        "Net Margin Check": (filtered_data['final_sales'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2)) - (filtered_data['cost'].sum().round(2) - filtered_data_r['returncost'].sum().round(2))
     }
 
 @timed

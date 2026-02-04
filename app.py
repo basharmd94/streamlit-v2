@@ -179,7 +179,6 @@ class BaseApp:
                 except AttributeError:
                     st.experimental_rerun()
 
-
     @timed
     def home(self):
         st.write(f"Welcome to the Business Data Analysis App, {st.session_state.username}!")
@@ -195,6 +194,7 @@ class BaseApp:
         menu = [
             "Home", 
             "Overall Sales Analysis",
+            "Customer Data View",
             "Overall Margin Analysis", 
             "Collection Analysis",
             "Purchase Analysis",
@@ -249,10 +249,11 @@ class BaseApp:
             "Overall Margin Analysis": ("sales", "return"),
             "Collection Analysis": ("collection","sales","return","ar"),
             "Basket Analysis": ("sales", "return"),
-            "Purchase Analysis": ("sales", "purchase", "stock")
+            "Purchase Analysis": ("sales", "purchase", "stock"),
+            "Customer Data View": ("sales", "return")
         }
 
-        if self.current_page in self.page_data_map and self.current_page != "Purchase Analysis":
+        if self.current_page in self.page_data_map and self.current_page not in ("Purchase Analysis", "Customer Data View"):
             tables = self.page_data_map[self.current_page]
 
             # Dynamically define filter columns
@@ -316,12 +317,22 @@ class BaseApp:
                 # Render an empty page so layout doesn’t break
                 st.write("⬅ Use the sidebar to load purchase data")
             return  # ⬅ prevent the main router from running twice
+        elif self.current_page == "Customer Data View":
+            tables = self.page_data_map[self.current_page]
+
+            st.sidebar.title("Customer Data Loader")
+
+            if st.sidebar.button("🔄 Load Data"):
+                st.session_state.ready_to_load = True
+                st.session_state.last_data_dict = process_data(zid=st.session_state.zid,filters={},tables=tables)
 
 
         if self.current_page == "Home":
             self.home()
         elif self.current_page == "Overall Sales Analysis":
             self.call_if_data_loaded(self.overall_sales_analysis)
+        elif self.current_page == "Customer Data View":
+            self.call_if_data_loaded(self.customer_data_view)
         elif self.current_page == "Overall Margin Analysis":
             self.call_if_data_loaded(self.overall_margin_analysis)
         elif self.current_page == "Purchase Analysis":
@@ -340,6 +351,10 @@ class BaseApp:
     @timed
     def overall_sales_analysis(self, data_dict):
         views.display_overall_sales_analysis_page(self.current_page, st.session_state.zid, data_dict)
+    
+    @timed
+    def customer_data_view(self, data_dict):
+        views.display_customer_data_view_page(current_page=self.current_page, zid=st.session_state.zid, data_dict=data_dict)
 
     @timed
     def overall_margin_analysis(self, data_dict):

@@ -69,12 +69,16 @@ def setup_auth_tables():
             ('admin', 'Manufacturing Analysis'),
             ('admin', 'Accounting Analysis'),
             ('admin','Inventory Analysis'),
+            ('admin','Customer Data View'),
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
             ('sales', 'YOY Analysis'),
             ('sales', 'Basket Analysis'),
+            ('sales','Customer Data View'),
+            ('SOP', 'Customer Data View'),
             ('crm', 'Collection Analysis'),
             ('crm', 'Overall Sales Analysis'),
+            ('crm', 'Customer Data View'),
             ('finance', 'Home'),
             ('finance', 'Overall Margin Analysis'),
             ('finance', 'Financial Statements'),
@@ -95,7 +99,8 @@ def setup_auth_tables():
             ('sales_user', 'sales123', 'sales'),
             ('finance_user', 'finance123', 'finance'),
             ('purchase_user', 'purchase123', 'purchase'),
-            ('crm_user', 'crm3210', 'crm')
+            ('crm_user', 'crm3210', 'crm'),
+            ('SOP_user', 'sop123', 'SOP')
         ]
         
         # Clear existing users to avoid duplicates
@@ -136,6 +141,10 @@ def setup_auth_tables():
         print("   - Username: crm_user")
         print("   - Password: crm3210")
         print("   - Access: Home, Collection Analysis, Overall Sales Analysis")
+        print("\n6. SOP User:")
+        print("   - Username: SOP_user")
+        print("   - Password: sop123")
+        print("   - Access: Home, Customer Data View")
     except (Exception, psycopg2.DatabaseError) as error:
         print(f"Error: {error}")
         if conn:

@@ -216,30 +216,60 @@ class SyncManager:
         """
         self.execute_sync(select_sql_sales, insert_sql_sales, 'sales', clear_table_first=True)
 
-        # Returns (return)
         select_sql_return = """
             SELECT
-                opcdt.ztime AS itime,
-                opcdt.zutime AS utime,
-                opcdt.zid AS zid,
-                opcrn.xcrnnum AS revoucher,
-                opcrn.xdate AS date,
-                opcrn.xcus AS cusid,
-                opcrn.xemp AS sp_id,
-                opcdt.xitem AS itemcode,
-                opcrn.xreason AS reason,
-                opcdt.xqty AS returnqty,
-                opcdt.xlineamt AS treturnamt,
-                imtrn.xval AS returncost
+                opcdt.ztime       AS itime,
+                opcdt.zutime      AS utime,
+                opcdt.zid         AS zid,
+                opcrn.xcrnnum     AS revoucher,
+                opcrn.xdate       AS date,
+                opcrn.xcus        AS cusid,
+                opcrn.xemp        AS sp_id,
+                opcdt.xitem       AS itemcode,
+                opcrn.xreason     AS reason,
+                opcdt.xqty        AS returnqty,
+                opcdt.xlineamt    AS treturnamt,
+                imtrn.xval        AS returncost
             FROM opcdt
-            LEFT JOIN opcrn ON opcrn.xcrnnum = opcdt.xcrnnum AND opcrn.zid = opcdt.zid
-            LEFT JOIN imtrn ON opcrn.xcrnnum = imtrn.xdocnum
-                AND opcdt.xcrnnum = imtrn.xdocnum
-                AND opcdt.xitem = imtrn.xitem
-                AND opcdt.zid = imtrn.zid
-                AND opcrn.zid = imtrn.zid
-                AND opcdt.xrow = imtrn.xdocrow
+            LEFT JOIN opcrn
+                ON opcrn.xcrnnum = opcdt.xcrnnum
+               AND opcrn.zid     = opcdt.zid
+            LEFT JOIN imtrn
+                ON opcrn.xcrnnum = imtrn.xdocnum
+               AND opcdt.xcrnnum = imtrn.xdocnum
+               AND opcdt.xitem   = imtrn.xitem
+               AND opcdt.zid     = imtrn.zid
+               AND opcrn.zid     = imtrn.zid
+               AND opcdt.xrow    = imtrn.xdocrow
+
+            UNION ALL
+
+            SELECT
+                imtemptdt.ztime      AS itime,
+                imtemptdt.zutime     AS utime,
+                imtemptdt.zid        AS zid,
+                imtemptrn.ximtmptrn  AS revoucher,
+                imtemptrn.xdate      AS date,
+                imtemptrn.xcus       AS cusid,
+                imtemptrn.xemp       AS sp_id,
+                imtemptdt.xitem      AS itemcode,
+                imtemptrn.xrem       AS reason,
+                imtemptdt.xqtyord    AS returnqty,
+                imtemptdt.xlineamt   AS treturnamt,
+                imtrn.xval           AS returncost
+            FROM imtemptdt
+            LEFT JOIN imtemptrn
+                ON imtemptrn.ximtmptrn = imtemptdt.ximtmptrn
+               AND imtemptrn.zid       = imtemptdt.zid
+            LEFT JOIN imtrn
+                ON imtemptrn.ximtmptrn  = imtrn.xdocnum
+               AND imtemptdt.ximtmptrn  = imtrn.xdocnum
+               AND imtemptdt.xitem      = imtrn.xitem
+               AND imtemptdt.zid        = imtrn.zid
+               AND imtemptrn.zid        = imtrn.zid
+               AND imtemptdt.xtorlno    = imtrn.xdocrow
         """
+
         insert_sql_return = """
             INSERT INTO return (
                 uuid, itime, utime, zid, revoucher, date, cusid, sp_id,

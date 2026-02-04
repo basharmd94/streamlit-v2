@@ -45,15 +45,15 @@ def create_user(username, password, role):
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         print("Usage: python create_user.py <username> <password> <role>")
-        print("Available roles: admin, sales, finance, purchase")
+        print("Available roles: admin, sales, finance, purchase, SOP")
         sys.exit(1)
         
     username = sys.argv[1]
     password = sys.argv[2]
     role = sys.argv[3]
     
-    if role not in ['admin', 'sales', 'finance', 'purchase']:
-        print("Invalid role. Available roles: admin, sales, finance, purchase")
+    if role not in ['admin', 'sales', 'finance', 'purchase', 'SOP']:
+        print("Invalid role. Available roles: admin, sales, finance, purchase, SOP")
         sys.exit(1)
         
     create_user(username, password, role)

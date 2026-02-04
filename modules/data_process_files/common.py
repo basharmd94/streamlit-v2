@@ -152,7 +152,8 @@ def net_pivot(data1, data2, params, current_page=None, data3=None):
         elif metric == "Net Margin":
             grouped_sales = df.groupby(index_cols + column_cols)["gross_margin"].sum()
             grouped_returns = df_r.groupby(index_cols + column_cols)["treturnamt"].sum()
-            result = grouped_sales.subtract(grouped_returns, fill_value=0)
+            grouped_return_cost = df_r.groupby(index_cols + column_cols)["returncost"].sum()
+            result = grouped_sales.subtract(grouped_returns, fill_value=0).add(grouped_return_cost, fill_value=0)
 
         elif metric == "Total Returns":
             result = df_r.groupby(index_cols + column_cols)["treturnamt"].sum()
