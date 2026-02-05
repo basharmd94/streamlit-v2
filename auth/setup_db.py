@@ -72,6 +72,7 @@ def setup_auth_tables():
             ('admin','Customer Data View'),
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
+            ('sales','Collection Analysis'),
             ('sales', 'YOY Analysis'),
             ('sales', 'Basket Analysis'),
             ('sales','Customer Data View'),
