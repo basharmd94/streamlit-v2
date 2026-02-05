@@ -2278,34 +2278,45 @@ def display_inventory_analysis_main(current_page, zid: str):
             st.write(common.create_download_link(movement, f"movement_analysis_{K}m.xlsx"),
                     unsafe_allow_html=True)
 
-@timed
+@st.cache_data(show_spinner=False)
+def _build_customer_data_view_options(zid: int,sales_shape: tuple,sales_cols: tuple,sales_df: pd.DataFrame):
+    """
+    Cached builder for dropdown options to avoid repeated drop_duplicates()
+    on every Streamlit rerun.
+    """
+    def build_code_name(df, code_col, name_col):
+        tmp = df[[code_col, name_col]].dropna().drop_duplicates()
+        tmp["label"] = tmp[code_col].astype(str) + " - " + tmp[name_col].astype(str)
+        return tmp
+
+    cus_opts = build_code_name(sales_df, "cusid", "cusname")
+    sp_opts = build_code_name(sales_df, "spid", "spname")
+    item_opts = build_code_name(sales_df, "itemcode", "itemname")
+
+    area_opts = sales_df[["area"]].dropna().drop_duplicates()
+    area_opts["label"] = area_opts["area"].astype(str)
+
+    return cus_opts, sp_opts, item_opts, area_opts
+
+
 def display_customer_data_view_page(current_page, zid, data_dict):
     st.header("Customer Data View")
 
     # -----------------------------
     # Load & prepare data
     # -----------------------------
-    sales, returns = common.data_copy_add_columns(data_dict["sales"],data_dict["return"])
+    sales, returns = common.data_copy_add_columns(
+        data_dict["sales"],
+        data_dict["return"]
+    )
 
     # -----------------------------
-    # Build selector options
+    # Build selector options (cached)
     # -----------------------------
-    def build_code_name(df, code_col, name_col):
-        return (
-            df[[code_col, name_col]]
-            .dropna()
-            .drop_duplicates()
-            .assign(label=lambda x: x[code_col].astype(str) + " - " + x[name_col])
-        )
-
-    cus_opts = build_code_name(sales, "cusid", "cusname")
-    sp_opts = build_code_name(sales, "spid", "spname")
-    item_opts = build_code_name(sales, "itemcode", "itemname")
-    area_opts = (
-        sales[["area"]]
-        .dropna()
-        .drop_duplicates()
-        .assign(label=lambda x: x["area"])
+    sales_shape = (sales.shape[0], sales.shape[1])
+    sales_cols = tuple(sales.columns)
+    cus_opts, sp_opts, item_opts, area_opts = _build_customer_data_view_options(
+        zid, sales_shape, sales_cols, sales
     )
 
     # -----------------------------
@@ -2318,7 +2329,6 @@ def display_customer_data_view_page(current_page, zid, data_dict):
             "Customer (mandatory)",
             options=[""] + cus_opts["label"].tolist()
         )
-
         salesman = st.selectbox(
             "Salesman (optional)",
             options=[""] + sp_opts["label"].tolist()
@@ -2329,7 +2339,6 @@ def display_customer_data_view_page(current_page, zid, data_dict):
             "Product (optional)",
             options=[""] + item_opts["label"].tolist()
         )
-
         area = st.selectbox(
             "Area (optional)",
             options=[""] + area_opts["label"].tolist()
@@ -2344,40 +2353,50 @@ def display_customer_data_view_page(current_page, zid, data_dict):
         return
 
     cusid = customer.split(" - ")[0]
+    spid = salesman.split(" - ")[0] if salesman else None
+    itemcode = product.split(" - ")[0] if product else None
+    area_val = area if area else None
 
     # -----------------------------
-    # Filter sales
+    # Mask filtering (fast)
     # -----------------------------
-    sales_f = sales[sales["cusid"] == cusid].copy()
-    returns_f = returns[returns["cusid"] == cusid].copy()
+    # Only keep columns needed for the final table
+    sales_cols_needed = ["date", "voucher", "cusid", "spid", "area", "itemcode", "quantity", "final_sales"]
+    ret_cols_needed = ["date", "revoucher", "cusid", "spid", "area", "itemcode", "returnqty", "treturnamt"]
 
-    if salesman:
-        spid = salesman.split(" - ")[0]
-        sales_f = sales_f[sales_f["spid"] == spid]
-        returns_f = returns_f[returns_f["spid"] == spid]
+    smask = (sales["cusid"].astype(str) == str(cusid))
+    rmask = (returns["cusid"].astype(str) == str(cusid))
 
-    if product:
-        itemcode = product.split(" - ")[0]
-        sales_f = sales_f[sales_f["itemcode"] == itemcode]
-        returns_f = returns_f[returns_f["itemcode"] == itemcode]
+    if spid:
+        smask &= (sales["spid"].astype(str) == str(spid))
+        rmask &= (returns["spid"].astype(str) == str(spid))
 
-    if area:
-        sales_f = sales_f[sales_f["area"] == area]
-        returns_f = returns_f[returns_f["area"] == area]
+    if itemcode:
+        smask &= (sales["itemcode"].astype(str) == str(itemcode))
+        rmask &= (returns["itemcode"].astype(str) == str(itemcode))
+
+    if area_val:
+        smask &= (sales["area"] == area_val)
+        rmask &= (returns["area"] == area_val)
+
+    sales_f = sales.loc[smask, sales_cols_needed]
+    returns_f = returns.loc[rmask, ret_cols_needed]
+
+    if sales_f.empty and returns_f.empty:
+        st.info("No transactions exist for the selected combination.")
+        return
 
     # -----------------------------
     # Normalize to credit/debit rows
+    # (table shows codes only, as requested)
     # -----------------------------
     sales_txn = pd.DataFrame({
         "Date": sales_f["date"],
         "Voucher": sales_f["voucher"],
         "Customer Code": sales_f["cusid"],
-        "Customer": sales_f["cusname"],
         "Salesman Code": sales_f["spid"],
-        "Salesman": sales_f["spname"],
         "Area": sales_f["area"],
         "Product Code": sales_f["itemcode"],
-        "Product": sales_f["itemname"],
         "Qty Sold": sales_f["quantity"],
         "Qty Returned": 0,
         "Sales Value": sales_f["final_sales"],
@@ -2388,12 +2407,9 @@ def display_customer_data_view_page(current_page, zid, data_dict):
         "Date": returns_f["date"],
         "Voucher": returns_f["revoucher"],
         "Customer Code": returns_f["cusid"],
-        "Customer": returns_f["cusname"],
         "Salesman Code": returns_f["spid"],
-        "Salesman": returns_f["spname"],
         "Area": returns_f["area"],
         "Product Code": returns_f["itemcode"],
-        "Product": returns_f["itemname"],
         "Qty Sold": 0,
         "Qty Returned": returns_f["returnqty"],
         "Sales Value": 0,
@@ -2402,16 +2418,21 @@ def display_customer_data_view_page(current_page, zid, data_dict):
 
     txn = pd.concat([sales_txn, return_txn], ignore_index=True)
 
-    if txn.empty:
-        st.info("No transactions exist for the selected combination.")
-        return
+    # Replace 0 with '-' for display clarity (credit / debit style)
+    display_cols = ["Qty Sold", "Qty Returned", "Sales Value", "Return Value"]
+
+    for col in display_cols:
+        txn[col] = txn[col].apply(lambda x: "-" if x == 0 else x)
+
+    # Consistent column order
+    txn = txn[
+        ["Date", "Voucher", "Customer Code", "Salesman Code", "Area", "Product Code",
+         "Qty Sold", "Qty Returned", "Sales Value", "Return Value"]
+    ]
 
     txn = txn.sort_values("Date", ascending=False)
 
     # -----------------------------
     # Display
     # -----------------------------
-    st.dataframe(
-        txn,
-        use_container_width=True
-    )
+    st.dataframe(txn, use_container_width=True)

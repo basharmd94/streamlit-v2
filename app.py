@@ -253,7 +253,7 @@ class BaseApp:
             "Customer Data View": ("sales", "return")
         }
 
-        if self.current_page in self.page_data_map and self.current_page not in ("Purchase Analysis", "Customer Data View"):
+        if self.current_page in self.page_data_map and self.current_page != "Purchase Analysis":
             tables = self.page_data_map[self.current_page]
 
             # Dynamically define filter columns
@@ -317,15 +317,6 @@ class BaseApp:
                 # Render an empty page so layout doesn’t break
                 st.write("⬅ Use the sidebar to load purchase data")
             return  # ⬅ prevent the main router from running twice
-        elif self.current_page == "Customer Data View":
-            tables = self.page_data_map[self.current_page]
-
-            st.sidebar.title("Customer Data Loader")
-
-            if st.sidebar.button("🔄 Load Data"):
-                st.session_state.ready_to_load = True
-                st.session_state.last_data_dict = process_data(zid=st.session_state.zid,filters={},tables=tables)
-
 
         if self.current_page == "Home":
             self.home()
