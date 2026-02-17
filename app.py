@@ -248,7 +248,7 @@ class BaseApp:
             "Overall Sales Analysis": ("sales", "return"),
             "Overall Margin Analysis": ("sales", "return"),
             "Collection Analysis": ("collection","sales","return","ar"),
-            "Basket Analysis": ("sales", "return"),
+            "Basket Analysis": ("sales", "return", "purchase", "cacus_simple"),
             "Purchase Analysis": ("sales", "purchase", "stock"),
             "Customer Data View": ("sales", "return")
         }
@@ -296,6 +296,7 @@ class BaseApp:
             
             if st.sidebar.button("🔄 Load Data"):
                 st.session_state.ready_to_load = True
+                st.session_state.last_filters = selected_filters
                 st.session_state.last_data_dict = process_data(zid=st.session_state.zid, filters=selected_filters, tables=tables)
             
         elif self.current_page == "Purchase Analysis":
@@ -360,8 +361,8 @@ class BaseApp:
         views.display_collection_analysis_page(self.current_page, st.session_state.zid, st.session_state.proj, data_dict)
 
     @timed
-    def basket_analysis(self, data_dict=None):
-        views.display_basket_analysis_page(self.current_page, st.session_state.zid)
+    def basket_analysis(self, data_dict):
+        views.display_basket_analysis_page(self.current_page, st.session_state.zid, data_dict, st.session_state.get("last_filters", {}))
 
     @timed
     def financials(self):

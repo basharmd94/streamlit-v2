@@ -59,7 +59,6 @@ def setup_auth_tables():
             ('admin', 'Home'),
             ('admin', 'Overall Sales Analysis'),
             ('admin', 'Overall Margin Analysis'),
-            ('admin', 'YOY Analysis'),
             ('admin', 'Purchase Analysis'),
             ('admin', 'Collection Analysis'),
             ('admin', 'Distribution & Histograms'),
@@ -73,7 +72,6 @@ def setup_auth_tables():
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
             ('sales','Collection Analysis'),
-            ('sales', 'YOY Analysis'),
             ('sales', 'Basket Analysis'),
             ('sales','Customer Data View'),
             ('SOP', 'Customer Data View'),
@@ -88,7 +86,7 @@ def setup_auth_tables():
             ('finance','Inventory Analysis'),
             ('purchase', 'Home'),
             ('purchase', 'Purchase Analysis'),
-            ('purchase', 'YOY Analysis'),
+            ('purchase', 'Basket Analysis'),
             ('purchase', 'Distribution & Histograms'),
             ('purchase','Inventory Analysis')
         ON CONFLICT DO NOTHING

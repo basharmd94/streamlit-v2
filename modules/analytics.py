@@ -1,6 +1,7 @@
 from db import db_utils, sql_scripts
 from modules.data_process_files import common
 import streamlit as st
+import pandas as pd
 
 # modules/analytics.py
 
@@ -25,13 +26,17 @@ class Analytics:
         )
 
         if table_name == "purchase":
-            # use string literals for the test
-            if "100001" in zid_list and "100009" not in zid_list:
+            # Only add 100009 when the scope is *exactly* just 100001
+            if len(zid_list) == 1 and zid_list[0] == "100001":
                 zid_list.append("100009")
 
             # Pad to two values if still length-1
             if len(zid_list) == 1:
                 zid_list.append(zid_list[0])
+
+            # Safety: never allow more than 2, because purchase SQL uses 2 placeholders
+            if len(zid_list) > 2:
+                zid_list = zid_list[:2]
 
         filters["zid"] = tuple(zid_list)
         filters["project"] = project
@@ -82,5 +87,92 @@ class Analytics:
             self.data = common.to_dataframe(data, cols)
 
 
-    
+
+# -----------------------------
+# Basket Analysis helpers (Basket-only; does NOT modify existing pipelines)
+# -----------------------------
+
+def basket_scope_zids(selected_zid: str) -> list[str]:
+    """Basket-only business merge rule."""
+    z = str(selected_zid)
+    if z in ("100000", "100001"):
+        return ["100000", "100001"]
+    return [z]
+
+
+@st.cache_data(show_spinner=False)
+def basket_load_sales(scope_zids: tuple[str, ...], filters: dict) -> 'common.pd.DataFrame':  # type: ignore
+    """
+    Load sales for one or two ZIDs and concatenate.
+    Uses the existing Analytics('sales', zid=..., filters=...) call per-ZID (sales SQL is zid = %s).
+    """
+    dfs = []
+    for z in scope_zids:
+        df = Analytics("sales", zid=z, filters=filters).data
+        if df is not None and not df.empty:
+            dfs.append(df)
+    if not dfs:
+        import pandas as pd
+        return pd.DataFrame()
+    import pandas as pd
+    return pd.concat(dfs, ignore_index=True)
+
+@st.cache_data(show_spinner=False)
+def basket_load_purchase_for_basket(selected_zid: str) -> "pd.DataFrame":
+    """
+    Basket Purchase loader:
+      - For merged GI/Gulshan analysis, purchases must come ONLY from 100001 + 100009
+      - 100000 purchases are not relevant (not international)
+      - For Zepto (100005), keep its own purchase scope (100005 only) unless you later define otherwise.
+    """
+
+    z = str(selected_zid)
+
+    def _load_pair(a: str, b: str) -> pd.DataFrame:
+        df = Analytics("purchase", zid=[a, b], filters={}).data
+        return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    if z in ("100000", "100001"):
+        # Always: only Gulshan + Packaging Imports
+        return _load_pair("100001", "100009")
+
+    # Zepto or others: default to itself
+    return _load_pair(z, z)
+
+@st.cache_data(show_spinner=False)
+def basket_load_cacus(zid: str) -> 'common.pd.DataFrame':  # type: ignore
+    """Load simple customer master for a single zid."""
+    df = Analytics("cacus_simple", zid=str(zid), filters={}).data
+    import pandas as pd
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def basket_prepare(selected_zid: str, filters: dict) -> dict:
+    """
+    Prepare all basket-only datasets using the navbar-selected filters.
+    Returns:
+      - sales_df: merged sales for the basket scope (100000+100001 or single zid)
+      - purchase_df: purchase data for the same scope
+      - scope_zids: list[str]
+      - cacus_100000 / cacus_100001 (only when scope is merged)
+    """
+    scope = basket_scope_zids(selected_zid)
+    scope_tuple = tuple(scope)
+    sales_df = basket_load_sales(scope_tuple, filters or {})
+    purchase_df = basket_load_purchase_for_basket(str(selected_zid))
+
+
+    out = {
+        "scope_zids": scope,
+        "sales": sales_df,
+        "purchase": purchase_df,
+    }
+
+    if scope == ["100000", "100001"]:
+        out["cacus_100000"] = basket_load_cacus("100000")
+        out["cacus_100001"] = basket_load_cacus("100001")
+
+    return out
+
 
