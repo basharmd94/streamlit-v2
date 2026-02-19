@@ -360,11 +360,20 @@ PREFIX_TO_SECTION_SIGN = {
     "13": ("financing",  1),   # Owners Equity
 }
 
+SPECIAL_FINANCING_CODES = {"09040007", "09040001", "09040003"}
+SPECIAL_FIN_BUCKET_L1 = "10-Special Financing (CL Reclass)"
+SPECIAL_FIN_BUCKET_L2 = "10-Special Financing (CL Reclass)"
+
 def _prefix_lookup(code):
+    code = "" if code is None else str(code)
+
+    if code in {"09040007", "09040001", "09040003"}:
+        return "financing", 1
+
     for pfx, (sect, sgn) in PREFIX_TO_SECTION_SIGN.items():
         if code.startswith(pfx):
             return sect, sgn
-    return "operating", 0      # ignore unmapped
+    return "operating", 0 
 
 def _prefix_rank(code: str) -> int:
     """Return 0–5 for known IFRS bucket, 99 otherwise (for sorting)."""
@@ -517,10 +526,6 @@ def make_cashflow_statement_level0(pl_df: pd.DataFrame,bs_df: pd.DataFrame, coc_
 
     excl_codes = _codes_to_exclude()
     bs_df = bs_df[~bs_df[code_col].isin(excl_codes)]
-    bs_df.loc[bs_df[name_col].eq("Net Profit/Loss") & bs_df[code_col].eq(""),name_col] = "Change in Net Profit/Loss"
-
-    print(bs_df.columns,"bs_df.columns")
-    print(pl_df.columns,"pl_df.columns")
 
     if selected_perspective.lower() == "monthly":
 
@@ -536,9 +541,6 @@ def make_cashflow_statement_level0(pl_df: pd.DataFrame,bs_df: pd.DataFrame, coc_
         common = [c for c in num_bs if c in pl_df.columns]        # overlap with P/L
         col_head = common
 
-    # print("Years (B/S):", num_bs, "Common:", common)  # optional: remove after testing
-    print(col_head,"col_head")
-
     if len(col_head) < 2:
         raise ValueError("Need at least two overlapping years between P/L and B/S")
 
@@ -548,18 +550,35 @@ def make_cashflow_statement_level0(pl_df: pd.DataFrame,bs_df: pd.DataFrame, coc_
 
     # ---- C  Year-on-year deltas for every ac_code -----------------------
     bs_work   = bs_df.set_index([code_col, name_col])[col_head]
+
+    # --- Special handling: BS Net Profit/Loss should become "Prior Period Net Profit/Loss" and be shifted ---
+    np_key = ("", "Net Profit/Loss")  # BS NP row: blank code, name "Net Profit/Loss"
+
+    prior_np_key = ("", "Prior Period Net Profit/Loss")
+    prior_np_series = None
+
+    if np_key in bs_work.index:
+        # Shift RIGHT: current period shows previous period's NP
+        prior_np_series = bs_work.loc[np_key].shift(1).loc[col_head[1:]]  # aligns with delta columns
+
+        # Remove the original BS NP row from delta processing
+        bs_work = bs_work.drop(index=np_key)
+
     bs_delta  = bs_work.diff(axis=1).iloc[:, 1:]          # target − base
     bs_delta.columns = col_head[1:]
+
+    # Inject the shifted prior NP row into bs_delta (no diff)
+    if prior_np_series is not None:
+        bs_delta.loc[prior_np_key, :] = prior_np_series.values
 
     # ---- D  Allocate deltas & build detailed frames ---------------------
     section_frames = {"operating": [], "investing": [], "financing": []}
 
     for (code, name), delta_row in bs_delta.iterrows():
-        if (not code) and str(name).strip() == "Change in Net Profit/Loss":
-            section, sign = "financing", 1      # treat as financing item
+        if (code == "" and str(name).strip() == "Prior Period Net Profit/Loss"):
+            section, sign = "financing", -1
         else:
             section, sign = _prefix_lookup(code)
-        # section, sign = _prefix_lookup(code)
         if sign == 0:
             continue
         signed = sign * delta_row  # flip sign for cash logic
@@ -587,8 +606,7 @@ def make_cashflow_statement_level0(pl_df: pd.DataFrame,bs_df: pd.DataFrame, coc_
     dep_series   = pl_df.loc[pl_df[code_col].str.contains("06360001", case=False, na=False),col_head].sum()
     dep_row      = _total_row("Depreciation", dep_series.loc[col_head[1:]])
     wc_total_row = _total_row("Δ Working Capital",  op_total)
-    cfo_row      = _total_row("Cash from Operations",
-                                 op_total) #+ net_profit.loc[col_head[1:]]) dep_series.loc[col_head[1:]]
+    cfo_row      = _total_row("Cash from Operations", op_total + net_profit.loc[col_head[1:]] + dep_series.loc[col_head[1:]])
     capex_row    = _total_row("CapEx / Investments", inv_total)
     fin_row      = _total_row("Cash from Financing", fin_total)
     ndc_row      = _total_row("Net ΔCash",
@@ -758,6 +776,11 @@ def consolidate_cfs(cfs_l0: pd.DataFrame,
     lookup = maps[section]
     order  = order1_tbl[section] if level == 1 else order2_tbl[section]
 
+    # --- ensure our special financing bucket exists in the category order ---
+    special_bucket = SPECIAL_FIN_BUCKET_L1 if level == 1 else SPECIAL_FIN_BUCKET_L2
+    if special_bucket not in order:
+        order = list(order) + [special_bucket]
+
     # Guess columns
     code_col = cfs_l0.columns[0]     # arrow lives here
     name_col = cfs_l0.columns[1]
@@ -772,7 +795,12 @@ def consolidate_cfs(cfs_l0: pd.DataFrame,
         """
         if not isinstance(code, str) or code.strip() == "":
             return None                           # header / subtotal
-        acct = code.strip()                       # e.g. "01010101"
+        acct = code.strip()
+
+        # --- override: reclass these current-liability codes into financing bucket ---
+        if acct in SPECIAL_FINANCING_CODES:
+            return special_bucket
+
         return lookup.get(acct, (None, None))[level - 1]
 
     work = cfs_l0.copy()
@@ -799,7 +827,10 @@ def consolidate_cfs(cfs_l0: pd.DataFrame,
     headers = headers.drop(columns=code_col)            # drop empty code col
     headers = headers[[name_col] + list(num_cols)]      # same column order
     headers = headers.reset_index(drop=True)
-    headers = headers[headers[name_col] == "Change in Net Profit/Loss"]
+    headers = headers[headers[name_col].isin([
+        "Change in Net Profit/Loss",
+        "Prior Period Net Profit/Loss"
+    ])]
 
     # 🆕  combine and return
     final = pd.concat([agg, headers], ignore_index=True)
@@ -915,11 +946,11 @@ def build_cfs_level1_summary_df(cfs_lv1: pd.DataFrame,net_profit: pd.DataFrame,d
 
     # 3) Tag detail rows
     def bucket_section(label: str) -> str | None:
-        if label == "Change in Net Profit/Loss":
+        if label in ("Change in Net Profit/Loss", "Prior Period Net Profit/Loss"):
             return "financing"
         if not isinstance(label, str) or "-" not in label:
             return None
-        return _prefix_lookup(label.split("-")[0][:2])[0]
+        return _prefix_lookup(label.split("-")[0])[0]
 
     work = cfs_lv1.copy()
     work["section"] = work[name_col].apply(bucket_section)
@@ -934,7 +965,7 @@ def build_cfs_level1_summary_df(cfs_lv1: pd.DataFrame,net_profit: pd.DataFrame,d
     fin_total = _as_year_series(work.loc[fin_mask, years_raw].sum(), years_str)
 
     wc_row  = _row("Δ Working Capital", wc_total)
-    cfo_row = _row("Cash from Operations", wc_total)  # (+ dep_series + np_series) if you later enable them
+    cfo_row = _row("Cash from Operations", wc_total + dep_series + np_series)
 
     inv_tot  = _row("Cash from Investing", inv_total)
     fin_tot  = _row("Cash from Financing", fin_total)
@@ -1118,7 +1149,7 @@ def build_cfs_level2_summary(cfs_lv2: pd.DataFrame,net_profit_lv2: pd.DataFrame,
     years_str = [str(c) for c in years_raw]
 
     # 1) Net-profit & Depreciation as aligned Series (string-indexed)
-    np_series  = _as_year_series(net_profit_lv2,       years_str) * -1
+    np_series  = _as_year_series(net_profit_lv2,       years_str)
     dep_series = _as_year_series(depreciation_lv1_row, years_str)
 
     def _row(label: str, series: pd.Series) -> pd.DataFrame:
@@ -1127,13 +1158,12 @@ def build_cfs_level2_summary(cfs_lv2: pd.DataFrame,net_profit_lv2: pd.DataFrame,
     np_row  = _row("Net Profit/Loss", np_series)
     dep_row = _row("Depreciation",    dep_series)
 
-    # classify
     def section_of(label: str) -> str | None:
-        if label == "Change in Net Profit/Loss":
+        if label in ("Change in Net Profit/Loss", "Prior Period Net Profit/Loss"):
             return "financing"
         if not isinstance(label, str) or "-" not in label:
             return None
-        return _prefix_lookup(label.split("-")[0][:2])[0]
+        return _prefix_lookup(label.split("-")[0])[0]
 
     work = cfs_lv2.copy()
     work["section"] = work[name_col].apply(section_of)
@@ -1148,7 +1178,7 @@ def build_cfs_level2_summary(cfs_lv2: pd.DataFrame,net_profit_lv2: pd.DataFrame,
     fin_tot = _as_year_series(work.loc[fin_mask, years_raw].sum(), years_str)
 
     wc_row  = _row("Δ Working Capital", wc_tot)
-    cfo_row = _row("Cash from Operations", wc_tot)  # (+ dep_series + np_series) if needed
+    cfo_row = _row("Cash from Operations", wc_tot + dep_series + np_series)
 
     inv_row = _row("Cash from Investing",  inv_tot)
     fin_row = _row("Cash from Financing",  fin_tot)

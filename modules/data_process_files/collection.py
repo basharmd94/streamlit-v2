@@ -676,7 +676,6 @@ def calculate_summary_statistics(filtered_data_c, filtered_data_s, filtered_data
         "Net Sales": filtered_data_s['final_sales'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2),
         "Total Returns": filtered_data_r['treturnamt'].sum().round(2),
         "Total Discounts": filtered_data_s['proddiscount'].sum().round(2),
-        "Net Margin": filtered_data_s['gross_margin'].sum().round(2) - filtered_data_r['treturnamt'].sum().round(2),
         "Net Collection": filtered_data_c['value'].sum().round(2),
         "Net Units Sold": round(net_units, 2)
     }
@@ -727,7 +726,6 @@ def display_cross_relation_pivot(filtered_data_c, filtered_data_s, filtered_data
         "Net Sales", 
         "Total Returns", 
         "Total Discounts",
-        "Net Margin",
         "Net Units Sold",
         "Collection"  # Collection only for customer/salesman/area
     ]
@@ -755,7 +753,6 @@ def display_cross_relation_pivot(filtered_data_c, filtered_data_s, filtered_data
             "Net Sales", 
             "Total Returns", 
             "Total Discounts",
-            "Net Margin",
             "Net Units Sold"
         ]
     else:
@@ -803,7 +800,6 @@ def display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_
         "Net Sales", 
         "Total Returns", 
         "Total Discounts",
-        "Net Margin",
         "Net Units Sold",
         "Collection"  # Collection allowed only if entity is customer/salesman/area
     ]
@@ -822,7 +818,6 @@ def display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_
             "Net Sales", 
             "Total Returns", 
             "Total Discounts",
-            "Net Margin",
             "Net Units Sold"
         ]
     else:
@@ -860,17 +855,6 @@ def display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_
 
 @timed
 def plot_net(data1,data2,xaxis,yaxis1,yaxis2,bartitle,current_page):
-
-    grouped_data,yaxis = common.net_vertical(data1,data2,xaxis,yaxis1,yaxis2,current_page)
-
-    # Create the bar plot using Plotly
-    fig = px.bar(grouped_data, x='xaxis', y=yaxis, title=bartitle, labels={'xaxis': 'Month-Year', yaxis: 'Net Value'})
-    fig.update_layout(xaxis_tickangle=-45)  # better readability
-    # Display the plot in Streamlit
-    st.plotly_chart(fig,use_container_width=True)
-
-@timed
-def plot_net_margin(data1,data2,xaxis,yaxis1,yaxis2,bartitle,current_page):
 
     grouped_data,yaxis = common.net_vertical(data1,data2,xaxis,yaxis1,yaxis2,current_page)
 
