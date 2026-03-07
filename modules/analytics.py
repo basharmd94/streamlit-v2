@@ -25,7 +25,7 @@ class Analytics:
             else [str(zid)]                          # single value
         )
 
-        if table_name == "purchase":
+        if table_name in ("purchase","stock_movement"):
             # Only add 100009 when the scope is *exactly* just 100001
             if len(zid_list) == 1 and zid_list[0] == "100001":
                 zid_list.append("100009")
@@ -58,7 +58,10 @@ class Analytics:
             "glheader_simple":  sql_scripts.get_glheader_simple,
             "glmst_simple":     sql_scripts.get_glmst_simple,
             "casup_simple":     sql_scripts.get_casup_simple,
+            # New Entries 28/02/2026
+            "stock_movement":   sql_scripts.get_stock_movement_data,
         }
+
         query_func = query_map.get(table_name)
         if not query_func:
             st.error(f"No query builder for table {table_name}")
@@ -85,8 +88,6 @@ class Analytics:
             st.error("Error fetching data. Check filters/SQL.")
         else:
             self.data = common.to_dataframe(data, cols)
-
-
 
 # -----------------------------
 # Basket Analysis helpers (Basket-only; does NOT modify existing pipelines)

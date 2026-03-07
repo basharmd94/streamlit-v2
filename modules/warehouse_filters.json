@@ -1,0 +1,31 @@
+{
+  "100001": {
+    "enabled": [
+      "Damage Store",
+      "Finished Goods Maintenance Store",
+      "Finished Goods Store GPK",
+      "General Store (5th Floor)",
+      "HMBR -Main Store (4th Floor)",
+      "HMBR -W5 (MirerBaazar 2nd Floor)",
+      "HMBR -W7 (2) (MirerBaazar 3rd Floor)",
+      "HMBR -W7 (MirerBaazar 3rd Floor)",
+      "HMBR Showroom(Mirer Bazar)",
+      "Imamgonj WareHouse",
+      "Import purchase warehouse",
+      "Maintenance Store",
+      "Nawabpur WareHouse",
+      "QC Store",
+      "RAW Material Store GPK",
+      "Rahima Enterprise Store",
+      "Raw Material Store Packaging"
+    ]
+  },
+  "100009": {
+    "enabled": [
+      "Damage Warehouse",
+      "Finished Goods Store Packaging",
+      "General Store",
+      "Raw Material Store Packaging"
+    ]
+  }
+}

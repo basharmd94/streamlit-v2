@@ -410,12 +410,32 @@
                         "constraints": []
                     },
                     {
+                        "name": "date",
+                        "type": "DATE",
+                        "constraints": []
+                    },
+                    {
+                        "name": "docnum",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "imtrnnum",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
                         "name": "itemcode",
                         "type": "VARCHAR",
                         "constraints": []
                     },
                     {
                         "name": "warehouse",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "project",
                         "type": "VARCHAR",
                         "constraints": []
                     },

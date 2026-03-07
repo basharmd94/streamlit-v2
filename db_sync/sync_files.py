@@ -284,16 +284,20 @@ class SyncManager:
                 imtrn.zid AS zid,
                 imtrn.xyear AS year,
                 imtrn.xper AS month,
+                imtrn.xdate as date,
+                imtrn.xdocnum as docnum,
+                imtrn.ximtrnnum as imtrnnum,
                 imtrn.xitem AS itemcode,
                 imtrn.xwh AS warehouse,
+                imtrn.xproj as project,
                 SUM(imtrn.xqty * imtrn.xsign) AS stockqty,
                 SUM(imtrn.xval * imtrn.xsign) AS stockvalue
             FROM imtrn
-            GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper
+            GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper, imtrn.xdate, imtrn.xdocnum, imtrn.xproj, imtrn.ximtrnnum
         """
         insert_sql_stock = """
             INSERT INTO stock (
-                uuid, zid, year, month, itemcode, warehouse, stockqty, stockvalue
+                uuid, zid, year, month, date, docnum, imtrnnum, itemcode, warehouse, project, stockqty, stockvalue
             ) VALUES %s
         """
         self.execute_sync(select_sql_stock, insert_sql_stock, 'stock', clear_table_first=True)

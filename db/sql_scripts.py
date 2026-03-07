@@ -522,6 +522,40 @@ def get_stock_flow_data(filters=None):
               FROM stock_flow
               WHERE zid = (%s)"""
 
+def get_stock_movement_data(filters=None) -> Tuple[str, Tuple[Any, ...]]:
+    """
+    Stock movement ledger with date + docnum + project.
+    NOTE: Filters strictly by project (no blanks), per user requirement.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+
+    sql = """
+        SELECT
+            stock.zid,
+            stock.year,
+            stock.month,
+            stock.date::date AS date,
+            stock.docnum,
+            stock.project,
+            CASE
+                WHEN caitem.packcode IS NOT NULL
+                 AND caitem.packcode <> ''
+                 AND caitem.packcode != 'NO'
+                 AND LEFT(caitem.packcode,2) != 'KH' THEN caitem.packcode
+                ELSE stock.itemcode
+            END AS itemcode,
+            caitem.itemname,
+            caitem.itemgroup,
+            stock.warehouse,
+            stock.stockqty,
+            stock.stockvalue
+        FROM stock
+        JOIN caitem ON stock.itemcode = caitem.itemcode AND stock.zid = caitem.zid
+        WHERE stock.zid = %s
+    """
+    return sql, (zid,)
+
 def get_payment_data():
     return """SELECT
                 glmst.zid as zid,

@@ -1,15 +1,15 @@
-from operator import index
 import streamlit as st
 import pandas as pd,numpy as np
 from .analytics import Analytics, basket_prepare
-from modules.data_process_files import common,overall_sales, overall_margin, collection, purchase, basket, financial
-from modules.visualization_files import common_v, basket_v
+from modules.data_process_files import common,overall_sales, overall_margin, collection, purchase, financial
+from modules.visualization_files import common_v
 from datetime import datetime
 pd.set_option('display.float_format', '{:.2f}'.format)
 from io import BytesIO
 import calendar
 from utils.utils import timed
-from db import db_utils
+from typing import Dict, List, Tuple
+
 
 
 
@@ -1226,29 +1226,483 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 @timed
 def display_purchase_analysis_page(current_page, zid, data_dict):
 
-    options =  [i for i in range(10)]
-    default_option = 2
-    default_index = options.index(default_option)
-    selected_time = st.selectbox("Select Time Frame",options,index= default_index)
+    mode = st.radio(
+        "Purchase View",
+        ["Purchase Cohort & Requisition", "Batch Profitability & Capital Engine"],
+        horizontal=True,
+        index=0
+    )
 
-    sales_df,purchase_df,year_ago = common.time_filtered_data_purchase(data_dict['sales'],data_dict['purchase'],selected_time)
-    cohort_df = purchase.main_purchase_product_cohort_process(sales_df,purchase_df)
+    # -----------------------------
+    # MODE 1: Existing cohort logic (unchanged)
+    # -----------------------------
+    if mode == "Purchase Cohort & Requisition":
+        options = [i for i in range(10)]
+        default_option = 2
+        default_index = options.index(default_option)
+        selected_time = st.selectbox("Select Time Frame", options, index=default_index)
 
-    selected_products = st.multiselect("Select Product", common.update_pair_options(cohort_df,'itemcode','itemname'))
-    if selected_products:
-        selected_itemnames = [x.split(" - ")[0] for x in selected_products]
-        cohort_df = cohort_df[cohort_df['itemcode'].isin(selected_itemnames)]
+        sales_df, purchase_df, year_ago = common.time_filtered_data_purchase(
+            data_dict['sales'], data_dict['purchase'], selected_time
+        )
+        cohort_df = purchase.main_purchase_product_cohort_process(sales_df, purchase_df)
 
-    cohort_df = cohort_df.applymap(common.handle_infinity_and_round).fillna(0)
-    st.markdown("Product-Based Purchase Cohort")
-    st.write(cohort_df)
-    st.write(common.create_download_link(cohort_df,"purchase_cohort.xlsx"), unsafe_allow_html=True)
+        selected_products = st.multiselect("Select Product", common.update_pair_options(cohort_df,'itemcode','itemname'))
+        if selected_products:
+            selected_itemcodes = [x.split(" - ")[0] for x in selected_products]
+            cohort_df = cohort_df[cohort_df['itemcode'].isin(selected_itemcodes)]
 
-    if st.button("Generate Purchase Requirement"):
-        result_df = purchase.generate_cohort(data_dict['purchase'],year_ago,data_dict['stock'],sales_df,cohort_df)
-        st.markdown("Generated Purchase Requisition")
-        st.write(result_df)
-        st.write(common.create_download_link(result_df,"purchase_requisition.xlsx"), unsafe_allow_html=True)
+        cohort_df = cohort_df.applymap(common.handle_infinity_and_round).fillna(0)
+        st.markdown("Product-Based Purchase Cohort")
+        st.write(cohort_df, use_container_width=True)
+        st.write(common.create_download_link(cohort_df, "purchase_cohort.xlsx"), unsafe_allow_html=True)
+
+        if st.button("Generate Purchase Requirement"):
+            result_df = purchase.generate_cohort(
+                data_dict['purchase'],
+                year_ago,
+                data_dict['stock_movement'],
+                sales_df,
+                cohort_df
+            )
+            st.markdown("Generated Purchase Requisition")
+            st.write(result_df, use_container_width=True)
+            st.write(common.create_download_link(result_df, "purchase_requisition.xlsx"), unsafe_allow_html=True)
+
+        return
+        
+    else:
+        # -----------------------------
+        # MODE 2: Batch Profitability & Capital Engine
+        # -----------------------------
+        st.subheader("Batch Profitability & Capital Engine")
+
+        purchase_df = data_dict.get("purchase", pd.DataFrame())
+        if purchase_df is None or purchase_df.empty:
+            st.warning("No purchase data loaded.")
+            return
+
+             # ============================================================
+        # SECTION RADIO (ONLY ONE SECTION COMPUTES PER RERUN)
+        # Make Accounts Explorer the default landing section
+        # ============================================================
+        engine_section = st.radio(
+            "Engine Section",
+            [
+                "Accounts Explorer (Overhead)",
+                "Inventory Check",
+                "Warehouse Snapshot",
+                "Batch Profitability",
+                "SKU Simulator",
+            ],
+            horizontal=True,
+            index=0,
+            key="purchase_engine_section",
+        )
+
+        # --------- Shipment selector ----------
+        ship_df = purchase_df[["zid", "shipmentname", "povoucher", "grnvoucher", "combinedate"]].copy()
+        ship_df["shipmentname"] = ship_df["shipmentname"].astype(str).fillna("").str.strip()
+        ship_df = ship_df[ship_df["shipmentname"] != ""].copy()
+
+        shipment_options = (
+            ship_df[["shipmentname"]]
+            .drop_duplicates()
+            .sort_values("shipmentname")["shipmentname"]
+            .tolist()
+        )
+
+        if not shipment_options:
+            st.warning("No shipmentname found in purchase data.")
+            return
+
+        selected_shipment = st.selectbox(
+            "Select Shipment (bridges 100001 + 100009)",
+            shipment_options,
+            index=0,
+            key="purchase_selected_shipment",
+            disabled=(engine_section != "Accounts Explorer (Overhead)"),
+        )
+
+        # Combinedate resolve
+        _sel_rows = ship_df[ship_df["shipmentname"] == selected_shipment].copy()
+        selected_combinedate = pd.to_datetime(_sel_rows["combinedate"], errors="coerce").min()
+
+        if pd.isna(selected_combinedate):
+            st.error("Could not resolve combinedate.")
+            return
+
+        selected_combinedate = selected_combinedate.normalize()
+
+        # Display IP/GRN transparency
+        ship_pick = ship_df[ship_df["shipmentname"] == selected_shipment].copy()
+
+        info_cols = st.columns(2)
+        with info_cols[0]:
+            st.caption("100001 (Trading)")
+            st.write({
+                "IP": ship_pick[ship_pick["zid"].astype(str) == "100001"]["povoucher"].dropna().unique().tolist(),
+                "GRN": ship_pick[ship_pick["zid"].astype(str) == "100001"]["grnvoucher"].dropna().unique().tolist()
+            })
+
+        with info_cols[1]:
+            st.caption("100009 (Packaging)")
+            st.write({
+                "IP": ship_pick[ship_pick["zid"].astype(str) == "100009"]["povoucher"].dropna().unique().tolist(),
+                "GRN": ship_pick[ship_pick["zid"].astype(str) == "100009"]["grnvoucher"].dropna().unique().tolist()
+            })
+
+        st.divider()
+
+        # ---------------------------------------------------
+        # Warehouse Selection (Shared across all sections)
+        # ---------------------------------------------------
+        wh_opts = purchase.get_all_warehouse_options(data_dict["stock_movement"])
+
+        sel_wh_100001 = st.multiselect(
+            "Warehouses (100001)",
+            options=wh_opts.get("100001", []),
+            default=wh_opts.get("100001", []),
+        )
+
+        sel_wh_100009 = st.multiselect(
+            "Warehouses (100009)",
+            options=wh_opts.get("100009", []),
+            default=wh_opts.get("100009", []),
+        )
+
+        override_wh = {
+            "100001": sel_wh_100001,
+            "100009": sel_wh_100009,
+        }
+        # ============================================================
+        # 1️⃣ INVENTORY CHECK
+        # ============================================================
+
+        if engine_section == "Inventory Check":
+
+            tables = purchase.build_shipment_inventory_tables(
+                purchase_df=data_dict["purchase"],
+                stock_movement_df=data_dict["stock_movement"],
+                sales_df=data_dict["sales"],
+                returns_df=data_dict["return"],
+                shipmentname=selected_shipment,
+                project=st.session_state.proj,
+                zid_deplete="100001",
+            )
+
+            # -----------------------------
+            # Save audit results for reuse in Batch Profitability
+            # -----------------------------
+            st.session_state["invcheck_tables"] = tables
+            st.session_state["invcheck_reconcile"] = tables.get("reconcile_sales_vs_stock", pd.DataFrame())
+
+
+            with st.expander("Inventory Check Tables", expanded=True):
+                st.subheader("Arrival Check — 100001")
+                st.dataframe(tables["arrival_check_100001_only"], use_container_width=True)
+
+                st.subheader("Arrival Check — 100009 Items")
+                st.dataframe(tables["arrival_check_100009_items"], use_container_width=True)
+
+                st.subheader("Sales vs Stock Reconciliation")
+                st.dataframe(tables["reconcile_sales_vs_stock"], use_container_width=True)
+
+                # st.subheader("Warehouse Breakdown")
+                # st.dataframe(tables["warehouse_breakdown"], use_container_width=True)
+
+            return
+
+
+        # ============================================================
+        # 2️⃣ ACCOUNTS EXPLORER
+        # ============================================================
+
+        if engine_section == "Accounts Explorer (Overhead)":
+
+            opts = purchase.build_accounts_selector_options(
+                glmst_df=data_dict["glmst_simple"],
+                hierarchy_path="hierarchy.json",
+            )
+
+            level_choice = st.radio(
+                "Selection level",
+                ["Level 0", "Level 1", "Level 2"],
+                horizontal=True,
+                index=2,
+            )
+
+            level_map = {"Level 0": 0, "Level 1": 1, "Level 2": 2}
+            level = level_map[level_choice]
+
+            if level_choice == "Level 0":
+                selections = st.multiselect(
+                    "Select ac_code(s)",
+                    opts["level0_options"],
+                    default=opts["level0_options"],
+                )
+                selections = [s.split(" ", 1)[0].strip() for s in selections]
+
+            elif level_choice == "Level 1":
+                selections = st.multiselect(
+                    "Select Level 1 head(s)",
+                    opts["level1_options"],
+                    default=opts["level1_options"],
+                )
+
+            else:
+                selections = st.multiselect(
+                    "Select Level 2 head(s)",
+                    opts["level2_options"],
+                    default=opts["level2_options"],
+                )
+
+            show_details = st.checkbox("Show daily ratio diagnostics")
+
+            overhead_out = purchase.build_accounts_overhead_summary(
+                purchase_df=data_dict["purchase"],
+                stock_movement_df=data_dict["stock_movement"],
+                glheader_df=data_dict["glheader_simple"],
+                gldetail_df=data_dict["gldetail_simple"],
+                glmst_df=data_dict["glmst_simple"],
+                hierarchy_path="hierarchy.json",
+                shipmentname=selected_shipment,
+                level=level,
+                selections=selections,
+                include_details=show_details,
+                zids_inventory=["100001", "100009"],
+                warehouse_filters=override_wh,                 # NEW
+                warehouse_json_path="warehouse_filters.json",  # NEW
+            )
+
+            db_overhead = float(overhead_out["totals"].get("overhead_for_shipment_sum", 0.0))
+
+            st.markdown("### Overhead Add-ons (optional)")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                use_vat = st.checkbox("Add VAT overhead (%) on sales", value=st.session_state.get("use_vat_overhead", False))
+                vat_pct = st.number_input("VAT %", min_value=0.0, max_value=50.0, value=float(st.session_state.get("vat_pct", 0.0)), step=0.5)
+            with c2:
+                use_manual = st.checkbox("Add manual overhead (BDT)", value=st.session_state.get("use_manual_overhead", False))
+                manual_overhead_value = st.number_input("Manual overhead value", min_value=0.0, value=float(st.session_state.get("manual_overhead_value", 0.0)), step=100.0)
+
+            st.session_state["use_vat_overhead"] = use_vat
+            st.session_state["vat_pct"] = vat_pct if use_vat else 0.0
+            st.session_state["use_manual_overhead"] = use_manual
+            st.session_state["manual_overhead_value"] = manual_overhead_value if use_manual else 0.0
+
+            # We show VAT estimate using last computed revenue if available (exact VAT will be applied in engine)
+            last_rev = float(st.session_state.get("last_shipment_realized_revenue", 0.0))
+            vat_est = (st.session_state["vat_pct"] / 100.0) * max(0.0, last_rev)
+            manual_val = float(st.session_state.get("manual_overhead_value", 0.0))
+
+            st.write({
+                "DB overhead (allocated)": round(db_overhead, 2),
+                "VAT overhead (estimate; exact in engine)": round(vat_est, 2),
+                "Manual overhead": round(manual_val, 2),
+                "Total overhead passed to engine (estimate)": round(db_overhead + vat_est + manual_val, 2),
+            })
+
+            st.session_state["shipment_overhead_total"] = float(
+                overhead_out["totals"]["overhead_for_shipment_sum"]
+            )
+
+            st.dataframe(overhead_out["summary_df"], use_container_width=True)
+
+            st.metric("Shipment Overhead Allocated",
+                    round(overhead_out["totals"]["overhead_for_shipment_sum"], 2))
+
+            if show_details and overhead_out["details_df"] is not None:
+                with st.expander("Daily Diagnostics", expanded=False):
+                    st.dataframe(overhead_out["details_df"], use_container_width=True)
+
+            return
+
+
+        # ============================================================
+        # 3️⃣ BATCH PROFITABILITY
+        # ============================================================
+
+        if engine_section == "Batch Profitability":
+
+            if "shipment_overhead_total" not in st.session_state:
+                st.warning("Please run Accounts Explorer first to compute shipment overhead.")
+                return
+
+            shipment_overhead_total = float(st.session_state.get("shipment_overhead_total", 0.0))
+            vat_pct = float(st.session_state.get("vat_pct", 0.0))
+            manual_overhead_value = float(st.session_state.get("manual_overhead_value", 0.0))
+
+            result_df = purchase.run_batch_profitability_engine(
+            purchase_df=data_dict["purchase"],
+            sales_df=data_dict["sales"],
+            returns_df=data_dict["return"],
+            stock_movement_df=data_dict["stock_movement"],
+            glheader_df=data_dict["glheader_simple"],
+            gldetail_df=data_dict["gldetail_simple"],
+            glmst_df=data_dict["glmst_simple"],
+            hierarchy_path="hierarchy.json",
+            shipmentname=selected_shipment,
+            discount_pct=0.0,
+            zid_deplete="100001",
+            shipment_overhead_total=shipment_overhead_total,
+            vat_pct=vat_pct,
+            manual_overhead_value=manual_overhead_value,
+            inventory_tables=st.session_state.get("invcheck_tables"),   # ✅ add this
+            )
+
+            st.session_state["last_batch_df"] = result_df.copy()
+            st.session_state["last_shipment_realized_revenue"] = float(result_df["sold_revenue"].sum()) if not result_df.empty else 0.0
+
+            st.dataframe(result_df, use_container_width=True)
+
+            if result_df is not None and not result_df.empty:
+                sum_cols = [
+                    "sold_revenue", "realized_cogs", "realized_gm",
+                    "overhead_realized", "net_profit_realized",
+                    "remaining_cost_value", "proj_remaining_revenue", "proj_remaining_gm",
+                    "overhead_projected", "Proj_remaining_profit", "proj_final_profit",
+                ]
+                totals = {c: float(result_df[c].sum()) for c in sum_cols if c in result_df.columns}
+
+                # averages (simple + weighted)
+                vel = result_df["velocity"].replace([np.inf, -np.inf], np.nan)
+                dtc = result_df["days_to_clear"].replace([np.inf, -np.inf], np.nan)
+
+                simple_avg_velocity = float(vel.mean(skipna=True))
+                simple_avg_days_to_clear = float(dtc.mean(skipna=True))
+
+                # Weighted: velocity weighted by sold_qty; days_to_clear weighted by remaining_qty
+                sold_w = result_df["sold_qty"].clip(lower=0.0)
+                rem_w = result_df["remaining_qty"].clip(lower=0.0)
+
+                w_avg_velocity = float((vel.fillna(0.0) * sold_w).sum() / sold_w.sum()) if sold_w.sum() > 0 else 0.0
+                w_avg_days_to_clear = float((dtc.fillna(0.0) * rem_w).sum() / rem_w.sum()) if rem_w.sum() > 0 else 0.0
+
+                st.markdown("### Shipment Totals & Averages")
+                st.write({k: round(v, 2) for k, v in totals.items()})
+
+                st.write({
+                    "Avg velocity (simple)": round(simple_avg_velocity, 4),
+                    "Avg days_to_clear (simple)": round(simple_avg_days_to_clear, 2),
+                    "Avg velocity (weighted by sold_qty)": round(w_avg_velocity, 4),
+                    "Avg days_to_clear (weighted by remaining_qty)": round(w_avg_days_to_clear, 2),
+                })
+
+            return
+        # ============================================================
+        # 4️⃣ WAREHOUSE SNAPSHOT
+        # ============================================================
+
+        if engine_section == "Warehouse Snapshot":
+
+            warehouse_basis = st.radio(
+                "Warehouse valuation date",
+                ["Shipment arrival (combinedate)", "Today"],
+                horizontal=True,
+            )
+
+            as_of_dt = selected_combinedate if warehouse_basis == "Shipment arrival (combinedate)" else pd.Timestamp.today().normalize()
+
+            wh_value_df = purchase.build_warehouse_total_value_table(
+                stock_movement_df=data_dict["stock_movement"],
+                as_of_date=as_of_dt,
+                zids=["100001", "100009"],
+                warehouse_filters=override_wh,
+                warehouse_json_path="warehouse_filters.json",
+            )
+
+            st.dataframe(wh_value_df, use_container_width=True)
+
+            st.metric("Total Inventory Value",
+                    round(wh_value_df["totalvalue"].sum(), 2))
+
+            return
+
+        # ============================================================
+        # 3️⃣ SKU Simulator
+        # ============================================================
+
+        if engine_section == "SKU Simulator":
+            st.subheader("SKU Simulator (no recompute)")
+
+            base_df = st.session_state.get("last_batch_df")
+            if base_df is None or base_df.empty:
+                st.warning("Run 'Batch Profitability' once first so I can cache the results for simulation.")
+                return
+
+            base_df = base_df.copy()
+            base_df["sku_label"] = base_df["itemcode"].astype(str) + " - " + base_df["itemname"].astype(str)
+
+            sku = st.selectbox("Select SKU", base_df["sku_label"].tolist(), index=0)
+            row = base_df[base_df["sku_label"] == sku].iloc[0]
+
+            c1, c2 = st.columns(2)
+            with c1:
+                new_price = st.number_input("Scenario price", min_value=0.0, value=float(row["scenario_price"]), step=1.0)
+            with c2:
+                new_days_to_clear = st.number_input("Target days_to_clear", min_value=0.0, value=float(row["days_to_clear"]) if pd.notna(row["days_to_clear"]) else 0.0, step=1.0)
+
+            # Recompute ONLY this SKU using cached realized numbers
+            remaining_qty = float(row["remaining_qty"])
+            unit_cost = float(row["unit_cost"])
+            remaining_cost_value = float(row["remaining_cost_value"])
+            overhead_realized = float(row["overhead_realized"])
+            days_active = max(1, int(row["days_active"]))
+
+            proj_remaining_revenue = remaining_qty * float(new_price)
+            proj_remaining_gm = proj_remaining_revenue - remaining_cost_value
+
+            # -----------------------------------------
+            # Match Batch Profitability projected logic
+            # -----------------------------------------
+            sim_days_to_clear = min(max(float(new_days_to_clear), 0.0), 730.0)
+
+            # Shipment-level D0 = total overhead pool / max(days_active)
+            max_days_active = max(1, int(base_df["days_active"].max()))
+            total_overhead_pool = float(base_df["overhead_realized"].sum())
+            D0 = total_overhead_pool / max_days_active
+
+            # Recompute projected remaining revenue for all SKUs:
+            # selected SKU uses new scenario price, others keep current projected remaining revenue
+            sim_proj_rev_all = base_df[["itemcode", "proj_remaining_revenue", "remaining_cost_value"]].copy()
+            sim_proj_rev_all["sim_proj_remaining_revenue"] = sim_proj_rev_all["proj_remaining_revenue"].astype(float)
+
+            sim_proj_rev_all.loc[
+                sim_proj_rev_all["itemcode"].astype(str) == str(row["itemcode"]),
+                "sim_proj_remaining_revenue"
+            ] = proj_remaining_revenue
+
+            total_proj_remaining_revenue = float(sim_proj_rev_all["sim_proj_remaining_revenue"].sum())
+
+            if total_proj_remaining_revenue > 0:
+                remaining_share = proj_remaining_revenue / total_proj_remaining_revenue
+            else:
+                total_remaining_cost = float(sim_proj_rev_all["remaining_cost_value"].astype(float).sum())
+                remaining_share = (remaining_cost_value / total_remaining_cost) if total_remaining_cost > 0 else 0.0
+
+            decay_factor = 0.97 ** (sim_days_to_clear / 60.0)
+
+            overhead_projected = D0 * decay_factor * sim_days_to_clear * remaining_share
+
+            proj_remaining_profit = proj_remaining_gm - overhead_projected
+            proj_final_profit = float(row["net_profit_realized"]) + proj_remaining_profit
+
+            st.markdown("### Simulator Output (this SKU only)")
+            st.write({
+                "Realized sold_revenue": round(float(row["sold_revenue"]), 2),
+                "Realized GM": round(float(row["realized_gm"]), 2),
+                "Realized overhead": round(overhead_realized, 2),
+                "Net profit realized": round(float(row["net_profit_realized"]), 2),
+                "Projected remaining revenue": round(proj_remaining_revenue, 2),
+                "Projected remaining GM": round(proj_remaining_gm, 2),
+                "Projected overhead": round(overhead_projected, 2),
+                "Projected remaining profit": round(proj_remaining_profit, 2),
+                "Projected final profit": round(proj_final_profit, 2),
+            })
+
+            return
 
 @timed
 def display_financial_statements(current_page, zid):
@@ -1452,7 +1906,6 @@ def display_financial_statements(current_page, zid):
             common_v.plot_histogram(result_dict, selected_index)
         else:
             pass
-
 
 # ---------- Cached loaders (simple table pulls) ----------
 @st.cache_data(show_spinner=False)
@@ -1876,7 +2329,6 @@ def _load_product_inventory(zid: str) -> pd.DataFrame:
             st.error(f"Error loading product inventory for zid={z}: {e}")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-
 @st.cache_data(show_spinner=False)
 def _load_inventory_value(zid: str) -> pd.DataFrame:
     """
@@ -1895,7 +2347,6 @@ def _load_inventory_value(zid: str) -> pd.DataFrame:
         except Exception as e:
             st.error(f"Error loading stock_value for zid={z}: {e}")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
 
 @timed
 def display_inventory_analysis_main(current_page, zid: str):
@@ -2249,7 +2700,6 @@ def _build_customer_data_view_options(zid: int,sales_shape: tuple,sales_cols: tu
 
     return cus_opts, sp_opts, item_opts, area_opts
 
-
 def display_customer_data_view_page(current_page, zid, data_dict):
     st.header("Customer Data View")
 
@@ -2388,9 +2838,6 @@ def display_customer_data_view_page(current_page, zid, data_dict):
     # -----------------------------
     st.dataframe(txn, use_container_width=True)
 
-
-
-
 # -----------------------------
 # Basket Analysis v2 (per Bijoy spec)
 # -----------------------------
@@ -2408,19 +2855,16 @@ def _table_writeup(title: str, columns: dict[str, str], toggles: list[str] | Non
         st.markdown("**Controls / Options**")
         st.markdown("\n".join([f"- {t}" for t in toggles]))
 
-
 def _ensure_datetime(s: pd.Series) -> pd.Series:
     if np.issubdtype(s.dtype, np.datetime64):
         return s
     return pd.to_datetime(s, errors="coerce")
-
 
 def _month_name(m: int) -> str:
     try:
         return calendar.month_abbr[int(m)]
     except Exception:
         return str(m)
-
 
 def _build_order_sets(df: pd.DataFrame, order_id_col: str, key_col: str) -> dict:
     """
@@ -2430,7 +2874,6 @@ def _build_order_sets(df: pd.DataFrame, order_id_col: str, key_col: str) -> dict
     tmp = df[[order_id_col, key_col]].dropna()
     grouped = tmp.groupby(order_id_col)[key_col].agg(lambda x: set(x.astype(str).unique()))
     return grouped.to_dict()
-
 
 def _anchor_orders(order_sets: dict, anchors: set[str], mode: str) -> set:
     """
@@ -2448,7 +2891,6 @@ def _anchor_orders(order_sets: dict, anchors: set[str], mode: str) -> set:
             if s.intersection(anchors):
                 out.add(oid)
     return out
-
 
 def _basket_recommendations_items(df: pd.DataFrame,order_id_col: str,item_col: str,qty_col: str,value_col: str,anchor_items: list[str],anchor_mode: str = "ALL",top_n: int = 200,) -> pd.DataFrame:
     """
@@ -2536,7 +2978,6 @@ def _basket_recommendations_items(df: pd.DataFrame,order_id_col: str,item_col: s
     base = base.sort_values(["lift", "confidence", "support"], ascending=[False, False, False]).head(top_n)
     return base.reset_index(drop=True)
 
-
 def _best_months_for_pairs(df: pd.DataFrame,order_id_col: str,month_col: str,item_col: str,anchor_orders: set,itemcodes: list[str],top_k_months: int = 2) -> dict:
     """
     For each itemcode, find the 'best months' based on co-occur frequency within anchor orders.
@@ -2562,7 +3003,6 @@ def _best_months_for_pairs(df: pd.DataFrame,order_id_col: str,month_col: str,ite
         months = months[:top_k_months]
         out[str(code)] = ", ".join(_month_name(int(m)) for m in months)
     return out
-
 
 def _basket_recommendations_groups(df: pd.DataFrame,order_id_col: str,group_col: str,qty_col: str,value_col: str,anchor_groups: list[str],anchor_mode: str = "ALL",top_n: int = 200) -> pd.DataFrame:
     """
@@ -2628,7 +3068,6 @@ def _basket_recommendations_groups(df: pd.DataFrame,order_id_col: str,group_col:
     base = base.merge(agg, on="recommended_group", how="left")
     base = base.sort_values(["lift", "confidence", "support"], ascending=[False, False, False]).head(top_n)
     return base.reset_index(drop=True)
-
 
 def display_basket_analysis_page(current_page, zid: str, data_dict: dict, selected_filters: dict):
     st.header("Basket Analysis")

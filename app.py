@@ -306,9 +306,15 @@ class BaseApp:
             st.sidebar.title("Purchase Loader")
 
             if st.sidebar.button("🔄 Load Purchase Data"):
-                purchase_tables = ("sales", "purchase", "stock")
-                # If you decide to add purchase-specific filters, build them here
-                st.session_state.purchase_data_dict = process_data(zid=st.session_state.zid, filters={}, tables=purchase_tables)
+                # We need returns + GL tables for batch profitability + overhead pools
+                purchase_tables = ("sales", "return", "purchase","stock", "stock_movement", "glheader_simple", "gldetail_simple", "glmst_simple")
+
+                data_dict = {}
+                for table in purchase_tables:
+                    df = Analytics(table, zid=st.session_state.zid, project=st.session_state.proj,filters={}).data
+                    data_dict[table] = df if df is not None else pd.DataFrame()
+
+                st.session_state.purchase_data_dict = data_dict
                 st.session_state.purchase_ready = True
 
             if st.session_state.get("purchase_ready"):
@@ -354,6 +360,47 @@ class BaseApp:
 
     @timed
     def purchase_analysis(self, data_dict):
+        import pandas as pd
+        import streamlit as st
+
+        # --- Force GL tables for overhead explorer to always come from trading (100001) ---
+        if str(st.session_state.zid) != "100001":
+            gl_100001 = Analytics("glheader_simple", zid="100001", filters={}).data
+            gd_100001 = Analytics("gldetail_simple", zid="100001", filters={}).data
+            gm_100001 = Analytics("glmst_simple",   zid="100001", filters={}).data
+
+            data_dict["glheader_simple"] = gl_100001 if gl_100001 is not None else pd.DataFrame()
+            data_dict["gldetail_simple"] = gd_100001 if gd_100001 is not None else pd.DataFrame()
+            data_dict["glmst_simple"]    = gm_100001 if gm_100001 is not None else pd.DataFrame()
+
+        # --- Ensure stock_movement exists (load base zid if missing/empty) ---
+        zid_str = str(st.session_state.zid)
+
+        base_sm = data_dict.get("stock_movement")
+        if base_sm is None or (isinstance(base_sm, pd.DataFrame) and base_sm.empty) or (not isinstance(base_sm, pd.DataFrame)):
+            base_sm = Analytics("stock_movement", zid=zid_str, filters={}).data
+            if base_sm is None:
+                base_sm = pd.DataFrame()
+
+        # --- Ensure stock_movement contains BOTH 100001 + 100009 for packcode-linked items ---
+        if zid_str in ("100001", "100009"):
+            other_zid = "100009" if zid_str == "100001" else "100001"
+
+            other_sm = Analytics("stock_movement", zid=other_zid, filters={}).data
+            if other_sm is None:
+                other_sm = pd.DataFrame()
+
+            data_dict["stock_movement"] = (
+                pd.concat([base_sm, other_sm], ignore_index=True)
+                .drop_duplicates()
+            )
+        else:
+            # non-linked zids: just use base
+            data_dict["stock_movement"] = base_sm
+
+        # NOTE: we are intentionally NOT loading/using data_dict["stock"] anymore
+
+        # Now render the view AFTER data_dict has what the view expects
         views.display_purchase_analysis_page(self.current_page, st.session_state.zid, data_dict)
 
     @timed
