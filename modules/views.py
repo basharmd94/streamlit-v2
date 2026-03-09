@@ -1519,7 +1519,6 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             return
 
-
         # ============================================================
         # 3️⃣ BATCH PROFITABILITY
         # ============================================================
@@ -1565,7 +1564,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                     "overhead_projected", "Proj_remaining_profit", "proj_final_profit",
                 ]
                 totals = {c: float(result_df[c].sum()) for c in sum_cols if c in result_df.columns}
-
+                
                 # averages (simple + weighted)
                 vel = result_df["velocity"].replace([np.inf, -np.inf], np.nan)
                 dtc = result_df["days_to_clear"].replace([np.inf, -np.inf], np.nan)
@@ -1588,8 +1587,29 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                     "Avg days_to_clear (simple)": round(simple_avg_days_to_clear, 2),
                     "Avg velocity (weighted by sold_qty)": round(w_avg_velocity, 4),
                     "Avg days_to_clear (weighted by remaining_qty)": round(w_avg_days_to_clear, 2),
+                    "Shipment Overhead Total From Account Explorer": shipment_overhead_total,
                 })
+                with st.expander("Totals Logic Reference", expanded=False):
+                    st.markdown("""
+                        **Batch Profitability Totals Logic**
 
+                        - sold_revenue = FIFO-allocated realized sales value
+                        - realized_cogs = sold_qty × unit_cost
+                        - realized_gm = sold_revenue − realized_cogs
+                        - overhead_realized = D0 × realized_days × realized_share
+                        - net_profit_realized = realized_gm − overhead_realized
+                        - remaining_cost_value = remaining_qty × unit_cost
+                        - proj_remaining_revenue = remaining_qty × scenario_price
+                        - proj_remaining_gm = proj_remaining_revenue − remaining_cost_value
+                        - overhead_projected = D0 × (0.97)^(days_to_clear / 60) × days_to_clear × remaining_share
+                        - Proj_remaining_profit = proj_remaining_gm − overhead_projected
+                        - proj_final_profit = net_profit_realized + Proj_remaining_profit
+
+                        Where:
+                        - D0 = total_overhead_pool / max(days_active)
+                        - realized_days = days from combinedate to batch_end_date (or today if still open)
+                        - remaining_share = SKU projected remaining revenue share of shipment
+                        """)
             return
         # ============================================================
         # 4️⃣ WAREHOUSE SNAPSHOT
@@ -1625,84 +1645,272 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
         # ============================================================
 
         if engine_section == "SKU Simulator":
-            st.subheader("SKU Simulator (no recompute)")
+            st.subheader("Scenario Worksheet")
 
             base_df = st.session_state.get("last_batch_df")
+
             if base_df is None or base_df.empty:
-                st.warning("Run 'Batch Profitability' once first so I can cache the results for simulation.")
+                st.warning("Run Batch Profitability first.")
                 return
 
-            base_df = base_df.copy()
-            base_df["sku_label"] = base_df["itemcode"].astype(str) + " - " + base_df["itemname"].astype(str)
+            # ---------------------------------------------
+            # Base worksheet shown to user
+            # ---------------------------------------------
+            work_df = base_df.copy()
+            work_df["avg_price"] = pd.to_numeric(work_df["avg_price"], errors="coerce").fillna(0.0)
+            work_df["days_to_clear"] = pd.to_numeric(work_df["days_to_clear"], errors="coerce").fillna(0.0)
 
-            sku = st.selectbox("Select SKU", base_df["sku_label"].tolist(), index=0)
-            row = base_df[base_df["sku_label"] == sku].iloc[0]
+            editable_df = st.data_editor(
+                work_df,
+                use_container_width=True,
+                num_rows="fixed",
+                hide_index=True,
+                column_config={
+                    "avg_price": st.column_config.NumberColumn("avg_price", step=1.0, format="%.2f"),
+                    "days_to_clear": st.column_config.NumberColumn("days_to_clear", step=1.0, format="%.2f"),
+                },
+                disabled=[c for c in work_df.columns if c not in ["avg_price", "days_to_clear"]],
+                key="scenario_worksheet_editor",
+            )
 
-            c1, c2 = st.columns(2)
-            with c1:
-                new_price = st.number_input("Scenario price", min_value=0.0, value=float(row["scenario_price"]), step=1.0)
-            with c2:
-                new_days_to_clear = st.number_input("Target days_to_clear", min_value=0.0, value=float(row["days_to_clear"]) if pd.notna(row["days_to_clear"]) else 0.0, step=1.0)
+            # ---------------------------------------------
+            # Recompute scenario using edited values
+            # BUT anchor all share/pool logic to original batch result
+            # ---------------------------------------------
+            calc_df = base_df.copy()
+            share_base_df = base_df.copy()
 
-            # Recompute ONLY this SKU using cached realized numbers
-            remaining_qty = float(row["remaining_qty"])
-            unit_cost = float(row["unit_cost"])
-            remaining_cost_value = float(row["remaining_cost_value"])
-            overhead_realized = float(row["overhead_realized"])
-            days_active = max(1, int(row["days_active"]))
+            calc_df["avg_price"] = pd.to_numeric(editable_df["avg_price"], errors="coerce").fillna(0.0)
+            calc_df["days_to_clear"] = (
+                pd.to_numeric(editable_df["days_to_clear"], errors="coerce")
+                .fillna(0.0)
+                .clip(lower=0.0, upper=730.0)
+            )
 
-            proj_remaining_revenue = remaining_qty * float(new_price)
-            proj_remaining_gm = proj_remaining_revenue - remaining_cost_value
+            # scenario price follows edited avg price
+            calc_df["scenario_price"] = calc_df["avg_price"]
 
-            # -----------------------------------------
-            # Match Batch Profitability projected logic
-            # -----------------------------------------
-            sim_days_to_clear = min(max(float(new_days_to_clear), 0.0), 730.0)
+            calc_df["remaining_qty"] = pd.to_numeric(calc_df["remaining_qty"], errors="coerce").fillna(0.0)
+            calc_df["remaining_cost_value"] = pd.to_numeric(calc_df["remaining_cost_value"], errors="coerce").fillna(0.0)
+            calc_df["net_profit_realized"] = pd.to_numeric(calc_df["net_profit_realized"], errors="coerce").fillna(0.0)
+            calc_df["days_active"] = pd.to_numeric(calc_df["days_active"], errors="coerce").fillna(1.0)
 
-            # Shipment-level D0 = total overhead pool / max(days_active)
-            max_days_active = max(1, int(base_df["days_active"].max()))
-            total_overhead_pool = float(base_df["overhead_realized"].sum())
-            D0 = total_overhead_pool / max_days_active
+            calc_df["proj_remaining_revenue"] = calc_df["remaining_qty"] * calc_df["scenario_price"]
+            calc_df["proj_remaining_gm"] = calc_df["proj_remaining_revenue"] - calc_df["remaining_cost_value"]
 
-            # Recompute projected remaining revenue for all SKUs:
-            # selected SKU uses new scenario price, others keep current projected remaining revenue
-            sim_proj_rev_all = base_df[["itemcode", "proj_remaining_revenue", "remaining_cost_value"]].copy()
-            sim_proj_rev_all["sim_proj_remaining_revenue"] = sim_proj_rev_all["proj_remaining_revenue"].astype(float)
+            # ---------------------------------------------
+            # Overhead base must match original Batch Profitability engine
+            # ---------------------------------------------
+            shipment_overhead_total = float(st.session_state.get("shipment_overhead_total", 0.0))
+            vat_pct = float(st.session_state.get("vat_pct", 0.0))
+            manual_overhead_value = float(st.session_state.get("manual_overhead_value", 0.0))
 
-            sim_proj_rev_all.loc[
-                sim_proj_rev_all["itemcode"].astype(str) == str(row["itemcode"]),
-                "sim_proj_remaining_revenue"
-            ] = proj_remaining_revenue
+            # VAT overhead in the original engine is based on realized sold revenue
+            total_sold_revenue_base = float(
+                pd.to_numeric(base_df["sold_revenue"], errors="coerce").fillna(0.0).sum()
+            )
 
-            total_proj_remaining_revenue = float(sim_proj_rev_all["sim_proj_remaining_revenue"].sum())
+            vat_overhead_value = (vat_pct / 100.0) * max(0.0, total_sold_revenue_base)
+
+            total_overhead_pool = (
+                float(shipment_overhead_total)
+                + float(vat_overhead_value)
+                + float(manual_overhead_value)
+            )
+
+            days_elapsed = int(
+                pd.to_numeric(base_df["days_active"], errors="coerce").fillna(1).max()
+            )
+            days_elapsed = max(1, days_elapsed)
+
+            D0 = total_overhead_pool / float(days_elapsed)
+
+            # ---------------------------------------------
+            # Remaining-share basis anchored to original sheet shape
+            # but with edited projected revenue values from current worksheet
+            # ---------------------------------------------
+            total_proj_remaining_revenue = float(
+                pd.to_numeric(calc_df["proj_remaining_revenue"], errors="coerce").fillna(0.0).sum()
+            )
 
             if total_proj_remaining_revenue > 0:
-                remaining_share = proj_remaining_revenue / total_proj_remaining_revenue
+                share_rem = (
+                    pd.to_numeric(calc_df["proj_remaining_revenue"], errors="coerce").fillna(0.0)
+                    / total_proj_remaining_revenue
+                )
             else:
-                total_remaining_cost = float(sim_proj_rev_all["remaining_cost_value"].astype(float).sum())
-                remaining_share = (remaining_cost_value / total_remaining_cost) if total_remaining_cost > 0 else 0.0
+                denom = float(
+                    pd.to_numeric(share_base_df["remaining_cost_value"], errors="coerce").fillna(0.0).sum()
+                )
+                if denom > 0:
+                    share_rem = (
+                        pd.to_numeric(calc_df["remaining_cost_value"], errors="coerce").fillna(0.0)
+                        / denom
+                    )
+                else:
+                    share_rem = 0.0
 
-            decay_factor = 0.97 ** (sim_days_to_clear / 60.0)
+            # ---------------------------------------------
+            # Same projected overhead formula as batch engine
+            # overhead_projected = D0 * (0.97)^(days_to_clear/60) * days_to_clear * remaining_share
+            # ---------------------------------------------
+            dclear = (
+                pd.to_numeric(calc_df["days_to_clear"], errors="coerce")
+                .fillna(0.0)
+                .clip(lower=0.0, upper=730.0)
+            )
 
-            overhead_projected = D0 * decay_factor * sim_days_to_clear * remaining_share
+            decay_factor = np.power(0.97, dclear / 60.0)
 
-            proj_remaining_profit = proj_remaining_gm - overhead_projected
-            proj_final_profit = float(row["net_profit_realized"]) + proj_remaining_profit
+            calc_df["overhead_projected"] = D0 * decay_factor * dclear * share_rem
+            calc_df["Proj_remaining_profit"] = calc_df["proj_remaining_gm"] - calc_df["overhead_projected"]
+            calc_df["proj_final_profit"] = calc_df["net_profit_realized"] + calc_df["Proj_remaining_profit"]
 
-            st.markdown("### Simulator Output (this SKU only)")
-            st.write({
-                "Realized sold_revenue": round(float(row["sold_revenue"]), 2),
-                "Realized GM": round(float(row["realized_gm"]), 2),
-                "Realized overhead": round(overhead_realized, 2),
-                "Net profit realized": round(float(row["net_profit_realized"]), 2),
-                "Projected remaining revenue": round(proj_remaining_revenue, 2),
-                "Projected remaining GM": round(proj_remaining_gm, 2),
-                "Projected overhead": round(overhead_projected, 2),
-                "Projected remaining profit": round(proj_remaining_profit, 2),
-                "Projected final profit": round(proj_final_profit, 2),
-            })
+            # ---------------------------------------------
+            # Totals row
+            # Only sum revenue / cost / overhead / profit fields
+            # ---------------------------------------------
+            total_cols = [
+                "sold_revenue",
+                "realized_cogs",
+                "realized_gm",
+                "overhead_realized",
+                "net_profit_realized",
+                "remaining_cost_value",
+                "proj_remaining_revenue",
+                "proj_remaining_gm",
+                "overhead_projected",
+                "Proj_remaining_profit",
+                "proj_final_profit",
+            ]
 
+            totals_row = {c: "" for c in calc_df.columns}
+            totals_row["shipmentname"] = "TOTAL"
+            totals_row["batch_id"] = ""
+            totals_row["itemcode"] = ""
+            totals_row["itemname"] = ""
+            totals_row["combinedate"] = ""
+            totals_row["batch_end_date"] = ""
+            totals_row["is_closed"] = ""
+            totals_row["initial_qty"] = ""
+            totals_row["sold_qty"] = ""
+            totals_row["remaining_qty"] = ""
+            totals_row["threshold_qty"] = ""
+            totals_row["unit_cost"] = ""
+            totals_row["avg_price"] = ""
+            totals_row["scenario_price"] = ""
+            totals_row["days_active"] = ""
+            totals_row["velocity"] = ""
+            totals_row["days_to_clear"] = ""
+            totals_row["batch_age_days"] = ""
+
+            for c in total_cols:
+                if c in calc_df.columns:
+                    totals_row[c] = float(pd.to_numeric(calc_df[c], errors="coerce").fillna(0.0).sum())
+
+            final_display_df = pd.concat(
+                [calc_df, pd.DataFrame([totals_row])],
+                ignore_index=True
+            )
+
+            st.markdown("### Scenario Worksheet Output")
+            st.dataframe(final_display_df, use_container_width=True)
+
+            st.session_state["last_scenario_worksheet_df"] = calc_df.copy()
             return
+
+            with st.expander("SKU Simulator Calculation Logic", expanded=False):
+                st.markdown("""
+                        ### SKU Simulator Calculation Logic
+                        The SKU Simulator recomputes the projected profitability of a single SKU while keeping the rest of the shipment unchanged.
+
+                        #### Inputs
+                        - **remaining_qty**: Remaining units from the latest batch profitability result  
+                        - **unit_cost**: Purchase cost per unit  
+                        - **scenario_price**: User-defined selling price  
+                        - **days_to_clear**: User-defined clearance horizon (capped at 730 days)
+
+                        ---
+
+                        ### Revenue Projection
+                        Projected revenue of remaining stock:
+                        proj_remaining_revenue = remaining_qty × scenario_price
+
+                        ---
+
+                        ### Gross Margin Projection
+                        remaining_cost_value = remaining_qty × unit_cost  
+                        proj_remaining_gm = proj_remaining_revenue − remaining_cost_value
+
+                        ---
+
+                        ### Remaining Revenue Share
+                        The SKU’s share of the remaining shipment value is recalculated using the simulated projected revenue.
+
+                        remaining_share =
+                        simulated_projected_revenue_of_selected_sku
+                        /
+                        total_simulated_projected_revenue_of_shipment
+                        Fallback if projected revenue is zero:
+                        remaining_share =
+                        remaining_cost_value
+                        /
+                        total_remaining_cost_value_of_shipment
+
+                        ---
+
+                        ### Overhead Pool Baseline
+                        Daily overhead baseline:
+                        D0 = total_overhead_pool / max(days_active_in_shipment)
+
+                        Where:
+                        - **total_overhead_pool** = total overhead allocated to the shipment
+                        - **days_active** = maximum days_active across all SKUs in the shipment
+
+                        ---
+
+                        ### Decaying Overhead Projection
+                        Projected overhead uses the diminishing overhead formula:
+
+                        overhead_projected =
+                        D0 × (0.97)^(days_to_clear / 60)
+                        × days_to_clear
+                        × remaining_share
+                        This reflects the empirical observation that shipment overhead pressure declines over time as the shipment mix dilutes.
+
+                        ---
+
+                        ### Remaining Projected Profit
+                        Proj_remaining_profit =
+                        proj_remaining_gm − overhead_projected
+                        ---
+
+                        ### Final SKU Profit
+                        proj_final_profit =
+                        net_profit_realized + Proj_remaining_profit
+
+                        Where:
+                        net_profit_realized =
+                        realized_gm − overhead_realized
+                        ---
+
+                        ### Velocity Logic
+
+                        velocity =
+                        sold_qty / days_active
+                        If sold_qty = 0:
+                        velocity_used = 0.02
+                        Projected clearance time:
+                        days_to_clear =
+                        remaining_qty / velocity_used
+                        days_to_clear is capped at **730 days** to prevent extreme projections.
+
+                        ---
+                        ### Key Concept
+                        The SKU Simulator modifies **only the selected SKU scenario** while keeping all other shipment SKUs unchanged.  
+                        This allows testing pricing and clearance scenarios without rebuilding the entire shipment profitability model.
+                        """)
+
 
 @timed
 def display_financial_statements(current_page, zid):
