@@ -416,65 +416,98 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         returns_df = filtered_data_r
         collection_df = filtered_data_c
 
-        #filtered options for collection, - shows the filtering options for sales, returns and collections and outputs the dataset after the filter
-        sales_df, returns_df, collection_df = collection.filtered_options_for_collection(sales_df, returns_df, collection_df)
+        try:
+            #filtered options for collection, - shows the filtering options for sales, returns and collections and outputs the dataset after the filter
+            sales_df, returns_df, collection_df = collection.filtered_options_for_collection(sales_df, returns_df, collection_df)
 
-        sales_df = sales_df.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).final_sales.sum().reset_index()
-        returns_df = returns_df.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).treturnamt.sum().reset_index()
-        collection_df = collection_df.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).value.sum().reset_index()
-        # Compute average days and other metrics
-        avg_days, pivot_df, avg_days_between, combined_df = collection.average_days_to_collection(sales_df, returns_df, collection_df)
-        summary_df = collection.customer_segmentation_by_collection_days(avg_days)
+            # Early check: warn and stop if any core dataset is empty after filtering
+            if collection_df.empty or sales_df.empty:
+                st.warning(
+                    "⚠️ The selected filters returned no data. "
+                    "Please reselect your options — the current combination may lack sufficient data for valid reporting."
+                )
+                st.stop()
 
-        # Display metrics
-        for title, df in {
-            "Average Days to Collection": avg_days,
-            "Customer Segmentation by Days to Collection": summary_df,
-            "Collection Days by Year/Month": pivot_df,
-            "Average Days to Collection": avg_days_between
-        }.items():
-            st.markdown(title)
-            st.write(df)
+            sales_df = sales_df.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).final_sales.sum().reset_index()
+            returns_df = returns_df.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).treturnamt.sum().reset_index()
+            collection_df = collection_df.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).value.sum().reset_index()
 
-        # Step 1: Pull unique customer list from collection_df
-        combined_df = combined_df[['year','month','cusid','cusname','date','final_sales','treturnamt','value']]
-        customer_options = (
-            collection_df[['cusid', 'cusname']]
-            .drop_duplicates()
-            .sort_values(by='cusname')
-        )
-        customer_options["combined"] = customer_options["cusid"].astype(str) + " - " + customer_options["cusname"]
+            # Compute average days and other metrics
+            avg_days, pivot_df, avg_days_between, combined_df = collection.average_days_to_collection(sales_df, returns_df, collection_df)
 
-        default_customer = customer_options["combined"].iloc[0]
-        selected_customer = st.selectbox(
-            "Select Customer",
-            options=customer_options["combined"].tolist(),
-            index=customer_options["combined"].tolist().index(default_customer)  # Ensure default is selected
-        )
+            # Check computed outputs are usable
+            if avg_days is None or (isinstance(avg_days, pd.DataFrame) and avg_days.empty):
+                st.warning(
+                    "⚠️ Not enough data to compute collection metrics. "
+                    "Please reselect your options — the current combination may lack sufficient data for valid reporting."
+                )
+                st.stop()
 
-        selected_cusid = selected_customer.split(" - ")[0]
-        ledger_df = combined_df[combined_df['cusid'] == selected_cusid]
-        ledger_df = ledger_df.sort_values(by='date')
+            summary_df = collection.customer_segmentation_by_collection_days(avg_days)
 
-        columns_to_hide = ['cusid', 'cusname']  # or any other internal columns you want to omit
-        display_df = ledger_df.drop(columns=columns_to_hide)
+            # Display metrics
+            for title, df in {
+                "Average Days to Collection": avg_days,
+                "Customer Segmentation by Days to Collection": summary_df,
+                "Collection Days by Year/Month": pivot_df,
+                "Average Days Between Collections": avg_days_between
+            }.items():
+                st.markdown(title)
+                st.write(df)
 
-        st.markdown("Customer Ledger")
-        st.write(display_df)
+            # Step 1: Pull unique customer list from collection_df
+            combined_df = combined_df[['year','month','cusid','cusname','date','final_sales','treturnamt','value']]
+            customer_options = (
+                collection_df[['cusid', 'cusname']]
+                .drop_duplicates()
+                .sort_values(by='cusname')
+            )
+            customer_options["combined"] = customer_options["cusid"].astype(str) + " - " + customer_options["cusname"]
 
-        # Analysis and Metric Selection
-        timeframe = st.selectbox('Select Time Range', ['Daily', 'Monthly', 'Yearly'], index=2)
-        grouped_df, grouped_df_DOM, grouped_df_DOW = collection.get_grouped_df_collection(sales_df, returns_df, collection_df, timeframe)
+            if customer_options.empty:
+                st.warning(
+                    "⚠️ No customers found for the selected filters. "
+                    "Please reselect your options — the current combination may lack sufficient data for valid reporting."
+                )
+                st.stop()
 
-        # Display and visualize data
-        for title, (df, x_axis) in {
-                f"Comparison of Sales/Collection {timeframe}": (grouped_df, 'timeframe'),
-                "Comparison of Sales/Collection DOM": (grouped_df_DOM, 'DOM'),
-                "Comparison of Sales/Collection DOW": (grouped_df_DOW, 'DOW')
-        }.items():
-            st.markdown(title)
-            df = df.rename(columns={'value':'value_collection'})
-            st.write(df)
+            default_customer = customer_options["combined"].iloc[0]
+            selected_customer = st.selectbox(
+                "Select Customer",
+                options=customer_options["combined"].tolist(),
+                index=customer_options["combined"].tolist().index(default_customer)
+            )
+
+            selected_cusid = selected_customer.split(" - ")[0]
+            ledger_df = combined_df[combined_df['cusid'] == selected_cusid]
+            ledger_df = ledger_df.sort_values(by='date')
+
+            columns_to_hide = ['cusid', 'cusname']
+            display_df = ledger_df.drop(columns=columns_to_hide)
+
+            st.markdown("Customer Ledger")
+            st.write(display_df)
+
+            # Analysis and Metric Selection
+            timeframe = st.selectbox('Select Time Range', ['Daily', 'Monthly', 'Yearly'], index=2)
+            grouped_df, grouped_df_DOM, grouped_df_DOW = collection.get_grouped_df_collection(sales_df, returns_df, collection_df, timeframe)
+
+            # Display and visualize data
+            for title, (df, x_axis) in {
+                    f"Comparison of Sales/Collection {timeframe}": (grouped_df, 'timeframe'),
+                    "Comparison of Sales/Collection DOM": (grouped_df_DOM, 'DOM'),
+                    "Comparison of Sales/Collection DOW": (grouped_df_DOW, 'DOW')
+            }.items():
+                st.markdown(title)
+                df = df.rename(columns={'value':'value_collection'})
+                st.write(df)
+
+        except Exception as _cp_err:
+            st.warning(
+                "⚠️ Unable to generate Collection Performance report. "
+                "Please reselect your options — the current combination may lack sufficient data for valid reporting."
+            )
+            st.caption(f"Details: {_cp_err}")
             # long_df = df.melt(id_vars=[x_axis], value_vars=['final_sales', 'treturnamt', 'value_collection'], var_name='category', value_name='value')
             # common_v.plot_bar_chart(data=long_df, x_axis=x_axis, y_axis='value', color='category', title=f'{x_axis} Collection Analysis')
 
