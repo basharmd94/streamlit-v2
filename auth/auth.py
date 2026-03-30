@@ -79,6 +79,8 @@ def check_page_access(page_name):
 def render_login_page():
     st.markdown("""
         <style>
+        [data-testid="stSidebar"] {display: none;}
+        [data-testid="collapsedControl"] {display: none;}
         .login-container {
             max-width: 400px;
             margin: 0 auto;
