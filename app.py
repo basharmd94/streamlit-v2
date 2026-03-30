@@ -1,7 +1,7 @@
 import streamlit as st
 from core.analytics import Analytics
-from pages import sales, margin, collection, basket, purchase, financial, accounting, inventory
-from pages.home import display_home_page
+from views import sales, margin, collection, basket, purchase, financial, accounting, inventory
+from views.home import display_home_page
 import pandas as pd
 from io import BytesIO
 from datetime import datetime
@@ -361,8 +361,6 @@ class BaseApp:
 
     @timed
     def purchase_analysis(self, data_dict):
-        import pandas as pd
-        import streamlit as st
 
         # --- Force GL tables for overhead explorer to always come from trading (100001) ---
         if str(st.session_state.zid) != "100001":
