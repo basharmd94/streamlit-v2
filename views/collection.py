@@ -347,7 +347,7 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         st.subheader("Compare Metrics")
 
         # 1. Compare By Entity
-        compare_by = st.selectbox("Compare By", ["Product", "Product Group", "Salesman", "Customer", "Area"])
+        compare_by = st.selectbox("Compare By", ["Salesman", "Customer", "Area"])
 
         # 2. Metric Choices based on Compare By
         full_metric_choices = [
