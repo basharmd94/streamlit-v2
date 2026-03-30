@@ -1,7 +1,5 @@
 import pandas as pd
 import numpy as np
-from functools import partial
-from concurrent.futures import ProcessPoolExecutor
 from processing import common
 from datetime import datetime
 import os
@@ -144,12 +142,21 @@ def generate_cohort(purchase_data,year_ago,inventory_data,sales_df,cohort_df):
     # Then by 'final_stock' (ascending) and then by 'n-mean' (descending)
     result_df = result_df.sort_values(by=['has_shipments', 'final_stock', 'n-mean'], ascending=[False, True, False])
     result_df = result_df.drop(columns='has_shipments')
-    result_df['combinedate'] = pd.to_datetime(result_df['combinedate'], errors='coerce')
-    result_df['combinedate'] = result_df['combinedate'].dt.strftime('%Y-%m-%d')
     result_df['itemname'] = result_df['itemname'].astype(str)
 
-    # products_to_order
-    result_df = result_df.applymap(common.handle_infinity_and_round).fillna(0)
+    # Format combinedate BEFORE numeric cleanup so it survives as a string.
+    # Re-parse from whatever type it is (string or NaT) and format cleanly.
+    result_df['combinedate'] = (
+        pd.to_datetime(result_df['combinedate'], errors='coerce')
+        .dt.strftime('%Y-%m-%d')
+        .fillna('')   # items with no cohort match get empty string instead of 'NaT'/0
+    )
+
+    # Numeric cleanup (leaves string columns like combinedate, itemname untouched)
+    numeric_cols = [c for c in result_df.columns if c not in ('itemcode', 'itemname', 'combinedate')]
+    result_df[numeric_cols] = result_df[numeric_cols].apply(
+        lambda col: col.map(common.handle_infinity_and_round)
+    ).fillna(0)
 
     return result_df
 
@@ -230,14 +237,13 @@ def process_chunk(chunk, sales_df):
     return data_rows
 
 def main_purchase_product_cohort_process(sales_df, purchase_df):
-    num_processes = 4
-    chunks = np.array_split(purchase_df, num_processes)
-    partial_process_chunk = partial(process_chunk, sales_df=sales_df)
-    
-    with ProcessPoolExecutor(max_workers=num_processes) as executor:
-        results = list(executor.map(partial_process_chunk, chunks))
+    # NOTE: ProcessPoolExecutor is replaced with sequential processing.
+    # ProcessPoolExecutor uses 'spawn' on macOS (Python 3.8+), which re-imports all
+    # modules in each worker — including 'import streamlit as st' at the top of this
+    # file — causing workers to crash silently and return empty results (all 0s).
+    data_rows = process_chunk(purchase_df, sales_df)
 
-    final_df = pd.DataFrame([item for sublist in results for item in sublist])
+    final_df = pd.DataFrame(data_rows)
     final_df = final_df.sort_values(by=['itemcode', 'combinedate'])
     final_df['days_since_last_purchase'] = final_df.groupby('itemcode')['combinedate'].diff().fillna(pd.Timedelta(seconds=0)).dt.days
     final_df['days_since_last_purchase'] = final_df['days_since_last_purchase'].fillna(0).astype(int)
