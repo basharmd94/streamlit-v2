@@ -62,9 +62,8 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
         _sql, _params = queries.get_gl_details(
             zid=zid, project=project, year=year,
             smonth=cs_month, emonth=ce_month,
-            is_bs=True, is_project=bool(project)
-
-        df = get_dataframe(_sql, _params))
+            is_bs=True, is_project=bool(project))
+        df = get_dataframe(_sql, _params)
 
         max_m = df['month'].max()
         if not df.empty and pd.notna(max_m):
@@ -89,9 +88,8 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
         _sql, _params = queries.get_gl_details(
             zid=zid, project=project, year=year - 1,
             smonth=1, emonth=12,
-            is_bs=True, is_project=bool(project)
-
-        df = get_dataframe(_sql, _params))
+            is_bs=True, is_project=bool(project))
+        df = get_dataframe(_sql, _params)
 
         max_m = df['month'].max()
         if not df.empty and pd.notna(max_m):
@@ -147,15 +145,13 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
     _sql, _params = queries.get_gl_details(
         zid=zid, project=project, year=year,
         smonth=cs_month, emonth=ce_month,
-        is_bs=False, is_project=bool(project)
-
-    df_curr = get_dataframe(_sql, _params))
+        is_bs=False, is_project=bool(project))
+    df_curr = get_dataframe(_sql, _params)
     _sql, _params = queries.get_gl_details(
         zid=zid, project=project, year=year - 1,
         smonth=1, emonth=12,
-        is_bs=False, is_project=bool(project)
-
-    df_prev = get_dataframe(_sql, _params))
+        is_bs=False, is_project=bool(project))
+    df_prev = get_dataframe(_sql, _params)
 
     # ---- concat replaces deprecated append ----
     df = pd.concat([df_curr, df_prev], ignore_index=True)
@@ -234,10 +230,8 @@ def process_data(
             smonth=start_month,
             emonth=end_month,
             is_bs=is_bs,
-            is_project=bool(project)
-
-        raw = get_dataframe(_sql, _params),
-        )
+            is_project=bool(project))
+        raw = get_dataframe(_sql, _params)
         if raw.empty:
             continue
 
