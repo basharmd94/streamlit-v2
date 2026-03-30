@@ -1,7 +1,7 @@
 import plotly.graph_objects as go
 import streamlit as st
 import plotly.express as px
-from modules.data_process_files import common
+from processing import common
 
 def plot_histogram(data_dict, y_axis_title):
     x = list(data_dict.keys())

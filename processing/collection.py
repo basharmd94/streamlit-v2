@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from modules.data_process_files import common
+from processing import common
 from collections import defaultdict
 pd.set_option('display.float_format', '{:.2f}'.format)
 from utils.utils import timed

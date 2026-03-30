@@ -1,12 +1,13 @@
 import streamlit as st
-from modules.analytics import Analytics
-from modules import views
+from core.analytics import Analytics
+from pages import sales, margin, collection, basket, purchase, financial, accounting, inventory
+from pages.home import display_home_page
 import pandas as pd
 from io import BytesIO
 from datetime import datetime
 from utils.loggin_config import LogManager
 from utils.utils import timed
-from auth import auth_utils
+from auth import auth
 
 
 @timed
@@ -153,7 +154,7 @@ class BaseApp:
         """, unsafe_allow_html=True)
         
         self.title = "Business Data Analysis"
-        auth_utils.init_auth()
+        auth.init_auth()
 
                 
         # Initialize session state variables
@@ -167,13 +168,13 @@ class BaseApp:
     @timed
     def run(self):
         if not st.session_state.authenticated:
-            auth_utils.render_login_page()
+            auth.render_login_page()
         else:
             self.navigation()
             # Add logout button in sidebar
             st.sidebar.markdown("---")
             if st.sidebar.button("Logout", key='logout_button'):
-                auth_utils.logout()
+                auth.logout()
                 try:
                     st.rerun()
                 except AttributeError:
@@ -206,7 +207,7 @@ class BaseApp:
         ]
 
          # Filter menu based on user's role
-        authorized_menu = [page for page in menu if auth_utils.check_page_access(page)]
+        authorized_menu = [page for page in menu if auth.check_page_access(page)]
         
         if not authorized_menu:
             st.error("You don't have access to any pages. Please contact your administrator.")
@@ -348,15 +349,15 @@ class BaseApp:
 
     @timed
     def overall_sales_analysis(self, data_dict):
-        views.display_overall_sales_analysis_page(self.current_page, st.session_state.zid, data_dict)
+        sales.display_overall_sales_analysis_page(self.current_page, st.session_state.zid, data_dict)
     
     @timed
     def customer_data_view(self, data_dict):
-        views.display_customer_data_view_page(current_page=self.current_page, zid=st.session_state.zid, data_dict=data_dict)
+        sales.display_customer_data_view_page(current_page=self.current_page, zid=st.session_state.zid, data_dict=data_dict)
 
     @timed
     def overall_margin_analysis(self, data_dict):
-        views.display_margin_analysis_page(self.current_page, st.session_state.zid, data_dict)
+        margin.display_margin_analysis_page(self.current_page, st.session_state.zid, data_dict)
 
     @timed
     def purchase_analysis(self, data_dict):
@@ -401,27 +402,27 @@ class BaseApp:
         # NOTE: we are intentionally NOT loading/using data_dict["stock"] anymore
 
         # Now render the view AFTER data_dict has what the view expects
-        views.display_purchase_analysis_page(self.current_page, st.session_state.zid, data_dict)
+        purchase.display_purchase_analysis_page(self.current_page, st.session_state.zid, data_dict)
 
     @timed
     def collection_analysis(self, data_dict):
-        views.display_collection_analysis_page(self.current_page, st.session_state.zid, st.session_state.proj, data_dict)
+        collection.display_collection_analysis_page(self.current_page, st.session_state.zid, st.session_state.proj, data_dict)
 
     @timed
     def basket_analysis(self, data_dict):
-        views.display_basket_analysis_page(self.current_page, st.session_state.zid, data_dict, st.session_state.get("last_filters", {}))
+        basket.display_basket_analysis_page(self.current_page, st.session_state.zid, data_dict, st.session_state.get("last_filters", {}))
 
     @timed
     def financials(self):
-        views.display_financial_statements(self.current_page, st.session_state.zid)
+        financial.display_financial_statements(self.current_page, st.session_state.zid)
 
     @timed
     def accounting_analysis(self):
-        views.display_accounting_analysis_main(self.current_page, st.session_state.zid)
+        accounting.display_accounting_analysis_main(self.current_page, st.session_state.zid)
 
     @timed
     def inventory_analysis(self):
-        views.display_inventory_analysis_main(self.current_page, st.session_state.zid)
+        inventory.display_inventory_analysis_main(self.current_page, st.session_state.zid)
 
 if __name__ == "__main__":
     app = BaseApp()

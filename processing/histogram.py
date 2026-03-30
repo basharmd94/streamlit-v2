@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from modules.data_process_files import common
+from processing import common
 
 def process_and_print(processed_data,selected_column,selected_metric):
     df_print = processed_data.reset_index()

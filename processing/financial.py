@@ -1,6 +1,7 @@
 import pandas as pd
 from datetime import datetime
-from db import db_utils
+from core import queries
+from core.db import get_dataframe
 import streamlit as st
 import numpy as np
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Dict, Tuple, List, Set
 import re, ast
 
 HERE = Path(__file__).resolve().parent.parent
-JSON_PATH = HERE / "hierarchy.json"
+JSON_PATH = HERE / "data" / "hierarchy.json"
 
 @st.cache_data
 def _load_raw() -> dict:
@@ -19,7 +20,8 @@ def _load_raw() -> dict:
 
 @st.cache_data
 def get_filtered_master(zid, excluded_acctypes):
-    df_master = db_utils.get_gl_master(zid)
+    _sql, _params = queries.get_gl_master(zid)
+    df_master = get_dataframe(_sql, _params)
     return df_master[~df_master['ac_type'].isin(excluded_acctypes)]
 
 @st.cache_data
@@ -57,10 +59,12 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
     # =================================================================
     if 'Balance Sheet' in label_col:
         # ---- current fiscal year ----
-        df = db_utils.get_gl_details(
+        _sql, _params = queries.get_gl_details(
             zid=zid, project=project, year=year,
             smonth=cs_month, emonth=ce_month,
-            is_bs=True, is_project=bool(project))
+            is_bs=True, is_project=bool(project)
+
+        df = get_dataframe(_sql, _params))
 
         max_m = df['month'].max()
         if not df.empty and pd.notna(max_m):
@@ -82,10 +86,12 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
             df_new_c = df_new.copy()
 
         # ---- previous fiscal year ----
-        df = db_utils.get_gl_details(
+        _sql, _params = queries.get_gl_details(
             zid=zid, project=project, year=year - 1,
             smonth=1, emonth=12,
-            is_bs=True, is_project=bool(project))
+            is_bs=True, is_project=bool(project)
+
+        df = get_dataframe(_sql, _params))
 
         max_m = df['month'].max()
         if not df.empty and pd.notna(max_m):
@@ -138,14 +144,18 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
     # =================================================================
     # INCOME-STATEMENT  (flat pivot, two fiscal years)
     # =================================================================
-    df_curr = db_utils.get_gl_details(
+    _sql, _params = queries.get_gl_details(
         zid=zid, project=project, year=year,
         smonth=cs_month, emonth=ce_month,
-        is_bs=False, is_project=bool(project))
-    df_prev = db_utils.get_gl_details(
+        is_bs=False, is_project=bool(project)
+
+    df_curr = get_dataframe(_sql, _params))
+    _sql, _params = queries.get_gl_details(
         zid=zid, project=project, year=year - 1,
         smonth=1, emonth=12,
-        is_bs=False, is_project=bool(project))
+        is_bs=False, is_project=bool(project)
+
+    df_prev = get_dataframe(_sql, _params))
 
     # ---- concat replaces deprecated append ----
     df = pd.concat([df_curr, df_prev], ignore_index=True)
@@ -217,14 +227,16 @@ def process_data(
     is_bs = 'Balance Sheet' in label_col
     frames = []
     for yr in year_list:
-        raw = db_utils.get_gl_details(
+        _sql, _params = queries.get_gl_details(
             zid=zid,
             project=project,
             year=yr,
             smonth=start_month,
             emonth=end_month,
             is_bs=is_bs,
-            is_project=bool(project),
+            is_project=bool(project)
+
+        raw = get_dataframe(_sql, _params),
         )
         if raw.empty:
             continue

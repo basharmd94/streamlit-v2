@@ -60,3 +60,9 @@ config.py # or any other file containing sensitive configurations
 # Miscellaneous
 *._.DS_Store
 **/.DS_Store
+
+# Windows service executable
+nssm.exe
+
+# Runtime logs directory
+logs/

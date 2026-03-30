@@ -1,6 +1,6 @@
 import plotly.graph_objects as go
 import streamlit as st
-from modules.data_process_files import common
+from processing import common
 
 def plot_yoy(data1, data2, xaxis, color, yaxis1, yaxis2, bartitle, current_page):
     grouped_data, yaxis = common.net_sales_vertical(data1, data2, xaxis, yaxis1, yaxis2, current_page)

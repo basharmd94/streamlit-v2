@@ -1,21 +1,23 @@
-# db/sql_scripts.py
+# core/queries.py
+# All SQL query builders. Every function returns (query_string, params_tuple).
+# No f-string interpolation of user-supplied values.
 
-from typing import Iterable, Tuple, Dict, Any, List
+from typing import Iterable, Tuple, Dict, Any
+
 
 def _build_in_clause(id_iterable: Iterable[int]) -> Tuple[str, Tuple[int, ...]]:
-    # 1) Remove duplicates while preserving order
     seen, ordered_ids = set(), []
     for zid in id_iterable:
         if zid not in seen:
             ordered_ids.append(zid)
             seen.add(zid)
-
     placeholders = ", ".join(["%s"] * len(ordered_ids))
     return placeholders, tuple(ordered_ids)
 
+
 def get_sales_data(filters=None):
     filters = filters or {}
-    query = """SELECT 
+    query = """SELECT
                 sales.zid,
                 sales.ordernumber as voucher,
                 sales.date,
@@ -34,25 +36,29 @@ def get_sales_data(filters=None):
                 sales.proddiscount,
                 sales.totalsales,
                 sales.cost
-            FROM 
-                sales 
-            JOIN 
+            FROM
+                sales
+            JOIN
                 employee ON sales.sp_id = employee.spid AND sales.zid = employee.zid
-            JOIN 
+            JOIN
                 cacus ON sales.cusid = cacus.cusid AND sales.zid = cacus.zid
-            JOIN 
+            JOIN
                 caitem ON sales.itemcode = caitem.itemcode AND sales.zid = caitem.zid
-            WHERE 
+            WHERE
                 sales.zid = %s"""
-                
-    # Append filters to the WHERE clause
-    # Append filters to the WHERE clause
-    if filters.get("year"):
-        query += f" AND EXTRACT(YEAR FROM sales.date) IN ({','.join(map(str, filters['year']))})"
-    if filters.get("month"):
-        query += f" AND EXTRACT(MONTH FROM sales.date) IN ({','.join(map(str, filters['month']))})"
 
-    # Salesman: accept "spid - spname" or plain spname
+    params = [filters["zid"][0]]
+
+    if filters.get("year"):
+        placeholders = ",".join(["%s"] * len(filters["year"]))
+        query += f" AND EXTRACT(YEAR FROM sales.date) IN ({placeholders})"
+        params.extend(filters["year"])
+
+    if filters.get("month"):
+        placeholders = ",".join(["%s"] * len(filters["month"]))
+        query += f" AND EXTRACT(MONTH FROM sales.date) IN ({placeholders})"
+        params.extend(filters["month"])
+
     if filters.get("spname"):
         raw_vals = [str(v) for v in filters["spname"]]
         spids, spnames = [], []
@@ -71,15 +77,16 @@ def get_sales_data(filters=None):
 
         conditions = []
         if spids:
-            spid_list = "','".join(spids)
-            conditions.append(f"sales.sp_id IN ('{spid_list}')")
+            placeholders = ",".join(["%s"] * len(spids))
+            conditions.append(f"sales.sp_id IN ({placeholders})")
+            params.extend(spids)
         if spnames:
-            spname_list = "','".join(spnames)
-            conditions.append(f"employee.spname IN ('{spname_list}')")
+            placeholders = ",".join(["%s"] * len(spnames))
+            conditions.append(f"employee.spname IN ({placeholders})")
+            params.extend(spnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
 
-    # Customer: accept "cusid - cusname" or plain cusname
     if filters.get("cusname"):
         raw_vals = [str(v) for v in filters["cusname"]]
         cusids, cusnames = [], []
@@ -98,15 +105,16 @@ def get_sales_data(filters=None):
 
         conditions = []
         if cusids:
-            id_list = "','".join(cusids)
-            conditions.append(f"sales.cusid IN ('{id_list}')")
+            placeholders = ",".join(["%s"] * len(cusids))
+            conditions.append(f"sales.cusid IN ({placeholders})")
+            params.extend(cusids)
         if cusnames:
-            name_list = "','".join(cusnames)
-            conditions.append(f"cacus.cusname IN ('{name_list}')")
+            placeholders = ",".join(["%s"] * len(cusnames))
+            conditions.append(f"cacus.cusname IN ({placeholders})")
+            params.extend(cusnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
 
-    # Product: accept "itemcode - itemname" or plain itemname
     if filters.get("itemname"):
         raw_vals = [str(v) for v in filters["itemname"]]
         itemcodes, itemnames = [], []
@@ -125,25 +133,31 @@ def get_sales_data(filters=None):
 
         conditions = []
         if itemcodes:
-            code_list = "','".join(itemcodes)
-            conditions.append(f"sales.itemcode IN ('{code_list}')")
+            placeholders = ",".join(["%s"] * len(itemcodes))
+            conditions.append(f"sales.itemcode IN ({placeholders})")
+            params.extend(itemcodes)
         if itemnames:
-            name_list = "','".join(itemnames)
-            conditions.append(f"caitem.itemname IN ('{name_list}')")
+            placeholders = ",".join(["%s"] * len(itemnames))
+            conditions.append(f"caitem.itemname IN ({placeholders})")
+            params.extend(itemnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
 
     if filters.get("area"):
-        names = "','".join(filters["area"])
-        query += f" AND cacus.cuscity IN ('{names}')"
+        placeholders = ",".join(["%s"] * len(filters["area"]))
+        query += f" AND cacus.cuscity IN ({placeholders})"
+        params.extend(filters["area"])
+
     if filters.get("itemgroup"):
-        names = "','".join(filters["itemgroup"])
-        query += f" AND caitem.itemgroup2 IN ('{names}')"
-    return query
+        placeholders = ",".join(["%s"] * len(filters["itemgroup"]))
+        query += f" AND caitem.itemgroup2 IN ({placeholders})"
+        params.extend(filters["itemgroup"])
+
+    return query, tuple(params)
+
 
 def get_return_data(filters=None):
     filters = filters or {}
-
     query = """SELECT
                 return.zid,
                 return.revoucher,
@@ -162,24 +176,29 @@ def get_return_data(filters=None):
                 return.returnqty,
                 return.treturnamt,
                 return.returncost
-            FROM 
+            FROM
                 return
-            JOIN 
+            JOIN
                 employee ON return.sp_id = employee.spid AND return.zid = employee.zid
-            JOIN 
+            JOIN
                 cacus ON return.cusid = cacus.cusid AND return.zid = cacus.zid
-            JOIN 
+            JOIN
                 caitem ON return.itemcode = caitem.itemcode AND return.zid = caitem.zid
-            WHERE 
+            WHERE
                 return.zid = %s"""
 
-    # Append filters to the WHERE clause
-    if filters.get("year"):
-        query += f" AND EXTRACT(YEAR FROM return.date) IN ({','.join(map(str, filters['year']))})"
-    if filters.get("month"):
-        query += f" AND EXTRACT(MONTH FROM return.date) IN ({','.join(map(str, filters['month']))})"
+    params = [filters["zid"][0]]
 
-    # Salesman: "spid - spname" or plain spname
+    if filters.get("year"):
+        placeholders = ",".join(["%s"] * len(filters["year"]))
+        query += f" AND EXTRACT(YEAR FROM return.date) IN ({placeholders})"
+        params.extend(filters["year"])
+
+    if filters.get("month"):
+        placeholders = ",".join(["%s"] * len(filters["month"]))
+        query += f" AND EXTRACT(MONTH FROM return.date) IN ({placeholders})"
+        params.extend(filters["month"])
+
     if filters.get("spname"):
         raw_vals = [str(v) for v in filters["spname"]]
         spids, spnames = [], []
@@ -198,15 +217,16 @@ def get_return_data(filters=None):
 
         conditions = []
         if spids:
-            spid_list = "','".join(spids)
-            conditions.append(f"return.sp_id IN ('{spid_list}')")
+            placeholders = ",".join(["%s"] * len(spids))
+            conditions.append(f"return.sp_id IN ({placeholders})")
+            params.extend(spids)
         if spnames:
-            spname_list = "','".join(spnames)
-            conditions.append(f"employee.spname IN ('{spname_list}')")
+            placeholders = ",".join(["%s"] * len(spnames))
+            conditions.append(f"employee.spname IN ({placeholders})")
+            params.extend(spnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
 
-    # Customer: "cusid - cusname" or plain cusname
     if filters.get("cusname"):
         raw_vals = [str(v) for v in filters["cusname"]]
         cusids, cusnames = [], []
@@ -225,15 +245,16 @@ def get_return_data(filters=None):
 
         conditions = []
         if cusids:
-            id_list = "','".join(cusids)
-            conditions.append(f"return.cusid IN ('{id_list}')")
+            placeholders = ",".join(["%s"] * len(cusids))
+            conditions.append(f"return.cusid IN ({placeholders})")
+            params.extend(cusids)
         if cusnames:
-            name_list = "','".join(cusnames)
-            conditions.append(f"cacus.cusname IN ('{name_list}')")
+            placeholders = ",".join(["%s"] * len(cusnames))
+            conditions.append(f"cacus.cusname IN ({placeholders})")
+            params.extend(cusnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
 
-    # Product: "itemcode - itemname" or plain itemname
     if filters.get("itemname"):
         raw_vals = [str(v) for v in filters["itemname"]]
         itemcodes, itemnames = [], []
@@ -252,24 +273,32 @@ def get_return_data(filters=None):
 
         conditions = []
         if itemcodes:
-            code_list = "','".join(itemcodes)
-            conditions.append(f"return.itemcode IN ('{code_list}')")
+            placeholders = ",".join(["%s"] * len(itemcodes))
+            conditions.append(f"return.itemcode IN ({placeholders})")
+            params.extend(itemcodes)
         if itemnames:
-            name_list = "','".join(itemnames)
-            conditions.append(f"caitem.itemname IN ('{name_list}')")
+            placeholders = ",".join(["%s"] * len(itemnames))
+            conditions.append(f"caitem.itemname IN ({placeholders})")
+            params.extend(itemnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
 
     if filters.get("area"):
-        names = "','".join(filters["area"])
-        query += f" AND cacus.cuscity IN ('{names}')"
+        placeholders = ",".join(["%s"] * len(filters["area"]))
+        query += f" AND cacus.cuscity IN ({placeholders})"
+        params.extend(filters["area"])
+
     if filters.get("itemgroup"):
-        names = "','".join(filters["itemgroup"])
-        query += f" AND caitem.itemgroup2 IN ('{names}')"
-    return query
+        placeholders = ",".join(["%s"] * len(filters["itemgroup"]))
+        query += f" AND caitem.itemgroup2 IN ({placeholders})"
+        params.extend(filters["itemgroup"])
+
+    return query, tuple(params)
+
 
 def get_collection_data(filters=None):
     filters = filters or {}
+    params = [filters["zid"][0]]
 
     query = """
         SELECT
@@ -296,14 +325,16 @@ def get_collection_data(filters=None):
         AND glmst.usage IN ('AR')
     """
 
-    # Optional filter clauses
     if filters.get("year"):
-        query += f" AND glheader.year IN ({','.join(map(str, filters['year']))})"
+        placeholders = ",".join(["%s"] * len(filters["year"]))
+        query += f" AND glheader.year IN ({placeholders})"
+        params.extend(filters["year"])
 
     if filters.get("month"):
-        query += f" AND glheader.month IN ({','.join(map(str, filters['month']))})"
+        placeholders = ",".join(["%s"] * len(filters["month"]))
+        query += f" AND glheader.month IN ({placeholders})"
+        params.extend(filters["month"])
 
-  # Optional filters
     if filters.get("cusname"):
         raw_vals = [str(v) for v in filters["cusname"]]
         cusids, cusnames = [], []
@@ -320,22 +351,22 @@ def get_collection_data(filters=None):
                 if name:
                     cusnames.append(name)
 
-        conds_with_values = []
+        conditions = []
         if cusids:
-            placeholders = ", ".join(["%s"] * len(cusids))
-            conds_with_values.append((f"gldetail.ac_sub IN ({placeholders})", cusids))
+            placeholders = ",".join(["%s"] * len(cusids))
+            conditions.append(f"gldetail.ac_sub IN ({placeholders})")
+            params.extend(cusids)
         if cusnames:
-            placeholders = ", ".join(["%s"] * len(cusnames))
-            conds_with_values.append((f"cacus.cusname IN ({placeholders})", cusnames))
-
-        if conds_with_values:
-            query += "\n  AND (" + " OR ".join(cond for cond, _ in conds_with_values) + ")"
-            for _, vals in conds_with_values:
-                params.extend(vals)
+            placeholders = ",".join(["%s"] * len(cusnames))
+            conditions.append(f"cacus.cusname IN ({placeholders})")
+            params.extend(cusnames)
+        if conditions:
+            query += "\n  AND (" + " OR ".join(conditions) + ")"
 
     if filters.get("area"):
-        areas = "','".join(filters["area"])
-        query += f" AND cacus.cuscity IN ('{areas}')"
+        placeholders = ",".join(["%s"] * len(filters["area"]))
+        query += f" AND cacus.cuscity IN ({placeholders})"
+        params.extend(filters["area"])
 
     query += """
         GROUP BY
@@ -348,18 +379,13 @@ def get_collection_data(filters=None):
             glheader.year,
             glheader.month
     """
-    return query
+    return query, tuple(params)
+
 
 def get_ar_data(filters=None):
-    """
-    Returns a (query, params) tuple that fetches AR data
-    with dynamic cusname, area, year, and month filters,
-    but without a running_balance column.
-    """
     filters = filters or {}
-    zid = filters["zid"]
+    zid = filters["zid"][0]
 
-    # Base SELECT without running_balance
     query = """
     SELECT
       glmst.zid,
@@ -373,13 +399,13 @@ def get_ar_data(filters=None):
       glheader.month         AS month,
       SUM(gldetail.value)    AS value
     FROM glmst
-    JOIN gldetail 
+    JOIN gldetail
       ON glmst.ac_code = gldetail.ac_code
      AND glmst.zid     = gldetail.zid
-    JOIN glheader 
+    JOIN glheader
       ON gldetail.voucher = glheader.voucher
      AND glheader.zid      = glmst.zid
-    JOIN cacus    
+    JOIN cacus
       ON gldetail.ac_sub = cacus.cusid
      AND cacus.zid       = glmst.zid
     WHERE glmst.zid        = %s
@@ -387,7 +413,6 @@ def get_ar_data(filters=None):
     """
     params = [zid]
 
-    # Optional filters
     if filters.get("cusname"):
         raw_vals = [str(v) for v in filters["cusname"]]
         cusids, cusnames = [], []
@@ -404,38 +429,33 @@ def get_ar_data(filters=None):
                 if name:
                     cusnames.append(name)
 
-        conds_with_values = []
+        conditions = []
         if cusids:
-            placeholders = ", ".join(["%s"] * len(cusids))
-            conds_with_values.append((f"gldetail.ac_sub IN ({placeholders})", cusids))
+            placeholders = ",".join(["%s"] * len(cusids))
+            conditions.append(f"gldetail.ac_sub IN ({placeholders})")
+            params.extend(cusids)
         if cusnames:
-            placeholders = ", ".join(["%s"] * len(cusnames))
-            conds_with_values.append((f"cacus.cusname IN ({placeholders})", cusnames))
-
-        if conds_with_values:
-            query += "\n  AND (" + " OR ".join(cond for cond, _ in conds_with_values) + ")"
-            for _, vals in conds_with_values:
-                params.extend(vals)
+            placeholders = ",".join(["%s"] * len(cusnames))
+            conditions.append(f"cacus.cusname IN ({placeholders})")
+            params.extend(cusnames)
+        if conditions:
+            query += "\n  AND (" + " OR ".join(conditions) + ")"
 
     if filters.get("area"):
-        areas = filters["area"]
-        placeholders = ", ".join(["%s"] * len(areas))
+        placeholders = ",".join(["%s"] * len(filters["area"]))
         query += f"\n  AND cacus.cuscity IN ({placeholders})"
-        params.extend(areas)
+        params.extend(filters["area"])
 
     if filters.get("year"):
-        years = [str(y) for y in filters["year"]]
-        placeholders = ", ".join(["%s"] * len(years))
+        placeholders = ",".join(["%s"] * len(filters["year"]))
         query += f"\n  AND glheader.year IN ({placeholders})"
-        params.extend(years)
+        params.extend([str(y) for y in filters["year"]])
 
     if filters.get("month"):
-        months = [str(m) for m in filters["month"]]
-        placeholders = ", ".join(["%s"] * len(months))
+        placeholders = ",".join(["%s"] * len(filters["month"]))
         query += f"\n  AND glheader.month IN ({placeholders})"
-        params.extend(months)
+        params.extend([str(m) for m in filters["month"]])
 
-    # Grouping and ordering
     query += """
     GROUP BY
       glmst.zid,
@@ -449,11 +469,11 @@ def get_ar_data(filters=None):
       glheader.month
     ORDER BY date, voucher;
     """
-
     return query, tuple(params)
 
+
 def get_purchase_data(filters=None):
-    query = """SELECT 
+    query = """SELECT
                 purchase.zid,
                 purchase.combinedate,
                 purchase.povoucher,
@@ -467,26 +487,26 @@ def get_purchase_data(filters=None):
                 purchase.quantity,
                 purchase.cost,
                 purchase.status
-            FROM 
-                purchase 
-            JOIN 
+            FROM
+                purchase
+            JOIN
                 caitem ON purchase.itemcode =  caitem.itemcode AND purchase.zid = caitem.zid
-            WHERE 
+            WHERE
                 purchase.zid IN (%s,%s)
                 AND purchase.povoucher LIKE 'IP--%%'
                 AND purchase.status IN ('5-Received','1-Open')
             """
-
     return query
 
+
 def get_product_inventory_data(filters=None):
-    query = """SELECT 
+    query = """SELECT
                 stock.zid,
                 stock.year,
                 stock.month,
                 CASE
-                    WHEN caitem.packcode IS NOT NULL 
-                    AND caitem.packcode <> '' 
+                    WHEN caitem.packcode IS NOT NULL
+                    AND caitem.packcode <> ''
                     AND caitem.packcode != 'NO'
                     AND LEFT(caitem.packcode,2) != 'KH' THEN caitem.packcode
                     ELSE stock.itemcode
@@ -496,23 +516,24 @@ def get_product_inventory_data(filters=None):
                 stock.warehouse,
                 stock.stockqty,
                 stock.stockvalue
-            FROM 
+            FROM
                 stock
             JOIN
                 caitem ON stock.itemcode = caitem.itemcode AND stock.zid = caitem.zid
-            WHERE 
+            WHERE
                 stock.zid = (%s)"""
-
     return query
 
+
 def get_inventory_value_data(filters=None):
-    return """SELECT 
+    return """SELECT
                 stock_value.zid,
                 stock_value.year,
                 stock_value.month,
                 stock_value.warehouse,
                 stock_value.stockvalue
             FROM stock_value WHERE zid = (%s)"""
+
 
 def get_stock_flow_data(filters=None):
     return """SELECT
@@ -522,11 +543,8 @@ def get_stock_flow_data(filters=None):
               FROM stock_flow
               WHERE zid = (%s)"""
 
-def get_stock_movement_data(filters=None) -> Tuple[str, Tuple[Any, ...]]:
-    """
-    Stock movement ledger with date + docnum + project.
-    NOTE: Filters strictly by project (no blanks), per user requirement.
-    """
+
+def get_stock_movement_data(filters=None) -> Tuple[str, tuple]:
     filters = filters or {}
     zid = filters["zid"][0]
 
@@ -555,6 +573,7 @@ def get_stock_movement_data(filters=None) -> Tuple[str, Tuple[Any, ...]]:
         WHERE stock.zid = %s
     """
     return sql, (zid,)
+
 
 def get_payment_data():
     return """SELECT
@@ -594,14 +613,12 @@ def get_payment_data():
             ORDER BY
                 SUM(gldetail.value) DESC"""
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Simple table fetchers (one table each; let pandas do the work)
+# Simple table fetchers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_cacus_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
-    """
-    Return all customers for a zid.
-    """
+def get_cacus_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     sql = """
         SELECT
@@ -614,11 +631,8 @@ def get_cacus_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
     """
     return sql, (zid,)
 
-def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
-    """
-    Return raw GL detail (no joins, no filters) for a zid.
-    """
 
+def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     project = filters.get("project")
     sql = """
@@ -634,10 +648,8 @@ def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
     """
     return sql, (zid, project)
 
-def get_glheader_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
-    """
-    Return GL headers for a zid (date + year/month).
-    """
+
+def get_glheader_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     sql = """
         SELECT
@@ -651,10 +663,8 @@ def get_glheader_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
     """
     return sql, (zid,)
 
-def get_glmst_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
-    """
-    Return account master for a zid.
-    """
+
+def get_glmst_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     sql = """
         SELECT
@@ -669,7 +679,8 @@ def get_glmst_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
     """
     return sql, (zid,)
 
-def get_casup_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
+
+def get_casup_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     sql = """
         SELECT
@@ -678,5 +689,75 @@ def get_casup_simple(filters: Dict[str, Any]) -> Tuple[str, Tuple[Any, ...]]:
             supname
         FROM casup
         WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GL / Financial query builders (moved from db/db_utils.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None,
+                   is_bs=False, is_project=False) -> Tuple[str, tuple]:
+    """
+    Builds the GL detail query. Returns (sql, params).
+    Replaces db_utils.get_gl_details() — same logic, standardized return format.
+    """
+    where = [
+        "glmst.zid = %s",
+        "gldetail.zid = %s",
+        "glheader.zid = %s"
+    ]
+    params = [zid, zid, zid]
+
+    select = ["glmst.zid", "glmst.ac_code", "glheader.year",
+              "glheader.month", "SUM(gldetail.value) as sum"]
+    group_by = ["glmst.zid", "glmst.ac_code", "glheader.year",
+                "glheader.month", "glmst.usage"]
+
+    if is_project:
+        select.extend(["glmst.ac_type", "glmst.ac_lv1", "glmst.ac_lv2", "glmst.usage"])
+        group_by.extend(["glmst.ac_type", "glmst.ac_lv1", "glmst.ac_lv2"])
+        where.append("gldetail.project = %s")
+        params.append(project)
+
+    if is_bs:
+        where.append("(glmst.ac_type = 'Asset' OR glmst.ac_type = 'Liability')")
+    else:
+        where.append("(glmst.ac_type = 'Income' OR glmst.ac_type = 'Expenditure')")
+
+    if year:
+        where.append("glheader.year = %s")
+        params.append(year)
+
+    if is_bs:
+        if emonth:
+            where.append("glheader.month <= %s")
+            params.append(emonth)
+    else:
+        if smonth:
+            where.append("glheader.month >= %s")
+            params.append(smonth)
+        if emonth:
+            where.append("glheader.month <= %s")
+            params.append(emonth)
+
+    sql = f"""
+        SELECT {", ".join(select)}
+        FROM glmst
+        JOIN gldetail ON glmst.ac_code = gldetail.ac_code
+        JOIN glheader ON gldetail.voucher = glheader.voucher
+        WHERE {" AND ".join(where)}
+        GROUP BY {", ".join(group_by)}
+        ORDER BY glheader.month ASC, glmst.ac_type
+    """
+    return sql, tuple(params)
+
+
+def get_gl_master(zid) -> Tuple[str, tuple]:
+    """Returns (sql, params) for the GL account master."""
+    sql = """
+        SELECT ac_code, ac_name, ac_type, ac_lv1, ac_lv2, ac_lv3, ac_lv4
+        FROM glmst WHERE glmst.zid = %s
     """
     return sql, (zid,)

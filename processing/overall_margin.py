@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from modules.data_process_files import common
+from processing import common
 pd.set_option('display.float_format', '{:.2f}'.format)
 from utils.utils import timed
 import plotly.express as px
