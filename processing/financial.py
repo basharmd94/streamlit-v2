@@ -567,6 +567,20 @@ def make_cashflow_statement_level0(pl_df: pd.DataFrame,bs_df: pd.DataFrame, coc_
         # Shift RIGHT: current period shows previous period's NP
         prior_np_series = bs_work.loc[np_key].shift(1).loc[col_head[1:]]  # aligns with delta columns
 
+        # Monthly mode: the BS "Net Profit/Loss" is a YTD cumulative figure.
+        # Shifting it right gives the prior month's cumulative NP — which is only
+        # a legitimate financing event in January (the year-closing transfer of the
+        # full prior year's P/L to retained earnings). For Feb–Dec the cumulative
+        # NP is already captured in the top-line "Net Profit/Loss" row from the
+        # P/L statement, so including it in financing double-counts it. Zero those
+        # months out so only January carries the prior-period value.
+        if selected_perspective.lower() == "monthly":
+            for col in prior_np_series.index:
+                key = _period_key(col)
+                month = key[1] if isinstance(key, tuple) and len(key) == 2 else None
+                if month != 1:
+                    prior_np_series[col] = 0.0
+
         # Remove the original BS NP row from delta processing
         bs_work = bs_work.drop(index=np_key)
 
