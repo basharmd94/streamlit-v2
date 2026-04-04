@@ -182,7 +182,7 @@ class BaseApp:
 
     @timed
     def home(self):
-        st.write(f"Welcome to the Business Data Analysis App, {st.session_state.username}!")
+        display_home_page(st.session_state.username)
 
     def call_if_data_loaded(self, display_fn):
         if st.session_state.get("ready_to_load") and st.session_state.get("last_data_dict"):

@@ -1,52 +1,8 @@
 import streamlit as st
 import pandas as pd
-import calendar
-from datetime import datetime
-from io import BytesIO
 from processing import common, overall_sales
 from utils.utils import timed
 
-
-@timed
-def render_top_download_buttons(data_dict: dict):
-    """
-    Render right-aligned, side-by-side download buttons for each non-empty table in data_dict.
-    """
-    # Filter only non-empty DataFrames
-    valid_items = [(name, df) for name, df in data_dict.items() if df is not None and not df.empty]
-
-    if not valid_items:
-        return  # Nothing to render
-    total_buttons = len(valid_items)
-
-    # Add empty space columns for right alignment
-    cols = st.columns([8.0] + [1.0] * total_buttons)
-
-    # Place buttons on the right side
-    for i, (table_name, df) in enumerate(valid_items):
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer) as writer:
-            df.to_excel(writer, index=False, sheet_name='Data')
-        buffer.seek(0)
-
-        with cols[i + 1]:  # First column is spacer, skip it
-            st.download_button(
-                label=f"📥 {table_name.capitalize()}",
-                data=buffer,
-                file_name=f"{table_name}_filtered_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"download_{table_name}"
-            )
-
-@timed
-def safe_month_to_num(x):
-    try:
-        return int(x)
-    except:
-        try:
-            return list(calendar.month_name).index(x) if x in calendar.month_name else None
-        except:
-            return None
 
 @timed
 def display_overall_sales_analysis_page(current_page, zid, data_dict):
