@@ -761,3 +761,19 @@ def get_gl_master(zid) -> Tuple[str, tuple]:
         FROM glmst WHERE glmst.zid = %s
     """
     return sql, (zid,)
+
+
+def get_caitem_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Returns item master: itemcode, itemname, itemgroup, packcode."""
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            zid,
+            itemcode,
+            itemname,
+            COALESCE(itemgroup, '') AS itemgroup,
+            COALESCE(packcode,  '') AS packcode
+        FROM caitem
+        WHERE zid = %s
+    """
+    return sql, (zid,)

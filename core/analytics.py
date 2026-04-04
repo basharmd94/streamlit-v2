@@ -53,6 +53,7 @@ class Analytics:
             "glmst_simple":     queries.get_glmst_simple,
             "casup_simple":     queries.get_casup_simple,
             "stock_movement":   queries.get_stock_movement_data,
+            "caitem":           queries.get_caitem_data,
         }
 
         query_func = query_map.get(table_name)
