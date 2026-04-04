@@ -282,52 +282,15 @@ def display_inventory_analysis_main(current_page, zid: str):
             if c in flow_df.columns:
                 flow_df[c] = pd.to_numeric(flow_df[c], errors="coerce").fillna(0.0)
 
-        # ---- 2) Make stock_flow pack-aware so keys align with Report 2 ----
-        # We mirror the same CASE logic used in your stock SQL.
-        # Load caitem for effective zids and build a raw->display mapping.
-        try:
-            zids_eff = _effective_zids(zid)
-            caitem_frames = []
-            for z in zids_eff:
-                try:
-                    ci = Analytics("caitem", zid=z, filters={"zid": (str(z),)}).data
-                    if isinstance(ci, pd.DataFrame) and not ci.empty:
-                        caitem_frames.append(ci[["itemcode", "itemname", "itemgroup", "packcode"]].copy())
-                except Exception as _e:
-                    pass
-            if caitem_frames:
-                caitem_map = pd.concat(caitem_frames, ignore_index=True).drop_duplicates()
-                # compute display_code = packcode (when valid) else raw itemcode
-                def _choose_code(row):
-                    pk = str(row.get("packcode") or "").strip()
-                    if pk and pk.upper() != "NO" and not pk.startswith("KH"):
-                        return pk
-                    return str(row.get("itemcode"))
-                caitem_map["display_code"] = caitem_map.apply(_choose_code, axis=1)
-                # Raw->display mapping
-                raw_to_display = dict(zip(caitem_map["itemcode"].astype(str), caitem_map["display_code"]))
-                # Apply mapping to flow_df item codes
-                flow_df["itemcode"] = flow_df["itemcode"].map(raw_to_display).fillna(flow_df["itemcode"]).astype(str)
-                # Build a lookup of display_code -> (name, group)
-                disp_lookup = (
-                    caitem_map[["display_code","itemname","itemgroup"]]
-                    .drop_duplicates()
-                    .rename(columns={"display_code":"itemcode"})
-                )
-            else:
-                disp_lookup = inv_df[["itemcode","itemname","itemgroup"]].drop_duplicates()
-        except Exception:
-            # Fallback: use metadata from inv_df if caitem load fails
-            disp_lookup = inv_df[["itemcode","itemname","itemgroup"]].drop_duplicates()
+        # Packcode CASE logic is now applied in the SQL query (get_stock_flow_data),
+        # so flow_df itemcodes already match inv_df itemcodes. No Python remapping needed.
 
-        # Attach itemname/itemgroup after mapping
-        flow_df = flow_df.merge(disp_lookup, on="itemcode", how="left")
-
-        # ---- 3) Apply the same user filters (warehouse / itemgroup / product) ----
+        # ---- 3) Apply the same user filters (warehouse / product) ----
+        # itemgroup is not in stock_flow; it is filtered implicitly because
+        # base (from inv_df) already respects itemgroup selection — unmatched
+        # itemcodes simply produce no join result in step 7.
         if wh_sel:
             flow_df = flow_df[flow_df["warehouse"].isin(wh_sel)]
-        if ig_sel:
-            flow_df = flow_df[flow_df["itemgroup"].isin(ig_sel)]
         if prod_codes:
             flow_df = flow_df[flow_df["itemcode"].isin(prod_codes)]
 
@@ -379,9 +342,13 @@ def display_inventory_analysis_main(current_page, zid: str):
             window = flow_all[flow_all["mi"] >= (cutoff_mi - (K - 1))]
 
             # ---- 5) Aggregate movement over window (INTENSITY) ----
-            grp = ["warehouse","itemcode","itemname","itemgroup"]
+            # Group only by warehouse + itemcode (the stable numeric/code keys).
+            # itemname / itemgroup come from base (inv_df) which already has the
+            # correct packcode-resolved values — using them as merge keys caused
+            # mismatches due to subtle string differences.
+            grp_key = ["warehouse", "itemcode"]
             window_agg = (
-                window.groupby(grp, as_index=False)
+                window.groupby(grp_key, as_index=False)
                     .agg(qty_in_K=("qty_in","sum"),
                         qty_out_K=("qty_out","sum"),
                         active_months_K=("net_qty", lambda s: (s != 0).sum()))
@@ -391,14 +358,15 @@ def display_inventory_analysis_main(current_page, zid: str):
             # ---- 6) Last movement across full history to cutoff (not just window) ----
             moved = flow_all.loc[(flow_all["qty_in"] > 0) | (flow_all["qty_out"] > 0)]
             last_move = (
-                moved.groupby(grp, as_index=False)["mi"].max()
+                moved.groupby(grp_key, as_index=False)["mi"].max()
                     .rename(columns={"mi":"last_move_mi"})
             )
 
             # ---- 7) LEFT-JOIN movement onto balances base ----
+            # Merge on warehouse + itemcode only; itemname/itemgroup stay from base.
             agg = (base
-                .merge(window_agg, on=grp, how="left")
-                .merge(last_move,  on=grp, how="left"))
+                .merge(window_agg, on=grp_key, how="left")
+                .merge(last_move,  on=grp_key, how="left"))
 
             # Fill zeros for missing movement; ∞ months for never-moved
             for c in ["qty_in_K","qty_out_K","abs_qty_K","active_months_K"]:

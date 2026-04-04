@@ -536,12 +536,30 @@ def get_inventory_value_data(filters=None):
 
 
 def get_stock_flow_data(filters=None):
+    # Apply the same packcode CASE logic used in get_product_inventory_data
+    # so that itemcodes here always match those in inv_df (from stock).
     return """SELECT
-                zid, year, month, warehouse, itemcode,
-                qty_in, qty_out, net_qty,
-                val_in, val_out, net_val
-              FROM stock_flow
-              WHERE zid = (%s)"""
+                sf.zid,
+                sf.year,
+                sf.month,
+                sf.warehouse,
+                CASE
+                    WHEN ca.packcode IS NOT NULL
+                     AND ca.packcode <> ''
+                     AND ca.packcode != 'NO'
+                     AND LEFT(ca.packcode, 2) != 'KH' THEN ca.packcode
+                    ELSE sf.itemcode
+                END AS itemcode,
+                sf.qty_in,
+                sf.qty_out,
+                sf.net_qty,
+                sf.val_in,
+                sf.val_out,
+                sf.net_val
+              FROM stock_flow sf
+              LEFT JOIN caitem ca
+                ON sf.itemcode = ca.itemcode AND sf.zid = ca.zid
+              WHERE sf.zid = (%s)"""
 
 
 def get_stock_movement_data(filters=None) -> Tuple[str, tuple]:
