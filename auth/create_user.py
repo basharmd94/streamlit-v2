@@ -4,9 +4,9 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
-from auth_utils import hash_password
+from auth.auth import hash_password
 import psycopg2
-from db.db_utils import config
+from config.settings import get_db_params as config
 
 def create_user(username, password, role):
     conn = None

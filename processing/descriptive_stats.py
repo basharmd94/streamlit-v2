@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
-from modules.visualization_files import common_v
-from modules.data_process_files import common
+from visualization import common_v
+from processing import common
 
 def show_stats(variance,std_dev,minimum,maximum,IQR,skew,kurt):
     cols = st.columns(7)

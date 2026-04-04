@@ -1,8 +1,6 @@
 import pandas as pd
 import numpy as np
-from functools import partial
-from concurrent.futures import ProcessPoolExecutor
-from modules.data_process_files import common
+from processing import common
 from datetime import datetime
 import os
 import json
@@ -144,12 +142,21 @@ def generate_cohort(purchase_data,year_ago,inventory_data,sales_df,cohort_df):
     # Then by 'final_stock' (ascending) and then by 'n-mean' (descending)
     result_df = result_df.sort_values(by=['has_shipments', 'final_stock', 'n-mean'], ascending=[False, True, False])
     result_df = result_df.drop(columns='has_shipments')
-    result_df['combinedate'] = pd.to_datetime(result_df['combinedate'], errors='coerce')
-    result_df['combinedate'] = result_df['combinedate'].dt.strftime('%Y-%m-%d')
     result_df['itemname'] = result_df['itemname'].astype(str)
 
-    # products_to_order
-    result_df = result_df.applymap(common.handle_infinity_and_round).fillna(0)
+    # Format combinedate BEFORE numeric cleanup so it survives as a string.
+    # Re-parse from whatever type it is (string or NaT) and format cleanly.
+    result_df['combinedate'] = (
+        pd.to_datetime(result_df['combinedate'], errors='coerce')
+        .dt.strftime('%Y-%m-%d')
+        .fillna('')   # items with no cohort match get empty string instead of 'NaT'/0
+    )
+
+    # Numeric cleanup (leaves string columns like combinedate, itemname untouched)
+    numeric_cols = [c for c in result_df.columns if c not in ('itemcode', 'itemname', 'combinedate')]
+    result_df[numeric_cols] = result_df[numeric_cols].apply(
+        lambda col: col.map(common.handle_infinity_and_round)
+    ).fillna(0)
 
     return result_df
 
@@ -230,14 +237,13 @@ def process_chunk(chunk, sales_df):
     return data_rows
 
 def main_purchase_product_cohort_process(sales_df, purchase_df):
-    num_processes = 4
-    chunks = np.array_split(purchase_df, num_processes)
-    partial_process_chunk = partial(process_chunk, sales_df=sales_df)
-    
-    with ProcessPoolExecutor(max_workers=num_processes) as executor:
-        results = list(executor.map(partial_process_chunk, chunks))
+    # NOTE: ProcessPoolExecutor is replaced with sequential processing.
+    # ProcessPoolExecutor uses 'spawn' on macOS (Python 3.8+), which re-imports all
+    # modules in each worker — including 'import streamlit as st' at the top of this
+    # file — causing workers to crash silently and return empty results (all 0s).
+    data_rows = process_chunk(purchase_df, sales_df)
 
-    final_df = pd.DataFrame([item for sublist in results for item in sublist])
+    final_df = pd.DataFrame(data_rows)
     final_df = final_df.sort_values(by=['itemcode', 'combinedate'])
     final_df['days_since_last_purchase'] = final_df.groupby('itemcode')['combinedate'].diff().fillna(pd.Timedelta(seconds=0)).dt.days
     final_df['days_since_last_purchase'] = final_df['days_since_last_purchase'].fillna(0).astype(int)
@@ -1823,7 +1829,7 @@ def build_accounts_overhead_summary(
     include_details: bool = False,
     zids_inventory: Optional[List[str]] = None,
     warehouse_filters: Optional[Dict[str, List[str]]] = None,   # NEW
-    warehouse_json_path: str = "warehouse_filters.json",) -> Dict[str, Any]:
+    warehouse_json_path: str = "data/warehouse_filters.json",) -> Dict[str, Any]:
     """
     Shipment-level overhead allocation over shipment age:
       date range = combinedate .. (end_of_shipment if closed else today)
@@ -2272,7 +2278,7 @@ def build_warehouse_total_value_table(
     as_of_date: pd.Timestamp,
     zids: List[str] = None,
     warehouse_filters: Optional[Dict[str, List[str]]] = None,
-    warehouse_json_path: str = "warehouse_filters.json",) -> pd.DataFrame:
+    warehouse_json_path: str = "data/warehouse_filters.json",) -> pd.DataFrame:
     """
     Returns zid, warehouse, totalvalue (sum of movement stockvalue) up to as_of_date.
 
@@ -2380,7 +2386,7 @@ def _resolve_modules_file(path_hint: str) -> Optional[str]:
             return c
     return None
 
-def load_warehouse_filters(warehouse_json_path: str = "warehouse_filters.json") -> Dict[str, List[str]]:
+def load_warehouse_filters(warehouse_json_path: str = "data/warehouse_filters.json") -> Dict[str, List[str]]:
     """
     Load enabled warehouses per zid from modules/warehouse_filters.json.
 
@@ -2464,7 +2470,7 @@ def warehouse_value_snapshot(
     stock_movement_df: pd.DataFrame,
     as_of_date: pd.Timestamp,
     zids: List[str],
-    warehouse_json_path: str = "warehouse_filters.json",
+    warehouse_json_path: str = "data/warehouse_filters.json",
     override_selected_warehouses: Optional[Dict[str, List[str]]] = None,) -> pd.DataFrame:
     """
     Snapshot: zid, warehouse, totalvalue
@@ -2528,7 +2534,7 @@ def total_inventory_value_timeseries(
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
     zids: List[str],
-    warehouse_json_path: str = "warehouse_filters.json",
+    warehouse_json_path: str = "data/warehouse_filters.json",
     override_selected_warehouses: Optional[Dict[str, List[str]]] = None,) -> pd.DataFrame:
     """
     Daily inventory value series for ratio logic.

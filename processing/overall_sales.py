@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from modules.data_process_files import common
+from processing import common
 pd.set_option('display.float_format', '{:.2f}'.format)
 import calendar
 import plotly.express as px
@@ -1242,7 +1242,7 @@ def plot_number_of_orders(filtered_data, current_page):
     - filtered_data: Filtered sales DataFrame
     - current_page: Current page context
     """
-    from modules.data_process_files import overall_sales
+    from processing import overall_sales
     
     # Prepare data
     orders_data = overall_sales.prepare_number_of_orders(filtered_data)
@@ -1285,7 +1285,7 @@ def plot_number_of_returns(filtered_data_r, current_page):
     - filtered_data_r: Filtered returns DataFrame
     - current_page: Current page context
     """
-    from modules.data_process_files import overall_sales
+    from processing import overall_sales
     
     # Prepare data
     returns_data = overall_sales.prepare_number_of_returns(filtered_data_r)
@@ -1328,7 +1328,7 @@ def plot_number_of_customers(filtered_data, current_page):
     - filtered_data: Filtered sales DataFrame
     - current_page: Current page context
     """
-    from modules.data_process_files import overall_sales
+    from processing import overall_sales
     
     # Prepare data
     customers_data = overall_sales.prepare_number_of_customers(filtered_data)
@@ -1371,7 +1371,7 @@ def plot_number_of_customer_returns(filtered_data_r, current_page):
     - filtered_data_r: Filtered returns DataFrame
     - current_page: Current page context
     """
-    from modules.data_process_files import overall_sales
+    from processing import overall_sales
     
     # Prepare data
     customer_returns_data = overall_sales.prepare_number_of_customer_returns(filtered_data_r)
@@ -1414,7 +1414,7 @@ def plot_number_of_products(filtered_data, current_page):
     - filtered_data: Filtered sales DataFrame
     - current_page: Current page context
     """
-    from modules.data_process_files import overall_sales
+    from processing import overall_sales
     
     # Prepare data
     products_data = overall_sales.prepare_number_of_products(filtered_data)
@@ -1457,7 +1457,7 @@ def plot_number_of_product_returns(filtered_data_r, current_page):
     - filtered_data_r: Filtered returns DataFrame
     - current_page: Current page context
     """
-    from modules.data_process_files import overall_sales
+    from processing import overall_sales
     
     # Prepare data
     product_returns_data = overall_sales.prepare_number_of_product_returns(filtered_data_r)
