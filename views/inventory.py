@@ -100,7 +100,13 @@ def display_inventory_analysis_main(current_page, zid: str):
     )
 
     # --- Build filter options from data ---
-    years = sorted(inv_df["year"].dropna().astype(int).unique().tolist())
+    # Exclude garbage year values (e.g. 2102 from data-entry errors in the DB)
+    # that would push the default cutoff far into the future and empty the window.
+    _current_year = pd.Timestamp.today().year
+    years = sorted(
+        y for y in inv_df["year"].dropna().astype(int).unique()
+        if 2000 <= y <= _current_year + 1
+    )
     months = list(range(1, 13))
     warehouses = sorted(inv_df["warehouse"].dropna().unique().tolist())
     itemgroups = sorted(inv_df["itemgroup"].dropna().unique().tolist())
@@ -328,30 +334,6 @@ def display_inventory_analysis_main(current_page, zid: str):
                 key="dl_movement_0m",
             )
         else:
-            # ---- DEBUG BLOCK (remove after diagnosis) ----
-            print("=== MOVEMENT DEBUG ===")
-            print(f"flow_df shape: {flow_df.shape}")
-            print(f"flow_df columns: {flow_df.columns.tolist()}")
-            print(f"flow_df dtypes:\n{flow_df.dtypes}")
-            print(f"flow_df sample itemcodes: {flow_df['itemcode'].dropna().unique()[:10].tolist()}")
-            print(f"flow_df sample warehouses: {flow_df['warehouse'].dropna().unique()[:10].tolist()}")
-            print(f"flow_df qty_in sum: {flow_df['qty_in'].sum()}, qty_out sum: {flow_df['qty_out'].sum()}")
-            print(f"base shape: {base.shape}")
-            print(f"base columns: {base.columns.tolist()}")
-            print(f"base sample itemcodes: {base['itemcode'].dropna().unique()[:10].tolist()}")
-            print(f"base sample warehouses: {base['warehouse'].dropna().unique()[:10].tolist()}")
-            # Check itemcode overlap between flow_df and base
-            flow_codes = set(flow_df['itemcode'].dropna().astype(str).unique())
-            base_codes = set(base['itemcode'].dropna().astype(str).unique())
-            overlap = flow_codes & base_codes
-            print(f"flow_df unique itemcodes: {len(flow_codes)}")
-            print(f"base unique itemcodes: {len(base_codes)}")
-            print(f"overlapping itemcodes: {len(overlap)}")
-            print(f"sample overlap: {list(overlap)[:5]}")
-            print(f"sample flow-only: {list(flow_codes - base_codes)[:5]}")
-            print(f"sample base-only: {list(base_codes - flow_codes)[:5]}")
-            # ---- END DEBUG ----
-
             # ---- 4) Timing model: history to cutoff + trailing window K months ----
             y = pd.to_numeric(flow_df["year"], errors="coerce").fillna(0).astype("int64")
             m = pd.to_numeric(flow_df["month"], errors="coerce").fillna(0).astype("int64")
@@ -365,8 +347,6 @@ def display_inventory_analysis_main(current_page, zid: str):
                         help="Used for movement intensity (in/out) metrics only.")
             window = flow_all[flow_all["mi"] >= (cutoff_mi - (K - 1))]
 
-            print(f"cutoff_mi: {cutoff_mi}, flow_all rows: {len(flow_all)}, window rows: {len(window)}")
-
             # ---- 5) Aggregate movement over window (INTENSITY) ----
             grp_key = ["warehouse", "itemcode"]
             window_agg = (
@@ -377,9 +357,6 @@ def display_inventory_analysis_main(current_page, zid: str):
             )
             window_agg["abs_qty_K"] = window_agg["qty_in_K"] + window_agg["qty_out_K"]
 
-            print(f"window_agg shape: {window_agg.shape}")
-            print(f"window_agg abs_qty_K sum: {window_agg['abs_qty_K'].sum()}")
-
             # ---- 6) Last movement across full history to cutoff (not just window) ----
             moved = flow_all.loc[(flow_all["qty_in"] > 0) | (flow_all["qty_out"] > 0)]
             last_move = (
@@ -387,16 +364,11 @@ def display_inventory_analysis_main(current_page, zid: str):
                     .rename(columns={"mi":"last_move_mi"})
             )
 
-            print(f"moved rows: {len(moved)}, last_move shape: {last_move.shape}")
-
             # ---- 7) LEFT-JOIN movement onto balances base ----
             agg = (base
                 .merge(window_agg, on=grp_key, how="left")
                 .merge(last_move,  on=grp_key, how="left"))
 
-            print(f"agg shape after merge: {agg.shape}")
-            print(f"agg qty_in_K non-null: {agg['qty_in_K'].notna().sum()}, sum: {agg['qty_in_K'].sum()}")
-            print("=== END DEBUG ===")
 
             # Fill zeros for missing movement; ∞ months for never-moved
             for c in ["qty_in_K","qty_out_K","abs_qty_K","active_months_K"]:
