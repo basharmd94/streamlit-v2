@@ -57,6 +57,8 @@ def filter_data_by_column(df, column, selected_values):
         return df[df[column].isin(selected_values)]
     return df
 
+EXCEL_MAX_ROWS = 1_048_576
+
 def create_download_link(df, filename="data.xlsx"):
     # ── flatten a MultiIndex header, if present ────────────────
     if isinstance(df.columns, pd.MultiIndex):
@@ -65,9 +67,23 @@ def create_download_link(df, filename="data.xlsx"):
             for c in df.columns.values
         ]
 
+    # ── fall back to CSV when DataFrame exceeds Excel row limit ──
+    too_large = len(df) > EXCEL_MAX_ROWS
+    if too_large:
+        csv_filename = filename.rsplit(".", 1)[0] + ".csv"
+        buffer = io.BytesIO()
+        df.to_csv(buffer, index=True, encoding="utf-8")
+        buffer.seek(0)
+        b64 = base64.b64encode(buffer.read()).decode()
+        href = (
+            f'<a href="data:text/csv;base64,{b64}" download="{csv_filename}">'
+            f'Download CSV File ({len(df):,} rows — too large for Excel)</a>'
+        )
+        return href
+
     # ── write the file to an in-memory buffer ─────────────────
     buffer = io.BytesIO()
-    df.to_excel(buffer, index=True)      # ← removed encoding='utf-8'
+    df.to_excel(buffer, index=True)
     buffer.seek(0)
 
     # ── build the download link ───────────────────────────────
