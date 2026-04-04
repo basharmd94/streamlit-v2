@@ -184,8 +184,24 @@ def display_inventory_analysis_main(current_page, zid: str):
     # Running cumulative qty per itemcode×warehouse across combined zids
     ledger["running_qty"] = ledger.groupby(["itemcode", "warehouse"])["stockqty"].cumsum()
 
-    st.dataframe(ledger, use_container_width=True, height=420)
-    st.write(common.create_download_link(ledger, "inventory_ledger.xlsx"), unsafe_allow_html=True)
+    _DISPLAY_LIMIT = 50_000
+    if len(ledger) > _DISPLAY_LIMIT:
+        st.info(
+            f"Showing first {_DISPLAY_LIMIT:,} of {len(ledger):,} rows. "
+            f"Use the download button below for the full dataset."
+        )
+        st.dataframe(ledger.head(_DISPLAY_LIMIT), use_container_width=True, height=420)
+    else:
+        st.dataframe(ledger, use_container_width=True, height=420)
+
+    _csv_ledger = ledger.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label=f"⬇ Download Ledger CSV ({len(ledger):,} rows)",
+        data=_csv_ledger,
+        file_name="inventory_ledger.csv",
+        mime="text/csv",
+        key="dl_ledger",
+    )
 
     # ------ Report 2: Final Stock by Product & Warehouse (Qty & Value as-of cutoff) ------
     st.subheader("2) Final Stock — Qty & Value (as of cutoff)")
@@ -198,7 +214,13 @@ def display_inventory_analysis_main(current_page, zid: str):
         .reset_index(drop=True)
     )
     st.dataframe(final, use_container_width=True, height=420)
-    st.write(common.create_download_link(final, "final_stock_by_product.xlsx"), unsafe_allow_html=True)
+    st.download_button(
+        label=f"⬇ Download Final Stock CSV ({len(final):,} rows)",
+        data=final.to_csv(index=False).encode("utf-8"),
+        file_name="final_stock_by_product.csv",
+        mime="text/csv",
+        key="dl_final_stock",
+    )
 
     # ------ Report 3: Warehouse Value Transactions per Month (flow up to cutoff) ------
     st.subheader("3) Warehouse Value Transactions (Monthly, up to cutoff)")
@@ -211,7 +233,13 @@ def display_inventory_analysis_main(current_page, zid: str):
     flow["year_month"] = flow.apply(lambda r: f"{int(r['year']):04d}-{int(r['month']):02d}", axis=1)
     flow = flow[["year_month", "warehouse", "value_txn"]]
     st.dataframe(flow, use_container_width=True, height=360)
-    st.write(common.create_download_link(flow, "warehouse_value_flow.xlsx"), unsafe_allow_html=True)
+    st.download_button(
+        label=f"⬇ Download Warehouse Flow CSV ({len(flow):,} rows)",
+        data=flow.to_csv(index=False).encode("utf-8"),
+        file_name="warehouse_value_flow.csv",
+        mime="text/csv",
+        key="dl_wh_flow",
+    )
 
    # ------ Report 4: Warehouse Ending Stock Value (as of cutoff) ------
     st.subheader("4) Warehouse Ending Stock Value (as of cutoff)")
@@ -225,8 +253,13 @@ def display_inventory_analysis_main(current_page, zid: str):
     )
 
     st.dataframe(warehouse_ending, use_container_width=True, height=300)
-    st.write(common.create_download_link(warehouse_ending, "warehouse_ending_stock_value.xlsx"),
-            unsafe_allow_html=True)
+    st.download_button(
+        label=f"⬇ Download Warehouse Ending Value CSV ({len(warehouse_ending):,} rows)",
+        data=warehouse_ending.to_csv(index=False).encode("utf-8"),
+        file_name="warehouse_ending_stock_value.csv",
+        mime="text/csv",
+        key="dl_wh_ending",
+    )
 
    # ------ Report 5: Movement Analysis (Fast / Slow / Stagnant) ------
     st.subheader("5) Movement Analysis (Fast / Slow / Stagnant)")
@@ -324,7 +357,13 @@ def display_inventory_analysis_main(current_page, zid: str):
                 ["warehouse","movement_class","abs_qty_K"], ascending=[True, True, False]
             )
             st.dataframe(movement, use_container_width=True, height=420)
-            st.write(common.create_download_link(movement, "movement_analysis_0m.xlsx"), unsafe_allow_html=True)
+            st.download_button(
+                label=f"⬇ Download Movement Analysis CSV ({len(movement):,} rows)",
+                data=movement.to_csv(index=False).encode("utf-8"),
+                file_name="movement_analysis_0m.csv",
+                mime="text/csv",
+                key="dl_movement_0m",
+            )
         else:
             # ---- 4) Timing model: history to cutoff + trailing window K months ----
             y = pd.to_numeric(flow_df["year"], errors="coerce").fillna(0).astype("int64")
@@ -396,5 +435,10 @@ def display_inventory_analysis_main(current_page, zid: str):
                 ["warehouse","movement_class","abs_qty_K"], ascending=[True, True, False]
             )
             st.dataframe(movement, use_container_width=True, height=420)
-            st.write(common.create_download_link(movement, f"movement_analysis_{K}m.xlsx"),
-                    unsafe_allow_html=True)
+            st.download_button(
+                label=f"⬇ Download Movement Analysis CSV ({len(movement):,} rows)",
+                data=movement.to_csv(index=False).encode("utf-8"),
+                file_name=f"movement_analysis_{K}m.csv",
+                mime="text/csv",
+                key="dl_movement_Km",
+            )
