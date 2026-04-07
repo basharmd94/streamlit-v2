@@ -85,39 +85,48 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 day_options = list(range(1, 32))  # 1 to 31
                 selected_dom_days = st.multiselect("Select Days (leave empty to include all days)",options=day_options)
 
-        compare_by = st.selectbox("Compare By", ["Product", "Product Group", "Salesman", "Customer", "Area"])
+        # Entity options — match the Overview pivot table's "Select Entity" list
+        compare_by = st.selectbox("Compare By", ["Salesman", "Customer", "Product", "Product Group", "Area"])
         metric = st.selectbox("Metric", [
-                "Net Sales",
-                "Total Returns",
-                "Total Discounts",
-                "Net Margin"
+            "Net Sales", "Total Returns", "Total Discounts", "Net Margin", "Net Units Sold",
         ])
 
-        # Step 3: Build entity list
         dimension_column_map = {
-            "Product": ("itemcode", "itemname"),
+            "Salesman":      ("spid",      "spname"),
+            "Customer":      ("cusid",     "cusname"),
+            "Product":       ("itemcode",  "itemname"),
             "Product Group": ("itemgroup", None),
-            "Customer": ("cusid", "cusname"),
-            "Salesman": ("spid", "spname"),
-            "Area": ("area", None)
+            "Area":          ("area",      None),
         }
-
         code_col, name_col = dimension_column_map[compare_by]
 
-        # Only single item selection
-        if name_col:
+        if name_col and name_col in filtered_data.columns and code_col in filtered_data.columns:
             filtered_sub = filtered_data[[code_col, name_col]].dropna().drop_duplicates()
             filtered_sub["combined"] = filtered_sub[code_col].astype(str) + " - " + filtered_sub[name_col].astype(str)
             display_options = sorted(filtered_sub["combined"].tolist())
+        elif code_col in filtered_data.columns:
+            display_options = sorted(filtered_data[code_col].dropna().unique().astype(str).tolist())
         else:
-            display_options = sorted(filtered_data[code_col].dropna().unique().tolist())
+            display_options = []
 
-
-
-        # Plot if metric + compare selected
-        if compare_type == "Year-over-Year (YOY)" and granularity == "Monthly":
-            selected_display = st.selectbox(f"Select {compare_by} to Filter (optional)", options=["(All)"] + display_options)
+        is_mom = compare_type == "Month vs Month"
+        if is_mom:
+            selected_display = st.multiselect(
+                f"Select {compare_by}(s) to Compare",
+                options=display_options, default=display_options[:3], max_selections=7,
+                key="comp_entity_select",
+            )
+            selected_codes = [x.split(" - ")[0] for x in selected_display] if name_col else selected_display
+        else:
+            selected_display = st.selectbox(
+                f"Select {compare_by} to Filter (leave as '(All)' to aggregate)",
+                options=["(All)"] + display_options,
+                key="comp_entity_select",
+            )
             selected_codes = [selected_display.split(" - ")[0]] if selected_display != "(All)" else []
+
+        # Plot
+        if compare_type == "Year-over-Year (YOY)" and granularity == "Monthly":
             overall_margin.plot_yoy_monthly_comparison(
                 filtered_data=filtered_data,
                 filtered_data_r=filtered_data_r,
@@ -128,8 +137,6 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 selected_month_names=selected_months
             )
         elif compare_type == "Year-over-Year (YOY)" and granularity == "Daily":
-            selected_display = st.selectbox(f"Select {compare_by} to Filter (optional)", options=["(All)"] + display_options)
-            selected_codes = [selected_display.split(" - ")[0]] if selected_display != "(All)" else []
             overall_margin.plot_yoy_daily_comparison(
                 filtered_data=filtered_data,
                 filtered_data_r=filtered_data_r,
@@ -141,8 +148,6 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 end_date=end_date
             )
         elif compare_type == "Year-over-Year (YOY)" and granularity == "Day of Week":
-            selected_display = st.selectbox(f"Select {compare_by} to Filter (optional)", options=["(All)"] + display_options)
-            selected_codes = [selected_display.split(" - ")[0]] if selected_display != "(All)" else []
             overall_margin.plot_yoy_dow_comparison(
                 filtered_data=filtered_data,
                 filtered_data_r=filtered_data_r,
@@ -153,8 +158,6 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 average_or_total=average_or_total_YOY_DOW
             )
         elif compare_type == "Year-over-Year (YOY)" and granularity == "Day of Month":
-            selected_display = st.selectbox(f"Select {compare_by} to Filter (optional)", options=["(All)"] + display_options)
-            selected_codes = [selected_display.split(" - ")[0]] if selected_display != "(All)" else []
             overall_margin.plot_yoy_dom_comparison(
                 filtered_data=filtered_data,
                 filtered_data_r=filtered_data_r,
@@ -166,12 +169,6 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 average_or_total=average_or_total_YOY_DOM
             )
         elif compare_type == "Month vs Month" and granularity == "Monthly":
-            selected_display = st.multiselect(f"Select {compare_by}(s) to Compare", options=display_options, default=display_options[:3], max_selections=7)
-            if name_col:
-                selected_codes = [x.split(" - ")[0] for x in selected_display]
-            else:
-                selected_codes = selected_display
-
             overall_margin.plot_month_vs_month_comparison(
                 filtered_data=filtered_data,
                 filtered_data_r=filtered_data_r,
@@ -182,12 +179,6 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 selected_months=selected_months
             )
         elif compare_type == "Month vs Month" and granularity == "Day of Week":
-            selected_display = st.multiselect(f"Select {compare_by}(s) to Compare", options=display_options, default=display_options[:3], max_selections=7)
-            if name_col:
-                selected_codes = [x.split(" - ")[0] for x in selected_display]
-            else:
-                selected_codes = selected_display
-
             overall_margin.plot_month_vs_month_dow_comparison(
                 filtered_data=filtered_data,
                 filtered_data_r=filtered_data_r,
@@ -199,12 +190,6 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 aggregation_type=average_or_total_MOM_DOW
             )
         elif compare_type == "Month vs Month" and granularity == "Day of Month":
-            selected_display = st.multiselect(f"Select {compare_by}(s) to Compare", options=display_options, default=display_options[:3], max_selections=7)
-            if name_col:
-                selected_codes = [x.split(" - ")[0] for x in selected_display]
-            else:
-                selected_codes = selected_display
-
             overall_margin.plot_month_vs_month_dom_comparison(
                 filtered_data=filtered_data,
                 filtered_data_r=filtered_data_r,
@@ -214,7 +199,7 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 metric=metric,
                 selected_months=selected_months,
                 aggregation_type=average_or_total_MOM_DOM,
-                selected_days=selected_dom_days  # Optional
+                selected_days=selected_dom_days
             )
         else:
             st.warning("Please select at least one year and month.")
@@ -303,10 +288,10 @@ def display_margin_analysis_page(current_page, zid, data_dict):
     elif analysis_mode == "Metric Comparison":
         st.subheader("Compare Metrics")
 
-        compare_by = st.selectbox("Compare By", ["Product", "Product Group", "Salesman", "Customer", "Area"])
+        compare_by = st.selectbox("Compare By", ["Salesman", "Customer", "Product", "Product Group", "Area"])
 
         metric_choices = [
-            "Net Sales", "Total Returns", "Total Discounts", "Net Margin"
+            "Net Sales", "Total Returns", "Total Discounts", "Net Margin", "Net Units Sold",
         ]
 
         col1, col2 = st.columns(2)
@@ -323,22 +308,23 @@ def display_margin_analysis_page(current_page, zid, data_dict):
         selected_months = st.multiselect("Select Months", [month_map[m] for m in all_months], default=[month_map[m] for m in all_months])
 
         dimension_column_map = {
-            "Product": ("itemcode", "itemname"),
+            "Salesman":      ("spid",      "spname"),
+            "Customer":      ("cusid",     "cusname"),
+            "Product":       ("itemcode",  "itemname"),
             "Product Group": ("itemgroup", None),
-            "Customer": ("cusid", "cusname"),
-            "Salesman": ("spid", "spname"),
-            "Area": ("area", None)
+            "Area":          ("area",      None),
         }
 
         code_col, name_col = dimension_column_map[compare_by]
 
-        # Only single item for focused view
-        if name_col:
+        if name_col and name_col in filtered_data.columns and code_col in filtered_data.columns:
             filtered_sub = filtered_data[[code_col, name_col]].dropna().drop_duplicates()
             filtered_sub["combined"] = filtered_sub[code_col].astype(str) + " - " + filtered_sub[name_col].astype(str)
             display_options = sorted(filtered_sub["combined"].tolist())
+        elif code_col in filtered_data.columns:
+            display_options = sorted(filtered_data[code_col].dropna().unique().astype(str).tolist())
         else:
-            display_options = sorted(filtered_data[code_col].dropna().unique().tolist())
+            display_options = []
 
         selected_display = st.selectbox(f"Select {compare_by} to View", options=["(All)"] + display_options)
         selected_codes = [selected_display.split(" - ")[0]] if selected_display != "(All)" else []
