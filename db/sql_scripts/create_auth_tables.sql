@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS page_permissions (
 INSERT INTO page_permissions (role, page_name) VALUES
     ('admin', 'Home'),
     ('admin', 'Overall Sales Analysis'),
+    ('admin', 'Daily Sales Analysis'),
     ('admin', 'Overall Margin Analysis'),
     ('admin', 'YOY Analysis'),
     ('admin', 'Purchase Analysis'),
@@ -30,8 +31,10 @@ INSERT INTO page_permissions (role, page_name) VALUES
     ('admin', 'Financial Statements'),
     ('sales', 'Home'),
     ('sales', 'Overall Sales Analysis'),
+    ('sales', 'Daily Sales Analysis'),
     ('sales', 'YOY Analysis'),
     ('sales', 'Basket Analysis'),
+    ('crm',   'Daily Sales Analysis'),
     ('finance', 'Home'),
     ('finance', 'Overall Margin Analysis'),
     ('finance', 'Financial Statements'),

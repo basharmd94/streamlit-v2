@@ -105,6 +105,11 @@
                         "constraints": []
                     },
                     {
+                        "name": "sp_id",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
                         "name": "project",
                         "type": "VARCHAR",
                         "constraints": []

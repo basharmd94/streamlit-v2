@@ -297,43 +297,43 @@ def get_return_data(filters=None):
 
 
 def get_collection_data(filters=None):
-    filters = filters or {}
-    params = [filters["zid"][0]]
-
-    query = """
-        SELECT
-            glmst.zid,
-            gldetail.voucher AS glvoucher,
-            gldetail.ac_sub AS cusid,
-            cacus.cusname as cusname,
-            glheader.date,
-            glheader.year,
-            glheader.month,
-            ABS(SUM(gldetail.value)) AS value
-        FROM glmst
-        JOIN gldetail ON glmst.ac_code = gldetail.ac_code AND glmst.zid = gldetail.zid
-        JOIN glheader ON gldetail.voucher = glheader.voucher AND glmst.zid = glheader.zid
-        JOIN cacus ON gldetail.ac_sub = cacus.cusid AND gldetail.zid = cacus.zid
-        WHERE glmst.zid = %s
-        AND (
-            gldetail.voucher LIKE 'JV--%%'
-            OR gldetail.voucher LIKE 'RCT-%%'
-            OR gldetail.voucher LIKE 'CRCT%%'
-            OR gldetail.voucher LIKE 'STJV%%'
-            OR gldetail.voucher LIKE 'BRCT%%'
-        )
-        AND glmst.usage IN ('AR')
     """
+    Returns one row per collection voucher with:
+      - spid/spname from gldetail.sp_id (the newly added column)
+      - fallback: if gldetail.sp_id is NULL/blank, uses the most recent
+        salesman from the sales table for that customer (last-INOP rule)
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+
+    # ── CTE 1: aggregate collection vouchers, grab direct sp_id ──────────────
+    rct_conditions = [
+        "gd.zid = %s",
+        "gm.usage = 'AR'",
+        "(gd.voucher LIKE 'RCT-%%' OR gd.voucher LIKE 'CRCT%%'"
+        " OR gd.voucher LIKE 'STJV%%' OR gd.voucher LIKE 'BRCT%%'"
+        " OR gd.voucher LIKE 'JV--%%')",
+    ]
+    rct_params: list = [zid]
 
     if filters.get("year"):
-        placeholders = ",".join(["%s"] * len(filters["year"]))
-        query += f" AND glheader.year IN ({placeholders})"
-        params.extend(filters["year"])
+        ph = ",".join(["%s"] * len(filters["year"]))
+        rct_conditions.append(f"gh.year IN ({ph})")
+        rct_params.extend(filters["year"])
 
     if filters.get("month"):
-        placeholders = ",".join(["%s"] * len(filters["month"]))
-        query += f" AND glheader.month IN ({placeholders})"
-        params.extend(filters["month"])
+        ph = ",".join(["%s"] * len(filters["month"]))
+        rct_conditions.append(f"gh.month IN ({ph})")
+        rct_params.extend(filters["month"])
+
+    rct_where = " AND ".join(rct_conditions)
+
+    # ── CTE 2: last salesman per customer from sales table ────────────────────
+    last_sp_params: list = [zid]
+
+    # ── Outer WHERE (cusname / area / spname filters) ─────────────────────────
+    outer_conditions: list = []
+    outer_params: list = []
 
     if filters.get("cusname"):
         raw_vals = [str(v) for v in filters["cusname"]]
@@ -341,45 +341,101 @@ def get_collection_data(filters=None):
         for v in raw_vals:
             if " - " in v:
                 code, name = v.split(" - ", 1)
-                code, name = code.strip(), name.strip()
-                if code:
-                    cusids.append(code)
-                if name:
-                    cusnames.append(name)
+                if code.strip(): cusids.append(code.strip())
+                if name.strip(): cusnames.append(name.strip())
             else:
-                name = v.strip()
-                if name:
-                    cusnames.append(name)
-
-        conditions = []
+                if v.strip(): cusnames.append(v.strip())
+        conds = []
         if cusids:
-            placeholders = ",".join(["%s"] * len(cusids))
-            conditions.append(f"gldetail.ac_sub IN ({placeholders})")
-            params.extend(cusids)
+            ph = ",".join(["%s"] * len(cusids))
+            conds.append(f"r.cusid IN ({ph})")
+            outer_params.extend(cusids)
         if cusnames:
-            placeholders = ",".join(["%s"] * len(cusnames))
-            conditions.append(f"cacus.cusname IN ({placeholders})")
-            params.extend(cusnames)
-        if conditions:
-            query += "\n  AND (" + " OR ".join(conditions) + ")"
+            ph = ",".join(["%s"] * len(cusnames))
+            conds.append(f"cc.cusname IN ({ph})")
+            outer_params.extend(cusnames)
+        if conds:
+            outer_conditions.append("(" + " OR ".join(conds) + ")")
 
     if filters.get("area"):
-        placeholders = ",".join(["%s"] * len(filters["area"]))
-        query += f" AND cacus.cuscity IN ({placeholders})"
-        params.extend(filters["area"])
+        ph = ",".join(["%s"] * len(filters["area"]))
+        outer_conditions.append(f"cc.cuscity IN ({ph})")
+        outer_params.extend(filters["area"])
 
-    query += """
-        GROUP BY
-            glmst.zid,
-            gldetail.voucher,
-            gldetail.ac_sub,
-            cacus.cusname,
-            glmst.usage,
-            glheader.date,
-            glheader.year,
-            glheader.month
+    if filters.get("spname"):
+        raw_vals = [str(v) for v in filters["spname"]]
+        spids, spnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                if code.strip(): spids.append(code.strip())
+                if name.strip(): spnames.append(name.strip())
+            else:
+                if v.strip(): spnames.append(v.strip())
+        conds = []
+        if spids:
+            ph = ",".join(["%s"] * len(spids))
+            conds.append(f"COALESCE(r.direct_sp_id, ls.sp_id) IN ({ph})")
+            outer_params.extend(spids)
+        if spnames:
+            ph = ",".join(["%s"] * len(spnames))
+            conds.append(f"e.spname IN ({ph})")
+            outer_params.extend(spnames)
+        if conds:
+            outer_conditions.append("(" + " OR ".join(conds) + ")")
+
+    outer_where = ("\n    WHERE " + " AND ".join(outer_conditions)) if outer_conditions else ""
+
+    query = f"""
+    WITH rct_raw AS (
+        SELECT
+            gd.zid,
+            gd.voucher,
+            gd.ac_sub::text          AS cusid,
+            gh.date,
+            gh.year,
+            gh.month,
+            ABS(SUM(gd.value))       AS value,
+            MAX(NULLIF(TRIM(gd.sp_id::text), '')) AS direct_sp_id
+        FROM gldetail gd
+        JOIN glheader gh ON gd.voucher  = gh.voucher  AND gd.zid = gh.zid
+        JOIN glmst    gm ON gd.ac_code  = gm.ac_code  AND gd.zid = gm.zid
+        WHERE {rct_where}
+        GROUP BY gd.zid, gd.voucher, gd.ac_sub, gh.date, gh.year, gh.month
+    ),
+    last_sale_sp AS (
+        -- Most recent salesman per customer from the sales table (last-INOP rule)
+        SELECT DISTINCT ON (cusid::text)
+            cusid::text   AS cusid,
+            sp_id::text   AS sp_id
+        FROM sales
+        WHERE zid = %s
+          AND sp_id IS NOT NULL
+          AND TRIM(sp_id::text) != ''
+        ORDER BY cusid::text, date DESC
+    )
+    SELECT
+        r.zid,
+        r.voucher                                       AS glvoucher,
+        r.cusid,
+        cc.cusname,
+        cc.cuscity                                      AS area,
+        r.date,
+        r.year,
+        r.month,
+        r.value,
+        COALESCE(r.direct_sp_id, ls.sp_id)             AS spid,
+        e.spname
+    FROM rct_raw r
+    JOIN  cacus    cc ON r.cusid  = cc.cusid::text AND r.zid = cc.zid
+    LEFT JOIN last_sale_sp ls ON r.cusid = ls.cusid
+    LEFT JOIN employee     e
+           ON COALESCE(r.direct_sp_id, ls.sp_id) = e.spid::text
+          AND e.zid = r.zid{outer_where}
     """
-    return query, tuple(params)
+
+    all_params = tuple(rct_params + last_sp_params + outer_params)
+    return query, all_params
 
 
 def get_ar_data(filters=None):

@@ -398,29 +398,31 @@ def data_copy_add_columns(*dfs):
     return tuple(processed_dfs)
 
 def enrich_collection_with_sales_info(filtered_data_c, filtered_data_s):
-    # Create mapping from sales data (cusid -> spid, spname)
-    print("Before:", filtered_data_c["value"].sum())
+    """
+    Enrich collection rows with salesman and area from the sales table.
 
+    The new get_collection_data query already embeds spid / spname / area
+    directly on each row (via gldetail.sp_id + last-INOP fallback), so this
+    function only adds the columns that are still missing — preventing
+    duplicate-column suffixes (_x / _y) from a blind merge.
+    """
+    enrichable = ["spid", "spname", "area"]
+    cols_to_add = [c for c in enrichable if c not in filtered_data_c.columns]
 
-    # Step 1: Extract mapping of most recent spid/spname per customer
+    if not cols_to_add:
+        return filtered_data_c          # everything already embedded by the query
+
+    # Columns we can pull from the sales DataFrame
+    available = [c for c in ["cusid"] + cols_to_add if c in filtered_data_s.columns]
+    if "cusid" not in available:
+        return filtered_data_c
+
     latest_sales = (
-        filtered_data_s.sort_values("date")  # or use .sort_values("year", "month", "date") if more granular
-        .drop_duplicates(subset=["cusid"], keep="last")[["cusid", "spid", "spname", "area"]]
+        filtered_data_s.sort_values("date")
+        .drop_duplicates(subset=["cusid"], keep="last")[available]
     )
 
-    # Step 2: Merge safely without duplication
-    enriched_df = pd.merge(
-        filtered_data_c,
-        latest_sales,
-        on="cusid",
-        how="left",
-        validate="many_to_one"  # 🚨 ensures each cusid in collection maps to only one row
-    )
-
-    print("After:", enriched_df["value"].sum()) 
-
-
-    return enriched_df
+    return pd.merge(filtered_data_c, latest_sales, on="cusid", how="left")
 
 def add_voucher_type_ar(filtered_data_ar):
     filtered_data_ar['voucher_type'] = filtered_data_ar['voucher'].str.extract(r"^([A-Za-z]+)")
