@@ -196,10 +196,15 @@ class BaseApp:
         display_home_page(st.session_state.username)
 
     def call_if_data_loaded(self, display_fn):
-        if st.session_state.get("ready_to_load") and st.session_state.get("last_data_dict"):
+        data_loaded_for = st.session_state.get("ready_to_load_page")
+        if (
+            st.session_state.get("ready_to_load")
+            and st.session_state.get("last_data_dict")
+            and data_loaded_for == self.current_page
+        ):
             display_fn(st.session_state.last_data_dict)
         else:
-            st.info("Please select your filters and click '🔄 Load Data' to begin analysis.")
+            st.info("⬅️ Please select your filters and click **🔄 Load Data** to begin analysis.")
 
     @timed
     def navigation(self):
@@ -303,6 +308,7 @@ class BaseApp:
                     st.session_state.daily_sales_item     = selected_products
                     st.session_state.daily_sales_group    = selected_groups
                     st.session_state.ready_to_load        = True
+                    st.session_state.ready_to_load_page   = self.current_page
                     st.session_state.last_filters         = selected_filters
                     st.session_state.last_data_dict       = process_data(
                         zid=st.session_state.zid, filters={}, tables=tables
@@ -361,9 +367,10 @@ class BaseApp:
                     }
 
                 if st.sidebar.button("🔄 Load Data"):
-                    st.session_state.ready_to_load    = True
-                    st.session_state.last_filters     = selected_filters
-                    st.session_state.last_data_dict   = process_data(
+                    st.session_state.ready_to_load      = True
+                    st.session_state.ready_to_load_page = self.current_page
+                    st.session_state.last_filters       = selected_filters
+                    st.session_state.last_data_dict     = process_data(
                         zid=st.session_state.zid, filters=selected_filters, tables=tables
                     )
             
