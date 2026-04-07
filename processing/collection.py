@@ -942,7 +942,8 @@ def plot_yoy_monthly_comparison(filtered_data_c,filtered_data_s,filtered_data_r,
 
     # Filter entity
     if selected_codes:
-        df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
+        if code_col in df_collections.columns:
+            df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
         df_sales = df_sales[df_sales[code_col].isin(selected_codes)]
         df_returns = df_returns[df_returns[code_col].isin(selected_codes)]
 
@@ -1013,7 +1014,8 @@ def plot_yoy_daily_comparison(filtered_data_c,filtered_data_s, filtered_data_r, 
 
     # Apply filters for selected entity
     if selected_codes:
-        df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
+        if code_col in df_collections.columns:
+            df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
         df_sales = df_sales[df_sales[code_col].isin(selected_codes)]
         df_returns = df_returns[df_returns[code_col].isin(selected_codes)]
 
@@ -1094,7 +1096,8 @@ def plot_yoy_dow_comparison(filtered_data_c, filtered_data_s, filtered_data_r, c
 
     # Apply filters for selected entity
     if selected_codes:
-        df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
+        if code_col in df_collections.columns:
+            df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
         df_sales = df_sales[df_sales[code_col].isin(selected_codes)]
         df_returns = df_returns[df_returns[code_col].isin(selected_codes)]
 
@@ -1181,7 +1184,8 @@ def plot_yoy_dom_comparison(filtered_data_c, filtered_data_s, filtered_data_r, c
 
     # Filter selected entity, year, month
     if selected_codes:
-        df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
+        if code_col in df_collections.columns:
+            df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
         df_sales = df_sales[df_sales[code_col].isin(selected_codes)]
         df_returns = df_returns[df_returns[code_col].isin(selected_codes)]
 
@@ -1261,7 +1265,8 @@ def plot_month_vs_month_comparison(filtered_data_c,filtered_data_s,filtered_data
     df_returns = df_returns[df_returns["month_label"].isin(selected_months)]
     # Filter for selected entities
     if selected_codes:
-        df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
+        if code_col in df_collections.columns:
+            df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
         df_sales = df_sales[df_sales[code_col].isin(selected_codes)]
         df_returns = df_returns[df_returns[code_col].isin(selected_codes)]
     # Metric logic
@@ -1346,7 +1351,8 @@ def plot_month_vs_month_dow_comparison(filtered_data_c,filtered_data_s,filtered_
 
     # Filter for selected entities
     if selected_codes:
-        df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
+        if code_col in df_collections.columns:
+            df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
         df_sales = df_sales[df_sales[code_col].isin(selected_codes)]
         df_returns = df_returns[df_returns[code_col].isin(selected_codes)]
 
@@ -1441,7 +1447,8 @@ def plot_month_vs_month_dom_comparison(filtered_data_c,filtered_data_s,filtered_
 
     # Filter for selected entities
     if selected_codes:
-        df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
+        if code_col in df_collections.columns:
+            df_collections = df_collections[df_collections[code_col].isin(selected_codes)]
         df_sales = df_sales[df_sales[code_col].isin(selected_codes)]
         df_returns = df_returns[df_returns[code_col].isin(selected_codes)]
 
