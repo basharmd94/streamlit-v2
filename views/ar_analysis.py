@@ -160,27 +160,29 @@ def display_ar_analysis_page(current_page, zid, data_dict):
             st.warning("No data to display.")
             return
 
-        # Apply salesman filter – keep the "Total" row always
+        # Apply salesman filter – keep subtotal/grand total rows always
         if sp_codes:
+            is_summary_row = summary["Salesman ID"].astype(str).isin(
+                ["", "Retail Due", "District Due"]
+            ) | (summary["Salesman Name"].astype(str) == "Grand Total")
             summary = summary[
-                summary["xsp"].astype(str).isin(sp_codes)
-                | (summary["xsp"].astype(str) == "Total")
+                summary["Salesman ID"].astype(str).isin(sp_codes) | is_summary_row
             ]
 
         # Format month columns for display
         display_summary = _format_month_cols(summary)
 
         # Summary metrics
-        total_row = display_summary[display_summary["xsp"].astype(str) == "Total"]
+        grand_row = display_summary[display_summary["Salesman Name"].astype(str) == "Grand Total"]
         col1, col2 = st.columns(2)
         col1.metric(
             "Salesman Count",
-            len(display_summary) - (1 if not total_row.empty else 0),
+            len(display_summary[display_summary["Salesman ID"].astype(str) != ""]) - 0,
         )
-        if "total_due" in display_summary.columns and not total_row.empty:
+        if "Total Due" in display_summary.columns and not grand_row.empty:
             col2.metric(
                 "Grand Total Due",
-                f"{total_row['total_due'].values[0]:,.0f}",
+                f"{grand_row['Total Due'].values[0]:,.0f}",
             )
 
         st.dataframe(display_summary, use_container_width=True, hide_index=True)
