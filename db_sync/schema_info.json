@@ -110,6 +110,11 @@
                         "constraints": []
                     },
                     {
+                        "name": "sp_id",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
                         "name": "project",
                         "type": "VARCHAR",
                         "constraints": []
@@ -117,6 +122,11 @@
                     {
                         "name": "voucher",
                         "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "row",
+                        "type": "INT",
                         "constraints": []
                     },
                     {

@@ -1,6 +1,6 @@
 import streamlit as st
 from core.analytics import Analytics
-from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, daily_sales
+from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, daily_sales, ar_analysis as ar_view
 from views.home import display_home_page
 import pandas as pd
 from io import BytesIO
@@ -83,6 +83,18 @@ def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str],
         filter_options[col] = list(values)
 
     return filter_options
+
+@st.cache_data(show_spinner=False)
+def load_employee_options(zid: str) -> list[str]:
+    """Load salesman options for the AR Analysis sidebar."""
+    from core.db import get_dataframe
+    df = get_dataframe(
+        "SELECT spid::text AS spid, spname FROM employee WHERE zid = %s ORDER BY spname",
+        (zid,)
+    )
+    if df is not None and not df.empty:
+        return (df["spid"].astype(str) + " - " + df["spname"].astype(str)).tolist()
+    return []
 
 @timed
 @st.cache_data(show_spinner=False)
@@ -220,7 +232,8 @@ class BaseApp:
             "Financial Statements",
             "Manufacturing Analysis",
             "Accounting Analysis",
-            "Inventory Analysis"
+            "Inventory Analysis",
+            "AR Analysis"
         ]
 
          # Filter menu based on user's role
@@ -400,6 +413,36 @@ class BaseApp:
                 st.write("⬅ Use the sidebar to load purchase data")
             return  # ⬅ prevent the main router from running twice
 
+        elif self.current_page == "AR Analysis":
+            from processing import ar_analysis as ar_proc
+
+            sp_options = load_employee_options(st.session_state.zid)
+
+            default_till = date.today() - timedelta(days=2)
+            selected_till_date = st.sidebar.date_input(
+                "Till Date",
+                value=st.session_state.get("ar_till_date", default_till),
+                key="ar_till_date_input",
+            )
+            selected_salesmen = st.sidebar.multiselect(
+                "Select Salesman", sp_options, key="ar_sp_filter"
+            )
+
+            if st.sidebar.button("🔄 Load Data", key="ar_load_button"):
+                with st.spinner("Fetching AR ledger data…"):
+                    raw_df = ar_proc.fetch_ar_data(
+                        zid=st.session_state.zid,
+                        project=st.session_state.proj,
+                        till_date=selected_till_date,
+                    )
+                if raw_df is None:
+                    raw_df = pd.DataFrame()
+                st.session_state.ar_till_date       = selected_till_date
+                st.session_state.ar_salesmen        = selected_salesmen
+                st.session_state.ready_to_load      = True
+                st.session_state.ready_to_load_page = self.current_page
+                st.session_state.last_data_dict     = {"ar_raw": raw_df}
+
         if self.current_page == "Home":
             self.home()
         elif self.current_page == "Overall Sales Analysis":
@@ -422,6 +465,8 @@ class BaseApp:
             self.accounting_analysis()
         elif self.current_page == "Inventory Analysis":
             self.inventory_analysis()
+        elif self.current_page == "AR Analysis":
+            self.call_if_data_loaded(self.ar_analysis_page)
 
     @timed
     def overall_sales_analysis(self, data_dict):
@@ -501,6 +546,10 @@ class BaseApp:
     @timed
     def inventory_analysis(self):
         inventory.display_inventory_analysis_main(self.current_page, st.session_state.zid)
+
+    @timed
+    def ar_analysis_page(self, data_dict):
+        ar_view.display_ar_analysis_page(self.current_page, st.session_state.zid, data_dict)
 
 if __name__ == "__main__":
     app = BaseApp()

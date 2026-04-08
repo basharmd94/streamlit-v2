@@ -91,7 +91,9 @@ def setup_auth_tables():
             ('purchase', 'Purchase Analysis'),
             ('purchase', 'Basket Analysis'),
             ('purchase', 'Distribution & Histograms'),
-            ('purchase','Inventory Analysis')
+            ('purchase','Inventory Analysis'),
+            ('admin', 'AR Analysis'),
+            ('finance', 'AR Analysis')
         ON CONFLICT DO NOTHING
         """)
         

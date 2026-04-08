@@ -128,12 +128,13 @@ class SyncManager:
                 gldetail.xsp as sp_id,
                 gldetail.xproj AS project,
                 gldetail.xvoucher AS voucher,
+                gldetail.xrow AS row,
                 gldetail.xprime AS value
             FROM gldetail
         """
         insert_sql_gldetail = """
             INSERT INTO gldetail (
-                uuid, itime, utime, zid, ac_code, ac_sub, sp_id, project, voucher, value
+                uuid, itime, utime, zid, ac_code, ac_sub, sp_id, project, voucher, row, value
             ) VALUES %s
         """
         self.execute_sync(select_sql_gldetail, insert_sql_gldetail, 'gldetail', clear_table_first=True)
