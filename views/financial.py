@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from processing import common, financial
-from visualization import common_v
 from utils.utils import timed
 
 
@@ -101,27 +100,6 @@ def display_financial_statements(current_page, zid):
                 for tbl in (pl_lv2, bs_lv2, cfs_lv2, summary_df2):
                     st.write(tbl, use_container_width=True)
 
-            # histogram picker
-            state = pd.concat(
-                [pl_sorted.drop(columns="", errors="ignore"), bs_lv0],
-                axis=0,
-                ignore_index=True
-            )
-
-            cols = st.columns(4)
-            with cols[0]:
-                selected_index = st.selectbox("Select Account",state['ac_name'].to_list(),index=1)
-
-            # Select the row you want to convert into a dictionary
-            selected_row = state[state['ac_name'] == selected_index]
-
-            result_dict = selected_row.to_dict(orient='list')
-            first_key = list(result_dict.keys())[0]
-            second_key = list(result_dict.keys())[1]  # Get the first key
-            result_dict.pop(first_key)
-            result_dict.pop(second_key)
-
-            common_v.plot_histogram(result_dict, selected_index)
         else:
             pass
     else: # Monthly
@@ -187,26 +165,5 @@ def display_financial_statements(current_page, zid):
                 for tbl in (pl_lv2, bs_lv2, cfs_lv2, summary_df2):
                     st.write(tbl, use_container_width=True)
 
-            # # histogram picker
-            # state = pd.concat(
-            #     [pl_sorted.drop(columns="", errors="ignore"), bs_lv0],
-            #     axis=0,
-            #     ignore_index=True
-            # )
-
-            # cols = st.columns(4)
-            # with cols[0]:
-            #     selected_index = st.selectbox("Select Account",state['ac_name'].to_list(),index=1)
-
-            # # Select the row you want to convert into a dictionary
-            # selected_row = state[state['ac_name'] == selected_index]
-
-            # result_dict = selected_row.to_dict(orient='list')
-            # first_key = list(result_dict.keys())[0]
-            # second_key = list(result_dict.keys())[1]  # Get the first key
-            # result_dict.pop(first_key)
-            # result_dict.pop(second_key)
-
-            # common_v.plot_histogram(result_dict, selected_index)
         else:
             pass
