@@ -100,6 +100,7 @@ def display_financial_statements(current_page, zid):
                 st.write(bs_lv0, use_container_width=True)
             with st.expander("Cash Flow Statement", expanded=True):
                 st.write(cfs_df, use_container_width=True)
+            with st.expander("Cash Flow Summary", expanded=False):
                 st.write(summary_df, use_container_width=True)
 
         elif selected_level == "Level 1 - Moderate Detail":
@@ -109,6 +110,7 @@ def display_financial_statements(current_page, zid):
                 st.write(bs_lv1, use_container_width=True)
             with st.expander("Cash Flow Statement", expanded=True):
                 st.write(cfs_lv1, use_container_width=True)
+            with st.expander("Cash Flow Summary", expanded=False):
                 st.write(summary_df1, use_container_width=True)
 
         elif selected_level == "Level 2 - Least Detail":
@@ -118,6 +120,7 @@ def display_financial_statements(current_page, zid):
                 st.write(bs_lv2, use_container_width=True)
             with st.expander("Cash Flow Statement", expanded=True):
                 st.write(cfs_lv2, use_container_width=True)
+            with st.expander("Cash Flow Summary", expanded=False):
                 st.write(summary_df2, use_container_width=True)
 
         elif selected_level == "Level S - Customised Detail":
@@ -179,6 +182,7 @@ def display_financial_statements(current_page, zid):
                 st.write(bs_lv0, use_container_width=True)
             with st.expander("Cash Flow Statement", expanded=True):
                 st.write(cfs_df, use_container_width=True)
+            with st.expander("Cash Flow Summary", expanded=False):
                 st.write(summary_df, use_container_width=True)
 
         elif selected_level == "Level 1 - Moderate Detail":
@@ -188,6 +192,7 @@ def display_financial_statements(current_page, zid):
                 st.write(bs_lv1, use_container_width=True)
             with st.expander("Cash Flow Statement", expanded=True):
                 st.write(cfs_lv1, use_container_width=True)
+            with st.expander("Cash Flow Summary", expanded=False):
                 st.write(summary_df1, use_container_width=True)
 
         elif selected_level == "Level 2 - Least Detail":
@@ -197,6 +202,7 @@ def display_financial_statements(current_page, zid):
                 st.write(bs_lv2, use_container_width=True)
             with st.expander("Cash Flow Statement", expanded=True):
                 st.write(cfs_lv2, use_container_width=True)
+            with st.expander("Cash Flow Summary", expanded=False):
                 st.write(summary_df2, use_container_width=True)
 
         elif selected_level == "Level S - Customised Detail":
