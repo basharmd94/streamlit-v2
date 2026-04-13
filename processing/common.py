@@ -95,6 +95,145 @@ def create_download_link(df, filename="data.xlsx"):
     )
     return href
 
+def _period_col_label(col) -> str:
+    """Convert a period column (int year or (year, month) tuple/string) to a display string."""
+    import re, ast
+    if isinstance(col, tuple) and len(col) == 2:
+        yr, mo = int(col[0]), int(col[1])
+        return str(yr) if mo == 0 else f"{yr}-{str(mo).zfill(2)}"
+    try:
+        if isinstance(col, str) and col.startswith("("):
+            yr, mo = ast.literal_eval(col)
+            return f"{int(yr)}-{str(int(mo)).zfill(2)}"
+        nums = re.findall(r"\d+", str(col))
+        if len(nums) >= 2:
+            return f"{nums[0]}-{nums[1].zfill(2)}"
+        if len(nums) == 1:
+            return str(nums[0])
+    except Exception:
+        pass
+    return str(col)
+
+
+def create_combined_ls_download_link(
+    pl_s: "pd.DataFrame",
+    bs_s: "pd.DataFrame",
+    cfs_s: "pd.DataFrame",
+    filename: str = "LevelS_Financial_Statements.xlsx",
+) -> str:
+    """
+    Combine the three Level S statements into a single Excel sheet.
+
+    Layout
+    ------
+    - Row header column ("ac_name") + one column per period, all aligned.
+    - Statements are stacked: IS → blank row → BS → blank row → CFS.
+    - CFS is missing the first period (it shows deltas); that column is left blank.
+    """
+    name_col = "ac_name"
+
+    def _period_cols(df):
+        return [c for c in df.columns if c != name_col and
+                pd.api.types.is_numeric_dtype(df[c])]
+
+    # Collect and sort all unique period columns across all three statements
+    import re, ast
+
+    def _sort_key(col):
+        if isinstance(col, tuple) and len(col) == 2:
+            return (int(col[0]), int(col[1]))
+        try:
+            if isinstance(col, str) and col.startswith("("):
+                yr, mo = ast.literal_eval(col)
+                return (int(yr), int(mo))
+            nums = re.findall(r"\d+", str(col))
+            if len(nums) >= 2:
+                return (int(nums[0]), int(nums[1]))
+            if len(nums) == 1:
+                return (int(nums[0]), 0)
+        except Exception:
+            pass
+        return (9999, 99)
+
+    all_period_cols = sorted(
+        set(_period_cols(pl_s)) | set(_period_cols(bs_s)) | set(_period_cols(cfs_s)),
+        key=_sort_key,
+    )
+    col_labels = [_period_col_label(c) for c in all_period_cols]
+    out_cols = [name_col] + col_labels
+
+    def _prepare(df: "pd.DataFrame") -> "pd.DataFrame":
+        pcols = _period_cols(df)
+        sub = df[[name_col] + pcols].copy()
+        # Add empty columns for any missing periods
+        for orig, label in zip(all_period_cols, col_labels):
+            if orig not in sub.columns:
+                sub[label] = None
+            else:
+                sub = sub.rename(columns={orig: label})
+        sub = sub.rename(columns={name_col: name_col})
+        return sub[out_cols]
+
+    def _blank_row() -> "pd.DataFrame":
+        return pd.DataFrame([[None] * len(out_cols)], columns=out_cols)
+
+    combined = pd.concat(
+        [_prepare(pl_s), _blank_row(), _prepare(bs_s), _blank_row(), _prepare(cfs_s)],
+        ignore_index=True,
+    )
+    # Rename header column for readability in the file
+    combined = combined.rename(columns={name_col: "Account"})
+
+    buffer = io.BytesIO()
+    combined.to_excel(buffer, index=False)
+    buffer.seek(0)
+    b64 = base64.b64encode(buffer.read()).decode()
+    href = (
+        f'<a href="data:application/vnd.openxmlformats-officedocument.'
+        f'spreadsheetml.sheet;base64,{b64}" download="{filename}">'
+        f'⬇ Download Level S Financial Statements (Excel)</a>'
+    )
+    return href
+
+
+def create_multi_sheet_download_link(sheets: dict, filename: str = "report.xlsx") -> str:
+    """
+    Build a base64-encoded Excel download link from multiple DataFrames.
+
+    Parameters
+    ----------
+    sheets : dict[str, pd.DataFrame]
+        Ordered mapping of sheet name → DataFrame.  Sheet names are
+        truncated to 31 characters (Excel limit).
+    filename : str
+        Suggested download filename.
+
+    Returns
+    -------
+    str  HTML <a> anchor tag ready for st.markdown(..., unsafe_allow_html=True).
+    """
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            safe_name = str(sheet_name)[:31]
+            # Flatten MultiIndex columns if present
+            if isinstance(df.columns, pd.MultiIndex):
+                df = df.copy()
+                df.columns = [
+                    f"{c[0]}_{str(c[1]).strip()}" if len(c) > 1 and c[1] else str(c[0])
+                    for c in df.columns.values
+                ]
+            df.to_excel(writer, sheet_name=safe_name, index=False)
+    buffer.seek(0)
+    b64 = base64.b64encode(buffer.read()).decode()
+    href = (
+        f'<a href="data:application/vnd.openxmlformats-officedocument.'
+        f'spreadsheetml.sheet;base64,{b64}" download="{filename}">'
+        f'⬇ Download Financial Statements (Excel)</a>'
+    )
+    return href
+
+
 def update_single_options(data, col):
     return data[col].unique().tolist()
 

@@ -96,6 +96,19 @@ def load_employee_options(zid: str) -> list[str]:
         return (df["spid"].astype(str) + " - " + df["spname"].astype(str)).tolist()
     return []
 
+
+@st.cache_data(show_spinner=False)
+def _load_zid_dict() -> dict:
+    """Load business display names from the database business table."""
+    from core.db import get_dataframe
+    from core import queries
+    sql, params = queries.get_all_businesses()
+    df = get_dataframe(sql, params)
+    if df is not None and not df.empty:
+        return dict(zip(df["zid"].astype(str), df["org"].astype(str)))
+    # Fallback: return empty dict (app will show raw ZID keys)
+    return {}
+
 @timed
 @st.cache_data(show_spinner=False)
 def process_data(zid: str,filters: dict, tables: tuple[str], page: str = None) -> dict:
@@ -243,11 +256,7 @@ class BaseApp:
             st.error("You don't have access to any pages. Please contact your administrator.")
             return
 
-        zid_dict = {
-            '100000': 'GI Corporation',
-            '100001': 'Gulshan Trading',
-            '100005': 'Zepto Chemicals'
-        }
+        zid_dict = _load_zid_dict()
 
         project_dict = {
             '100000': 'GI Corporation',
@@ -255,9 +264,14 @@ class BaseApp:
             '100005': 'Zepto Chemicals'
         }
 
-        selected_zid = st.sidebar.selectbox('Select Business (ZID):', list(zid_dict.keys()), format_func=lambda x: zid_dict[x])
+        selected_zid = st.sidebar.selectbox(
+            'Select Business (ZID):',
+            list(zid_dict.keys()),
+            format_func=lambda x: zid_dict[x],
+            disabled=st.session_state.get('current_page') == 'Financial Statements',
+        )
         st.session_state.zid = selected_zid
-        st.session_state.proj = project_dict[selected_zid]
+        st.session_state.proj = project_dict.get(selected_zid, zid_dict.get(selected_zid, selected_zid))
 
         # Display the company info in a styled header
         st.markdown(f"""

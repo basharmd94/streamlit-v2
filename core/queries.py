@@ -837,6 +837,62 @@ def get_gl_master(zid) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_vat_breakdown_gl(
+    zid,
+    project=None,
+    year_list=None,
+    smonth: int = 1,
+    emonth: int = 12,
+) -> Tuple[str, tuple]:
+    """
+    Fetch raw gldetail rows for ac_code IN (1050007, 6290001) so that
+    Level S IS can compute the four VAT/Tax informational rows:
+
+        01050007  — VAT Expense from Rebate (A) and VAT through Cash (i)
+        06290001  — VAT Expenses Office (iii) and Others Company Tax (ii)
+
+    Returns all individual voucher rows (not pre-aggregated) so that
+    processing logic can split by voucher prefix and sign.
+    """
+    params: list = [zid]
+    where = ["gldetail.zid = %s", "gldetail.ac_code IN ('01050007', '06290001')"]
+
+    if project:
+        where.append("gldetail.project = %s")
+        params.append(project)
+
+    if year_list:
+        placeholders = ", ".join(["%s"] * len(year_list))
+        where.append(f"glheader.year IN ({placeholders})")
+        params.extend(year_list)
+
+    where.append("glheader.month >= %s")
+    params.append(smonth)
+    where.append("glheader.month <= %s")
+    params.append(emonth)
+
+    sql = f"""
+        SELECT
+            gldetail.ac_code,
+            glheader.year,
+            glheader.month,
+            gldetail.voucher,
+            gldetail.value
+        FROM gldetail
+        JOIN glheader ON gldetail.voucher = glheader.voucher
+                      AND gldetail.zid    = glheader.zid
+        WHERE {" AND ".join(where)}
+    """
+    return sql, tuple(params)
+
+
+def get_all_businesses() -> Tuple[str, tuple]:
+    """Returns all businesses from the business table: zid, org.
+    Excludes placeholder/test rows with zid = 1."""
+    sql = "SELECT zid, org FROM business WHERE zid <> 1 ORDER BY zid"
+    return sql, ()
+
+
 def get_caitem_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """Returns item master: itemcode, itemname, itemgroup, packcode."""
     zid = filters["zid"][0]
