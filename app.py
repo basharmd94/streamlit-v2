@@ -256,7 +256,8 @@ class BaseApp:
             st.error("You don't have access to any pages. Please contact your administrator.")
             return
 
-        zid_dict = _load_zid_dict()
+        _ALLOWED_ZIDS = {'100000', '100001', '100005', '100009'}
+        zid_dict = {k: v for k, v in _load_zid_dict().items() if k in _ALLOWED_ZIDS}
 
         project_dict = {
             '100000': 'GI Corporation',
@@ -264,11 +265,14 @@ class BaseApp:
             '100005': 'Zepto Chemicals'
         }
 
+        # Use the page_selector widget key directly — it's updated by Streamlit before
+        # the script re-runs, so there's no one-render delay vs st.session_state.current_page.
+        _on_financials = st.session_state.get('page_selector') == 'Financial Statements'
         selected_zid = st.sidebar.selectbox(
             'Select Business (ZID):',
             list(zid_dict.keys()),
             format_func=lambda x: zid_dict[x],
-            disabled=st.session_state.get('current_page') == 'Financial Statements',
+            disabled=_on_financials,
         )
         st.session_state.zid = selected_zid
         st.session_state.proj = project_dict.get(selected_zid, zid_dict.get(selected_zid, selected_zid))

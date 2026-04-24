@@ -786,19 +786,34 @@ def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None,
 
     select = ["glmst.zid", "glmst.ac_code", "glheader.year",
               "glheader.month", "SUM(gldetail.value) as sum"]
+    # glmst.ac_type is referenced in ORDER BY so it must be in GROUP BY.
+    # Adding it here is safe for all businesses: for those with ac_type set,
+    # (zid, ac_code) already uniquely determines ac_type so the extra GROUP BY
+    # column does not change the result; for those with NULL ac_type (e.g. 100007)
+    # it prevents a PostgreSQL "must appear in GROUP BY" error.
     group_by = ["glmst.zid", "glmst.ac_code", "glheader.year",
-                "glheader.month", "glmst.usage"]
+                "glheader.month", "glmst.usage", "glmst.ac_type"]
 
     if is_project:
         select.extend(["glmst.ac_type", "glmst.ac_lv1", "glmst.ac_lv2", "glmst.usage"])
-        group_by.extend(["glmst.ac_type", "glmst.ac_lv1", "glmst.ac_lv2"])
+        group_by.extend(["glmst.ac_lv1", "glmst.ac_lv2"])  # ac_type already in base group_by
         where.append("gldetail.project = %s")
         params.append(project)
 
+    # Some businesses have NULL ac_type in glmst; fall back to ac_code prefix
+    # so those accounts are not silently excluded from the query.
     if is_bs:
-        where.append("(glmst.ac_type = 'Asset' OR glmst.ac_type = 'Liability')")
+        where.append(
+            "(glmst.ac_type IN ('Asset', 'Liability') "
+            "OR (glmst.ac_type IS NULL "
+            "    AND LEFT(glmst.ac_code, 2) IN ('01','02','03','09','10','11','12','13')))"
+        )
     else:
-        where.append("(glmst.ac_type = 'Income' OR glmst.ac_type = 'Expenditure')")
+        where.append(
+            "(glmst.ac_type IN ('Income', 'Expenditure') "
+            "OR (glmst.ac_type IS NULL "
+            "    AND LEFT(glmst.ac_code, 2) IN ('04','05','06','07','08','14','15')))"
+        )
 
     if year:
         where.append("glheader.year = %s")
@@ -884,6 +899,126 @@ def get_vat_breakdown_gl(
         WHERE {" AND ".join(where)}
     """
     return sql, tuple(params)
+
+
+def get_ind_hh_net_sales(
+    zid,
+    year_list=None,
+    smonth: int = 1,
+    emonth: int = 12,
+) -> Tuple[str, tuple]:
+    """
+    Returns yearly net sales (totalsales - treturnamt) for items where
+    caitem.itemgroup = 'Industrial & Household', for the given ZID.
+
+    Used exclusively by Level T IS to subtract I&H net sales from Revenue
+    for years <= 2024.
+
+    Returns columns: year (int), net_sales (numeric).
+    """
+    year_list = list(year_list) if year_list else []
+
+    s_year_clause = ""
+    r_year_clause = ""
+    if year_list:
+        placeholders = ", ".join(["%s"] * len(year_list))
+        s_year_clause = f"AND EXTRACT(YEAR FROM s.date)::int IN ({placeholders})"
+        r_year_clause = f"AND EXTRACT(YEAR FROM r.date)::int IN ({placeholders})"
+
+    # params: sales subquery first, then return subquery
+    s_params = [zid] + year_list + [smonth, emonth]
+    r_params = [zid] + year_list + [smonth, emonth]
+
+    sql = f"""
+        WITH sales_agg AS (
+            SELECT EXTRACT(YEAR FROM s.date)::int AS year,
+                   SUM(s.totalsales) AS total_sales
+            FROM sales s
+            JOIN caitem ci ON s.itemcode = ci.itemcode AND s.zid = ci.zid
+            WHERE s.zid = %s
+              {s_year_clause}
+              AND EXTRACT(MONTH FROM s.date)::int BETWEEN %s AND %s
+              AND ci.itemgroup = 'Industrial & Household'
+            GROUP BY 1
+        ),
+        return_agg AS (
+            SELECT EXTRACT(YEAR FROM r.date)::int AS year,
+                   SUM(r.treturnamt) AS total_returns
+            FROM return r
+            JOIN caitem ci ON r.itemcode = ci.itemcode AND r.zid = ci.zid
+            WHERE r.zid = %s
+              {r_year_clause}
+              AND EXTRACT(MONTH FROM r.date)::int BETWEEN %s AND %s
+              AND ci.itemgroup = 'Industrial & Household'
+            GROUP BY 1
+        )
+        SELECT
+            COALESCE(s.year, r.year)                              AS year,
+            COALESCE(s.total_sales, 0) - COALESCE(r.total_returns, 0) AS net_sales
+        FROM sales_agg s
+        FULL OUTER JOIN return_agg r ON s.year = r.year
+        ORDER BY 1
+    """
+    return sql, tuple(s_params + r_params)
+
+
+def get_ind_hh_net_cost(
+    zid,
+    year_list=None,
+    smonth: int = 1,
+    emonth: int = 12,
+) -> Tuple[str, tuple]:
+    """
+    Returns yearly net cost (sales.cost - return.returncost) for items where
+    caitem.itemgroup = 'Industrial & Household', for the given ZID.
+
+    Used by Level T IS to subtract I&H net cost from COGS for years <= 2024.
+
+    Returns columns: year (int), net_cost (numeric).
+    """
+    year_list = list(year_list) if year_list else []
+
+    s_year_clause = ""
+    r_year_clause = ""
+    if year_list:
+        placeholders = ", ".join(["%s"] * len(year_list))
+        s_year_clause = f"AND EXTRACT(YEAR FROM s.date)::int IN ({placeholders})"
+        r_year_clause = f"AND EXTRACT(YEAR FROM r.date)::int IN ({placeholders})"
+
+    s_params = [zid] + year_list + [smonth, emonth]
+    r_params = [zid] + year_list + [smonth, emonth]
+
+    sql = f"""
+        WITH sales_cost AS (
+            SELECT EXTRACT(YEAR FROM s.date)::int AS year,
+                   SUM(s.cost) AS total_cost
+            FROM sales s
+            JOIN caitem ci ON s.itemcode = ci.itemcode AND s.zid = ci.zid
+            WHERE s.zid = %s
+              {s_year_clause}
+              AND EXTRACT(MONTH FROM s.date)::int BETWEEN %s AND %s
+              AND ci.itemgroup = 'Industrial & Household'
+            GROUP BY 1
+        ),
+        return_cost AS (
+            SELECT EXTRACT(YEAR FROM r.date)::int AS year,
+                   SUM(r.returncost) AS total_returncost
+            FROM return r
+            JOIN caitem ci ON r.itemcode = ci.itemcode AND r.zid = ci.zid
+            WHERE r.zid = %s
+              {r_year_clause}
+              AND EXTRACT(MONTH FROM r.date)::int BETWEEN %s AND %s
+              AND ci.itemgroup = 'Industrial & Household'
+            GROUP BY 1
+        )
+        SELECT
+            COALESCE(s.year, r.year)                                          AS year,
+            COALESCE(s.total_cost, 0) - COALESCE(r.total_returncost, 0)      AS net_cost
+        FROM sales_cost s
+        FULL OUTER JOIN return_cost r ON s.year = r.year
+        ORDER BY 1
+    """
+    return sql, tuple(s_params + r_params)
 
 
 def get_all_businesses() -> Tuple[str, tuple]:

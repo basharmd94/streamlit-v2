@@ -120,6 +120,7 @@ def create_combined_ls_download_link(
     bs_s: "pd.DataFrame",
     cfs_s: "pd.DataFrame",
     filename: str = "LevelS_Financial_Statements.xlsx",
+    link_label: str = "⬇ Download Level S Financial Statements (Excel)",
 ) -> str:
     """
     Combine the three Level S statements into a single Excel sheet.
@@ -131,9 +132,15 @@ def create_combined_ls_download_link(
     - CFS is missing the first period (it shows deltas); that column is left blank.
     """
     name_col = "ac_name"
+    code_col = "ac_code"
+    # Include ac_code if present in any of the three statements
+    has_code = any(
+        code_col in df.columns for df in (pl_s, bs_s, cfs_s)
+    )
 
     def _period_cols(df):
-        return [c for c in df.columns if c != name_col and
+        skip = {name_col, code_col}
+        return [c for c in df.columns if c not in skip and
                 pd.api.types.is_numeric_dtype(df[c])]
 
     # Collect and sort all unique period columns across all three statements
@@ -155,23 +162,43 @@ def create_combined_ls_download_link(
             pass
         return (9999, 99)
 
-    all_period_cols = sorted(
+    _raw_period_cols = sorted(
         set(_period_cols(pl_s)) | set(_period_cols(bs_s)) | set(_period_cols(cfs_s)),
         key=_sort_key,
     )
-    col_labels = [_period_col_label(c) for c in all_period_cols]
-    out_cols = [name_col] + col_labels
+
+    # Deduplicate: different original column types (e.g. tuple (2021,0) vs int 2021)
+    # can produce the same display label.  Keep only the first original column for
+    # each label so that out_cols is unique and pd.concat does not crash.
+    _seen_labels: dict = {}
+    all_period_cols = []
+    col_labels = []
+    for _orig in _raw_period_cols:
+        _lbl = _period_col_label(_orig)
+        if _lbl not in _seen_labels:
+            _seen_labels[_lbl] = _orig
+            all_period_cols.append(_orig)
+            col_labels.append(_lbl)
+
+    # ac_code comes first when present, then ac_name, then period columns
+    out_cols = ([code_col] if has_code else []) + [name_col] + col_labels
 
     def _prepare(df: "pd.DataFrame") -> "pd.DataFrame":
         pcols = _period_cols(df)
-        sub = df[[name_col] + pcols].copy()
-        # Add empty columns for any missing periods
-        for orig, label in zip(all_period_cols, col_labels):
-            if orig not in sub.columns:
-                sub[label] = None
-            else:
-                sub = sub.rename(columns={orig: label})
-        sub = sub.rename(columns={name_col: name_col})
+        base_cols = (
+            ([code_col] if code_col in df.columns else []) + [name_col] + pcols
+        )
+        sub = df[base_cols].copy()
+        # Rename every recognised period column to its display label.
+        # Also handle columns whose format differs from the canonical one kept in
+        # all_period_cols (e.g. the IS has (2021,0) but the CFS has int 2021 —
+        # both must end up as "2021").
+        label_map = {c: _period_col_label(c) for c in pcols}
+        sub = sub.rename(columns=label_map)
+        # Add blank columns for any period or header not present in this statement.
+        for col in out_cols:
+            if col not in sub.columns:
+                sub[col] = None
         return sub[out_cols]
 
     def _blank_row() -> "pd.DataFrame":
@@ -181,8 +208,11 @@ def create_combined_ls_download_link(
         [_prepare(pl_s), _blank_row(), _prepare(bs_s), _blank_row(), _prepare(cfs_s)],
         ignore_index=True,
     )
-    # Rename header column for readability in the file
-    combined = combined.rename(columns={name_col: "Account"})
+    # Rename header columns for readability in the file
+    rename_map = {name_col: "Account"}
+    if has_code:
+        rename_map[code_col] = "Code"
+    combined = combined.rename(columns=rename_map)
 
     buffer = io.BytesIO()
     combined.to_excel(buffer, index=False)
@@ -191,7 +221,7 @@ def create_combined_ls_download_link(
     href = (
         f'<a href="data:application/vnd.openxmlformats-officedocument.'
         f'spreadsheetml.sheet;base64,{b64}" download="{filename}">'
-        f'⬇ Download Level S Financial Statements (Excel)</a>'
+        f'{link_label}</a>'
     )
     return href
 

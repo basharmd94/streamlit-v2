@@ -110,11 +110,6 @@
                         "constraints": []
                     },
                     {
-                        "name": "sp_id",
-                        "type": "VARCHAR",
-                        "constraints": []
-                    },
-                    {
                         "name": "project",
                         "type": "VARCHAR",
                         "constraints": []
@@ -768,6 +763,33 @@
                     },
                     {
                         "name": "designation",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "business",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "name",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "org",
                         "type": "VARCHAR",
                         "constraints": []
                     }

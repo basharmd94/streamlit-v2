@@ -18,13 +18,25 @@ def _load_raw() -> dict:
     with open(JSON_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def get_filtered_master(zid, excluded_acctypes):
     _sql, _params = queries.get_gl_master(zid)
     df_master = get_dataframe(_sql, _params)
+
+    # Some businesses (e.g. 100007) have NULL ac_type in glmst.
+    # Infer the correct type from the ac_code prefix so that IS/BS
+    # filtering works identically to businesses with fully-populated glmst.
+    _null_mask = df_master['ac_type'].isna() | (df_master['ac_type'].astype(str).str.strip() == '')
+    if _null_mask.any():
+        _codes = df_master.loc[_null_mask, 'ac_code'].astype(str)
+        df_master.loc[_null_mask & _codes.str.startswith('08'),                          'ac_type'] = 'Income'
+        df_master.loc[_null_mask & _codes.str.startswith(('04','05','06','07','14','15')), 'ac_type'] = 'Expenditure'
+        df_master.loc[_null_mask & _codes.str.startswith(('01','02','03')),               'ac_type'] = 'Asset'
+        df_master.loc[_null_mask & _codes.str.startswith(('09','10','11','12','13')),     'ac_type'] = 'Liability'
+
     return df_master[~df_master['ac_type'].isin(excluded_acctypes)]
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def process_data_month(zid, year, start_month, end_month,label_col, label_df, project=None, account_types=None):
     df_master = get_filtered_master(zid, account_types)
     df_new    = df_master.copy()
@@ -192,7 +204,7 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
 
     return df_new.rename(columns={'Income Statement': 'ac_lv5'})
 
-@st.cache_data
+@st.cache_data(ttl=600)
 def process_data(
     zid,
     year_list,                 # list[int] – e.g. [2024, 2023]
@@ -623,10 +635,11 @@ def make_cashflow_statement_level0(pl_df: pd.DataFrame,bs_df: pd.DataFrame, coc_
 
     # ---- E  Assemble rows in the required order -------------------------
     np_row       = _total_row("Net Profit/Loss",    net_profit.loc[col_head[1:]])
-    dep_series   = pl_df.loc[pl_df[code_col].str.contains("06360001", case=False, na=False),col_head].sum()
-    dep_row      = _total_row("Depreciation", dep_series.loc[col_head[1:]])
+    # Depreciation is NOT added back here: the accumulated-depreciation BS account
+    # (03xx codes) is already captured in inv_total via the BS delta, so adding it
+    # back in CFO would double-count it and break the cash-flow check.
     wc_total_row = _total_row("Δ Working Capital",  op_total)
-    cfo_row      = _total_row("Cash from Operations", op_total + net_profit.loc[col_head[1:]] + dep_series.loc[col_head[1:]])
+    cfo_row      = _total_row("Cash from Operations", op_total + net_profit.loc[col_head[1:]])
     capex_row    = _total_row("CapEx / Investments", inv_total)
     fin_row      = _total_row("Cash from Financing", fin_total)
     ndc_row      = _total_row("Net ΔCash",
@@ -679,13 +692,12 @@ def make_cashflow_statement_level0(pl_df: pd.DataFrame,bs_df: pd.DataFrame, coc_
     cfs_df = pd.concat(
         [
             np_row,
-            dep_row,
             op_details, wc_total_row, cfo_row,
             inv_details, capex_row,
             fin_details, fin_row,
-            opening_row,          # ← INSERTED between financing & ΔCash
+            opening_row,
             ndc_row,
-            calc_row,             # ← reconciliation lines
+            calc_row,
             close_row,
             check_row,
         ],
@@ -949,20 +961,17 @@ def _as_year_series(obj, years):
 def build_cfs_level1_summary_df(cfs_lv1: pd.DataFrame,net_profit: pd.DataFrame,depreciation_df: pd.DataFrame,coc_df: pd.DataFrame | None = None,name_col: str = "ac_name") -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # ------------------------------------------------------------------
-    # 1️⃣  normalise NP & Depreciation to Series aligned to cfs columns
+    # 1️⃣  normalise NP to Series aligned to cfs columns
     # ------------------------------------------------------------------
     years_raw = cfs_lv1.select_dtypes("number").columns.tolist()  # e.g., Int64Index([2022, 2023,...])
     years_str = [str(y) for y in years_raw]
 
-    # 2) Normalise NP & Depreciation → Series indexed by string years
     np_series  = _as_year_series(net_profit, years_str)
-    dep_series = _as_year_series(depreciation_df.select_dtypes("number").iloc[0], years_str)
 
     def _row(label: str, series: pd.Series) -> pd.DataFrame:
         return pd.DataFrame({name_col: [label], **series.to_dict()})
 
     np_row  = _row("Net Profit/Loss", np_series)
-    dep_row = _row("Depreciation",    dep_series)
 
     # 3) Tag detail rows
     def bucket_section(label: str) -> str | None:
@@ -985,7 +994,7 @@ def build_cfs_level1_summary_df(cfs_lv1: pd.DataFrame,net_profit: pd.DataFrame,d
     fin_total = _as_year_series(work.loc[fin_mask, years_raw].sum(), years_str)
 
     wc_row  = _row("Δ Working Capital", wc_total)
-    cfo_row = _row("Cash from Operations", wc_total + dep_series + np_series)
+    cfo_row = _row("Cash from Operations", wc_total + np_series)
 
     inv_tot  = _row("Cash from Investing", inv_total)
     fin_tot  = _row("Cash from Financing", fin_total)
@@ -1032,7 +1041,6 @@ def build_cfs_level1_summary_df(cfs_lv1: pd.DataFrame,net_profit: pd.DataFrame,d
     full_df = pd.concat(
         [
             np_row,
-            dep_row,
             work.loc[op_mask],
             wc_row,
             cfo_row,
@@ -1040,7 +1048,7 @@ def build_cfs_level1_summary_df(cfs_lv1: pd.DataFrame,net_profit: pd.DataFrame,d
             inv_tot,
             work.loc[fin_mask],
             fin_tot,
-            opening_row,          # ← inserted before Net ΔCash
+            opening_row,
             ndc_row,
             calc_row,
             close_row,
@@ -1050,7 +1058,7 @@ def build_cfs_level1_summary_df(cfs_lv1: pd.DataFrame,net_profit: pd.DataFrame,d
     ).drop(columns="section")
 
     summary_labels = [
-        "Net Profit/Loss", "Depreciation","Δ Working Capital",
+        "Net Profit/Loss", "Δ Working Capital",
         "Cash from Operations", "Cash from Investing",
         "Cash from Financing","Opening Cash & CE",
         "Net ΔCash","Calculated Closing Cash & CE",
@@ -1168,15 +1176,13 @@ def build_cfs_level2_summary(cfs_lv2: pd.DataFrame,net_profit_lv2: pd.DataFrame,
     years_raw = cfs_lv2.select_dtypes("number").columns.tolist()
     years_str = [str(c) for c in years_raw]
 
-    # 1) Net-profit & Depreciation as aligned Series (string-indexed)
-    np_series  = _as_year_series(net_profit_lv2,       years_str)
-    dep_series = _as_year_series(depreciation_lv1_row, years_str)
+    # 1) Net-profit as aligned Series (string-indexed)
+    np_series  = _as_year_series(net_profit_lv2, years_str)
 
     def _row(label: str, series: pd.Series) -> pd.DataFrame:
         return pd.DataFrame({name_col: [label], **series.to_dict()})
 
     np_row  = _row("Net Profit/Loss", np_series)
-    dep_row = _row("Depreciation",    dep_series)
 
     def section_of(label: str) -> str | None:
         if label in ("Change in Net Profit/Loss", "Prior Period Net Profit/Loss"):
@@ -1198,7 +1204,7 @@ def build_cfs_level2_summary(cfs_lv2: pd.DataFrame,net_profit_lv2: pd.DataFrame,
     fin_tot = _as_year_series(work.loc[fin_mask, years_raw].sum(), years_str)
 
     wc_row  = _row("Δ Working Capital", wc_tot)
-    cfo_row = _row("Cash from Operations", wc_tot + dep_series + np_series)
+    cfo_row = _row("Cash from Operations", wc_tot + np_series)
 
     inv_row = _row("Cash from Investing",  inv_tot)
     fin_row = _row("Cash from Financing",  fin_tot)
@@ -1238,11 +1244,10 @@ def build_cfs_level2_summary(cfs_lv2: pd.DataFrame,net_profit_lv2: pd.DataFrame,
     full_df = pd.concat(
         [
             np_row,
-            dep_row,
             work.loc[op_mask],  wc_row,  cfo_row,
             work.loc[inv_mask], inv_row,
             work.loc[fin_mask], fin_row,
-            opening_row,                   # inserted before ΔCash
+            opening_row,
             ndc_row,
             calc_row, close_row, check_row
         ],
@@ -1250,7 +1255,7 @@ def build_cfs_level2_summary(cfs_lv2: pd.DataFrame,net_profit_lv2: pd.DataFrame,
     ).drop(columns="section")
 
     summary_labels = [
-        "Net Profit/Loss", "Depreciation","Δ Working Capital",
+        "Net Profit/Loss", "Δ Working Capital",
         "Cash from Operations", "Cash from Investing",
         "Cash from Financing","Opening Cash & CE",
         "Net ΔCash","Calculated Closing Cash & CE",
@@ -1421,7 +1426,8 @@ def build_pl_level_s(
     others_rev    = s(["08010002","08020001","08020002","08020003","08030001","08030002",
                         "08040001","08050001","08050002","08050003","08050004",
                         "08050005","08050006","08050007","08050008","08050009",
-                        "08050010","08050011"])
+                        "08050010","08050011",
+                        "15010001"])   # Sales Return — revenue deduction (pre-2016 only)
     mrp_discount  = s(["07080002"])
 
     # Adjusted Revenue = Revenue - MRP Discount (display only, no effect on other rows)
@@ -1429,8 +1435,9 @@ def build_pl_level_s(
 
     # COGS: purchase-related codes only. 05010001/03/04 (0501-Others Direct
     # Expenses) are reported on their own dedicated IS line below GP.
-    # 04010011 included as a purchase-related cost (zero in recent years).
-    cogs          = s(["04010020","04010002","04010004","04010011"])
+    # 04010008 (Customs Tax & VAT on imports) and 04010011 included as
+    # purchase-related costs.
+    cogs          = s(["04010020","04010002","04010004","04010008","04010011"])
 
     # SGA includes Director Remuneration (06150001–3) for full reconciliation.
     sga           = s(["06010001","06010002","06010003","06010004","06010005",
@@ -1453,7 +1460,8 @@ def build_pl_level_s(
                         "06310001","06310002","06310003","06310004","06310005",
                         "06310006","06310007","06320001","06320002","06340001",
                         "06360001","06370001","06380001","06390001","06290003",
-                        "06290004","05010002"])
+                        "06290004","05010002",
+                        "06160006"])   # Paper bill — previously missing from SGA
     salary        = s(["06120001","06120002"])
     bonus         = s(["06130001","06130002"])
     overtime      = s(["06140001","06140002"])
@@ -1531,9 +1539,76 @@ def build_pl_level_s(
     return pd.concat(rows, ignore_index=True)
 
 
+# ── Per-business Level S BS code routing ─────────────────────────────────────
+# Each entry overrides which ac_codes map to which AR/AP buckets.
+# Businesses not listed use the default routing below.
+_BS_LEVEL_S_CODE_ROUTES: dict = {
+    "100000": {
+        # 01030002 = Internal Receivable; 01030003 = Recognized Agent (Dealers)
+        "ar_main":      ["01030001"],
+        "ar_internal":  ["01030002"],
+        "ar_agent":     ["01030003"],
+        "ar_local":     [],
+        "ar_defaulted": [],
+        # 09030002 = Internal AP; 09030003 = International AP
+        "ap_local":     ["09030001"],
+        "ap_internal":  ["09030002"],
+        "ap_intl":      ["09030003"],
+    },
+    "100001": {
+        # 01030003 = Defaulted Receivables (not local AR)
+        "ar_main":      ["01030001"],
+        "ar_internal":  [],
+        "ar_agent":     ["01030002"],
+        "ar_local":     [],
+        "ar_defaulted": ["01030003"],
+        "ap_local":     ["09030001", "09030002"],
+        "ap_internal":  ["09030003"],
+        "ap_intl":      ["09030004"],
+    },
+    "100005": {
+        # 09030002 = Internal AP; 09030003 = International AP
+        "ar_main":      ["01030001"],
+        "ar_internal":  [],
+        "ar_agent":     ["01030002"],
+        "ar_local":     ["01030003"],
+        "ar_defaulted": [],
+        "ap_local":     ["09030001"],
+        "ap_internal":  ["09030002"],
+        "ap_intl":      ["09030003"],
+    },
+}
+
+_BS_LEVEL_S_CODE_ROUTES_DEFAULT: dict = {
+    "ar_main":      ["01030001"],
+    "ar_internal":  [],
+    "ar_agent":     ["01030002"],
+    "ar_local":     ["01030003"],
+    "ar_defaulted": [],
+    "ap_local":     ["09030001", "09030002"],
+    "ap_internal":  ["09030003"],
+    "ap_intl":      ["09030004"],
+}
+
+# Consolidated routing: merges code variants from different businesses into
+# unified group-level buckets.  No internal AR/AP bucket — those intercompany
+# amounts net at the total assets / liabilities level via natural sign netting.
+_BS_LEVEL_S_CODE_ROUTES["consolidated"] = {
+    "ar_main":      ["01030001"],
+    "ar_internal":  [],
+    "ar_agent":     ["01030002", "01030003"],   # both Recognised Agent variants
+    "ar_local":     [],
+    "ar_defaulted": [],
+    "ap_local":     ["09030001", "09030002"],   # incl. 100001 Construction Materials AP
+    "ap_internal":  [],
+    "ap_intl":      ["09030003", "09030004"],   # both AP International variants
+}
+
+
 def build_bs_level_s(
     bs_raw: pd.DataFrame,
     net_profit: pd.Series,
+    zid=None,
     code_col: str = "ac_code",
     name_col: str = "ac_name",
 ) -> pd.DataFrame:
@@ -1546,6 +1621,9 @@ def build_bs_level_s(
         Raw Level 0 BS with ac_code still present.
     net_profit : Series
         Net Income per period from build_pl_level_s() (Level S sign: positive=profit).
+    zid : str or int, optional
+        Business ZID used to look up per-business AR/AP code routing.
+        If None or not in the routing table, the default routing is used.
 
     Returns
     -------
@@ -1558,13 +1636,21 @@ def build_bs_level_s(
     def d(codes):  return _ls_sum_raw(bs_raw, codes, code_col)
     def pfx(p):    return _ls_prefix_sum(bs_raw, p, code_col)
 
+    # ── Per-business AR/AP code routing ──────────────────────────────────────
+    _routes = _BS_LEVEL_S_CODE_ROUTES.get(
+        str(zid) if zid is not None else "",
+        _BS_LEVEL_S_CODE_ROUTES_DEFAULT,
+    )
+
     # ── Current Assets ───────────────────────────────────────────────────────
     cash_ce       = d(["01010001","01010003","01010004","01010006","01010008"])
     bank_bal      = d(["01020001","01020002","01020003"])
-    ar_local      = d(["01030003"])
-    ar_main       = d(["01030001"])
-    ar_agent      = d(["01030002"])
-    ar_total      = ar_main + ar_agent + ar_local
+    ar_main       = d(_routes["ar_main"])
+    ar_internal   = d(_routes["ar_internal"])
+    ar_agent      = d(_routes["ar_agent"])
+    ar_local      = d(_routes["ar_local"])
+    ar_defaulted  = d(_routes["ar_defaulted"])
+    ar_total      = ar_main + ar_internal + ar_agent + ar_local + ar_defaulted
     prepaid       = d(["01040005"])
     advance       = d(["01050001","01050002","01050003","01050004",
                         "01050005","01050006","01050007","01050008"])
@@ -1602,20 +1688,20 @@ def build_bs_level_s(
     # ── Current Liabilities ───────────────────────────────────────────────────
     accrued       = d(["09010001","09010002","09010003","09010004",
                         "09010005","09010006"])
-    ap_local      = d(["09030001","09030002"])
-    ap_internal   = d(["09030003"])
-    ap_intl       = d(["09030004"])
+    ap_local      = d(_routes["ap_local"])
+    ap_internal   = d(_routes["ap_internal"])
+    ap_intl       = d(_routes["ap_intl"])
     ap_total      = ap_local + ap_internal + ap_intl
     money_agent   = d(["09040001","09040002","09040003","09040004",
                         "09040005","09040007"])
     recon_liab    = d(["09040006"])
-    cf_liab       = d(["09050009","09050019","09050024"])
+    cf_liab       = pfx("09050")   # all C&F / shipping / customs liability codes
     others_liab   = d(["09060001"])
     total_cl      = accrued + ap_total + money_agent + recon_liab + cf_liab + others_liab
 
     # ── Short-Term Bank Loans (B) ─────────────────────────────────────────────
-    stb_loan      = d(["10010003","10010004","10010005","10010006",
-                        "10010007","10010008"])
+    stb_loan      = d(["10010001","10010002","10010003","10010004",
+                        "10010005","10010006","10010007","10010008"])
 
     # ── Short-Term Loans (other) ──────────────────────────────────────────────
     st_loan       = d(["10020001","10020002","10020003","10020004","10020005",
@@ -1630,7 +1716,7 @@ def build_bs_level_s(
     # ── Reserve & Funds ───────────────────────────────────────────────────────
     emp_fund      = d(["11010001","11010002","11010003"])
     dir_award     = d(["11020002"])
-    rent_tax_fund = d(["11020001"])
+    rent_tax_fund = d(["11020001","11020003"])   # 11020003 Office Rent Tax Fund
     edu_fund      = d(["11030001"])
     sec_fund      = d(["11040001","11040002"])
     total_rf      = emp_fund + dir_award + rent_tax_fund + edu_fund + sec_fund
@@ -1654,8 +1740,10 @@ def build_bs_level_s(
         _ls_row("0101-Cash & Cash Equivalent",            cash_ce,       name_col),
         _ls_row("0102-Bank Balance",                      bank_bal,      name_col),
         _ls_row("Accounts Receivable",                    ar_main,       name_col),
+        _ls_row("Accounts Receivable (Internal)",         ar_internal,   name_col),
         _ls_row("Recognized Agent (Dealers)",             ar_agent,      name_col),
         _ls_row("Accounts Receivable (Local)",            ar_local,      name_col),
+        _ls_row("Defaulted Receivables",                  ar_defaulted,  name_col),
         _ls_row("0103-Accounts Receivable (Total)",       ar_total,      name_col),
         _ls_row("0104-Prepaid Expenses",                  prepaid,       name_col),
         _ls_row("0105-Advance Accounts",                  advance,       name_col),
@@ -1794,7 +1882,7 @@ def build_cfs_level_s(
     ap_intl       = d(["09030004"])
     ap_total      = ap_local + ap_internal + ap_intl
     recon_liab    = d(["09040006"])
-    cf_liab       = d(["09050009","09050019","09050024"])
+    cf_liab       = pfx("09050")   # all C&F / shipping / customs liability codes
     others_liab   = d(["09060001"])
 
     # — Investing: Other Assets —
@@ -1822,8 +1910,8 @@ def build_cfs_level_s(
     # — Financing: Liabilities & Equity —
     money_agent   = d(["09040001","09040002","09040003","09040004",
                         "09040005","09040007"])
-    stb_loan      = d(["10010003","10010004","10010005","10010006",
-                        "10010007","10010008"])
+    stb_loan      = d(["10010001","10010002","10010003","10010004",
+                        "10010005","10010006","10010007","10010008"])
     st_loan       = d(["10020001","10020002","10020003","10020004","10020005",
                         "10020006","10020007","10020008","10020009","10020010",
                         "10020011","10020012","10020013","10020014","10020015",
@@ -1831,18 +1919,13 @@ def build_cfs_level_s(
     ltl_loan      = d(["12010001","12010002"])
     emp_fund      = d(["11010001","11010002","11010003"])
     dir_award     = d(["11020002"])
-    rent_tax_fund = d(["11020001"])
+    rent_tax_fund = d(["11020001","11020003"])   # 11020003 Office Rent Tax Fund
     edu_fund      = d(["11030001"])
     sec_fund      = d(["11040001","11040002"])
     share_cap     = d(["13010001"])
     retained      = d(["13010003","13010004","13010005"])
     error_adj     = d(["13020001","13020002","13020003","13020004",
                         "13020005","13020006","13020007","13021001"])
-
-    # ── Depreciation (non-cash add-back) ──────────────────────────────────
-    dep_series = (_ls_sum_raw(pl_raw, ["06360001"], code_col)
-                  .reindex(delta_cols, fill_value=0.0))
-    dep_series = pd.Series(dep_series.values, index=delta_cols, dtype=float)
 
     # ── Net Profit for CFS ────────────────────────────────────────────────
     # net_income_series is Level S (positive=profit).  Negate for CFS convention.
@@ -1949,7 +2032,10 @@ def build_cfs_level_s(
         index=delta_cols, dtype=float,
     )
 
-    cfo_series = np_cfs + dep_series + op_total
+    # Depreciation is NOT added back: the accumulated-depreciation BS account
+    # (03xx codes) is already captured in inv_total via the BS delta, so adding
+    # dep back in CFO would double-count it and break the cash-flow check.
+    cfo_series = np_cfs + op_total
 
     # ── Opening / closing cash (reuse Level 0 coc_lv0) ───────────────────
     num_coc   = coc_lv0.select_dtypes("number").columns
@@ -1969,7 +2055,6 @@ def build_cfs_level_s(
                     closing[key2delta[k]] = close_raw.iloc[0][col]
 
     np_row      = _row("Net Profit/Loss",               np_cfs)
-    dep_row     = _row("Depreciation",                  dep_series)
     wc_row      = _row("Δ Working Capital",             op_total)
     cfo_row     = _row("Cash from Operations",          cfo_series)
     inv_row     = _row("Cash from Investing",           inv_total)
@@ -1984,7 +2069,7 @@ def build_cfs_level_s(
 
     full_df = pd.concat(
         [
-            np_row, dep_row,
+            np_row,
             op_details, wc_row, cfo_row,
             inv_details, inv_row,
             fin_details, fin_row,
@@ -1995,7 +2080,7 @@ def build_cfs_level_s(
     )
 
     summary_labels = [
-        "Net Profit/Loss", "Depreciation", "Δ Working Capital",
+        "Net Profit/Loss", "Δ Working Capital",
         "Cash from Operations", "Cash from Investing",
         "Cash from Financing", "Opening Cash & CE",
         "Net ΔCash", "Calculated Closing Cash & CE",
@@ -2004,3 +2089,1001 @@ def build_cfs_level_s(
     sum_df = full_df[full_df[name_col].isin(summary_labels)].reset_index(drop=True)
 
     return full_df, sum_df
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Level T — Trading Adjustments (ZID 100001, Full Year vs YTD / Lifetime only)
+#
+# These functions take already-generated Level S DataFrames as input and apply
+# row-level overrides.  Level S generation is completely untouched.
+#
+# adj_data : dict of named pd.Series, each indexed to the numeric period
+#            columns of the Level S DataFrames.  Add future adjustments here:
+#              "ind_hh_net_sales" — I&H net sales subtracted from Revenue (years <= 2024)
+#              future: "cogs_adj", "sga_adj", etc.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _t_get(df: pd.DataFrame, name: str, name_col: str = "ac_name") -> pd.Series:
+    """Return the numeric row values for a named row in a Level S DataFrame."""
+    num = df.select_dtypes("number").columns
+    mask = df[name_col] == name
+    if not mask.any():
+        return pd.Series(0.0, index=num)
+    return df.loc[mask, num].iloc[0].copy()
+
+
+def _t_set(df: pd.DataFrame, name: str, values: pd.Series,
+           name_col: str = "ac_name") -> None:
+    """Overwrite the numeric values for a named row in a Level S DataFrame (in-place)."""
+    num = df.select_dtypes("number").columns
+    mask = df[name_col] == name
+    if mask.any():
+        df.loc[mask, num] = values.reindex(num).values
+
+
+def get_level_t_vat_prior(num_cols) -> pd.Series:
+    """
+    Load the pre-2022 VAT Rebate reclassification amounts from
+    data/level_t_vat_prior.json and return a Series aligned to *num_cols*.
+
+    Values are non-zero only for year columns <= 2021.  Update the JSON file
+    at data/level_t_vat_prior.json when exact figures are available from
+    physical records.
+    """
+    _path = HERE / "data" / "level_t_vat_prior.json"
+    _raw: dict = {}
+    if _path.exists():
+        with open(_path, "r", encoding="utf-8") as _f:
+            _raw = json.load(_f).get("vat_rebate_prior", {})
+
+    series = pd.Series(0.0, index=num_cols)
+    for col in num_cols:
+        yr = _period_key(col)[0]
+        if yr <= 2021:
+            key = str(yr)
+            if key in _raw:
+                series[col] = float(_raw[key])
+    return series
+
+
+def adjust_pl_level_t(pl_s: pd.DataFrame, adj_data: dict) -> pd.DataFrame:
+    """
+    Apply Level T adjustments to the Level S Income Statement.
+
+    Current adjustments
+    -------------------
+    - Revenue reduced by Industrial & Household net sales (years <= 2024 only;
+      the caller zeroes out later years in adj_data["ind_hh_net_sales"]).
+    - Adjusted Revenue, Gross Profit, EBITDA and Net Income are recalculated
+      to cascade the revenue change through the IS.
+
+    Future adjustments
+    ------------------
+    Add entries to adj_data and corresponding _t_set calls in the
+    ADJUSTMENTS BLOCK below.  All other rows stay identical to Level S.
+    """
+    df = pl_s.copy()
+    num = df.select_dtypes("number").columns
+    z = pd.Series(0.0, index=num)
+
+    # ── ADJUSTMENTS BLOCK ─────────────────────────────────────────────────────
+    ind_hh        = adj_data.get("ind_hh_net_sales", z.copy())
+    cogs_adj      = adj_data.get("cogs_adj",          z.copy())
+    # 8 % of I&H revenue is the expense reduction applied proportionally across
+    # all SG&A and S&D sub-rows (bank interest and tax rows are untouched).
+    exp_reduction = 0.08 * ind_hh   # positive value per year
+    # Pre-2022 VAT rebate amounts that were embedded inside COGS; loaded from JSON.
+    # Non-zero only for years <= 2021 (placeholder 5 000 000 BDT — update from records).
+    vat_rebate_prior = get_level_t_vat_prior(num)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # ── Read Level S rows ─────────────────────────────────────────────────────
+    revenue        = _t_get(df, "Revenue")
+    others_rev     = _t_get(df, "Others Revenue")
+    mrp_discount   = _t_get(df, "MRP Discount")
+    cogs           = _t_get(df, "COGS")
+    vat_rebate_row = _t_get(df, "VAT Expenses from Rebate (A)")
+
+    # SG&A individual rows
+    sga            = _t_get(df, "SG&A")
+    salary         = _t_get(df, "0612-Salary Expenses")
+    bonus          = _t_get(df, "0613-Employee Bonus")
+    overtime       = _t_get(df, "0614-Overtime")
+    director_rem   = _t_get(df, "0615-Director Remuneration")
+
+    # S&D individual rows
+    discount_paid  = _t_get(df, "0708-Discount Paid")
+    sd_expenses    = _t_get(df, "Sales & Distribution Expenses")
+
+    others_direct  = _t_get(df, "0501-Others Direct Expenses")
+    total_interest = _t_get(df, "Total Interest & Charges")
+    vat_tax_total  = _t_get(df, "0629-VAT & Tax Total (A+B+C)")
+
+    # ── Revenue & COGS adjustments ─────────────────────────────────────────────
+    new_revenue      = revenue - ind_hh
+    new_adj_revenue  = new_revenue + mrp_discount
+
+    # Remove I&H net cost AND reclassify pre-2022 embedded VAT out of COGS.
+    # Both adjustments are positive, making COGS less negative (lower cost).
+    new_cogs         = cogs + cogs_adj + vat_rebate_prior
+    new_gross_profit = new_revenue + others_rev + mrp_discount + new_cogs
+
+    # ── Pre-2022 VAT reclassification — move out of COGS into VAT line ────────
+    # The same amount is added to VAT Expenses from Rebate (making it more
+    # negative = larger expense) so that Net Income remains unchanged.
+    new_vat_rebate    = vat_rebate_row - vat_rebate_prior
+    new_vat_tax_total = vat_tax_total  - vat_rebate_prior
+
+    # ── Proportional expense reduction across SG&A + S&D ──────────────────────
+    # total_base is the sum of all sub-rows — negative (expenses).
+    # scale = exp_reduction / total_base  →  negative value.
+    # new_row = row * (1 + scale)  →  row magnitude shrinks proportionally.
+    total_base  = (sga + salary + bonus + overtime + director_rem
+                   + discount_paid + sd_expenses)
+    safe_base   = total_base.where(total_base != 0, other=np.nan)
+    scale       = (exp_reduction / safe_base).fillna(0)
+
+    new_sga          = sga          * (1 + scale)
+    new_salary       = salary       * (1 + scale)
+    new_bonus        = bonus        * (1 + scale)
+    new_overtime     = overtime     * (1 + scale)
+    new_director_rem = director_rem * (1 + scale)
+    new_disc_paid    = discount_paid * (1 + scale)
+    new_sd_expenses  = sd_expenses  * (1 + scale)
+
+    new_total_sga    = new_sga + new_salary + new_bonus + new_overtime + new_director_rem
+    new_total_sd     = new_disc_paid + new_sd_expenses
+
+    new_ebitda       = new_gross_profit + new_total_sga + new_total_sd + others_direct
+    # VAT tax total already incorporates the rebate reclassification above.
+    new_net_income   = new_ebitda + total_interest + new_vat_tax_total
+
+    # ── Write back ────────────────────────────────────────────────────────────
+    _t_set(df, "Revenue",                        new_revenue)
+    _t_set(df, "Adjusted Revenue (Pending)",     new_adj_revenue)
+    _t_set(df, "COGS",                           new_cogs)
+    _t_set(df, "Gross Profit",                   new_gross_profit)
+    _t_set(df, "VAT Expenses from Rebate (A)",   new_vat_rebate)
+    _t_set(df, "0629-VAT & Tax Total (A+B+C)",   new_vat_tax_total)
+    _t_set(df, "SG&A",                           new_sga)
+    _t_set(df, "0612-Salary Expenses",           new_salary)
+    _t_set(df, "0613-Employee Bonus",            new_bonus)
+    _t_set(df, "0614-Overtime",                  new_overtime)
+    _t_set(df, "0615-Director Remuneration",     new_director_rem)
+    _t_set(df, "Total SG&A",                     new_total_sga)
+    _t_set(df, "0708-Discount Paid",             new_disc_paid)
+    _t_set(df, "Sales & Distribution Expenses",  new_sd_expenses)
+    _t_set(df, "Total Sales & Distribution",     new_total_sd)
+    _t_set(df, "EBITDA",                         new_ebitda)
+    _t_set(df, "Net Income",                     new_net_income)
+
+    return df
+
+
+def get_level_t_stock_inh(num_cols) -> pd.Series:
+    """
+    Load the I&H ending stock balance per year from
+    data/level_t_stock_inh.json and return a Series aligned to *num_cols*.
+
+    Values cover 2016–2023 (manually calculated). Years outside that range
+    return 0 (no adjustment). Update the JSON when revised figures are available.
+    """
+    _path = HERE / "data" / "level_t_stock_inh.json"
+    _raw: dict = {}
+    if _path.exists():
+        with open(_path, "r", encoding="utf-8") as _f:
+            _raw = json.load(_f).get("inh_stock_balance", {})
+
+    series = pd.Series(0.0, index=num_cols)
+    for col in num_cols:
+        key = str(_period_key(col)[0])
+        if key in _raw:
+            series[col] = float(_raw[key])
+    return series
+
+
+def adjust_bs_level_t(bs_s: pd.DataFrame, adj_data: dict) -> pd.DataFrame:
+    """
+    Apply Level T adjustments to the Level S Balance Sheet.
+
+    Adjustments applied
+    -------------------
+    1. Stock in Hand     — subtract the I&H ending inventory balance (from JSON)
+                           from '0106-Stock in Hand'.
+    2. Accounts Receivable — scale all AR rows by the non-I&H revenue share:
+                           keep_ratio = 1 − (ind_hh_net_sales / level_s_revenue)
+                           Sub-rows (AR Main, Agent, Local) and AR Total are all
+                           scaled by the same ratio so they remain consistent.
+    3. Cash & Bank       — scale '0101-Cash & Cash Equivalent' and
+                           '0102-Bank Balance' by the same keep_ratio, removing
+                           the estimated cash float held for I&H operations.
+    4. Equity balancing  — after all asset reductions, the '1302-Error Adjustment
+                           For Retained Earning' row is offset by the exact gap
+                           so that Balance Check returns to zero.  Total Equity
+                           and Total Liabilities & Equity are recalculated
+                           accordingly.
+
+    adj_data keys consumed
+    ----------------------
+    ind_hh_net_sales : pd.Series  — I&H net sales (from PL revenue adjustment)
+    level_s_revenue  : pd.Series  — Level S total revenue (pre-T adjustments)
+    """
+    df = bs_s.copy()
+    num = df.select_dtypes("number").columns
+    z   = pd.Series(0.0, index=num)
+
+    # ── Load inputs ───────────────────────────────────────────────────────────
+    inh_stock      = get_level_t_stock_inh(num)
+    ind_hh_rev     = adj_data.get("ind_hh_net_sales", z.copy()).reindex(num, fill_value=0.0)
+    level_s_rev    = adj_data.get("level_s_revenue",  z.copy()).reindex(num, fill_value=0.0)
+
+    # I&H share of total revenue (clamped to [0, 1] for safety)
+    safe_rev   = level_s_rev.where(level_s_rev != 0, other=np.nan)
+    ih_ratio   = (ind_hh_rev / safe_rev).fillna(0.0).clip(0.0, 1.0)
+    keep_ratio = 1.0 - ih_ratio   # fraction to retain (non-I&H share)
+
+    # ── Read current BS rows ──────────────────────────────────────────────────
+    cash_ce    = _t_get(df, "0101-Cash & Cash Equivalent")
+    bank_bal   = _t_get(df, "0102-Bank Balance")
+    ar_main    = _t_get(df, "Accounts Receivable")
+    ar_agent   = _t_get(df, "Recognized Agent (Dealers)")
+    ar_local   = _t_get(df, "Accounts Receivable (Local)")
+    ar_total   = _t_get(df, "0103-Accounts Receivable (Total)")
+    prepaid    = _t_get(df, "0104-Prepaid Expenses")
+    advance    = _t_get(df, "0105-Advance Accounts")
+    stock      = _t_get(df, "0106-Stock in Hand")
+    total_oa   = _t_get(df, "Total Other Assets (B)")
+    total_fa   = _t_get(df, "Total Fixed Assets (C)")
+    share_cap  = _t_get(df, "1301-Share Capital")
+    retained   = _t_get(df, "1301A-Non-Cash Capital (Retained Earning)")
+    error_adj  = _t_get(df, "1302-Error Adjustment For Retained Earning")
+    np_for_bs  = _t_get(df, "Net Profit/Loss")
+    total_liab = _t_get(df, "Total Liabilities (A+B+C+D+E)")
+
+    # ── Adjustment 1: Stock in Hand ───────────────────────────────────────────
+    new_stock = stock - inh_stock
+
+    # ── Adjustment 2: Accounts Receivable (non-I&H share only) ───────────────
+    new_ar_main  = ar_main  * keep_ratio
+    new_ar_agent = ar_agent * keep_ratio
+    new_ar_local = ar_local * keep_ratio
+    new_ar_total = ar_total * keep_ratio
+
+    # ── Adjustment 3: Cash & Bank (non-I&H share only) ───────────────────────
+    new_cash_ce  = cash_ce  * keep_ratio
+    new_bank_bal = bank_bal * keep_ratio
+
+    # ── Recalculate asset subtotals ───────────────────────────────────────────
+    new_total_ca     = new_cash_ce + new_bank_bal + new_ar_total + prepaid + advance + new_stock
+    new_total_assets = new_total_ca + total_oa + total_fa
+
+    # ── Adjustment 4: Equity balancing ───────────────────────────────────────
+    # Compute the imbalance that exists before correction.  All removed assets
+    # reduce total_assets; without a matching liability/equity offset the
+    # Balance Check deviates from zero.  We absorb the gap into error_adj so
+    # that Balance Check = new_total_assets + new_total_le = 0 exactly.
+    intermediate_check = new_total_assets + total_liab + share_cap + retained + error_adj + np_for_bs
+    new_error_adj      = error_adj - intermediate_check
+    new_total_equity   = share_cap + retained + new_error_adj + np_for_bs
+    new_total_le       = total_liab + new_total_equity
+
+    # ── Write back ────────────────────────────────────────────────────────────
+    _t_set(df, "0101-Cash & Cash Equivalent",                new_cash_ce)
+    _t_set(df, "0102-Bank Balance",                          new_bank_bal)
+    _t_set(df, "0106-Stock in Hand",                         new_stock)
+    _t_set(df, "Accounts Receivable",                        new_ar_main)
+    _t_set(df, "Recognized Agent (Dealers)",                 new_ar_agent)
+    _t_set(df, "Accounts Receivable (Local)",                new_ar_local)
+    _t_set(df, "0103-Accounts Receivable (Total)",           new_ar_total)
+    _t_set(df, "01-Total Current Assets (A)",                new_total_ca)
+    _t_set(df, "Total Assets (A+B+C)",                       new_total_assets)
+    _t_set(df, "1302-Error Adjustment For Retained Earning", new_error_adj)
+    _t_set(df, "Total Equity",                               new_total_equity)
+    _t_set(df, "Total Liabilities & Equity",                 new_total_le)
+    _t_set(df, "Balance Check",                              new_total_assets + new_total_le)
+
+    return df
+
+
+def adjust_cfs_level_t(
+    cfs_s: pd.DataFrame,
+    summary_s: pd.DataFrame,
+    adj_data: dict,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Apply Level T adjustments to the Level S Cash Flow Statement.
+    Currently a pass-through — placeholder for future row-level CFS overrides.
+    CFS is rebuilt from scratch with the updated net income before this is called,
+    so the net income change propagates automatically.
+    """
+    # future: add _t_set calls here as new adj_data keys are introduced
+    return cfs_s.copy(), summary_s.copy()
+
+
+def build_cfs_from_bs_t(
+    bs_t: pd.DataFrame,
+    net_income_series: pd.Series,
+    name_col: str = "ac_name",
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build the Level T Cash Flow Statement directly from the adjusted Level T
+    Balance Sheet.
+
+    Unlike build_cfs_level_s(), which reads raw GL account codes, this function
+    reads the named rows that already exist in bs_t (the output of
+    adjust_bs_level_t).  Because bs_t is fully balanced (Balance Check = 0),
+    the resulting CFS check is guaranteed to be 0 as well.
+
+    Opening and closing cash are derived from the adjusted '0101-Cash & Cash
+    Equivalent' + '0102-Bank Balance' rows, so they reflect the I&H-removed
+    cash balance consistently.
+
+    This function is designed for yearly mode only (matching Level T).
+
+    Parameters
+    ----------
+    bs_t             : adjusted Level T Balance Sheet from adjust_bs_level_t()
+    net_income_series: Net Income per period from adjust_pl_level_t() (positive=profit)
+
+    Returns
+    -------
+    (full_df, summary_df)  — same structure as build_cfs_level_s()
+    """
+    num_all     = bs_t.select_dtypes("number").columns
+    sorted_cols = sorted(num_all, key=_period_key)
+    col_head    = sorted_cols          # all period columns (e.g. 5 years)
+    delta_cols  = col_head[1:]         # 4 delta columns (CFS window)
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+    def get(row_name: str) -> pd.Series:
+        """Read a named BS row and align to col_head."""
+        return _t_get(bs_t, row_name).reindex(col_head, fill_value=0.0)
+
+    def delta(series: pd.Series) -> pd.Series:
+        """Year-on-year change; result indexed by delta_cols."""
+        s = pd.Series(series.values, index=col_head, dtype=float)
+        d_s = s.diff().iloc[1:]
+        d_s.index = delta_cols
+        return d_s
+
+    def _row(label: str, series: pd.Series) -> pd.DataFrame:
+        return pd.DataFrame({name_col: [label],
+                             **dict(zip(delta_cols, series.values))})
+
+    # ── Read all BS rows (mirrors the named rows in build_bs_level_s) ──────
+
+    # Current Assets — WC items (cash excluded; tracked separately as open/close)
+    ar_main      = get("Accounts Receivable")
+    ar_agent     = get("Recognized Agent (Dealers)")
+    ar_local     = get("Accounts Receivable (Local)")
+    ar_total     = get("0103-Accounts Receivable (Total)")
+    prepaid      = get("0104-Prepaid Expenses")
+    advance      = get("0105-Advance Accounts")
+    stock        = get("0106-Stock in Hand")
+
+    # Current Liabilities — WC items (money_agent goes to Financing)
+    accrued      = get("0901-Accrued Expenses")
+    ap_local     = get("Accounts Payable (Local)")
+    ap_internal  = get("Accounts Payable (Internal)")
+    ap_intl      = get("Accounts Payable (International)")
+    ap_total     = get("0903-Accounts Payable (Total)")
+    recon_liab   = get("0904-Reconciliation Liability")
+    cf_liab      = get("0905-C & F Liability")
+    others_liab  = get("0906-Others Liability")
+
+    # Investing: Other Assets
+    def_capex    = get("0201-Deferred Capital Expenditure")
+    gift_items   = get("0202-Gift Items")
+    loan_hosp    = get("0203-Loan to Hospital (Staff Salary)")
+    loan_surma   = get("0203-Loan to Others Concern (Surma)")
+    security_dep = get("0204-Security Deposit")
+    loan_others  = get("0205-Loan to Others Concern")
+    other_invest = get("0206-Other Investment")
+
+    # Investing: Fixed Assets
+    fa_office_eq  = get("0301-Office Equipment")
+    fa_corp_eq    = get("0302-Corporate Office Equipments")
+    fa_furn       = get("0303-Furniture & Fixture")
+    fa_trade_veh  = get("0304-Trading Vehicles")
+    fa_priv_veh   = get("0305-Private Vehicles")
+    fa_plant      = get("0306-Plants & Machinery")
+    fa_intang     = get("0307-Intangible Asset")
+    fa_land       = get("0308-Land & Building")
+
+    # Financing: Liabilities & Equity
+    money_agent   = get("0904-Money Agent Liability")
+    stb_loan      = get("1001-Short Term Bank Loan (B)")
+    st_loan       = get("1001-Short Term Loan (Related Parties)")
+    ltl_loan      = get("1201-Long Term Bank Loan (E)")
+    emp_fund      = get("1101-Employee Fund")
+    dir_award     = get("1102-Directors Award Fund")
+    rent_tax_fund = get("1102-Office Rent Tax Fund")
+    edu_fund      = get("1103-Employee Educational Fund")
+    sec_fund      = get("1104-Security Deposit Fund")
+    share_cap     = get("1301-Share Capital")
+    retained      = get("1301A-Non-Cash Capital (Retained Earning)")
+    error_adj     = get("1302-Error Adjustment For Retained Earning")
+
+    # Adjusted cash total (cash_ce + bank_bal, both already scaled by keep_ratio)
+    cash_ce      = get("0101-Cash & Cash Equivalent")
+    bank_bal     = get("0102-Bank Balance")
+    cash_total   = cash_ce + bank_bal
+
+    # ── Net Profit for CFS ────────────────────────────────────────────────
+    np_cfs = (-net_income_series).reindex(delta_cols, fill_value=0.0)
+    np_cfs = pd.Series(np_cfs.values, index=delta_cols, dtype=float)
+
+    # ── Prior Period Net Profit/Loss (yearly mode only for Level T) ───────
+    ni_all       = net_income_series.reindex(sorted_cols, fill_value=0.0)
+    prior_np_fin = pd.Series(ni_all.values[:-1], index=delta_cols, dtype=float)
+
+    # ── Operating WC detail rows ──────────────────────────────────────────
+    op_details = pd.concat([
+        _row("Accounts Receivable",                   delta(ar_main)),
+        _row("Recognized Agent (Dealers)",            delta(ar_agent)),
+        _row("Accounts Receivable (Local)",           delta(ar_local)),
+        _row("0103-Accounts Receivable (Total)",      delta(ar_total)),
+        _row("0104-Prepaid Expenses",                 delta(prepaid)),
+        _row("0105-Advance Accounts",                 delta(advance)),
+        _row("0106-Stock in Hand",                    delta(stock)),
+        _row("0901-Accrued Expenses",                 delta(accrued)),
+        _row("Accounts Payable (Local)",              delta(ap_local)),
+        _row("Accounts Payable (Internal)",           delta(ap_internal)),
+        _row("Accounts Payable (International)",      delta(ap_intl)),
+        _row("0903-Accounts Payable (Total)",         delta(ap_total)),
+        _row("0904-Reconciliation Liability",         delta(recon_liab)),
+        _row("0905-C & F Liability",                  delta(cf_liab)),
+        _row("0906-Others Liability",                 delta(others_liab)),
+    ], ignore_index=True)
+
+    op_total = (
+        delta(ar_total) + delta(prepaid) + delta(advance) + delta(stock)
+        + delta(accrued) + delta(ap_total)
+        + delta(recon_liab) + delta(cf_liab) + delta(others_liab)
+    )
+
+    # ── Investing detail rows ─────────────────────────────────────────────
+    inv_details = pd.concat([
+        _row("0201-Deferred Capital Expenditure",      delta(def_capex)),
+        _row("0202-Gift Items",                        delta(gift_items)),
+        _row("0203-Loan to Hospital (Staff Salary)",   delta(loan_hosp)),
+        _row("0203-Loan to Others Concern (Surma)",    delta(loan_surma)),
+        _row("0204-Security Deposit",                  delta(security_dep)),
+        _row("0205-Loan to Others Concern",            delta(loan_others)),
+        _row("0206-Other Investment",                  delta(other_invest)),
+        _row("0301-Office Equipment",                  delta(fa_office_eq)),
+        _row("0302-Corporate Office Equipments",       delta(fa_corp_eq)),
+        _row("0303-Furniture & Fixture",               delta(fa_furn)),
+        _row("0304-Trading Vehicles",                  delta(fa_trade_veh)),
+        _row("0305-Private Vehicles",                  delta(fa_priv_veh)),
+        _row("0306-Plants & Machinery",                delta(fa_plant)),
+        _row("0307-Intangible Asset",                  delta(fa_intang)),
+        _row("0308-Land & Building",                   delta(fa_land)),
+    ], ignore_index=True)
+
+    inv_total = pd.Series(
+        inv_details[[c for c in delta_cols]].sum().values,
+        index=delta_cols, dtype=float,
+    )
+
+    # ── Financing detail rows ─────────────────────────────────────────────
+    fin_details = pd.concat([
+        _row("0904-Money Agent Liability",                 delta(money_agent)),
+        _row("1001-Short Term Bank Loan (B)",              delta(stb_loan)),
+        _row("1001-Short Term Loan (Related Parties)",     delta(st_loan)),
+        _row("1201-Long Term Bank Loan (E)",               delta(ltl_loan)),
+        _row("1101-Employee Fund",                         delta(emp_fund)),
+        _row("1102-Directors Award Fund",                  delta(dir_award)),
+        _row("1102-Office Rent Tax Fund",                  delta(rent_tax_fund)),
+        _row("1103-Employee Educational Fund",             delta(edu_fund)),
+        _row("1104-Security Deposit Fund",                 delta(sec_fund)),
+        _row("1301-Share Capital",                         delta(share_cap)),
+        _row("1301A-Non-Cash Capital (Retained Earning)",  delta(retained)),
+        _row("1302-Error Adjustment For Retained Earning", delta(error_adj)),
+        _row("Prior Period Net Profit/Loss",               prior_np_fin),
+    ], ignore_index=True)
+
+    fin_total = pd.Series(
+        fin_details[[c for c in delta_cols]].sum().values,
+        index=delta_cols, dtype=float,
+    )
+
+    # Depreciation is NOT added back (same rationale as build_cfs_level_s).
+    cfo_series = np_cfs + op_total
+
+    # ── Opening / closing cash from adjusted BS ───────────────────────────
+    # cash_total is indexed by col_head (all years including the base year).
+    # For each delta column i (year[i] vs year[i-1]):
+    #   opening = cash_total at year[i-1]
+    #   closing = cash_total at year[i]
+    opening = pd.Series(
+        cash_total.values[:-1], index=delta_cols, dtype=float
+    )
+    closing = pd.Series(
+        cash_total.values[1:], index=delta_cols, dtype=float
+    )
+
+    np_row      = _row("Net Profit/Loss",               np_cfs)
+    wc_row      = _row("Δ Working Capital",             op_total)
+    cfo_row     = _row("Cash from Operations",          cfo_series)
+    inv_row     = _row("Cash from Investing",           inv_total)
+    fin_row     = _row("Cash from Financing",           fin_total)
+    opening_row = _row("Opening Cash & CE",             opening)
+    ndc_series  = cfo_series + inv_total + fin_total
+    ndc_row     = _row("Net ΔCash",                     ndc_series)
+    calc_close  = opening - ndc_series
+    calc_row    = _row("Calculated Closing Cash & CE",  calc_close)
+    close_row   = _row("Closing Cash & CE",             closing)
+    check_row   = _row("Cash-flow Check",               calc_close - closing)
+
+    full_df = pd.concat(
+        [
+            np_row,
+            op_details, wc_row, cfo_row,
+            inv_details, inv_row,
+            fin_details, fin_row,
+            opening_row, ndc_row,
+            calc_row, close_row, check_row,
+        ],
+        ignore_index=True,
+    )
+
+    summary_labels = [
+        "Net Profit/Loss", "Δ Working Capital",
+        "Cash from Operations", "Cash from Investing",
+        "Cash from Financing", "Opening Cash & CE",
+        "Net ΔCash", "Calculated Closing Cash & CE",
+        "Closing Cash & CE", "Cash-flow Check",
+    ]
+    sum_df = full_df[full_df[name_col].isin(summary_labels)].reset_index(drop=True)
+
+    return full_df, sum_df
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Level T — GI Adjustments  (ZID 100000, Full Year vs YTD / Lifetime only)
+#
+# adj_data keys consumed / expected:
+#   'ind_hh_net_sales'  — I&H net sales Series from 100001 (aligned to GI cols)
+#   'cogs_adj'          — I&H net cost Series from 100001  (future use)
+#   'level_s_revenue'   — 100001 Level S Revenue Series    (future use)
+#   ... additional keys added as each instruction is implemented
+# ══════════════════════════════════════════════════════════════════════════════
+
+def adjust_pl_level_t_gi(
+    pl_gi_s: pd.DataFrame,
+    adj_data: dict,
+) -> pd.DataFrame:
+    """
+    Apply GI (100000) Level T adjustments to the GI Level S Income Statement.
+
+    Adjustments applied  (years < 2024 only — 2024+ equals Level S)
+    -------------------
+    1. Revenue    — replaced entirely with I&H Net Sales from ZID 100001.
+    2. COGS       — replaced entirely with sum of COGS from 100002/3/4/7/8.
+    3. Total SG&A — replaced with sum of Total SG&A from 100002/3/4/7/8.
+    4. Total S&D  — sum of Total S&D from 100002/3/4/7/8, plus a 5% of
+                    adjusted revenue distribution charge.
+
+    All adjustments cascade through: Adjusted Revenue, Gross Profit,
+    EBITDA, and Net Income.  For 2024 and beyond, Level T = Level S
+    (no Level T interaction).
+
+    adj_data keys consumed
+    ----------------------
+    ind_hh_net_sales       : pd.Series  — I&H net sales from 100001
+    cogs_from_subsidiaries : pd.Series  — sum of COGS from 100002/3/4/7/8
+    sga_from_subsidiaries  : pd.Series  — sum of Total SG&A from 100002/3/4/7/8
+    sd_from_subsidiaries   : pd.Series  — sum of Total S&D from 100002/3/4/7/8
+    """
+    df  = pl_gi_s.copy()
+    num = df.select_dtypes("number").columns
+    z   = pd.Series(0.0, index=num)
+
+    ind_hh_rev  = adj_data.get("ind_hh_net_sales",        z.copy()).reindex(num, fill_value=0.0)
+    subs_cogs   = adj_data.get("cogs_from_subsidiaries",  z.copy()).reindex(num, fill_value=0.0)
+    subs_sga    = adj_data.get("sga_from_subsidiaries",   z.copy()).reindex(num, fill_value=0.0)
+    subs_sd     = adj_data.get("sd_from_subsidiaries",    z.copy()).reindex(num, fill_value=0.0)
+
+    # ── Read rows needed for cascade ─────────────────────────────────────────
+    revenue    = _t_get(df, "Revenue")
+    cogs_ls    = _t_get(df, "COGS")
+    others_rev = _t_get(df, "Others Revenue")
+    mrp_disc   = _t_get(df, "MRP Discount")
+    total_sga  = _t_get(df, "Total SG&A")
+    total_sd   = _t_get(df, "Total Sales & Distribution")
+    others_dir = _t_get(df, "0501-Others Direct Expenses")
+    tot_int    = _t_get(df, "Total Interest & Charges")
+    vat_tax    = _t_get(df, "0629-VAT & Tax Total (A+B+C)")
+
+    # ── Adjustment 1: Revenue ────────────────────────────────────────────────
+    #   < 2024 : replace entirely with I&H Net Sales from 100001
+    #   ≥ 2024 : keep Level S as-is (no Level T interaction)
+    new_revenue = revenue.copy()
+    for col in num:
+        if _period_key(col)[0] < 2024:
+            new_revenue[col] = ind_hh_rev.get(col, 0.0)
+
+    # ── Adjustment 2: COGS ───────────────────────────────────────────────────
+    #   < 2024 : replace entirely with sum of COGS from subsidiaries 100002/3/4/7/8
+    #   ≥ 2024 : keep Level S as-is (no Level T interaction)
+    new_cogs = cogs_ls.copy()
+    for col in num:
+        if _period_key(col)[0] < 2024:
+            new_cogs[col] = subs_cogs.get(col, 0.0)
+
+    # ── Adjustment 3: Total SG&A ─────────────────────────────────────────────
+    #   < 2024 : replace with sum of Total SG&A from subsidiaries 100002/3/4/7/8
+    #   ≥ 2024 : keep Level S as-is (no Level T interaction)
+    new_total_sga = total_sga.copy()
+    for col in num:
+        if _period_key(col)[0] < 2024:
+            new_total_sga[col] = subs_sga.get(col, 0.0)
+
+    # ── Adjustment 4: Total Sales & Distribution ─────────────────────────────
+    #   < 2024 : sum of Total S&D from subsidiaries 100002/3/4/7/8
+    #            + 5% of adjusted revenue as a distribution charge (negative = expense)
+    #   ≥ 2024 : keep Level S as-is (no Level T interaction)
+    new_total_sd = total_sd.copy()
+    for col in num:
+        if _period_key(col)[0] < 2024:
+            new_total_sd[col] = subs_sd.get(col, 0.0) + (-0.05 * new_revenue[col])
+
+    # ── Cascade through derived rows ──────────────────────────────────────────
+    new_adj_rev    = new_revenue + mrp_disc
+    new_gp         = new_revenue + others_rev + mrp_disc + new_cogs
+    new_ebitda     = new_gp + new_total_sga + new_total_sd + others_dir
+    new_net_income = new_ebitda + tot_int + vat_tax
+
+    # ── Write back ────────────────────────────────────────────────────────────
+    _t_set(df, "Revenue",                    new_revenue)
+    _t_set(df, "Adjusted Revenue (Pending)", new_adj_rev)
+    _t_set(df, "COGS",                       new_cogs)
+    _t_set(df, "Gross Profit",               new_gp)
+    _t_set(df, "Total SG&A",                 new_total_sga)
+    _t_set(df, "Total Sales & Distribution", new_total_sd)
+    _t_set(df, "EBITDA",                     new_ebitda)
+    _t_set(df, "Net Income",                 new_net_income)
+
+    return df
+
+
+def adjust_bs_level_t_gi(
+    bs_gi_s: pd.DataFrame,
+    adj_data: dict,
+) -> pd.DataFrame:
+    """
+    Apply GI (100000) Level T adjustments to the GI Level S Balance Sheet.
+
+    Sign convention (inherited from build_bs_level_s / Level 0):
+        Assets  → POSITIVE   (debit balances, _ls_sum_raw no flip)
+        Liabilities / Equity → NEGATIVE  (credit balances)
+
+    Adjustments by section
+    ──────────────────────
+    CURRENT ASSETS  (all adjustments apply for years < 2024 only;
+                     2024+ = Level S, no Level T interaction)
+      0101 Cash CE  } — ADD the I&H portions from 100001 (positive) for years < 2024
+      0102 Bank     }
+      AR sub-rows   } — same < 2024 addition; total and CA totals recalculated
+      0106 Stock    — ADD inh_stock (JSON, positive; covers 2016–2023) + ADD Level S
+                       stock from subs 100002/3/4/7/8 for years < 2024
+
+    OTHER ASSETS (B)
+      0205 Loan to Others Concern
+      0206 Other Investment
+        — ADD from subs 100002/3/4/7/8, years < 2024 only; Total Other Assets recalc.
+
+    FIXED ASSETS (C)
+      0301–0308 — ADD from subs 100002/3/4/7/8, years < 2024 only;
+                  Total Fixed Assets and Total Assets recalculated.
+
+    CURRENT LIABILITIES (A)
+      0901 Accrued, AP sub-rows + total, 0904 Money Agent, 0904 Recon,
+      0905 C&F, 0906 Others
+        — ADD from subs, years < 2024 only (values stay negative = correct).
+
+    SHORT / LONG-TERM LOANS (B, C, E)
+      1001 STB, 1001 ST, Total STL, 1201 LTL
+        — ADD from subs, < 2024.
+
+    RESERVE & FUNDS (D)
+      1101 Emp Fund, 1102 Dir Award, 1102 Rent Tax, 1103 Edu, 1104 Sec
+        — ADD from subs, < 2024; Total RF and Total Liabilities recalculated.
+
+    EQUITY
+      1301 Share Capital, 1301A Retained Earning
+        — ADD from subs, < 2024 only.
+
+    BALANCING (step 12)
+      After all rows are set, error_adj absorbs the gap so Balance Check = 0.
+      Total Equity, Total LE, Balance Check recalculated last.
+
+    adj_data keys consumed
+    ──────────────────────
+    stock_inh     : pd.Series — I&H stock from JSON (positive, 2016–2023)
+    cash_add      : pd.Series — cash CE to add (100001 cash × ih_ratio, positive)
+    bank_add      : pd.Series — bank to add (100001 bank × ih_ratio, positive)
+    ar_main_add   : pd.Series — AR main to add (positive)
+    ar_agent_add  : pd.Series — AR agent to add (positive)
+    ar_local_add  : pd.Series — AR local to add (positive)
+    sub_bs_raws   : list[DataFrame] — raw Level 0 BS DataFrames for subs 100002/3/4/7/8
+    """
+    df  = bs_gi_s.copy()
+    num = df.select_dtypes("number").columns
+    z   = pd.Series(0.0, index=num)
+
+    # ── Year masks ────────────────────────────────────────────────────────────
+    pre2024 = np.array([_period_key(c)[0] <  2024 for c in num])
+    le2024  = np.array([_period_key(c)[0] <= 2024 for c in num])
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _madd(base: pd.Series, add: pd.Series, mask: np.ndarray) -> pd.Series:
+        """Return base + add where mask is True, else base unchanged."""
+        return base + pd.Series(np.where(mask, add.values, 0.0), index=num)
+
+    sub_bs_raws: list = adj_data.get("sub_bs_raws", [])
+
+    def _sub_codes(codes: list) -> pd.Series:
+        """Sum account codes across subsidiary raw BS DataFrames (no sign flip)."""
+        tot = z.copy()
+        for raw in sub_bs_raws:
+            if raw is None or raw.empty:
+                continue
+            tot = tot + _ls_sum_raw(raw, codes, "ac_code").reindex(num, fill_value=0.0)
+        return tot
+
+    def _sub_pfx(prefix: str) -> pd.Series:
+        """Sum prefix-matched codes across subsidiary raw BS DataFrames."""
+        tot = z.copy()
+        for raw in sub_bs_raws:
+            if raw is None or raw.empty:
+                continue
+            tot = tot + _ls_prefix_sum(raw, prefix, "ac_code").reindex(num, fill_value=0.0)
+        return tot
+
+    # ── Unpack adj_data ───────────────────────────────────────────────────────
+    inh_stock    = adj_data.get("stock_inh",    z.copy()).reindex(num, fill_value=0.0)
+    cash_add     = adj_data.get("cash_add",     z.copy()).reindex(num, fill_value=0.0)
+    bank_add     = adj_data.get("bank_add",     z.copy()).reindex(num, fill_value=0.0)
+    # ar_local_add carries the FULL 100001 AR total (all sub-rows combined × ih_ratio)
+    # — placed entirely into "Accounts Receivable (Local)" for years ≤ 2024
+    ar_local_add = adj_data.get("ar_local_add", z.copy()).reindex(num, fill_value=0.0)
+
+    # ── Read all Level S rows from GI's BS ───────────────────────────────────
+    cash_ce      = _t_get(df, "0101-Cash & Cash Equivalent")
+    bank_bal     = _t_get(df, "0102-Bank Balance")
+    ar_main      = _t_get(df, "Accounts Receivable")
+    ar_agent     = _t_get(df, "Recognized Agent (Dealers)")
+    ar_local     = _t_get(df, "Accounts Receivable (Local)")
+    prepaid      = _t_get(df, "0104-Prepaid Expenses")
+    advance      = _t_get(df, "0105-Advance Accounts")
+    stock        = _t_get(df, "0106-Stock in Hand")
+    def_capex    = _t_get(df, "0201-Deferred Capital Expenditure")
+    gift_items   = _t_get(df, "0202-Gift Items")
+    loan_hosp    = _t_get(df, "0203-Loan to Hospital (Staff Salary)")
+    loan_surma   = _t_get(df, "0203-Loan to Others Concern (Surma)")
+    security_dep = _t_get(df, "0204-Security Deposit")
+    loan_others  = _t_get(df, "0205-Loan to Others Concern")
+    other_invest = _t_get(df, "0206-Other Investment")
+    fa_office_eq = _t_get(df, "0301-Office Equipment")
+    fa_corp_eq   = _t_get(df, "0302-Corporate Office Equipments")
+    fa_furn      = _t_get(df, "0303-Furniture & Fixture")
+    fa_trade_veh = _t_get(df, "0304-Trading Vehicles")
+    fa_priv_veh  = _t_get(df, "0305-Private Vehicles")
+    fa_plant     = _t_get(df, "0306-Plants & Machinery")
+    fa_intang    = _t_get(df, "0307-Intangible Asset")
+    fa_land      = _t_get(df, "0308-Land & Building")
+    accrued      = _t_get(df, "0901-Accrued Expenses")
+    ap_local     = _t_get(df, "Accounts Payable (Local)")
+    ap_internal  = _t_get(df, "Accounts Payable (Internal)")
+    ap_intl      = _t_get(df, "Accounts Payable (International)")
+    money_agent  = _t_get(df, "0904-Money Agent Liability")
+    recon_liab   = _t_get(df, "0904-Reconciliation Liability")
+    cf_liab      = _t_get(df, "0905-C & F Liability")
+    others_liab  = _t_get(df, "0906-Others Liability")
+    stb_loan     = _t_get(df, "1001-Short Term Bank Loan (B)")
+    st_loan      = _t_get(df, "1001-Short Term Loan (Related Parties)")
+    ltl_loan     = _t_get(df, "1201-Long Term Bank Loan (E)")
+    emp_fund     = _t_get(df, "1101-Employee Fund")
+    dir_award    = _t_get(df, "1102-Directors Award Fund")
+    rent_tax     = _t_get(df, "1102-Office Rent Tax Fund")
+    edu_fund     = _t_get(df, "1103-Employee Educational Fund")
+    sec_fund     = _t_get(df, "1104-Security Deposit Fund")
+    share_cap    = _t_get(df, "1301-Share Capital")
+    retained     = _t_get(df, "1301A-Non-Cash Capital (Retained Earning)")
+    error_adj    = _t_get(df, "1302-Error Adjustment For Retained Earning")
+    np_for_bs    = _t_get(df, "Net Profit/Loss")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # CURRENT ASSETS
+    # ════════════════════════════════════════════════════════════════════════
+    # Cash & Bank: ADD trading-adj amounts (positive) for years < 2024
+    # (2024+ = Level S; no Level T interaction)
+    new_cash_ce  = _madd(cash_ce,  cash_add,     pre2024)
+    new_bank_bal = _madd(bank_bal, bank_add,     pre2024)
+
+    # AR adjustments:
+    #   "Accounts Receivable"        ← ADD sum of all AR from subs 100002/3/4/7/8
+    #                                   (codes 01030001+01030002+01030003), years < 2024
+    #   "Recognized Agent (Dealers)" ← unchanged
+    #   "Accounts Receivable (Local)"← ADD full 100001 AR total × ih_ratio, years < 2024
+    # (2024+ = Level S; no Level T interaction for any AR row)
+    sub_ar_all   = _sub_codes(["01030001","01030002","01030003"])
+    new_ar_main  = _madd(ar_main,  sub_ar_all,   pre2024)   # subs → ar_main,  < 2024
+    new_ar_agent = ar_agent                                  # unchanged
+    new_ar_local = _madd(ar_local, ar_local_add, pre2024)   # 100001 total → ar_local, < 2024
+    new_ar_total = new_ar_main + new_ar_agent + new_ar_local
+
+    # Stock: ADD inh_stock (positive from JSON; zero outside 2016–2023), years < 2024
+    #        ADD subsidiary stock for years < 2024
+    # (2024+ = Level S; no Level T interaction)
+    sub_stock    = _sub_codes(["01060003","01060001","01060002"])
+    new_stock    = stock + _madd(z, inh_stock, pre2024) + _madd(z, sub_stock, pre2024)
+
+    new_total_ca = (new_cash_ce + new_bank_bal + new_ar_total +
+                    prepaid + advance + new_stock)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # OTHER ASSETS (B)  — add 0205 + 0206 from subs, < 2024 only
+    # ════════════════════════════════════════════════════════════════════════
+    sub_loan_oth  = _sub_codes(["02050001","02050002","02050003","02050004","02050005",
+                                 "02050006","02050007","02050008","02050009","02050010",
+                                 "02050011","02050012","02050013","02050014","02050015",
+                                 "02050016","02050017"])
+    sub_oth_inv   = _sub_codes(["02060001"])
+    new_loan_oth  = _madd(loan_others,  sub_loan_oth, pre2024)
+    new_oth_inv   = _madd(other_invest, sub_oth_inv,  pre2024)
+    new_total_oa  = (def_capex + gift_items + loan_hosp + loan_surma +
+                     security_dep + new_loan_oth + new_oth_inv)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # FIXED ASSETS (C)  — add 0301–0308 from subs, < 2024 only
+    # ════════════════════════════════════════════════════════════════════════
+    new_fa_oe    = _madd(fa_office_eq, _sub_pfx("03010"), pre2024)
+    new_fa_ce    = _madd(fa_corp_eq,   _sub_pfx("03020"), pre2024)
+    new_fa_furn  = _madd(fa_furn,      _sub_pfx("03030"), pre2024)
+    new_fa_tveh  = _madd(fa_trade_veh, _sub_pfx("03040"), pre2024)
+    new_fa_pveh  = _madd(fa_priv_veh,  _sub_pfx("03050"), pre2024)
+    new_fa_plant = _madd(fa_plant,     _sub_pfx("03060"), pre2024)
+    new_fa_int   = _madd(fa_intang,    _sub_pfx("03070"), pre2024)
+    new_fa_land  = _madd(fa_land,      _sub_pfx("03080"), pre2024)
+    new_total_fa = (new_fa_oe + new_fa_ce + new_fa_furn + new_fa_tveh +
+                    new_fa_pveh + new_fa_plant + new_fa_int + new_fa_land)
+
+    new_total_assets = new_total_ca + new_total_oa + new_total_fa
+
+    # ════════════════════════════════════════════════════════════════════════
+    # CURRENT LIABILITIES (A)  — add from subs, < 2024 only
+    # (liabilities are negative in Level 0 / Level S → stays negative)
+    # ════════════════════════════════════════════════════════════════════════
+    new_accrued     = _madd(accrued,     _sub_codes(["09010001","09010002","09010003",
+                                                      "09010004","09010005","09010006"]), pre2024)
+    new_ap_local    = _madd(ap_local,    _sub_codes(["09030001","09030002"]),             pre2024)
+    new_ap_internal = _madd(ap_internal, _sub_codes(["09030003"]),                        pre2024)
+    new_ap_intl     = _madd(ap_intl,     _sub_codes(["09030004"]),                        pre2024)
+    new_ap_total    = new_ap_local + new_ap_internal + new_ap_intl
+    new_money_agent = _madd(money_agent, _sub_codes(["09040001","09040002","09040003",
+                                                      "09040004","09040005","09040007"]), pre2024)
+    new_recon_liab  = _madd(recon_liab,  _sub_codes(["09040006"]),                        pre2024)
+    new_cf_liab     = _madd(cf_liab,     _sub_pfx("09050"),                               pre2024)
+    new_others_liab = _madd(others_liab, _sub_codes(["09060001"]),                        pre2024)
+    new_total_cl    = (new_accrued + new_ap_total + new_money_agent +
+                       new_recon_liab + new_cf_liab + new_others_liab)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SHORT / LONG-TERM LOANS  (B, C, E)  — add from subs, < 2024 only
+    # ════════════════════════════════════════════════════════════════════════
+    new_stb_loan  = _madd(stb_loan, _sub_codes(["10010001","10010002","10010003",
+                                                 "10010004","10010005","10010006",
+                                                 "10010007","10010008"]),           pre2024)
+    new_st_loan   = _madd(st_loan,  _sub_codes(["10020001","10020002","10020003",
+                                                 "10020004","10020005","10020006",
+                                                 "10020007","10020008","10020009",
+                                                 "10020010","10020011","10020012",
+                                                 "10020013","10020014","10020015",
+                                                 "10020016","10020017"]),           pre2024)
+    new_total_stl = new_stb_loan + new_st_loan
+    new_ltl_loan  = _madd(ltl_loan, _sub_codes(["12010001","12010002"]),            pre2024)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # RESERVE & FUNDS (D)  — add from subs, < 2024 only
+    # ════════════════════════════════════════════════════════════════════════
+    new_emp_fund  = _madd(emp_fund,  _sub_codes(["11010001","11010002","11010003"]), pre2024)
+    new_dir_award = _madd(dir_award, _sub_codes(["11020002"]),                       pre2024)
+    new_rent_tax  = _madd(rent_tax,  _sub_codes(["11020001","11020003"]),             pre2024)
+    new_edu_fund  = _madd(edu_fund,  _sub_codes(["11030001"]),                        pre2024)
+    new_sec_fund  = _madd(sec_fund,  _sub_codes(["11040001","11040002"]),             pre2024)
+    new_total_rf  = (new_emp_fund + new_dir_award + new_rent_tax +
+                     new_edu_fund + new_sec_fund)
+
+    new_total_liab = new_total_cl + new_total_stl + new_ltl_loan + new_total_rf
+
+    # ════════════════════════════════════════════════════════════════════════
+    # EQUITY  — add share capital + retained from subs, < 2024 only
+    # (equity is negative in Level 0 / Level S → stays negative)
+    # ════════════════════════════════════════════════════════════════════════
+    new_share_cap = _madd(share_cap, _sub_codes(["13010001"]),                        pre2024)
+    new_retained  = _madd(retained,  _sub_codes(["13010003","13010004","13010005"]),  pre2024)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # BALANCING — error_adj absorbs the gap; Balance Check → 0  (step 12)
+    # All asset / liability / equity rows must be finalised BEFORE this block.
+    # ════════════════════════════════════════════════════════════════════════
+    intermediate_check = (new_total_assets + new_total_liab +
+                          new_share_cap + new_retained + error_adj + np_for_bs)
+    new_error_adj  = error_adj - intermediate_check
+    new_total_equity = new_share_cap + new_retained + new_error_adj + np_for_bs
+    new_total_le     = new_total_liab + new_total_equity
+
+    # ── Write back every adjusted row ────────────────────────────────────────
+    # Current Assets
+    _t_set(df, "0101-Cash & Cash Equivalent",            new_cash_ce)
+    _t_set(df, "0102-Bank Balance",                      new_bank_bal)
+    _t_set(df, "Accounts Receivable",                    new_ar_main)
+    _t_set(df, "Recognized Agent (Dealers)",             new_ar_agent)
+    _t_set(df, "Accounts Receivable (Local)",            new_ar_local)
+    _t_set(df, "0103-Accounts Receivable (Total)",       new_ar_total)
+    _t_set(df, "0106-Stock in Hand",                     new_stock)
+    _t_set(df, "01-Total Current Assets (A)",            new_total_ca)
+    # Other Assets
+    _t_set(df, "0205-Loan to Others Concern",            new_loan_oth)
+    _t_set(df, "0206-Other Investment",                  new_oth_inv)
+    _t_set(df, "Total Other Assets (B)",                 new_total_oa)
+    # Fixed Assets
+    _t_set(df, "0301-Office Equipment",                  new_fa_oe)
+    _t_set(df, "0302-Corporate Office Equipments",       new_fa_ce)
+    _t_set(df, "0303-Furniture & Fixture",               new_fa_furn)
+    _t_set(df, "0304-Trading Vehicles",                  new_fa_tveh)
+    _t_set(df, "0305-Private Vehicles",                  new_fa_pveh)
+    _t_set(df, "0306-Plants & Machinery",                new_fa_plant)
+    _t_set(df, "0307-Intangible Asset",                  new_fa_int)
+    _t_set(df, "0308-Land & Building",                   new_fa_land)
+    _t_set(df, "Total Fixed Assets (C)",                 new_total_fa)
+    _t_set(df, "Total Assets (A+B+C)",                   new_total_assets)
+    # Current Liabilities
+    _t_set(df, "0901-Accrued Expenses",                  new_accrued)
+    _t_set(df, "Accounts Payable (Local)",               new_ap_local)
+    _t_set(df, "Accounts Payable (Internal)",            new_ap_internal)
+    _t_set(df, "Accounts Payable (International)",       new_ap_intl)
+    _t_set(df, "0903-Accounts Payable (Total)",          new_ap_total)
+    _t_set(df, "0904-Money Agent Liability",             new_money_agent)
+    _t_set(df, "0904-Reconciliation Liability",          new_recon_liab)
+    _t_set(df, "0905-C & F Liability",                   new_cf_liab)
+    _t_set(df, "0906-Others Liability",                  new_others_liab)
+    _t_set(df, "Current Liability (A)",                  new_total_cl)
+    # Short / Long-term Loans
+    _t_set(df, "1001-Short Term Bank Loan (B)",          new_stb_loan)
+    _t_set(df, "1001-Short Term Loan (Related Parties)", new_st_loan)
+    _t_set(df, "Total Short Term Liability (C)",         new_total_stl)
+    _t_set(df, "1201-Long Term Bank Loan (E)",           new_ltl_loan)
+    # Reserve & Funds
+    _t_set(df, "1101-Employee Fund",                     new_emp_fund)
+    _t_set(df, "1102-Directors Award Fund",              new_dir_award)
+    _t_set(df, "1102-Office Rent Tax Fund",              new_rent_tax)
+    _t_set(df, "1103-Employee Educational Fund",         new_edu_fund)
+    _t_set(df, "1104-Security Deposit Fund",             new_sec_fund)
+    _t_set(df, "Total Reserve & Funds (D)",              new_total_rf)
+    _t_set(df, "Total Liabilities (A+B+C+D+E)",          new_total_liab)
+    # Equity (balancing last)
+    _t_set(df, "1301-Share Capital",                     new_share_cap)
+    _t_set(df, "1301A-Non-Cash Capital (Retained Earning)", new_retained)
+    _t_set(df, "1302-Error Adjustment For Retained Earning", new_error_adj)
+    _t_set(df, "Total Equity",                           new_total_equity)
+    _t_set(df, "Total Liabilities & Equity",             new_total_le)
+    _t_set(df, "Balance Check",                          new_total_assets + new_total_le)
+    return df
+
+
+def build_cfs_from_bs_t_gi(
+    bs_gi_t: pd.DataFrame,
+    net_income_gi: pd.Series,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build the GI (100000) Level T Cash Flow Statement from the adjusted BS.
+
+    Delegates to build_cfs_from_bs_t().  Once adjust_bs_level_t_gi() produces
+    a fully balanced BS (Balance Check = 0), the CFS check will also be zero
+    automatically because build_cfs_from_bs_t reads named rows from the BS.
+    """
+    return build_cfs_from_bs_t(bs_gi_t, net_income_gi)

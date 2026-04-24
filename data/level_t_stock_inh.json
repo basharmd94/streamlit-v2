@@ -1,0 +1,13 @@
+{
+  "_comment": "I&H (Industrial & Household) ending stock balance per year for Level T Balance Sheet adjustment. These values are subtracted from '0106-Stock in Hand' to remove the I&H portion from the continuing-business view. Manually calculated — update when revised figures are available. Years outside this range default to 0 (no adjustment).",
+  "inh_stock_balance": {
+    "2016": 779987.8111,
+    "2017": 1142279.254,
+    "2018": 1537561.401,
+    "2019": 1523243.098,
+    "2020": 1047847.31,
+    "2021": 1217411.0,
+    "2022": 1831253.1,
+    "2023": 1461321.8
+  }
+}
