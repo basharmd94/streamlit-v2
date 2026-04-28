@@ -280,33 +280,59 @@ def display_financial_statements(current_page, zid):
                 0
             )
             analyse_zid = st.selectbox("View Statements For", biz_options, index=default_idx)
+        _is_consolidated = str(analyse_zid[0]) == "consolidated"
         with cols[1]:
             # Level T variants are only available in Full Year vs YTD and Lifetime,
             # and not available for the consolidated view.
-            _is_consolidated = str(analyse_zid[0]) == "consolidated"
-            _level_opts = level_options + (
-                ["Level T - Trading Adjustments"]
-                if str(analyse_zid[0]) == '100001' and _is_lt_persp else []
-            ) + (
-                ["Level T - GI Adjustments"]
-                if str(analyse_zid[0]) == '100000' and _is_lt_persp else []
-            )
+            if _is_consolidated:
+                _level_opts = [
+                    "Level C - Raw Consolidation",
+                    "Level C2 - Consolidated Detail",
+                    "Level 1 - Moderate Detail",
+                    "Level 2 - Least Detail",
+                    "Level S - Customised Detail",
+                ]
+            else:
+                _level_opts = level_options + (
+                    ["Level T - Trading Adjustments"]
+                    if str(analyse_zid[0]) == '100001' and _is_lt_persp else []
+                ) + (
+                    ["Level T - GI Adjustments"]
+                    if str(analyse_zid[0]) == '100000' and _is_lt_persp else []
+                )
             selected_level = st.selectbox("Select Level", _level_opts)
 
         # ── Raw data: consolidated or single-business ─────────────────────────
         _all_pl_map: dict = {}
         _all_bs_map: dict = {}
+        _hier_cols = ['ac_type','ac_lv1','ac_lv2','ac_lv3','ac_lv4','ac_lv5']
+        level_c_is = level_c_bs = c2_is = c2_bs = None
         if _is_consolidated:
             _all_pl_map = {str(k[0]): v for k, v in main_data_dict_pl.items()}
             _all_bs_map = {str(k[0]): v for k, v in main_data_dict_bs.items()}
-            pl_raw, bs_raw = _consol.build_consolidated_raw(_all_pl_map, _all_bs_map)
+            # Strip hierarchy columns; key by int ZID for the consolidation engine
+            _zid_frames_pl = {
+                int(k[0]): v.drop(columns=_hier_cols, errors='ignore')
+                for k, v in main_data_dict_pl.items()
+            }
+            _zid_frames_bs = {
+                int(k[0]): v.drop(columns=_hier_cols, errors='ignore')
+                for k, v in main_data_dict_bs.items()
+            }
+            level_c_is = _consol.build_level_c(_zid_frames_pl, kind="is")
+            level_c_bs = _consol.build_level_c(_zid_frames_bs, kind="bs")
+            c2_is = _consol.build_level_c2_is(level_c_is)
+            c2_bs = _consol.build_level_c2_bs(level_c_bs)
+            # C2 serves as the "Level 0" raw frames for all downstream levels
+            pl_raw = c2_is
+            bs_raw = c2_bs
         else:
             pl_raw = main_data_dict_pl[analyse_zid]
             bs_raw = main_data_dict_bs[analyse_zid]
 
-        drop_cols = ['ac_type','ac_lv1','ac_lv2','ac_lv3','ac_lv4','ac_lv5']
-        pl_lv0 = pl_raw.drop(columns=drop_cols)
-        bs_lv0 = bs_raw.drop(columns=drop_cols)
+        drop_cols = _hier_cols
+        pl_lv0 = pl_raw.drop(columns=drop_cols, errors='ignore')
+        bs_lv0 = bs_raw.drop(columns=drop_cols, errors='ignore')
 
         pl_sorted, net_profit, net_profit_m, dep_row = financial.sort_pl_level0(pl_lv0, selected_perspective='Yearly')
         bs_lv0 = financial.append_net_profit_to_bs_level0(bs_lv0, net_profit)
@@ -324,7 +350,39 @@ def display_financial_statements(current_page, zid):
         cfs_lv2 = financial.consolidate_cfs(cfs_df, level=2, debug=True)
         cfs_lv2, summary_df2 = financial.build_cfs_level2_summary(cfs_lv2, net_profitlv2, dep_rowlv1,coc_lv0)
 
-        if selected_level == "Level 0 - Most Detail":
+        if selected_level == "Level C - Raw Consolidation":
+            # Level C: simple concat of all ZID frames — ZID column retained.
+            # Cast zid to str so the numeric formatter ignores it.
+            _lc_is_disp = level_c_is.assign(zid=level_c_is["zid"].astype(str))
+            _lc_bs_disp = level_c_bs.assign(zid=level_c_bs["zid"].astype(str))
+            _lc_cfs_ok = True
+            try:
+                _lc_cfs, _lc_summary = _consol.build_level_c_cfs(
+                    level_c_bs, level_c_is, 'Yearly'
+                )
+            except Exception:
+                _lc_cfs_ok = False
+                _lc_cfs = _lc_summary = pd.DataFrame()
+            with st.expander("Income Statement (Level C)", expanded=True):
+                st.dataframe(_fmt(_lc_is_disp), use_container_width=True)
+            with st.expander("Balance Sheet (Level C)", expanded=True):
+                st.dataframe(_fmt(_lc_bs_disp), use_container_width=True)
+            if _lc_cfs_ok:
+                with st.expander("Cash Flow Statement (Level C)", expanded=True):
+                    st.dataframe(_fmt(_lc_cfs), use_container_width=True)
+                with st.expander("Cash Flow Summary", expanded=False):
+                    st.dataframe(_fmt(_lc_summary), use_container_width=True)
+            st.markdown(
+                common.create_combined_ls_download_link(
+                    pl_s=_lc_is_disp, bs_s=_lc_bs_disp,
+                    cfs_s=_lc_cfs if _lc_cfs_ok else pd.DataFrame(),
+                    filename="LevelC_Consolidated_Financial_Statements.xlsx",
+                    link_label="⬇ Download Level C Financial Statements (Excel)",
+                ),
+                unsafe_allow_html=True,
+            )
+
+        elif selected_level in ("Level 0 - Most Detail", "Level C2 - Consolidated Detail"):
             with st.expander("Income Statement", expanded=True):
                 st.dataframe(_fmt(pl_sorted), use_container_width=True)
             with st.expander("Balance Sheet", expanded=True):
@@ -336,16 +394,13 @@ def display_financial_statements(current_page, zid):
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_sorted, bs_s=bs_lv0, cfs_s=cfs_df,
-                    filename=f"Level0_{analyse_zid[0]}_Financial_Statements.xlsx",
-                    link_label="⬇ Download Level 0 Financial Statements (Excel)",
+                    filename="LevelC2_Consolidated_Financial_Statements.xlsx"
+                    if _is_consolidated else f"Level0_{analyse_zid[0]}_Financial_Statements.xlsx",
+                    link_label="⬇ Download Level C2 Financial Statements (Excel)"
+                    if _is_consolidated else "⬇ Download Level 0 Financial Statements (Excel)",
                 ),
                 unsafe_allow_html=True,
             )
-            if _is_consolidated:
-                _consol.render_consolidation_notes()
-                _consol.render_year_breakdown_report(
-                    _all_pl_map, _all_bs_map, key_suffix="yearly_lv0"
-                )
 
         elif selected_level == "Level 1 - Moderate Detail":
             with st.expander("Income Statement", expanded=True):
@@ -1024,24 +1079,49 @@ def display_financial_statements(current_page, zid):
                 0
             )
             analyse_zid = st.selectbox("View Statements For", biz_options, index=default_idx)
+        _is_consolidated = str(analyse_zid[0]) == "consolidated"
         with cols[1]:
-            selected_level = st.selectbox("Select Level", level_options)
+            if _is_consolidated:
+                _level_opts_m = [
+                    "Level C - Raw Consolidation",
+                    "Level C2 - Consolidated Detail",
+                    "Level 1 - Moderate Detail",
+                    "Level 2 - Least Detail",
+                    "Level S - Customised Detail",
+                ]
+            else:
+                _level_opts_m = level_options
+            selected_level = st.selectbox("Select Level", _level_opts_m)
 
         # ── Raw data: consolidated or single-business ─────────────────────────
-        _is_consolidated = str(analyse_zid[0]) == "consolidated"
         _all_pl_map: dict = {}
         _all_bs_map: dict = {}
+        _hier_cols_m = ['ac_type','ac_lv1','ac_lv2','ac_lv3','ac_lv4','ac_lv5']
+        level_c_is = level_c_bs = c2_is = c2_bs = None
         if _is_consolidated:
             _all_pl_map = {str(k[0]): v for k, v in main_data_dict_pl.items()}
             _all_bs_map = {str(k[0]): v for k, v in main_data_dict_bs.items()}
-            pl_raw, bs_raw = _consol.build_consolidated_raw(_all_pl_map, _all_bs_map)
+            _zid_frames_pl_m = {
+                int(k[0]): v.drop(columns=_hier_cols_m, errors='ignore')
+                for k, v in main_data_dict_pl.items()
+            }
+            _zid_frames_bs_m = {
+                int(k[0]): v.drop(columns=_hier_cols_m, errors='ignore')
+                for k, v in main_data_dict_bs.items()
+            }
+            level_c_is = _consol.build_level_c(_zid_frames_pl_m, kind="is")
+            level_c_bs = _consol.build_level_c(_zid_frames_bs_m, kind="bs")
+            c2_is = _consol.build_level_c2_is(level_c_is)
+            c2_bs = _consol.build_level_c2_bs(level_c_bs)
+            pl_raw = c2_is
+            bs_raw = c2_bs
         else:
             pl_raw = main_data_dict_pl[analyse_zid]
             bs_raw = main_data_dict_bs[analyse_zid]
 
-        drop_cols = ['ac_type','ac_lv1','ac_lv2','ac_lv3','ac_lv4','ac_lv5']
-        pl_lv0 = pl_raw.drop(columns=drop_cols)
-        bs_lv0 = bs_raw.drop(columns=drop_cols)
+        drop_cols = _hier_cols_m
+        pl_lv0 = pl_raw.drop(columns=drop_cols, errors='ignore')
+        bs_lv0 = bs_raw.drop(columns=drop_cols, errors='ignore')
 
         pl_sorted, net_profit, net_profit_m, dep_row = financial.sort_pl_level0(pl_lv0, selected_perspective='Monthly')
         bs_lv0 = financial.append_net_profit_to_bs_level0(bs_lv0, net_profit_m)
@@ -1087,7 +1167,38 @@ def display_financial_statements(current_page, zid):
                 "Income Statement and Balance Sheet are shown below."
             )
 
-        if selected_level == "Level 0 - Most Detail":
+        if selected_level == "Level C - Raw Consolidation":
+            # Level C: simple concat of all ZID frames — ZID column retained.
+            _lc_is_disp_m = level_c_is.assign(zid=level_c_is["zid"].astype(str))
+            _lc_bs_disp_m = level_c_bs.assign(zid=level_c_bs["zid"].astype(str))
+            _lc_cfs_ok_m = True
+            try:
+                _lc_cfs_m, _lc_summary_m = _consol.build_level_c_cfs(
+                    level_c_bs, level_c_is, 'Monthly'
+                )
+            except Exception:
+                _lc_cfs_ok_m = False
+                _lc_cfs_m = _lc_summary_m = pd.DataFrame()
+            with st.expander("Income Statement (Level C)", expanded=True):
+                st.dataframe(_fmt(_lc_is_disp_m), use_container_width=True)
+            with st.expander("Balance Sheet (Level C)", expanded=True):
+                st.dataframe(_fmt(_lc_bs_disp_m), use_container_width=True)
+            if _lc_cfs_ok_m:
+                with st.expander("Cash Flow Statement (Level C)", expanded=True):
+                    st.dataframe(_fmt(_lc_cfs_m), use_container_width=True)
+                with st.expander("Cash Flow Summary", expanded=False):
+                    st.dataframe(_fmt(_lc_summary_m), use_container_width=True)
+            st.markdown(
+                common.create_combined_ls_download_link(
+                    pl_s=_lc_is_disp_m, bs_s=_lc_bs_disp_m,
+                    cfs_s=_lc_cfs_m if _lc_cfs_ok_m else pd.DataFrame(),
+                    filename="LevelC_Consolidated_Financial_Statements_Monthly.xlsx",
+                    link_label="⬇ Download Level C Financial Statements (Excel)",
+                ),
+                unsafe_allow_html=True,
+            )
+
+        elif selected_level in ("Level 0 - Most Detail", "Level C2 - Consolidated Detail"):
             with st.expander("Income Statement", expanded=True):
                 st.dataframe(_fmt(pl_sorted), use_container_width=True)
             with st.expander("Balance Sheet", expanded=True):
@@ -1101,16 +1212,13 @@ def display_financial_statements(current_page, zid):
                 common.create_combined_ls_download_link(
                     pl_s=pl_sorted, bs_s=bs_lv0,
                     cfs_s=cfs_df if _cfs_monthly_available else pd.DataFrame(),
-                    filename=f"Level0_{analyse_zid[0]}_Financial_Statements.xlsx",
-                    link_label="⬇ Download Level 0 Financial Statements (Excel)",
+                    filename="LevelC2_Consolidated_Financial_Statements_Monthly.xlsx"
+                    if _is_consolidated else f"Level0_{analyse_zid[0]}_Financial_Statements.xlsx",
+                    link_label="⬇ Download Level C2 Financial Statements (Excel)"
+                    if _is_consolidated else "⬇ Download Level 0 Financial Statements (Excel)",
                 ),
                 unsafe_allow_html=True,
             )
-            if _is_consolidated:
-                _consol.render_consolidation_notes()
-                _consol.render_year_breakdown_report(
-                    _all_pl_map, _all_bs_map, key_suffix="monthly_lv0"
-                )
 
         elif selected_level == "Level 1 - Moderate Detail":
             with st.expander("Income Statement", expanded=True):
