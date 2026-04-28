@@ -55,7 +55,8 @@
                                                             ["06010003","Agriculture Project"],
                                                             ["06010004","Garden Project"],
                                                             ["06010006","Transportation Cost Director"],
-                                                            ["06010008","Tools for Working"]],
+                                                            ["06010008","Tools for Working"],
+                                                            ["06010009","Fraction Adjustment"]],
                                     "0602-Other Office Expenses":[["06020001","Alu Bazar Market Society Expense"]],
                                     "0603-License & Certification Expenses":[["06030010","Credit Rating Renewal"],
                                                                             ["06030012","Trade License Renewal"],
@@ -104,7 +105,8 @@
                                                                     ["06160005","Fake Note Expensense"],
                                                                     ["06160006","Paper bill"],
                                                                     ["06160008","Credit Card Expense (MD)"],
-                                                                    ["06160009","HMBR Social welfare & Charity Exp."]],
+                                                                    ["06160009","HMBR Social welfare & Charity Exp."],
+                                                                    ["06160010","Fraction Adjustment"]],
                                     "0617-Conveyance":[["06170001","Staff Conveyance (TA/DA)"]],
                                     "0618-Printing & Stationary Expenses":[["06180001","Stationary Expense"],
                                                                         ["06180004","Courier Service/Feedex/DHL& Post Office Exp."],
@@ -157,7 +159,8 @@
                                     "0632-Medical Expenses":[["06320001","Medical Expenses"],
                                                             ["06320002","Medicine For First Aid "]],
                                     "0634-Uniform Expenses":[["06340001","Uniform Expenses"]],
-                                    "0636-Depreciation":[["06360001","Depreciation"]],
+                                    "0636-Depreciation":[["06360001","Depreciation"],
+                                                        ["06360002","Carring,transport & Labour"]],
                                     "0637-General Insurance":[["06370001","General Insurance"]],
                                     "0638-Recruitment Expenses":[["06380001","Recruitment Expenses"]],
                                     "0639-Provident Fund Expenses":[["06390001","Provident Fund Expenses"]]
@@ -190,7 +193,8 @@
                                     "0702-Packeging Expenses":[["07020004","Packaging Item expense"],
                                                             ["07020001","Mobile Servising"],
                                                             ["07020002","Strapping Belt"],
-                                                            ["07020003","Carton"]],
+                                                            ["07020003","Carton"],
+                                                            ["07020005","Sales Commission"]],
                                     "0703-Vehicle Expenses":[["07030001","Expenses for Trading Vehicle"],
                                                             ["07030002","Traffic /Sergeant bill for Vehicle"],
                                                             ["07030003","Maintenance for Trading Vehicle"]],
@@ -210,7 +214,8 @@
                                     "0708-Discount Paid":[["07080001","Discount Exp."],
                                                             ["07080002","MRP Discount "]],
                                     "0709-Bad Debt":[["07090001","Bad debt"]],
-                                    "0710-Marketing Phone Bill":[["07100001","Marketing Phone Bill"]],
+                                    "0710-Marketing Phone Bill":[["07100001","Marketing Phone Bill"],
+                                                                ["07100002","Call Server & Channel Charge."]],
                                     "0711-Awards & Commisions":[["07110001","Sales Commission to Customers"],
                                                                 ["07110003","Sales Award To Sales Man"],
                                                                 ["07110004","Discount to Nawab Pur Showroom"]],
@@ -261,7 +266,8 @@
                                                             ["01050005","Advance for Showroom"]],
                                     "0106-STOCK IN HAND":[["01060003","Inventory Finished Goods & Trading Item"],
                                                             ["01060001","Inventory Raw Materials"],
-                                                            ["01060002","Inventory WIP"]]
+                                                            ["01060002","Inventory WIP"],
+                                                            ["6220010","Maintenance Item Expence (Maintenance Store)"]]
                                 },
                                 "02-OTHER ASSET":{
                                     "0201-Deferred Capital Expenditure":[["02010001","Deferred Capital Expenditure"]],
@@ -468,7 +474,8 @@
                                                             ["10020010","Loan From Nawabpur (Showroom)"],
                                                             ["10020011","Loan From Sun Flower"],
                                                             ["10020012","Loan From Gulshan Hardware & Paint"],
-                                                            ["10020015","Loan From  Md Sir For Manufacturing Project"]]
+                                                            ["10020015","Loan From  Md Sir For Manufacturing Project"],
+                                                            ["10020017","Loan From GI Corporation"]]
                                 },
                                 "11-Reserve & Fund":{
                                     "1101-Employee Fund":[["11010001","Employee Fund(Mobile)"],
