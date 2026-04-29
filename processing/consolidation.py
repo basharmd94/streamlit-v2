@@ -480,7 +480,12 @@ def build_level_c_cfs(
     -------
     (cfs_full_df, cfs_summary_df)  — same contract as make_cashflow_statement_level0
     """
-    from processing.financial import make_cashflow_statement_level0, cash_open_close
+    from processing.financial import (
+        make_cashflow_statement_level0,
+        cash_open_close,
+        sort_pl_level0,
+        append_net_profit_to_bs_level0,
+    )
 
     # Sum by code+name (collapse ZIDs) to get a clean aggregate BS/IS
     bs_agg = _sum_by_code_name(
@@ -489,6 +494,17 @@ def build_level_c_cfs(
     is_agg = _sum_by_code_name(
         level_c_is.drop(columns=["zid"], errors="ignore")
     )
+
+    # ── Critical: inject Net Profit/Loss row into bs_agg ─────────────────────
+    # make_cashflow_statement_level0 uses the BS "Net Profit/Loss" row to build
+    # the "Prior Period Net Profit/Loss" entry in Financing (line 578: `if
+    # np_key in bs_work.index`).  Without this row the prior-year NP is never
+    # shifted into the CFS, leaving an error of exactly the prior year's NP in
+    # every column (proven: Level_C_Check = −prior_NP + Level_C2_Check).
+    _, net_profit, _, _ = sort_pl_level0(
+        is_agg, selected_perspective=selected_perspective
+    )
+    bs_agg = append_net_profit_to_bs_level0(bs_agg, net_profit)
 
     coc = cash_open_close(bs_agg)
     return make_cashflow_statement_level0(
