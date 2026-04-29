@@ -95,6 +95,175 @@ def create_download_link(df, filename="data.xlsx"):
     )
     return href
 
+def _period_col_label(col) -> str:
+    """Convert a period column (int year or (year, month) tuple/string) to a display string."""
+    import re, ast
+    if isinstance(col, tuple) and len(col) == 2:
+        yr, mo = int(col[0]), int(col[1])
+        return str(yr) if mo == 0 else f"{yr}-{str(mo).zfill(2)}"
+    try:
+        if isinstance(col, str) and col.startswith("("):
+            yr, mo = ast.literal_eval(col)
+            return f"{int(yr)}-{str(int(mo)).zfill(2)}"
+        nums = re.findall(r"\d+", str(col))
+        if len(nums) >= 2:
+            return f"{nums[0]}-{nums[1].zfill(2)}"
+        if len(nums) == 1:
+            return str(nums[0])
+    except Exception:
+        pass
+    return str(col)
+
+
+def create_combined_ls_download_link(
+    pl_s: "pd.DataFrame",
+    bs_s: "pd.DataFrame",
+    cfs_s: "pd.DataFrame",
+    filename: str = "LevelS_Financial_Statements.xlsx",
+    link_label: str = "⬇ Download Level S Financial Statements (Excel)",
+) -> str:
+    """
+    Combine the three Level S statements into a single Excel sheet.
+
+    Layout
+    ------
+    - Row header column ("ac_name") + one column per period, all aligned.
+    - Statements are stacked: IS → blank row → BS → blank row → CFS.
+    - CFS is missing the first period (it shows deltas); that column is left blank.
+    """
+    name_col = "ac_name"
+    code_col = "ac_code"
+    # Include ac_code if present in any of the three statements
+    has_code = any(
+        code_col in df.columns for df in (pl_s, bs_s, cfs_s)
+    )
+
+    def _period_cols(df):
+        skip = {name_col, code_col}
+        return [c for c in df.columns if c not in skip and
+                pd.api.types.is_numeric_dtype(df[c])]
+
+    # Collect and sort all unique period columns across all three statements
+    import re, ast
+
+    def _sort_key(col):
+        if isinstance(col, tuple) and len(col) == 2:
+            return (int(col[0]), int(col[1]))
+        try:
+            if isinstance(col, str) and col.startswith("("):
+                yr, mo = ast.literal_eval(col)
+                return (int(yr), int(mo))
+            nums = re.findall(r"\d+", str(col))
+            if len(nums) >= 2:
+                return (int(nums[0]), int(nums[1]))
+            if len(nums) == 1:
+                return (int(nums[0]), 0)
+        except Exception:
+            pass
+        return (9999, 99)
+
+    _raw_period_cols = sorted(
+        set(_period_cols(pl_s)) | set(_period_cols(bs_s)) | set(_period_cols(cfs_s)),
+        key=_sort_key,
+    )
+
+    # Deduplicate: different original column types (e.g. tuple (2021,0) vs int 2021)
+    # can produce the same display label.  Keep only the first original column for
+    # each label so that out_cols is unique and pd.concat does not crash.
+    _seen_labels: dict = {}
+    all_period_cols = []
+    col_labels = []
+    for _orig in _raw_period_cols:
+        _lbl = _period_col_label(_orig)
+        if _lbl not in _seen_labels:
+            _seen_labels[_lbl] = _orig
+            all_period_cols.append(_orig)
+            col_labels.append(_lbl)
+
+    # ac_code comes first when present, then ac_name, then period columns
+    out_cols = ([code_col] if has_code else []) + [name_col] + col_labels
+
+    def _prepare(df: "pd.DataFrame") -> "pd.DataFrame":
+        pcols = _period_cols(df)
+        base_cols = (
+            ([code_col] if code_col in df.columns else []) + [name_col] + pcols
+        )
+        sub = df[base_cols].copy()
+        # Rename every recognised period column to its display label.
+        # Also handle columns whose format differs from the canonical one kept in
+        # all_period_cols (e.g. the IS has (2021,0) but the CFS has int 2021 —
+        # both must end up as "2021").
+        label_map = {c: _period_col_label(c) for c in pcols}
+        sub = sub.rename(columns=label_map)
+        # Add blank columns for any period or header not present in this statement.
+        for col in out_cols:
+            if col not in sub.columns:
+                sub[col] = None
+        return sub[out_cols]
+
+    def _blank_row() -> "pd.DataFrame":
+        return pd.DataFrame([[None] * len(out_cols)], columns=out_cols)
+
+    combined = pd.concat(
+        [_prepare(pl_s), _blank_row(), _prepare(bs_s), _blank_row(), _prepare(cfs_s)],
+        ignore_index=True,
+    )
+    # Rename header columns for readability in the file
+    rename_map = {name_col: "Account"}
+    if has_code:
+        rename_map[code_col] = "Code"
+    combined = combined.rename(columns=rename_map)
+
+    buffer = io.BytesIO()
+    combined.to_excel(buffer, index=False)
+    buffer.seek(0)
+    b64 = base64.b64encode(buffer.read()).decode()
+    href = (
+        f'<a href="data:application/vnd.openxmlformats-officedocument.'
+        f'spreadsheetml.sheet;base64,{b64}" download="{filename}">'
+        f'{link_label}</a>'
+    )
+    return href
+
+
+def create_multi_sheet_download_link(sheets: dict, filename: str = "report.xlsx") -> str:
+    """
+    Build a base64-encoded Excel download link from multiple DataFrames.
+
+    Parameters
+    ----------
+    sheets : dict[str, pd.DataFrame]
+        Ordered mapping of sheet name → DataFrame.  Sheet names are
+        truncated to 31 characters (Excel limit).
+    filename : str
+        Suggested download filename.
+
+    Returns
+    -------
+    str  HTML <a> anchor tag ready for st.markdown(..., unsafe_allow_html=True).
+    """
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            safe_name = str(sheet_name)[:31]
+            # Flatten MultiIndex columns if present
+            if isinstance(df.columns, pd.MultiIndex):
+                df = df.copy()
+                df.columns = [
+                    f"{c[0]}_{str(c[1]).strip()}" if len(c) > 1 and c[1] else str(c[0])
+                    for c in df.columns.values
+                ]
+            df.to_excel(writer, sheet_name=safe_name, index=False)
+    buffer.seek(0)
+    b64 = base64.b64encode(buffer.read()).decode()
+    href = (
+        f'<a href="data:application/vnd.openxmlformats-officedocument.'
+        f'spreadsheetml.sheet;base64,{b64}" download="{filename}">'
+        f'⬇ Download Financial Statements (Excel)</a>'
+    )
+    return href
+
+
 def update_single_options(data, col):
     return data[col].unique().tolist()
 
@@ -398,29 +567,31 @@ def data_copy_add_columns(*dfs):
     return tuple(processed_dfs)
 
 def enrich_collection_with_sales_info(filtered_data_c, filtered_data_s):
-    # Create mapping from sales data (cusid -> spid, spname)
-    print("Before:", filtered_data_c["value"].sum())
+    """
+    Enrich collection rows with salesman and area from the sales table.
 
+    The new get_collection_data query already embeds spid / spname / area
+    directly on each row (via gldetail.sp_id + last-INOP fallback), so this
+    function only adds the columns that are still missing — preventing
+    duplicate-column suffixes (_x / _y) from a blind merge.
+    """
+    enrichable = ["spid", "spname", "area"]
+    cols_to_add = [c for c in enrichable if c not in filtered_data_c.columns]
 
-    # Step 1: Extract mapping of most recent spid/spname per customer
+    if not cols_to_add:
+        return filtered_data_c          # everything already embedded by the query
+
+    # Columns we can pull from the sales DataFrame
+    available = [c for c in ["cusid"] + cols_to_add if c in filtered_data_s.columns]
+    if "cusid" not in available:
+        return filtered_data_c
+
     latest_sales = (
-        filtered_data_s.sort_values("date")  # or use .sort_values("year", "month", "date") if more granular
-        .drop_duplicates(subset=["cusid"], keep="last")[["cusid", "spid", "spname", "area"]]
+        filtered_data_s.sort_values("date")
+        .drop_duplicates(subset=["cusid"], keep="last")[available]
     )
 
-    # Step 2: Merge safely without duplication
-    enriched_df = pd.merge(
-        filtered_data_c,
-        latest_sales,
-        on="cusid",
-        how="left",
-        validate="many_to_one"  # 🚨 ensures each cusid in collection maps to only one row
-    )
-
-    print("After:", enriched_df["value"].sum()) 
-
-
-    return enriched_df
+    return pd.merge(filtered_data_c, latest_sales, on="cusid", how="left")
 
 def add_voucher_type_ar(filtered_data_ar):
     filtered_data_ar['voucher_type'] = filtered_data_ar['voucher'].str.extract(r"^([A-Za-z]+)")

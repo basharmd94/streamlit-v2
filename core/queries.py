@@ -297,43 +297,43 @@ def get_return_data(filters=None):
 
 
 def get_collection_data(filters=None):
-    filters = filters or {}
-    params = [filters["zid"][0]]
-
-    query = """
-        SELECT
-            glmst.zid,
-            gldetail.voucher AS glvoucher,
-            gldetail.ac_sub AS cusid,
-            cacus.cusname as cusname,
-            glheader.date,
-            glheader.year,
-            glheader.month,
-            ABS(SUM(gldetail.value)) AS value
-        FROM glmst
-        JOIN gldetail ON glmst.ac_code = gldetail.ac_code AND glmst.zid = gldetail.zid
-        JOIN glheader ON gldetail.voucher = glheader.voucher AND glmst.zid = glheader.zid
-        JOIN cacus ON gldetail.ac_sub = cacus.cusid AND gldetail.zid = cacus.zid
-        WHERE glmst.zid = %s
-        AND (
-            gldetail.voucher LIKE 'JV--%%'
-            OR gldetail.voucher LIKE 'RCT-%%'
-            OR gldetail.voucher LIKE 'CRCT%%'
-            OR gldetail.voucher LIKE 'STJV%%'
-            OR gldetail.voucher LIKE 'BRCT%%'
-        )
-        AND glmst.usage IN ('AR')
     """
+    Returns one row per collection voucher with:
+      - spid/spname from gldetail.sp_id (the newly added column)
+      - fallback: if gldetail.sp_id is NULL/blank, uses the most recent
+        salesman from the sales table for that customer (last-INOP rule)
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+
+    # ── CTE 1: aggregate collection vouchers, grab direct sp_id ──────────────
+    rct_conditions = [
+        "gd.zid = %s",
+        "gm.usage = 'AR'",
+        "(gd.voucher LIKE 'RCT-%%' OR gd.voucher LIKE 'CRCT%%'"
+        " OR gd.voucher LIKE 'STJV%%' OR gd.voucher LIKE 'BRCT%%'"
+        " OR gd.voucher LIKE 'JV--%%')",
+    ]
+    rct_params: list = [zid]
 
     if filters.get("year"):
-        placeholders = ",".join(["%s"] * len(filters["year"]))
-        query += f" AND glheader.year IN ({placeholders})"
-        params.extend(filters["year"])
+        ph = ",".join(["%s"] * len(filters["year"]))
+        rct_conditions.append(f"gh.year IN ({ph})")
+        rct_params.extend(filters["year"])
 
     if filters.get("month"):
-        placeholders = ",".join(["%s"] * len(filters["month"]))
-        query += f" AND glheader.month IN ({placeholders})"
-        params.extend(filters["month"])
+        ph = ",".join(["%s"] * len(filters["month"]))
+        rct_conditions.append(f"gh.month IN ({ph})")
+        rct_params.extend(filters["month"])
+
+    rct_where = " AND ".join(rct_conditions)
+
+    # ── CTE 2: last salesman per customer from sales table ────────────────────
+    last_sp_params: list = [zid]
+
+    # ── Outer WHERE (cusname / area / spname filters) ─────────────────────────
+    outer_conditions: list = []
+    outer_params: list = []
 
     if filters.get("cusname"):
         raw_vals = [str(v) for v in filters["cusname"]]
@@ -341,45 +341,101 @@ def get_collection_data(filters=None):
         for v in raw_vals:
             if " - " in v:
                 code, name = v.split(" - ", 1)
-                code, name = code.strip(), name.strip()
-                if code:
-                    cusids.append(code)
-                if name:
-                    cusnames.append(name)
+                if code.strip(): cusids.append(code.strip())
+                if name.strip(): cusnames.append(name.strip())
             else:
-                name = v.strip()
-                if name:
-                    cusnames.append(name)
-
-        conditions = []
+                if v.strip(): cusnames.append(v.strip())
+        conds = []
         if cusids:
-            placeholders = ",".join(["%s"] * len(cusids))
-            conditions.append(f"gldetail.ac_sub IN ({placeholders})")
-            params.extend(cusids)
+            ph = ",".join(["%s"] * len(cusids))
+            conds.append(f"r.cusid IN ({ph})")
+            outer_params.extend(cusids)
         if cusnames:
-            placeholders = ",".join(["%s"] * len(cusnames))
-            conditions.append(f"cacus.cusname IN ({placeholders})")
-            params.extend(cusnames)
-        if conditions:
-            query += "\n  AND (" + " OR ".join(conditions) + ")"
+            ph = ",".join(["%s"] * len(cusnames))
+            conds.append(f"cc.cusname IN ({ph})")
+            outer_params.extend(cusnames)
+        if conds:
+            outer_conditions.append("(" + " OR ".join(conds) + ")")
 
     if filters.get("area"):
-        placeholders = ",".join(["%s"] * len(filters["area"]))
-        query += f" AND cacus.cuscity IN ({placeholders})"
-        params.extend(filters["area"])
+        ph = ",".join(["%s"] * len(filters["area"]))
+        outer_conditions.append(f"cc.cuscity IN ({ph})")
+        outer_params.extend(filters["area"])
 
-    query += """
-        GROUP BY
-            glmst.zid,
-            gldetail.voucher,
-            gldetail.ac_sub,
-            cacus.cusname,
-            glmst.usage,
-            glheader.date,
-            glheader.year,
-            glheader.month
+    if filters.get("spname"):
+        raw_vals = [str(v) for v in filters["spname"]]
+        spids, spnames = [], []
+        for v in raw_vals:
+            if " - " in v:
+                code, name = v.split(" - ", 1)
+                if code.strip(): spids.append(code.strip())
+                if name.strip(): spnames.append(name.strip())
+            else:
+                if v.strip(): spnames.append(v.strip())
+        conds = []
+        if spids:
+            ph = ",".join(["%s"] * len(spids))
+            conds.append(f"COALESCE(r.direct_sp_id, ls.sp_id) IN ({ph})")
+            outer_params.extend(spids)
+        if spnames:
+            ph = ",".join(["%s"] * len(spnames))
+            conds.append(f"e.spname IN ({ph})")
+            outer_params.extend(spnames)
+        if conds:
+            outer_conditions.append("(" + " OR ".join(conds) + ")")
+
+    outer_where = ("\n    WHERE " + " AND ".join(outer_conditions)) if outer_conditions else ""
+
+    query = f"""
+    WITH rct_raw AS (
+        SELECT
+            gd.zid,
+            gd.voucher,
+            gd.ac_sub::text          AS cusid,
+            gh.date,
+            gh.year,
+            gh.month,
+            ABS(SUM(gd.value))       AS value,
+            MAX(NULLIF(TRIM(gd.sp_id::text), '')) AS direct_sp_id
+        FROM gldetail gd
+        JOIN glheader gh ON gd.voucher  = gh.voucher  AND gd.zid = gh.zid
+        JOIN glmst    gm ON gd.ac_code  = gm.ac_code  AND gd.zid = gm.zid
+        WHERE {rct_where}
+        GROUP BY gd.zid, gd.voucher, gd.ac_sub, gh.date, gh.year, gh.month
+    ),
+    last_sale_sp AS (
+        -- Most recent salesman per customer from the sales table (last-INOP rule)
+        SELECT DISTINCT ON (cusid::text)
+            cusid::text   AS cusid,
+            sp_id::text   AS sp_id
+        FROM sales
+        WHERE zid = %s
+          AND sp_id IS NOT NULL
+          AND TRIM(sp_id::text) != ''
+        ORDER BY cusid::text, date DESC
+    )
+    SELECT
+        r.zid,
+        r.voucher                                       AS glvoucher,
+        r.cusid,
+        cc.cusname,
+        cc.cuscity                                      AS area,
+        r.date,
+        r.year,
+        r.month,
+        r.value,
+        COALESCE(r.direct_sp_id, ls.sp_id)             AS spid,
+        e.spname
+    FROM rct_raw r
+    JOIN  cacus    cc ON r.cusid  = cc.cusid::text AND r.zid = cc.zid
+    LEFT JOIN last_sale_sp ls ON r.cusid = ls.cusid
+    LEFT JOIN employee     e
+           ON COALESCE(r.direct_sp_id, ls.sp_id) = e.spid::text
+          AND e.zid = r.zid{outer_where}
     """
-    return query, tuple(params)
+
+    all_params = tuple(rct_params + last_sp_params + outer_params)
+    return query, all_params
 
 
 def get_ar_data(filters=None):
@@ -730,19 +786,34 @@ def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None,
 
     select = ["glmst.zid", "glmst.ac_code", "glheader.year",
               "glheader.month", "SUM(gldetail.value) as sum"]
+    # glmst.ac_type is referenced in ORDER BY so it must be in GROUP BY.
+    # Adding it here is safe for all businesses: for those with ac_type set,
+    # (zid, ac_code) already uniquely determines ac_type so the extra GROUP BY
+    # column does not change the result; for those with NULL ac_type (e.g. 100007)
+    # it prevents a PostgreSQL "must appear in GROUP BY" error.
     group_by = ["glmst.zid", "glmst.ac_code", "glheader.year",
-                "glheader.month", "glmst.usage"]
+                "glheader.month", "glmst.usage", "glmst.ac_type"]
 
     if is_project:
         select.extend(["glmst.ac_type", "glmst.ac_lv1", "glmst.ac_lv2", "glmst.usage"])
-        group_by.extend(["glmst.ac_type", "glmst.ac_lv1", "glmst.ac_lv2"])
+        group_by.extend(["glmst.ac_lv1", "glmst.ac_lv2"])  # ac_type already in base group_by
         where.append("gldetail.project = %s")
         params.append(project)
 
+    # Some businesses have NULL ac_type in glmst; fall back to ac_code prefix
+    # so those accounts are not silently excluded from the query.
     if is_bs:
-        where.append("(glmst.ac_type = 'Asset' OR glmst.ac_type = 'Liability')")
+        where.append(
+            "(glmst.ac_type IN ('Asset', 'Liability') "
+            "OR (glmst.ac_type IS NULL "
+            "    AND LEFT(glmst.ac_code, 2) IN ('01','02','03','09','10','11','12','13')))"
+        )
     else:
-        where.append("(glmst.ac_type = 'Income' OR glmst.ac_type = 'Expenditure')")
+        where.append(
+            "(glmst.ac_type IN ('Income', 'Expenditure') "
+            "OR (glmst.ac_type IS NULL "
+            "    AND LEFT(glmst.ac_code, 2) IN ('04','05','06','07','08','14','15')))"
+        )
 
     if year:
         where.append("glheader.year = %s")
@@ -779,6 +850,182 @@ def get_gl_master(zid) -> Tuple[str, tuple]:
         FROM glmst WHERE glmst.zid = %s
     """
     return sql, (zid,)
+
+
+def get_vat_breakdown_gl(
+    zid,
+    project=None,
+    year_list=None,
+    smonth: int = 1,
+    emonth: int = 12,
+) -> Tuple[str, tuple]:
+    """
+    Fetch raw gldetail rows for ac_code IN (1050007, 6290001) so that
+    Level S IS can compute the four VAT/Tax informational rows:
+
+        01050007  — VAT Expense from Rebate (A) and VAT through Cash (i)
+        06290001  — VAT Expenses Office (iii) and Others Company Tax (ii)
+
+    Returns all individual voucher rows (not pre-aggregated) so that
+    processing logic can split by voucher prefix and sign.
+    """
+    params: list = [zid]
+    where = ["gldetail.zid = %s", "gldetail.ac_code IN ('01050007', '06290001')"]
+
+    if project:
+        where.append("gldetail.project = %s")
+        params.append(project)
+
+    if year_list:
+        placeholders = ", ".join(["%s"] * len(year_list))
+        where.append(f"glheader.year IN ({placeholders})")
+        params.extend(year_list)
+
+    where.append("glheader.month >= %s")
+    params.append(smonth)
+    where.append("glheader.month <= %s")
+    params.append(emonth)
+
+    sql = f"""
+        SELECT
+            gldetail.ac_code,
+            glheader.year,
+            glheader.month,
+            gldetail.voucher,
+            gldetail.value
+        FROM gldetail
+        JOIN glheader ON gldetail.voucher = glheader.voucher
+                      AND gldetail.zid    = glheader.zid
+        WHERE {" AND ".join(where)}
+    """
+    return sql, tuple(params)
+
+
+def get_ind_hh_net_sales(
+    zid,
+    year_list=None,
+    smonth: int = 1,
+    emonth: int = 12,
+) -> Tuple[str, tuple]:
+    """
+    Returns yearly net sales (totalsales - treturnamt) for items where
+    caitem.itemgroup = 'Industrial & Household', for the given ZID.
+
+    Used exclusively by Level T IS to subtract I&H net sales from Revenue
+    for years <= 2024.
+
+    Returns columns: year (int), net_sales (numeric).
+    """
+    year_list = list(year_list) if year_list else []
+
+    s_year_clause = ""
+    r_year_clause = ""
+    if year_list:
+        placeholders = ", ".join(["%s"] * len(year_list))
+        s_year_clause = f"AND EXTRACT(YEAR FROM s.date)::int IN ({placeholders})"
+        r_year_clause = f"AND EXTRACT(YEAR FROM r.date)::int IN ({placeholders})"
+
+    # params: sales subquery first, then return subquery
+    s_params = [zid] + year_list + [smonth, emonth]
+    r_params = [zid] + year_list + [smonth, emonth]
+
+    sql = f"""
+        WITH sales_agg AS (
+            SELECT EXTRACT(YEAR FROM s.date)::int AS year,
+                   SUM(s.totalsales) AS total_sales
+            FROM sales s
+            JOIN caitem ci ON s.itemcode = ci.itemcode AND s.zid = ci.zid
+            WHERE s.zid = %s
+              {s_year_clause}
+              AND EXTRACT(MONTH FROM s.date)::int BETWEEN %s AND %s
+              AND ci.itemgroup = 'Industrial & Household'
+            GROUP BY 1
+        ),
+        return_agg AS (
+            SELECT EXTRACT(YEAR FROM r.date)::int AS year,
+                   SUM(r.treturnamt) AS total_returns
+            FROM return r
+            JOIN caitem ci ON r.itemcode = ci.itemcode AND r.zid = ci.zid
+            WHERE r.zid = %s
+              {r_year_clause}
+              AND EXTRACT(MONTH FROM r.date)::int BETWEEN %s AND %s
+              AND ci.itemgroup = 'Industrial & Household'
+            GROUP BY 1
+        )
+        SELECT
+            COALESCE(s.year, r.year)                              AS year,
+            COALESCE(s.total_sales, 0) - COALESCE(r.total_returns, 0) AS net_sales
+        FROM sales_agg s
+        FULL OUTER JOIN return_agg r ON s.year = r.year
+        ORDER BY 1
+    """
+    return sql, tuple(s_params + r_params)
+
+
+def get_ind_hh_net_cost(
+    zid,
+    year_list=None,
+    smonth: int = 1,
+    emonth: int = 12,
+) -> Tuple[str, tuple]:
+    """
+    Returns yearly net cost (sales.cost - return.returncost) for items where
+    caitem.itemgroup = 'Industrial & Household', for the given ZID.
+
+    Used by Level T IS to subtract I&H net cost from COGS for years <= 2024.
+
+    Returns columns: year (int), net_cost (numeric).
+    """
+    year_list = list(year_list) if year_list else []
+
+    s_year_clause = ""
+    r_year_clause = ""
+    if year_list:
+        placeholders = ", ".join(["%s"] * len(year_list))
+        s_year_clause = f"AND EXTRACT(YEAR FROM s.date)::int IN ({placeholders})"
+        r_year_clause = f"AND EXTRACT(YEAR FROM r.date)::int IN ({placeholders})"
+
+    s_params = [zid] + year_list + [smonth, emonth]
+    r_params = [zid] + year_list + [smonth, emonth]
+
+    sql = f"""
+        WITH sales_cost AS (
+            SELECT EXTRACT(YEAR FROM s.date)::int AS year,
+                   SUM(s.cost) AS total_cost
+            FROM sales s
+            JOIN caitem ci ON s.itemcode = ci.itemcode AND s.zid = ci.zid
+            WHERE s.zid = %s
+              {s_year_clause}
+              AND EXTRACT(MONTH FROM s.date)::int BETWEEN %s AND %s
+              AND ci.itemgroup = 'Industrial & Household'
+            GROUP BY 1
+        ),
+        return_cost AS (
+            SELECT EXTRACT(YEAR FROM r.date)::int AS year,
+                   SUM(r.returncost) AS total_returncost
+            FROM return r
+            JOIN caitem ci ON r.itemcode = ci.itemcode AND r.zid = ci.zid
+            WHERE r.zid = %s
+              {r_year_clause}
+              AND EXTRACT(MONTH FROM r.date)::int BETWEEN %s AND %s
+              AND ci.itemgroup = 'Industrial & Household'
+            GROUP BY 1
+        )
+        SELECT
+            COALESCE(s.year, r.year)                                          AS year,
+            COALESCE(s.total_cost, 0) - COALESCE(r.total_returncost, 0)      AS net_cost
+        FROM sales_cost s
+        FULL OUTER JOIN return_cost r ON s.year = r.year
+        ORDER BY 1
+    """
+    return sql, tuple(s_params + r_params)
+
+
+def get_all_businesses() -> Tuple[str, tuple]:
+    """Returns all businesses from the business table: zid, org.
+    Excludes placeholder/test rows with zid = 1."""
+    sql = "SELECT zid, org FROM business WHERE zid <> 1 ORDER BY zid"
+    return sql, ()
 
 
 def get_caitem_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:

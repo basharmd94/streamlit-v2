@@ -1,10 +1,10 @@
 import streamlit as st
 from core.analytics import Analytics
-from views import sales, margin, collection, basket, purchase, financial, accounting, inventory
+from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, daily_sales, ar_analysis as ar_view
 from views.home import display_home_page
 import pandas as pd
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from utils.loggin_config import LogManager
 from utils.utils import timed
 from auth import auth
@@ -12,10 +12,21 @@ from auth import auth
 
 @timed
 @st.cache_data
-def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str]):
+def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str],
+                        pre_filters: tuple = ()):
+    """
+    pre_filters: tuple of (key, tuple_of_values) pairs applied as SQL filters
+    before building the option lists.  Hashable so st.cache_data works.
+    Example: (("year", (2024, 2025)), ("month", (1, 2, 3)))
+    """
+    pre_filter_dict: dict = {}
+    for key, values in pre_filters:
+        if values:
+            pre_filter_dict[key] = list(values)
+
     combined_df = None
     for table in tables:
-        df = Analytics(table, zid=zid, filters={}).data
+        df = Analytics(table, zid=zid, filters=pre_filter_dict).data
         if df is not None:
             if combined_df is None:
                 combined_df = df.copy()
@@ -72,6 +83,31 @@ def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str])
         filter_options[col] = list(values)
 
     return filter_options
+
+@st.cache_data(show_spinner=False)
+def load_employee_options(zid: str) -> list[str]:
+    """Load salesman options for the AR Analysis sidebar."""
+    from core.db import get_dataframe
+    df = get_dataframe(
+        "SELECT spid::text AS spid, spname FROM employee WHERE zid = %s ORDER BY spname",
+        (zid,)
+    )
+    if df is not None and not df.empty:
+        return (df["spid"].astype(str) + " - " + df["spname"].astype(str)).tolist()
+    return []
+
+
+@st.cache_data(show_spinner=False)
+def _load_zid_dict() -> dict:
+    """Load business display names from the database business table."""
+    from core.db import get_dataframe
+    from core import queries
+    sql, params = queries.get_all_businesses()
+    df = get_dataframe(sql, params)
+    if df is not None and not df.empty:
+        return dict(zip(df["zid"].astype(str), df["org"].astype(str)))
+    # Fallback: return empty dict (app will show raw ZID keys)
+    return {}
 
 @timed
 @st.cache_data(show_spinner=False)
@@ -185,25 +221,32 @@ class BaseApp:
         display_home_page(st.session_state.username)
 
     def call_if_data_loaded(self, display_fn):
-        if st.session_state.get("ready_to_load") and st.session_state.get("last_data_dict"):
+        data_loaded_for = st.session_state.get("ready_to_load_page")
+        if (
+            st.session_state.get("ready_to_load")
+            and st.session_state.get("last_data_dict")
+            and data_loaded_for == self.current_page
+        ):
             display_fn(st.session_state.last_data_dict)
         else:
-            st.info("Please select your filters and click '🔄 Load Data' to begin analysis.")
+            st.info("⬅️ Please select your filters and click **🔄 Load Data** to begin analysis.")
 
     @timed
     def navigation(self):
         menu = [
-            "Home", 
+            "Home",
             "Overall Sales Analysis",
+            "Daily Sales Analysis",
             "Customer Data View",
-            "Overall Margin Analysis", 
+            "Overall Margin Analysis",
             "Collection Analysis",
             "Purchase Analysis",
             "Basket Analysis",
             "Financial Statements",
             "Manufacturing Analysis",
             "Accounting Analysis",
-            "Inventory Analysis"
+            "Inventory Analysis",
+            "AR Analysis"
         ]
 
          # Filter menu based on user's role
@@ -213,11 +256,8 @@ class BaseApp:
             st.error("You don't have access to any pages. Please contact your administrator.")
             return
 
-        zid_dict = {
-            '100000': 'GI Corporation',
-            '100001': 'Gulshan Trading',
-            '100005': 'Zepto Chemicals'
-        }
+        _ALLOWED_ZIDS = {'100000', '100001', '100005', '100009'}
+        zid_dict = {k: v for k, v in _load_zid_dict().items() if k in _ALLOWED_ZIDS}
 
         project_dict = {
             '100000': 'GI Corporation',
@@ -225,9 +265,17 @@ class BaseApp:
             '100005': 'Zepto Chemicals'
         }
 
-        selected_zid = st.sidebar.selectbox('Select Business (ZID):', list(zid_dict.keys()), format_func=lambda x: zid_dict[x])
+        # Use the page_selector widget key directly — it's updated by Streamlit before
+        # the script re-runs, so there's no one-render delay vs st.session_state.current_page.
+        _on_financials = st.session_state.get('page_selector') == 'Financial Statements'
+        selected_zid = st.sidebar.selectbox(
+            'Select Business (ZID):',
+            list(zid_dict.keys()),
+            format_func=lambda x: zid_dict[x],
+            disabled=_on_financials,
+        )
         st.session_state.zid = selected_zid
-        st.session_state.proj = project_dict[selected_zid]
+        st.session_state.proj = project_dict.get(selected_zid, zid_dict.get(selected_zid, selected_zid))
 
         # Display the company info in a styled header
         st.markdown(f"""
@@ -247,6 +295,7 @@ class BaseApp:
 
         self.page_data_map = {
             "Overall Sales Analysis": ("sales", "return"),
+            "Daily Sales Analysis":   ("sales", "return", "collection"),
             "Overall Margin Analysis": ("sales", "return"),
             "Collection Analysis": ("collection","sales","return","ar"),
             "Basket Analysis": ("sales", "return", "purchase", "cacus_simple"),
@@ -257,48 +306,104 @@ class BaseApp:
         if self.current_page in self.page_data_map and self.current_page != "Purchase Analysis":
             tables = self.page_data_map[self.current_page]
 
-            # Dynamically define filter columns
-            if self.current_page == "Collection Analysis":
-                filter_columns = ['year', 'month', 'cusname', 'area']  # Only these 4
-            else:
-                filter_columns = ['year', 'month', 'spname', 'cusname', 'itemname', 'area', 'itemgroup']
-
-            filter_options = load_filter_options(tables,st.session_state.zid, filter_columns)
-
             st.sidebar.title("Filters")
-            current_year = datetime.now().year
-            all_years = sorted(filter_options.get("year", []))
-            valid_years = [y for y in all_years if int(y) <= current_year]
-            selected_years = st.sidebar.multiselect("Select Year", valid_years, default=valid_years[-2:] if len(valid_years) >= 2 else valid_years)
-            selected_months = st.sidebar.multiselect("Select Month", filter_options.get("month", []))
-            selected_salesmen = st.sidebar.multiselect("Select Salesman", filter_options.get("spname", []))
-            selected_customers = st.sidebar.multiselect("Select Customer", filter_options.get("cusname", []))
-            selected_products = st.sidebar.multiselect("Select Product", filter_options.get("itemname", []))
-            selected_areas = st.sidebar.multiselect("Select Area", filter_options.get("area", []))
-            selected_groups = st.sidebar.multiselect("Select Product Group", filter_options.get("itemgroup", []))
 
-            if self.current_page == "Collection Analysis":
+            # ── Daily Sales Analysis — special sidebar ──────────────────
+            if self.current_page == "Daily Sales Analysis":
+                # Entity options loaded from all historical data (date filtering happens in pandas)
+                filter_options = load_filter_options(
+                    tables, st.session_state.zid, ['spname', 'itemname', 'itemgroup']
+                )
+                selected_end_date = st.sidebar.date_input(
+                    "Analysis End Date",
+                    value=st.session_state.get("daily_sales_end_date", date.today() - timedelta(days=1)),
+                    key="ds_end_date_input",
+                )
+                selected_salesmen = st.sidebar.multiselect(
+                    "Select Salesman", filter_options.get("spname", []), key="ds_sp_filter"
+                )
+                selected_products = st.sidebar.multiselect(
+                    "Select Product", filter_options.get("itemname", []), key="ds_item_filter"
+                )
+                selected_groups = st.sidebar.multiselect(
+                    "Select Product Group", filter_options.get("itemgroup", []), key="ds_group_filter"
+                )
                 selected_filters = {
-                    "year": [int(x) for x in selected_years],
-                    "month": [int(x) for x in selected_months],
-                    "cusname": selected_customers,
-                    "area": selected_areas
+                    "spname":    selected_salesmen,
+                    "itemname":  selected_products,
+                    "itemgroup": selected_groups,
                 }
+                if st.sidebar.button("🔄 Load Data", key="ds_load_button"):
+                    st.session_state.daily_sales_end_date = selected_end_date
+                    st.session_state.daily_sales_sp       = selected_salesmen
+                    st.session_state.daily_sales_item     = selected_products
+                    st.session_state.daily_sales_group    = selected_groups
+                    st.session_state.ready_to_load        = True
+                    st.session_state.ready_to_load_page   = self.current_page
+                    st.session_state.last_filters         = selected_filters
+                    st.session_state.last_data_dict       = process_data(
+                        zid=st.session_state.zid, filters={}, tables=tables
+                    )
+
+            # ── All other pages — two-pass sidebar ──────────────────────
             else:
-                selected_filters = {
-                    "year": [int(x) for x in selected_years],
-                    "month": [int(x) for x in selected_months],
-                    "spname": selected_salesmen,
-                    "cusname": selected_customers,
-                    "itemname": selected_products,
-                    "area": selected_areas,
-                    "itemgroup": selected_groups
-                }
-            
-            if st.sidebar.button("🔄 Load Data"):
-                st.session_state.ready_to_load = True
-                st.session_state.last_filters = selected_filters
-                st.session_state.last_data_dict = process_data(zid=st.session_state.zid, filters=selected_filters, tables=tables)
+                # Pass 1: year / month options (no entity pre-filter)
+                base_opts = load_filter_options(tables, st.session_state.zid, ['year', 'month'])
+                current_year = datetime.now().year
+                all_years = sorted(base_opts.get("year", []))
+                valid_years = [y for y in all_years if int(y) <= current_year]
+                selected_years  = st.sidebar.multiselect("Select Year",  valid_years,
+                                      default=valid_years[-2:] if len(valid_years) >= 2 else valid_years)
+                selected_months = st.sidebar.multiselect("Select Month", base_opts.get("month", []))
+
+                # Pass 2: entity options scoped to the selected years/months
+                pre_filters_tuple = tuple(
+                    (k, tuple(int(v) for v in vals))
+                    for k, vals in [("year", selected_years), ("month", selected_months)]
+                    if vals
+                )
+                if self.current_page == "Collection Analysis":
+                    entity_cols = ['spname', 'cusname', 'area']
+                else:
+                    entity_cols = ['spname', 'cusname', 'itemname', 'area', 'itemgroup']
+
+                entity_opts = load_filter_options(tables, st.session_state.zid,
+                                                  entity_cols, pre_filters_tuple)
+
+                selected_salesmen  = st.sidebar.multiselect("Select Salesman",       entity_opts.get("spname",    []))
+                selected_customers = st.sidebar.multiselect("Select Customer",        entity_opts.get("cusname",   []))
+                selected_areas     = st.sidebar.multiselect("Select Area",            entity_opts.get("area",      []))
+
+                if self.current_page == "Collection Analysis":
+                    selected_products = []
+                    selected_groups   = []
+                    selected_filters  = {
+                        "year":    [int(x) for x in selected_years],
+                        "month":   [int(x) for x in selected_months],
+                        "spname":  selected_salesmen,
+                        "cusname": selected_customers,
+                        "area":    selected_areas,
+                    }
+                else:
+                    selected_products = st.sidebar.multiselect("Select Product",       entity_opts.get("itemname",  []))
+                    selected_groups   = st.sidebar.multiselect("Select Product Group", entity_opts.get("itemgroup", []))
+                    selected_filters  = {
+                        "year":      [int(x) for x in selected_years],
+                        "month":     [int(x) for x in selected_months],
+                        "spname":    selected_salesmen,
+                        "cusname":   selected_customers,
+                        "itemname":  selected_products,
+                        "area":      selected_areas,
+                        "itemgroup": selected_groups,
+                    }
+
+                if st.sidebar.button("🔄 Load Data"):
+                    st.session_state.ready_to_load      = True
+                    st.session_state.ready_to_load_page = self.current_page
+                    st.session_state.last_filters       = selected_filters
+                    st.session_state.last_data_dict     = process_data(
+                        zid=st.session_state.zid, filters=selected_filters, tables=tables
+                    )
             
         elif self.current_page == "Purchase Analysis":
             selected_filters = {}
@@ -326,10 +431,42 @@ class BaseApp:
                 st.write("⬅ Use the sidebar to load purchase data")
             return  # ⬅ prevent the main router from running twice
 
+        elif self.current_page == "AR Analysis":
+            from processing import ar_analysis as ar_proc
+
+            sp_options = load_employee_options(st.session_state.zid)
+
+            default_till = date.today() - timedelta(days=2)
+            selected_till_date = st.sidebar.date_input(
+                "Till Date",
+                value=st.session_state.get("ar_till_date", default_till),
+                key="ar_till_date_input",
+            )
+            selected_salesmen = st.sidebar.multiselect(
+                "Select Salesman", sp_options, key="ar_sp_filter"
+            )
+
+            if st.sidebar.button("🔄 Load Data", key="ar_load_button"):
+                with st.spinner("Fetching AR ledger data…"):
+                    raw_df = ar_proc.fetch_ar_data(
+                        zid=st.session_state.zid,
+                        project=st.session_state.proj,
+                        till_date=selected_till_date,
+                    )
+                if raw_df is None:
+                    raw_df = pd.DataFrame()
+                st.session_state.ar_till_date       = selected_till_date
+                st.session_state.ar_salesmen        = selected_salesmen
+                st.session_state.ready_to_load      = True
+                st.session_state.ready_to_load_page = self.current_page
+                st.session_state.last_data_dict     = {"ar_raw": raw_df}
+
         if self.current_page == "Home":
             self.home()
         elif self.current_page == "Overall Sales Analysis":
             self.call_if_data_loaded(self.overall_sales_analysis)
+        elif self.current_page == "Daily Sales Analysis":
+            self.call_if_data_loaded(self.daily_sales_analysis)
         elif self.current_page == "Customer Data View":
             self.call_if_data_loaded(self.customer_data_view)
         elif self.current_page == "Overall Margin Analysis":
@@ -346,10 +483,16 @@ class BaseApp:
             self.accounting_analysis()
         elif self.current_page == "Inventory Analysis":
             self.inventory_analysis()
+        elif self.current_page == "AR Analysis":
+            self.call_if_data_loaded(self.ar_analysis_page)
 
     @timed
     def overall_sales_analysis(self, data_dict):
         sales.display_overall_sales_analysis_page(self.current_page, st.session_state.zid, data_dict)
+
+    @timed
+    def daily_sales_analysis(self, data_dict):
+        daily_sales.display_daily_sales_page(self.current_page, st.session_state.zid, data_dict)
     
     @timed
     def customer_data_view(self, data_dict):
@@ -421,6 +564,10 @@ class BaseApp:
     @timed
     def inventory_analysis(self):
         inventory.display_inventory_analysis_main(self.current_page, st.session_state.zid)
+
+    @timed
+    def ar_analysis_page(self, data_dict):
+        ar_view.display_ar_analysis_page(self.current_page, st.session_state.zid, data_dict)
 
 if __name__ == "__main__":
     app = BaseApp()

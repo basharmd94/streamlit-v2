@@ -1,0 +1,11 @@
+{
+  "_comment": "Pre-2022 VAT Rebate reclassification amounts for Level T adjustments. Before 2022, VAT Rebate expenses were embedded inside COGS rather than recorded as a separate VAT line. These values move that amount out of COGS and into 'VAT Expenses from Rebate (A)' — Net Income is unchanged. All values are in BDT. Update these with exact figures from physical records when available.",
+  "vat_rebate_prior": {
+    "2016": 4544572.75, 
+    "2017": 17107471.34,
+    "2018": 14021974.3,
+    "2019": 8179767.01,
+    "2020": 8421911.01,
+    "2021": 14823700.24
+  }
+}

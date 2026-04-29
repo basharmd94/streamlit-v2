@@ -654,3 +654,10 @@ These are real bugs that were found and fixed. Do not reintroduce them.
 | Use `st.session_state` keys without `init_auth()` | Session keys may not exist; always check with `.get()` |
 | Trust raw year values from `stock` table without validation | DB contains rows with garbage years (e.g. 2102) |
 | Commit `*.ini` files to git | They contain credentials; they are gitignored by design |
+
+#
+Error handling rule: If any API call returns a 529 Overloaded error, 
+retry automatically with exponential backoff (2^attempt seconds, starting 
+at attempt=0), up to 5 retries. Print a message like 
+"[Retry N/5] 529 Overloaded — waiting Xs..." before each wait. 
+Do not treat 529 as a fatal error unless all retries fail.

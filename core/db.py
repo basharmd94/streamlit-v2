@@ -42,6 +42,12 @@ def get_dataframe(query: str, params: tuple) -> pd.DataFrame:
         return df
     except Exception as e:
         LogManager.logger.error(f"get_dataframe error: {e}")
+        # Roll back so the connection is returned to the pool in a clean state.
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return pd.DataFrame()
     finally:
         if conn:

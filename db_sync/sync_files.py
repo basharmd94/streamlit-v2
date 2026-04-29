@@ -125,14 +125,16 @@ class SyncManager:
                 gldetail.zid,
                 gldetail.xacc AS ac_code,
                 gldetail.xsub AS ac_sub,
+                gldetail.xsp as sp_id,
                 gldetail.xproj AS project,
                 gldetail.xvoucher AS voucher,
+                gldetail.xrow AS row,
                 gldetail.xprime AS value
             FROM gldetail
         """
         insert_sql_gldetail = """
             INSERT INTO gldetail (
-                uuid, itime, utime, zid, ac_code, ac_sub, project, voucher, value
+                uuid, itime, utime, zid, ac_code, ac_sub, sp_id, project, voucher, row, value
             ) VALUES %s
         """
         self.execute_sync(select_sql_gldetail, insert_sql_gldetail, 'gldetail', clear_table_first=True)
@@ -427,3 +429,18 @@ class SyncManager:
             ) VALUES %s
         """
         self.execute_sync(select_sql_casup, insert_sql_casup, 'casup', clear_table_first=True)
+
+        #Business List.
+        select_sql_business = """
+            SELECT
+                zbusiness.zid AS zid,
+                zbusiness.xshort AS name,
+                zbusiness.zorg AS org
+            FROM zbusiness
+        """
+        insert_sql_business = """
+            INSERT INTO business (
+                uuid, zid, name, org
+            ) VALUES %s
+        """
+        self.execute_sync(select_sql_business, insert_sql_business, 'business', clear_table_first=True)

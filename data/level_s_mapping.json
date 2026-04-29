@@ -1,0 +1,991 @@
+{
+  "_meta": {
+    "description": "Level S to Level 0/1/2 account mapping for financial statements",
+    "notes": [
+      "computation: how the Level S value is derived",
+      "operator: + means add, - means subtract from Level 0 accounts to arrive at Level S",
+      "sign_convention: Level 0 IS uses positive=expense, positive=income (revenue is negative). Level S uses positive=inflow, negative=outflow (management view).",
+      "ignore_now: rows marked ignore_now are in Level S but computation deferred (VAT from rebate lines)",
+      "calculated: row is computed from other Level S rows, no direct Level 0 mapping"
+    ]
+  },
+  "Income Statement": {
+    "Revenue": {
+      "level_s_row": "Revenue",
+      "type": "direct",
+      "sign_note": "Level 0 Sales is negative (credit), Level S shows positive. Flip sign.",
+      "level_0_accounts": [
+        {"ac_code": "08010001", "ac_name": "Sales", "operator": "+"}
+      ],
+      "level_1_rollup": "00801-Sales",
+      "level_2_rollup": "08-Revenue",
+      "remarks": "Direct 1:1 mapping to Sales account only. Others revenue is separate."
+    },
+    "Others revenue": {
+      "level_s_row": "Others revenue",
+      "type": "direct_sum",
+      "sign_note": "All income accounts are negative in Level 0. Flip sign for Level S positive display.",
+      "level_0_accounts": [
+        {"ac_code": "08020001", "ac_name": "Discount Received", "operator": "+"},
+        {"ac_code": "08020002", "ac_name": "Rebate From Others Organization", "operator": "+"},
+        {"ac_code": "08020003", "ac_name": "Received Against Operating & Sales Distribution from Sister Concern", "operator": "+"},
+        {"ac_code": "08030001", "ac_name": "Interest Received", "operator": "+"},
+        {"ac_code": "08030002", "ac_name": "Floor Rent", "operator": "+"},
+        {"ac_code": "08040001", "ac_name": "Insurance Claim", "operator": "+"},
+        {"ac_code": "08050001", "ac_name": "Others Income", "operator": "+"},
+        {"ac_code": "08050002", "ac_name": "Scrap Sales", "operator": "+"},
+        {"ac_code": "08050003", "ac_name": "Provident & Mobile Deposit Fund Forfeit", "operator": "+"},
+        {"ac_code": "08050004", "ac_name": "International Purchase Revenue", "operator": "+"},
+        {"ac_code": "08050005", "ac_name": "Others Income for absent deduction", "operator": "+"},
+        {"ac_code": "08050006", "ac_name": "Others Income for others deduction", "operator": "+"},
+        {"ac_code": "08050007", "ac_name": "Sales From HMBR Canteen.", "operator": "+"},
+        {"ac_code": "08050008", "ac_name": "Others Sales.", "operator": "+"},
+        {"ac_code": "08050009", "ac_name": "Cash Deduction From Mobile Purchase", "operator": "+"},
+        {"ac_code": "08050010", "ac_name": "Sales From Agriculture Project", "operator": "+"},
+        {"ac_code": "08050011", "ac_name": "Disable Payroll ID Reconciliation with additional Salary", "operator": "+"}
+      ],
+      "level_1_rollup": "Multiple: 00801-Income, 0801-International Purchase Income, 0802-Discount Received, 0802-Income, 0802-Sales Distribution Received, 0803-Others Received, 0804-Others Income, 0805-Others Income 2",
+      "level_2_rollup": "08-Revenue (partial — everything except 00801-Sales)",
+      "remarks": "Sum of ALL revenue accounts except main Sales (08010001)."
+    },
+    "MRP Discount": {
+      "level_s_row": "MRP Discount",
+      "type": "direct",
+      "level_0_accounts": [
+        {"ac_code": "07080002", "ac_name": "MRP Discount", "operator": "+"}
+      ],
+      "level_1_rollup": "0708-Discount Paid (partial — 07080002 only)",
+      "level_2_rollup": "07-Sales & Distribution Expenses (partial)",
+      "remarks": "Currently zero across all years. Marked 'Should be less from expenses' in Level S. When non-zero, subtract from revenue side."
+    },
+    "Adjusted Revenue": {
+      "level_s_row": "Adjusted Revenue",
+      "type": "calculated",
+      "formula": "Revenue - Others_revenue - MRP_Discount",
+      "remarks": "Calculated Level S row. Marked 'Ignore this for now'. No direct Level 0 mapping."
+    },
+    "COGS": {
+      "level_s_row": "COGS",
+      "type": "direct_sum",
+      "sign_note": "Level 0 COGS accounts are positive (debit). Level S shows negative. Flip sign.",
+      "level_0_accounts": [
+        {"ac_code": "04010020", "ac_name": "Cost Of Goods Sold", "operator": "+"},
+        {"ac_code": "04010004", "ac_name": "Store Redemption", "operator": "+"},
+        {"ac_code": "05010001", "ac_name": "Product Refurbishment", "operator": "+"},
+        {"ac_code": "05010003", "ac_name": "Labor Bill", "operator": "+"},
+        {"ac_code": "05010004", "ac_name": "Carring-inward transport & labour", "operator": "+"}
+      ],
+      "level_1_rollup": "0401-DIRECT EXPENSES + 0501-Other Expenses (partial)",
+      "level_2_rollup": "04-Cost of Goods Sold + 05-Other Expenses (partial)",
+      "remarks": "Core COGS. Excludes 0501-OTHERS DIRECT EXPENSES (05010001 = Product Refurbishment is included; other 0501 items are minor). Note: 04010004 Store Redemption carries into COGS per Level 0 grouping."
+    },
+    "Gross Profit": {
+      "level_s_row": "Gross Profit",
+      "type": "calculated",
+      "formula": "Revenue - COGS",
+      "remarks": "Calculated from Revenue minus COGS. (Note: Level S remark says 'Adjs Rev - COGS' but Adjusted Revenue is ignored for now, so use Revenue - COGS)."
+    },
+    "SG&A": {
+      "level_s_row": "SG&A",
+      "type": "direct_sum",
+      "sign_note": "Expenses are positive in Level 0. Level S shows negative.",
+      "level_0_accounts": [
+        {"ac_code": "06010001", "ac_name": "Head Office General Expenses", "operator": "+"},
+        {"ac_code": "06010002", "ac_name": "Corporate Office Expenses", "operator": "+"},
+        {"ac_code": "06010003", "ac_name": "Agriculture Project", "operator": "+"},
+        {"ac_code": "06010004", "ac_name": "Garden Project", "operator": "+"},
+        {"ac_code": "06010005", "ac_name": "Government Inspection Expenses", "operator": "+"},
+        {"ac_code": "06010006", "ac_name": "Transportation Cost Director", "operator": "+"},
+        {"ac_code": "06010007", "ac_name": "Office & Administrative Expenses", "operator": "+"},
+        {"ac_code": "06020001", "ac_name": "Alu Bazar Market Society Expense", "operator": "+"},
+        {"ac_code": "06030001", "ac_name": "Fast Track (ISO Fee)", "operator": "+"},
+        {"ac_code": "06030002", "ac_name": "BSTI Certification", "operator": "+"},
+        {"ac_code": "06030003", "ac_name": "DCCI Membership Fee", "operator": "+"},
+        {"ac_code": "06030004", "ac_name": "Fire Service License Fee", "operator": "+"},
+        {"ac_code": "06030005", "ac_name": "Joint Stock License (RJSC) Fee", "operator": "+"},
+        {"ac_code": "06030006", "ac_name": "IRC Renewal Fee", "operator": "+"},
+        {"ac_code": "06030007", "ac_name": "Trademark License Renewal", "operator": "+"},
+        {"ac_code": "06030008", "ac_name": "Chemicals License Fee", "operator": "+"},
+        {"ac_code": "06030009", "ac_name": "Environment License Fee", "operator": "+"},
+        {"ac_code": "06030010", "ac_name": "Credit Rating Renewal", "operator": "+"},
+        {"ac_code": "06030011", "ac_name": "Factory License Renewal", "operator": "+"},
+        {"ac_code": "06030012", "ac_name": "Trade License Renewal", "operator": "+"},
+        {"ac_code": "06030013", "ac_name": "Gazipur Chamber of Commerce", "operator": "+"},
+        {"ac_code": "06030014", "ac_name": "Schedule From X & X11 Renewal", "operator": "+"},
+        {"ac_code": "06040001", "ac_name": "Rose Villa Utility & Others Expenses", "operator": "+"},
+        {"ac_code": "06040002", "ac_name": "Corporate Office Tax", "operator": "+"},
+        {"ac_code": "06040003", "ac_name": "Head Quater Holding Tax Vatara", "operator": "+"},
+        {"ac_code": "06040004", "ac_name": "RH Home Center Shop-125 Utility & Service Charge", "operator": "+"},
+        {"ac_code": "06040005", "ac_name": "Green Road Apartment Property Tax", "operator": "+"},
+        {"ac_code": "06040006", "ac_name": "R H Home Center Shop-125 General Exp.", "operator": "+"},
+        {"ac_code": "06040007", "ac_name": "Mirer Bazar Head Quarter Holding Tax", "operator": "+"},
+        {"ac_code": "06040008", "ac_name": "Mirer Bazar Apartment General Exp.", "operator": "+"},
+        {"ac_code": "06060001", "ac_name": "Expenses for Administrative Car", "operator": "+"},
+        {"ac_code": "06060002", "ac_name": "Maintenance for Administrative Car", "operator": "+"},
+        {"ac_code": "06070001", "ac_name": "HMBR Cultural Program", "operator": "+"},
+        {"ac_code": "06070002", "ac_name": "HMBR Picnic Expenses", "operator": "+"},
+        {"ac_code": "06070003", "ac_name": "HMBR Festival Program", "operator": "+"},
+        {"ac_code": "06100001", "ac_name": "Mortgage & CC A/C Maintain Expenses", "operator": "+"},
+        {"ac_code": "06160001", "ac_name": "Cleaning items & Charge", "operator": "+"},
+        {"ac_code": "06160002", "ac_name": "Miscellaneous Expenses", "operator": "+"},
+        {"ac_code": "06160003", "ac_name": "Staff Welfare Expense", "operator": "+"},
+        {"ac_code": "06160004", "ac_name": "Dish Line Expense", "operator": "+"},
+        {"ac_code": "06160005", "ac_name": "Fake Note Expensense", "operator": "+"},
+        {"ac_code": "06160007", "ac_name": "Gift For Others Organization & Variety Ceremony", "operator": "+"},
+        {"ac_code": "06160008", "ac_name": "Credit Card Expense (MD)", "operator": "+"},
+        {"ac_code": "06160009", "ac_name": "HMBR Social welfare & Charity Exp.", "operator": "+"},
+        {"ac_code": "06160010", "ac_name": "Fraction Adjustmen", "operator": "+"},
+        {"ac_code": "06170001", "ac_name": "Staff Conveyance (TA/DA)", "operator": "+"},
+        {"ac_code": "06180001", "ac_name": "Stationary Expense", "operator": "+"},
+        {"ac_code": "06180002", "ac_name": "Paper Purchase & Printing", "operator": "+"},
+        {"ac_code": "06180003", "ac_name": "Marker Pen & Refill Exp.", "operator": "+"},
+        {"ac_code": "06180004", "ac_name": "Courier Service/Feedex/DHL& Post Office Exp.", "operator": "+"},
+        {"ac_code": "06190001", "ac_name": "Computer Accessories", "operator": "+"},
+        {"ac_code": "06190002", "ac_name": "Computer Service Expense", "operator": "+"},
+        {"ac_code": "06190003", "ac_name": "Software Maintenance", "operator": "+"},
+        {"ac_code": "06190004", "ac_name": "Website Expense", "operator": "+"},
+        {"ac_code": "06190005", "ac_name": "Toner Expense", "operator": "+"},
+        {"ac_code": "06200001", "ac_name": "Accounts & Audit Fee", "operator": "+"},
+        {"ac_code": "06210001", "ac_name": "Entertainment", "operator": "+"},
+        {"ac_code": "06210002", "ac_name": "Staff Food Allowance", "operator": "+"},
+        {"ac_code": "06210003", "ac_name": "Food item purchase", "operator": "+"},
+        {"ac_code": "06220001", "ac_name": "Furniture & Fixture Repairs", "operator": "+"},
+        {"ac_code": "06220002", "ac_name": "Elevator (LIft) Maintenance", "operator": "+"},
+        {"ac_code": "06220003", "ac_name": "Rickshaw Van Repairs", "operator": "+"},
+        {"ac_code": "06220004", "ac_name": "Plant & Building Maintenance", "operator": "+"},
+        {"ac_code": "06220005", "ac_name": "CC TV & Cameras Servicing", "operator": "+"},
+        {"ac_code": "06220006", "ac_name": "General Repairs & Maintenance", "operator": "+"},
+        {"ac_code": "06220007", "ac_name": "Electric Item Expenses", "operator": "+"},
+        {"ac_code": "06220008", "ac_name": "Generator Maintenance", "operator": "+"},
+        {"ac_code": "06220009", "ac_name": "Air Condition Maintenance", "operator": "+"},
+        {"ac_code": "06220010", "ac_name": "Spare Parts Purchase bill (Foreign)", "operator": "+"},
+        {"ac_code": "06220011", "ac_name": "Solar Energy Maintenance", "operator": "+"},
+        {"ac_code": "06220012", "ac_name": "Staff Quarters Maintenance", "operator": "+"},
+        {"ac_code": "06230001", "ac_name": "Office Rent", "operator": "+"},
+        {"ac_code": "06230002", "ac_name": "Warehouse Rent", "operator": "+"},
+        {"ac_code": "06230003", "ac_name": "House Rent (Residence)", "operator": "+"},
+        {"ac_code": "06230004", "ac_name": "Cloud Hosting Server Rent", "operator": "+"},
+        {"ac_code": "06240001", "ac_name": "Business Trip Expenses", "operator": "+"},
+        {"ac_code": "06240002", "ac_name": "Visa & Passport Processing Expenses", "operator": "+"},
+        {"ac_code": "06250001", "ac_name": "Mirer Bazar Property Tax(Khajana)", "operator": "+"},
+        {"ac_code": "06250002", "ac_name": "Rose Villa Property Tax", "operator": "+"},
+        {"ac_code": "06250003", "ac_name": "Vatara Property Tax(Khajana)", "operator": "+"},
+        {"ac_code": "06260001", "ac_name": "Electricity Bill", "operator": "+"},
+        {"ac_code": "06260002", "ac_name": "Water & Swerage Bill", "operator": "+"},
+        {"ac_code": "06260003", "ac_name": "GAS Bill", "operator": "+"},
+        {"ac_code": "06270001", "ac_name": "Office & Administrative Phone Bill", "operator": "+"},
+        {"ac_code": "06280001", "ac_name": "Internet Expenses", "operator": "+"},
+        {"ac_code": "06310001", "ac_name": "Donation & subcription", "operator": "+"},
+        {"ac_code": "06310002", "ac_name": "Fire Extingusher Maintenance", "operator": "+"},
+        {"ac_code": "06310003", "ac_name": "Employee Training & Educational Exp.", "operator": "+"},
+        {"ac_code": "06310004", "ac_name": "Product Development Exp.", "operator": "+"},
+        {"ac_code": "06310005", "ac_name": "Legal Expenses", "operator": "+"},
+        {"ac_code": "06310006", "ac_name": "Ration Distribution Expenses", "operator": "+"},
+        {"ac_code": "06310007", "ac_name": "Product Development .", "operator": "+"},
+        {"ac_code": "06320001", "ac_name": "Medical Expenses", "operator": "+"},
+        {"ac_code": "06320002", "ac_name": "Medicine For First Aid", "operator": "+"},
+        {"ac_code": "06340001", "ac_name": "Uniform Expenses", "operator": "+"},
+        {"ac_code": "06360001", "ac_name": "Depreciation", "operator": "+"},
+        {"ac_code": "06370001", "ac_name": "General Insurance", "operator": "+"},
+        {"ac_code": "06380001", "ac_name": "Recruitment Expense", "operator": "+"},
+        {"ac_code": "06390001", "ac_name": "Provident Fund Expenses (Company)", "operator": "+"},
+        {"ac_code": "06290003", "ac_name": "VAT Consultant Expence", "operator": "+"}
+      ],
+      "level_1_rollup": "0601-Office Expenses + 0602-Other Office Expenses + 0603-License & Certification Expenses + 0604-City Corporation Tax + 0606-Administrative Car Expenses + 0607-Other Entertainment Expenses + 0610-Mortgage Registration Fee + 0616-Misacellaneous Expenses + 0617-Conveyance + 0618-Printing & Stationary Expenses + 0619-Computer & Software Expenses + 0621-Entertainment + 0622-Repairs & Maintenance + 0623-Rent + 0624-Travelling Expenses + 0625-Other Property Taxes + 0626-Utility Expenses + 0627-Office & Administrative Phone Bill + 0628-Internet Expenses + 0631-Other Expenses + 0632-Medical Expenses + 0634-Uniform Expenses + 0636-Depreciation + 0637-General Insurance + 0638-Recruitment Expenses + 0639-Provident Fund Expenses + 0440-Consultant Expenditure",
+      "level_2_rollup": "06-Office & Administrative Expenses (partial — excludes 0612/0613/0614/0615 salary items and interest/tax codes)",
+      "remarks": "SG&A = all 06xx admin expenses EXCEPT salary (06120001), bonus (06130001/2), overtime (06140001), director remuneration (06150001-3), bank interest (06300001-3), VAT expenses (06290001-2), income tax (06290002), and internal loan interest (06330001, 06350001-2). Those are broken out separately."
+    },
+    "0612-Salary Expenses": {
+      "level_s_row": "0612-Salary Expenses",
+      "type": "direct",
+      "level_0_accounts": [
+        {"ac_code": "06120001", "ac_name": "Salary Expense", "operator": "+"}
+      ],
+      "level_1_rollup": "0612-Salary Expenses",
+      "level_2_rollup": "06-Office & Administrative Expenses (partial)",
+      "remarks": "Direct single-account mapping."
+    },
+    "0613-Employee Bonus": {
+      "level_s_row": "0613-Employee Bonus",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "06130001", "ac_name": "Employee Bonus", "operator": "+"},
+        {"ac_code": "06130002", "ac_name": "Employee Bonus (2)", "operator": "+"}
+      ],
+      "level_1_rollup": "0613-Employee Bonus",
+      "level_2_rollup": "06-Office & Administrative Expenses (partial)",
+      "remarks": "Both bonus ac_codes summed."
+    },
+    "0614-Overtime": {
+      "level_s_row": "0614-Overtime",
+      "type": "direct",
+      "level_0_accounts": [
+        {"ac_code": "06140001", "ac_name": "Overtime (OT)", "operator": "+"}
+      ],
+      "level_1_rollup": "0614-Overtime",
+      "level_2_rollup": "06-Office & Administrative Expenses (partial)",
+      "remarks": "Direct single-account mapping."
+    },
+    "Total SG&A": {
+      "level_s_row": "Total SG&A",
+      "type": "calculated",
+      "formula": "SG&A + 0612-Salary_Expenses + 0613-Employee_Bonus + 0614-Overtime",
+      "remarks": "Calculated sum of all SGA lines. No direct Level 0 mapping — derived from component rows."
+    },
+    "0708-Discount Paid": {
+      "level_s_row": "0708-Discount Paid",
+      "type": "direct",
+      "level_0_accounts": [
+        {"ac_code": "07080001", "ac_name": "Discount Exp.", "operator": "+"}
+      ],
+      "level_1_rollup": "0708-Discount Paid (partial — 07080001 only)",
+      "level_2_rollup": "07-Sales & Distribution Expenses (partial)",
+      "remarks": "Only the cash discount account. MRP Discount (07080002) is a separate Level S line."
+    },
+    "Sales & Distribution Expenses": {
+      "level_s_row": "Sales & Distribution Expenses",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "07010001", "ac_name": "Advertisement", "operator": "+"},
+        {"ac_code": "07010002", "ac_name": "Exhibition Expense", "operator": "+"},
+        {"ac_code": "07010003", "ac_name": "Digital Marketing Expenses", "operator": "+"},
+        {"ac_code": "07010004", "ac_name": "Picnic Expenses Others Organization", "operator": "+"},
+        {"ac_code": "07010005", "ac_name": "Gift Expenses for Customer", "operator": "+"},
+        {"ac_code": "07010006", "ac_name": "Digital SMS System & Others Subscription Fee", "operator": "+"},
+        {"ac_code": "07020001", "ac_name": "Mobile Servising", "operator": "+"},
+        {"ac_code": "07020002", "ac_name": "Strapping Belt", "operator": "+"},
+        {"ac_code": "07020003", "ac_name": "Carton", "operator": "+"},
+        {"ac_code": "07020004", "ac_name": "Packaging Item expense", "operator": "+"},
+        {"ac_code": "07030001", "ac_name": "Expenses for Trading Vehicle", "operator": "+"},
+        {"ac_code": "07030002", "ac_name": "Traffic /Sergeant bill for Vehicle", "operator": "+"},
+        {"ac_code": "07030003", "ac_name": "Maintenance for Trading Vehicle", "operator": "+"},
+        {"ac_code": "07040001", "ac_name": "Sales Commission to Salesman", "operator": "+"},
+        {"ac_code": "07040002", "ac_name": "Sales Commission for slow item & other package", "operator": "+"},
+        {"ac_code": "07050001", "ac_name": "Food Allowance-District", "operator": "+"},
+        {"ac_code": "07050002", "ac_name": "Hotel Allowance District", "operator": "+"},
+        {"ac_code": "07050003", "ac_name": "Food Allowance Logistic", "operator": "+"},
+        {"ac_code": "07060001", "ac_name": "Transportation Expenses(Dhaka)", "operator": "+"},
+        {"ac_code": "07060002", "ac_name": "Transportation Expenses District", "operator": "+"},
+        {"ac_code": "07060003", "ac_name": "District Labour Expenses", "operator": "+"},
+        {"ac_code": "07060004", "ac_name": "Labor Bill (Dhaka)", "operator": "+"},
+        {"ac_code": "07060005", "ac_name": "Goods Delivery Expenses", "operator": "+"},
+        {"ac_code": "07090001", "ac_name": "Bad debt", "operator": "+"},
+        {"ac_code": "07100001", "ac_name": "Marketing Phone Bill", "operator": "+"},
+        {"ac_code": "07100002", "ac_name": "Call Server & Channel Charge.", "operator": "+"},
+        {"ac_code": "07110001", "ac_name": "Sales Commission to Customers", "operator": "+"},
+        {"ac_code": "07110002", "ac_name": "Agent Commission", "operator": "+"},
+        {"ac_code": "07110003", "ac_name": "Sales Award To Sales Man", "operator": "+"},
+        {"ac_code": "07110004", "ac_name": "Discount to Nawab Pur Showroom", "operator": "+"},
+        {"ac_code": "07120001", "ac_name": "Sales Conveyance (District)", "operator": "+"},
+        {"ac_code": "07120002", "ac_name": "Sales Conveyance (TA/DA)", "operator": "+"},
+        {"ac_code": "07120003", "ac_name": "Bank Charge District Schedule", "operator": "+"},
+        {"ac_code": "07120004", "ac_name": "Sales Conveyance TA/DA", "operator": "+"},
+        {"ac_code": "07120005", "ac_name": "Brand Promotion Expenses", "operator": "+"},
+        {"ac_code": "07130001", "ac_name": "Miscellaneous Expense (District.)", "operator": "+"},
+        {"ac_code": "07130002", "ac_name": "Fax Expence", "operator": "+"},
+        {"ac_code": "07130003", "ac_name": "Stationery,Courier,Labor & Others Expense (District)", "operator": "+"},
+        {"ac_code": "07140001", "ac_name": "Marketing TA & DA", "operator": "+"},
+        {"ac_code": "05010001", "ac_name": "Product Refurbishment (Others Direct)", "operator": "+"}
+      ],
+      "level_1_rollup": "0701-Advertisement + 0702-Packeging Expenses + 0703-Vehicle Expenses + 0704-Other Commisions + 0705-Daily Allowance + 0706-Transportation + 0709-Bad Debt + 0710-Marketing Phone Bill + 0711-Awards & Commisions + 0712-Conveyance + 0713-Miscellaneous + 0714-Marketing TA & DA + 0501-OTHERS DIRECT EXPENSES (partial)",
+      "level_2_rollup": "07-Sales & Distribution Expenses + 05-Other Expenses (partial)",
+      "remarks": "Excludes 07080001 (Discount Paid) which is its own Level S line. Includes 05010001 Product Refurbishment per numerical reconciliation with Level S values."
+    },
+    "Total Sales & Distribution Expenses": {
+      "level_s_row": "Total Sales & Distribution Expenses",
+      "type": "calculated",
+      "formula": "0708-Discount_Paid + Sales_and_Distribution_Expenses",
+      "remarks": "Sum of Discount Paid and all other S&D expenses."
+    },
+    "0501-Others Direct Expenses": {
+      "level_s_row": "0501-Others Direct Expenses",
+      "type": "direct_sum",
+      "sign_note": "These accounts carry mixed signs in Level 0. Use values as-is.",
+      "level_0_accounts": [
+        {"ac_code": "04010004", "ac_name": "Store Redemption", "operator": "+"},
+        {"ac_code": "05010002", "ac_name": "Packaging & Blister Expense", "operator": "+"},
+        {"ac_code": "05010004", "ac_name": "Carring-inward transport & labour", "operator": "+"}
+      ],
+      "level_1_rollup": "0501-OTHERS DIRECT EXPENSES",
+      "level_2_rollup": "05-OTHERS DIRECT EXPENSES",
+      "remarks": "The Level S '0501-Others Direct Expenses' line matches the Level 1 '0501-OTHERS DIRECT EXPENSES' value. This captures store redemptions and minor direct cost items that do not fall cleanly into COGS or S&D."
+    },
+    "EBITDA": {
+      "level_s_row": "EBITDA",
+      "type": "calculated",
+      "formula": "Gross_Profit - Total_SG&A - Total_Sales_and_Distribution_Expenses",
+      "remarks": "Calculated: Gross Profit minus Total SG&A minus Total S&D. Level S remark: 'Calculate GROSS Profit - Total SG&A - Total Sales & Distribution'."
+    },
+    "0630-Bank Interest & Charges": {
+      "level_s_row": "0630- Bank Interest & Charges",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "06300001", "ac_name": "Bank Interest", "operator": "+"},
+        {"ac_code": "06300002", "ac_name": "Bank Charge", "operator": "+"},
+        {"ac_code": "06300003", "ac_name": "Interest on Md Sir Loan", "operator": "+"}
+      ],
+      "level_1_rollup": "0630- Bank Interest & Charges",
+      "level_2_rollup": "06A-Interest Expenses (partial)",
+      "remarks": "Bank-side interest: OD interest, bank charges, and loan interest from MD Sir."
+    },
+    "0633-Interest-Loan": {
+      "level_s_row": "0633-Interest-Loan",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "06330001", "ac_name": "Interest on Internal Loan", "operator": "+"},
+        {"ac_code": "06350001", "ac_name": "Interest on Term & Building Loan (DBL)", "operator": "+"},
+        {"ac_code": "06350002", "ac_name": "Interest on Term Loan (UCB)", "operator": "+"}
+      ],
+      "level_1_rollup": "0633-Interest-Loan",
+      "level_2_rollup": "06A-Interest Expenses (partial)",
+      "remarks": "Term loan and internal loan interest. Separate from bank OD interest in 0630."
+    },
+    "Total interest & Charges": {
+      "level_s_row": "Total interest & Charges",
+      "type": "calculated",
+      "formula": "0630-Bank_Interest_Charges + 0633-Interest_Loan",
+      "remarks": "Sum of both interest lines. Maps to Level 1 '0630- Bank Interest & Charges' + '0633-Interest-Loan', Level 2 '06A-Interest Expenses'."
+    },
+    "VAT Expenses from rebate(A)": {
+      "level_s_row": "VAT Expenses from rebate(A)",
+      "type": "ignore_now",
+      "remarks": "Marked 'Ignore this line for now — Will be calculated from A Specific account ledger'. No mapping defined yet."
+    },
+    "VAT through cash(i)": {
+      "level_s_row": "VAT through cash(i)",
+      "type": "ignore_now",
+      "remarks": "Marked 'Ignore this line for now'. No mapping defined yet."
+    },
+    "Others Company Tax (GI, Zepto, Packaging)(ii)": {
+      "level_s_row": "Others Company Tax ( GI, Zepto , Packaging)(ii)",
+      "type": "ignore_now",
+      "remarks": "Marked 'Ignore this line for now'. No mapping defined yet."
+    },
+    "Vat Expenses (Office Expenses)(iii)": {
+      "level_s_row": "Vat Expenses (Office Expenses)(iii)",
+      "type": "ignore_now",
+      "remarks": "Marked 'Ignore this line for now'. No mapping defined yet."
+    },
+    "Net Vat Expenses (Cash) (B)": {
+      "level_s_row": "Net Vat Expenses (Cash) (B)(i+ii+iii)",
+      "type": "direct",
+      "sign_note": "Level 0 ac_code 06290001 VAT Expenses is positive (expense). Level S shows negative.",
+      "level_0_accounts": [
+        {"ac_code": "06290001", "ac_name": "VAT Expenses", "operator": "+"}
+      ],
+      "level_1_rollup": "0629- HMBR VAT & Tax Expenses (partial — VAT portion only)",
+      "level_2_rollup": "06B-Taxes & Duties Expenses (partial)",
+      "remarks": "Currently mapped to ac_code 06290001 only. The three sub-lines (i, ii, iii) that feed this are deferred. When those are implemented, this line becomes their computed sum."
+    },
+    "0629-Income Tax Expenses (c)": {
+      "level_s_row": "0629 - Income Tax  Expenses (c)",
+      "type": "direct",
+      "level_0_accounts": [
+        {"ac_code": "06290002", "ac_name": "Income Tax  Expenses", "operator": "+"}
+      ],
+      "level_1_rollup": "0629- HMBR VAT & Tax Expenses (partial — income tax only)",
+      "level_2_rollup": "06B-Taxes & Duties Expenses (partial)",
+      "remarks": "Direct single-account mapping."
+    },
+    "0629-VAT & Tax Expenses (A+B+C)": {
+      "level_s_row": "0629 - VAT & Tax Expenses(A+B+C)",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "06290001", "ac_name": "VAT Expenses", "operator": "+"},
+        {"ac_code": "06290002", "ac_name": "Income Tax  Expenses", "operator": "+"}
+      ],
+      "level_1_rollup": "0629- HMBR VAT & Tax Expenses",
+      "level_2_rollup": "06B-Taxes & Duties Expenses",
+      "remarks": "Total tax line = VAT (06290001) + Income Tax (06290002). Maps directly to Level 1 '0629- HMBR VAT & Tax Expenses' and Level 2 '06B-Taxes & Duties Expenses'. When VAT from rebate lines are implemented, VAT portion (A) will be added here."
+    },
+    "Net Income": {
+      "level_s_row": "Net Income",
+      "type": "calculated",
+      "formula": "EBITDA - Total_Interest_Charges - VAT_and_Tax_Expenses",
+      "remarks": "Calculated: EBITDA minus Total Interest minus Total Tax. Equivalent to Net Profit/Loss in Level 0/1/2 (sign-flipped — Level 0 NP is positive for loss, Level S shows loss as negative)."
+    }
+  },
+  "Balance Sheet": {
+    "0101-Cash & Cash Equivalent": {
+      "level_s_row": "0101-Cash  & Cash Equivalent",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "01010001", "ac_name": "General Cash", "operator": "+"},
+        {"ac_code": "01010003", "ac_name": "PBL-RFCD-51302053", "operator": "+"},
+        {"ac_code": "01010004", "ac_name": "Staff Welfare", "operator": "+"},
+        {"ac_code": "01010008", "ac_name": "Advance for Manufacturing Project", "operator": "+"}
+      ],
+      "level_1_rollup": "0101-CASH & CASH EQUIVALENT",
+      "level_2_rollup": "01-CURRENT ASSET (partial)",
+      "remarks": "Cash equivalents only (general cash + petty items). Bank balance is separate row."
+    },
+    "0102-Bank Balance": {
+      "level_s_row": "0102-Bank Balance",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "01020001", "ac_name": "Cash at Bank", "operator": "+"},
+        {"ac_code": "01020002", "ac_name": "Bank Transfer", "operator": "+"}
+      ],
+      "level_1_rollup": "0102-BANK BALANCE",
+      "level_2_rollup": "01-CURRENT ASSET (partial)",
+      "remarks": "Bank accounts only."
+    },
+    "Accounts Receivable (Local)": {
+      "level_s_row": "1030002 Accounts Receivable (Local)",
+      "type": "direct",
+      "level_0_accounts": [
+        {"ac_code": "01030003", "ac_name": "Accounts Receivable for future Collections", "operator": "+"}
+      ],
+      "level_1_rollup": "0103-ACCOUNTS RECEIVABLE (partial)",
+      "level_2_rollup": "01-CURRENT ASSET (partial)",
+      "remarks": "Specifically future collection receivables broken out separately in Level S."
+    },
+    "Accounts Receivable": {
+      "level_s_row": "Accounts Receivable",
+      "type": "direct",
+      "level_0_accounts": [
+        {"ac_code": "01030001", "ac_name": "Accounts Receivable", "operator": "+"}
+      ],
+      "level_1_rollup": "0103-ACCOUNTS RECEIVABLE (partial)",
+      "level_2_rollup": "01-CURRENT ASSET (partial)",
+      "remarks": "Main trade receivables."
+    },
+    "Recognized Agent (dealers)": {
+      "level_s_row": "Recognized Agent (dealers)",
+      "type": "direct",
+      "level_0_accounts": [
+        {"ac_code": "01030002", "ac_name": "Recognized Agent", "operator": "+"}
+      ],
+      "level_1_rollup": "0103-ACCOUNTS RECEIVABLE (partial)",
+      "level_2_rollup": "01-CURRENT ASSET (partial)",
+      "remarks": "Dealer/agent receivables broken out in Level S."
+    },
+    "0103-Accounts Receivable (Total)": {
+      "level_s_row": "0103-Accounts Receivable",
+      "type": "calculated",
+      "formula": "Accounts_Receivable + Recognized_Agent_dealers + Accounts_Receivable_Local",
+      "remarks": "Sum of three AR sub-lines. Matches Level 1 '0103-ACCOUNTS RECEIVABLE'."
+    },
+    "0104-Prepaid Expenses": {
+      "level_s_row": "0104-Prepaid Expenses",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "01040005", "ac_name": "Advanced Salary for Employee", "operator": "+"}
+      ],
+      "level_1_rollup": "0104-PREPAID EXPENSES",
+      "level_2_rollup": "01-CURRENT ASSET (partial)",
+      "remarks": "Primarily advanced salary. Level 0 01040001 warehouse advance is zero."
+    },
+    "0105-Advance Accounts": {
+      "level_s_row": "0105-Advance Accounts",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "01050001", "ac_name": "Advance For International Purchase", "operator": "+"},
+        {"ac_code": "01050002", "ac_name": "Advance to Others", "operator": "+"},
+        {"ac_code": "01050003", "ac_name": "Remaining Due to Employee", "operator": "+"},
+        {"ac_code": "01050004", "ac_name": "Deferred Advertisment", "operator": "+"},
+        {"ac_code": "01050005", "ac_name": "Advance for Showroom", "operator": "+"},
+        {"ac_code": "01050006", "ac_name": "Advance House Rent (Employee)", "operator": "+"},
+        {"ac_code": "01050007", "ac_name": "AT(+)VAT Rebate Claim", "operator": "+"},
+        {"ac_code": "01050008", "ac_name": "Accrued Against Sales Distribution & Operating", "operator": "+"}
+      ],
+      "level_1_rollup": "0105-ADVANCE ACCOUNTS",
+      "level_2_rollup": "01-CURRENT ASSET (partial)",
+      "remarks": "All advance accounts. Matches Level 1 '0105-ADVANCE ACCOUNTS'."
+    },
+    "0106-Stock in Hand": {
+      "level_s_row": "0106-Stock in Hand",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "01060003", "ac_name": "Inventory Finished Goods & Trading Item", "operator": "+"},
+        {"ac_code": "01060001", "ac_name": "Inventory Raw Materials", "operator": "+"},
+        {"ac_code": "01060002", "ac_name": "Inventory WIP", "operator": "+"}
+      ],
+      "level_1_rollup": "0106-STOCK IN HAND",
+      "level_2_rollup": "01-CURRENT ASSET (partial)",
+      "remarks": "All inventory categories."
+    },
+    "01-Total CURRENT ASSET (A)": {
+      "level_s_row": "01- Total CURRENT ASSET (A)",
+      "type": "calculated",
+      "formula": "0101 + 0102 + 0103_total + 0104 + 0105 + 0106",
+      "remarks": "Sum of all current asset rows. Matches Level 1 '01-CURRENT ASSET (A)' / Level 2 '01-CURRENT ASSET'."
+    },
+    "0201-Deferred Capital Expenditure": {
+      "level_s_row": "0201-Deferred Capital Expenditure",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "02010001", "ac_name": "Deferred Capital Expenditure", "operator": "+"}],
+      "level_1_rollup": "0201-Deferred Capital Expenditure",
+      "level_2_rollup": "02-OTHER ASSET (partial)"
+    },
+    "0202-Gift Items": {
+      "level_s_row": "0202-Gift Items",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "02020001", "ac_name": "Gift Items", "operator": "+"}],
+      "level_1_rollup": "0202-Gift Items",
+      "level_2_rollup": "02-OTHER ASSET (partial)"
+    },
+    "0203-Loan to Hospital (Staff Salary)": {
+      "level_s_row": "0203-Loan to Hospital ( Staff Salary)",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "02030001", "ac_name": "Loan to Hospital(Staff Salary)", "operator": "+"}],
+      "level_1_rollup": "0203-LOAN TO HOSPITAL (STAFF SALARY)",
+      "level_2_rollup": "02-OTHER ASSET (partial)"
+    },
+    "0203-Loan to Others Concern": {
+      "level_s_row": "0203-Loan to Others Concern",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "02030002", "ac_name": "Surma Apartment (Vatara)", "operator": "+"}],
+      "level_1_rollup": "0203-LOAN TO OTHERS CONCERN",
+      "level_2_rollup": "02-OTHER ASSET (partial)"
+    },
+    "0204-Security Deposit": {
+      "level_s_row": "0204-Security Deposit",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "02040001", "ac_name": "Security Deposit", "operator": "+"}],
+      "level_1_rollup": "0204-Security Deposit",
+      "level_2_rollup": "02-OTHER ASSET (partial)"
+    },
+    "0205-Loan to Others Concern": {
+      "level_s_row": "0205-Loan to Others Concern",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "02050001", "ac_name": "Loan to Hospital (Development)", "operator": "+"},
+        {"ac_code": "02050002", "ac_name": "Loan to Imamgong Showroom", "operator": "+"},
+        {"ac_code": "02050003", "ac_name": "Loan to Nawabpur Showroom", "operator": "+"},
+        {"ac_code": "02050004", "ac_name": "Loan to Directors", "operator": "+"},
+        {"ac_code": "02050005", "ac_name": "Loan to GTC", "operator": "+"},
+        {"ac_code": "02050006", "ac_name": "Loan to Karigor Company Project", "operator": "+"},
+        {"ac_code": "02050007", "ac_name": "Loan to Employee Against P.F", "operator": "+"},
+        {"ac_code": "02050008", "ac_name": "Loan to Rahima Enterprise", "operator": "+"},
+        {"ac_code": "02050009", "ac_name": "Loan To Others.", "operator": "+"},
+        {"ac_code": "02050010", "ac_name": "Loan to HMBR Grocery Shop", "operator": "+"},
+        {"ac_code": "02050011", "ac_name": "Loan to Zepto Chemicals", "operator": "+"},
+        {"ac_code": "02050012", "ac_name": "Loan to HMBR Paint Roller Co.", "operator": "+"},
+        {"ac_code": "02050013", "ac_name": "Loan to HMBR Steel Scrubber Co.", "operator": "+"},
+        {"ac_code": "02050014", "ac_name": "Loan to E-Commerce", "operator": "+"},
+        {"ac_code": "02050015", "ac_name": "Loan to Gulshan Packaging", "operator": "+"},
+        {"ac_code": "02050016", "ac_name": "Loan to FIX iT HMBR Ltd.", "operator": "+"},
+        {"ac_code": "02050017", "ac_name": "Loan to GI For Property Share", "operator": "+"}
+      ],
+      "level_1_rollup": "0205-LOAN TO OTHERS CONCERN",
+      "level_2_rollup": "02-OTHER ASSET (partial)"
+    },
+    "0206-Other Investment": {
+      "level_s_row": "0206-Other Investment",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "02060001", "ac_name": "Other Investment", "operator": "+"}],
+      "level_1_rollup": "0206-Other Investment",
+      "level_2_rollup": "02-OTHER ASSET (partial)"
+    },
+    "Total OTHER ASSET (B)": {
+      "level_s_row": "Total OTHER ASSET (B)",
+      "type": "calculated",
+      "formula": "Sum_of_all_02xx_rows",
+      "remarks": "Matches Level 2 '02-OTHER ASSET'."
+    },
+    "0301-Office Equipment": {
+      "level_s_row": "0301-Office Equipment",
+      "type": "aggregated_from_level1",
+      "level_0_ac_prefix": "03010xxx",
+      "level_1_rollup": "0301-Office Equipment",
+      "level_2_rollup": "03-FIXED ASSET (partial)",
+      "remarks": "Sum of all 03010xxx ac_codes. See Level 1 for full list."
+    },
+    "0302-Corporate Office Equipments": {
+      "level_s_row": "0302-Corporate Office Equipments",
+      "type": "aggregated_from_level1",
+      "level_0_ac_prefix": "03020xxx",
+      "level_1_rollup": "0302-Corporate Office Equipments",
+      "level_2_rollup": "03-FIXED ASSET (partial)"
+    },
+    "0303-Furniture & Fixture": {
+      "level_s_row": "0303-Furniture & Fixture",
+      "type": "aggregated_from_level1",
+      "level_0_ac_prefix": "03030xxx",
+      "level_1_rollup": "0303-Furniture & Fixture",
+      "level_2_rollup": "03-FIXED ASSET (partial)"
+    },
+    "0304-Trading Vehicles": {
+      "level_s_row": "0304-Trading Vehicles",
+      "type": "aggregated_from_level1",
+      "level_0_ac_prefix": "03040xxx",
+      "level_1_rollup": "0304-Trading Vehicles",
+      "level_2_rollup": "03-FIXED ASSET (partial)"
+    },
+    "0305-Private Vehicles": {
+      "level_s_row": "0305-Private Vehicles",
+      "type": "aggregated_from_level1",
+      "level_0_ac_prefix": "03050xxx",
+      "level_1_rollup": "0305-Private Vehicles",
+      "level_2_rollup": "03-FIXED ASSET (partial)"
+    },
+    "0306-Plants & Machinery": {
+      "level_s_row": "0306- Plants & Machinery",
+      "type": "aggregated_from_level1",
+      "level_0_ac_prefix": "03060xxx",
+      "level_1_rollup": "0306- Plants & Machinery",
+      "level_2_rollup": "03-FIXED ASSET (partial)"
+    },
+    "0307-Intangible Asset": {
+      "level_s_row": "0307-Intangible Asset",
+      "type": "aggregated_from_level1",
+      "level_0_ac_prefix": "03070xxx",
+      "level_1_rollup": "0307-Intangible Asset",
+      "level_2_rollup": "03-FIXED ASSET (partial)"
+    },
+    "0308-Land & Building": {
+      "level_s_row": "0308-Land & Building",
+      "type": "aggregated_from_level1",
+      "level_0_ac_prefix": "03080xxx",
+      "level_1_rollup": "0308-Land & Building",
+      "level_2_rollup": "03-FIXED ASSET (partial)"
+    },
+    "Total Fixed Assets C": {
+      "level_s_row": "Total Fixed assets C",
+      "type": "calculated",
+      "formula": "Sum_of_all_03xx_rows",
+      "remarks": "Matches Level 2 '03-FIXED ASSET'."
+    },
+    "Total Assets": {
+      "level_s_row": "Total Assets (A+B+C)",
+      "type": "calculated",
+      "formula": "Total_CURRENT_ASSET + Total_OTHER_ASSET + Total_Fixed_Assets",
+      "remarks": "Grand total assets."
+    },
+    "Accounts Payable (Local)": {
+      "level_s_row": "Accounts Payable(Local)",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "09030001", "ac_name": "Accounts Payable(Local)", "operator": "+"}],
+      "level_1_rollup": "0903-Accounts Payable (partial)",
+      "level_2_rollup": "09-Current Liability (partial)"
+    },
+    "Accounts Payable (Internal)": {
+      "level_s_row": "Accounts Payable(Internal)",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "09030003", "ac_name": "Accounts Payable(Internal)", "operator": "+"}],
+      "level_1_rollup": "0903-Accounts Payable (partial)",
+      "level_2_rollup": "09-Current Liability (partial)"
+    },
+    "Accounts Payable (International)": {
+      "level_s_row": "Accounts Payable(International)",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "09030004", "ac_name": "Accounts Payable(International)", "operator": "+"}],
+      "level_1_rollup": "0903-Accounts Payable (partial)",
+      "level_2_rollup": "09-Current Liability (partial)"
+    },
+    "0903-Accounts Payable (Total)": {
+      "level_s_row": "0903-Accounts Payable",
+      "type": "calculated",
+      "formula": "AP_Local + AP_Internal + AP_International",
+      "remarks": "Sum of the three AP sub-lines. Matches Level 1 '0903-Accounts Payable' total."
+    },
+    "0904-Money Agent Liability": {
+      "level_s_row": "0904-Money Agent Liability",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "09040001", "ac_name": "Sun Flower", "operator": "+"},
+        {"ac_code": "09040002", "ac_name": "Bright", "operator": "+"},
+        {"ac_code": "09040003", "ac_name": "Rain Forest", "operator": "+"},
+        {"ac_code": "09040004", "ac_name": "Tulip", "operator": "+"},
+        {"ac_code": "09040005", "ac_name": "Water Lily", "operator": "+"},
+        {"ac_code": "09040007", "ac_name": "Malek Jobeda Foundation", "operator": "+"}
+      ],
+      "level_1_rollup": "0904-Money Agent Liability",
+      "level_2_rollup": "09-Current Liability (partial)",
+      "remarks": "All money agent sub-accounts."
+    },
+    "0904-Reconciliation Liability": {
+      "level_s_row": "0904-Reconciliation Liability",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "09040006", "ac_name": "Bank Reconciliation Adjust", "operator": "+"}],
+      "level_1_rollup": "0904-Reconciliation Liability",
+      "level_2_rollup": "09-Current Liability (partial)"
+    },
+    "0905-C & F Liability": {
+      "level_s_row": "0905-C & F Liability",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "09050019", "ac_name": "Asma Trade International (C&F)", "operator": "+"},
+        {"ac_code": "09050024", "ac_name": "C & F bill / Charge.", "operator": "+"}
+      ],
+      "level_1_rollup": "0905-C & F Liability",
+      "level_2_rollup": "09-Current Liability (partial)"
+    },
+    "0906-Others Liability": {
+      "level_s_row": "0906-Others Liability",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "09060001", "ac_name": "Bank balance Received in GI", "operator": "+"}],
+      "level_1_rollup": "0906-Others Liability",
+      "level_2_rollup": "09-Current Liability (partial)"
+    },
+    "0901-Accrued Expenses": {
+      "level_s_row": "0901-Accrued Expenses (Director remuneration & Salary)",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "09010001", "ac_name": "Manufacturing Warehouse", "operator": "+"},
+        {"ac_code": "09010002", "ac_name": "Accrued Salary", "operator": "+"},
+        {"ac_code": "09010003", "ac_name": "Accrued International Purchase", "operator": "+"},
+        {"ac_code": "09010004", "ac_name": "Accrued Raw Material Purchase", "operator": "+"},
+        {"ac_code": "09010005", "ac_name": "Accrued Local Purchase", "operator": "+"},
+        {"ac_code": "09010006", "ac_name": "Accrued for Director Remuneration", "operator": "+"}
+      ],
+      "level_1_rollup": "0901-Accrued Expenses",
+      "level_2_rollup": "09-Current Liability (partial)"
+    },
+    "0903-total Accounts Payable": {
+      "level_s_row": "0903-total Accounts Payable",
+      "type": "calculated",
+      "formula": "0903_AP_total + 0904_Money_Agent + 0904_Reconciliation + 0905_CF + 0906_Others + 0901_Accrued",
+      "remarks": "Extended AP total including accruals and agent liabilities."
+    },
+    "Current liability (A)": {
+      "level_s_row": "Current liability (A)",
+      "type": "calculated",
+      "formula": "0903_total_AP + 1001_Short_Term_Bank_Loan_B",
+      "remarks": "Wait — per Level S layout, Current Liability A = 0903 total + 1001(1). Cross-check with Level 1 '09-Current Liability' which = 0901+0903+0904+0905+0906 total."
+    },
+    "1001-Short Term Bank Loan (1) (B)": {
+      "level_s_row": "1001-Short Term Bank Loan (1) (B)",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "10010003", "ac_name": "Bank Overdraft Dhaka Bank-CC-A/C", "operator": "+"},
+        {"ac_code": "10010004", "ac_name": "Dhaka Bank Short Term Loan", "operator": "+"},
+        {"ac_code": "10010005", "ac_name": "Loan Against Trust Received From UCB (LTR)", "operator": "+"},
+        {"ac_code": "10010006", "ac_name": "Bank Overdraft UCB LTD-CC-A/C", "operator": "+"},
+        {"ac_code": "10010007", "ac_name": "Overdraft by MD SIR", "operator": "+"},
+        {"ac_code": "10010008", "ac_name": "Short Term Loan UCB", "operator": "+"}
+      ],
+      "level_1_rollup": "1001-Short Term Bank Loan (1)",
+      "level_2_rollup": "10-Long Term Liability",
+      "remarks": "Bank OD and institutional short-term loans."
+    },
+    "1001-Short Term Bank Loan": {
+      "level_s_row": "1001-Short Term Bank Loan",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "10020001", "ac_name": "Loan From MD Sir.", "operator": "+"},
+        {"ac_code": "10020002", "ac_name": "Loan From Fix-iT", "operator": "+"},
+        {"ac_code": "10020003", "ac_name": "Loan From Fix it(G.R)", "operator": "+"},
+        {"ac_code": "10020004", "ac_name": "Loan From HMBR", "operator": "+"},
+        {"ac_code": "10020005", "ac_name": "Loan From GCC", "operator": "+"},
+        {"ac_code": "10020006", "ac_name": "Loan From GTT", "operator": "+"},
+        {"ac_code": "10020007", "ac_name": "Loan From GPK", "operator": "+"},
+        {"ac_code": "10020008", "ac_name": "Loan From Gulshan PlasticCo.", "operator": "+"},
+        {"ac_code": "10020009", "ac_name": "Loan From Imamgonj (Showroom)", "operator": "+"},
+        {"ac_code": "10020010", "ac_name": "Loan From Nawabpur (Showroom)", "operator": "+"},
+        {"ac_code": "10020011", "ac_name": "Loan From Sun Flower", "operator": "+"},
+        {"ac_code": "10020012", "ac_name": "Loan From Gulshan Hardware & Paint", "operator": "+"},
+        {"ac_code": "10020013", "ac_name": "Loan From Others", "operator": "+"},
+        {"ac_code": "10020014", "ac_name": "Loan From Hospital", "operator": "+"},
+        {"ac_code": "10020015", "ac_name": "Loan From  Md Sir For Manufacturing Project", "operator": "+"},
+        {"ac_code": "10020016", "ac_name": "Loan From Director", "operator": "+"},
+        {"ac_code": "10020017", "ac_name": "Loan From GI Corporation", "operator": "+"}
+      ],
+      "level_1_rollup": "1001-Short Term Bank Loan (from related parties/others)",
+      "level_2_rollup": "10-Short Term Liability",
+      "remarks": "Loans from related entities and individuals (non-bank)."
+    },
+    "1002-Short Term Loan": {
+      "level_s_row": "1002-Short Term Loan",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "10020016", "ac_name": "Loan From Director", "operator": "+"}],
+      "level_1_rollup": "1002-Short Term Loan",
+      "level_2_rollup": "10-Short Term Liability",
+      "remarks": "Note: Level 0 10020016 + other non-bank loans map to both 1001 and 1002 in Level S. Cross-check with Level 1 '1002-Short Term Loan' which uses 10020016 series."
+    },
+    "Total Short Term Liability (C)": {
+      "level_s_row": "Total Short Term Liability(C)",
+      "type": "calculated",
+      "formula": "1001_Short_Term_Bank_Loan + 1002_Short_Term_Loan",
+      "remarks": "Matches Level 2 '10-Short Term Liability'."
+    },
+    "1101-Employee Fund": {
+      "level_s_row": "1101-Employee Fund",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "11010001", "ac_name": "Employee Fund(Mobile)", "operator": "+"},
+        {"ac_code": "11010002", "ac_name": "Staff Welfare Fund", "operator": "+"},
+        {"ac_code": "11010003", "ac_name": "Provident Fund (Employee)", "operator": "+"}
+      ],
+      "level_1_rollup": "1101-Employee Fund",
+      "level_2_rollup": "11-Reserve & Funds (partial)"
+    },
+    "1102-Directors Award Fund": {
+      "level_s_row": "1102-Directors Award Fund",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "11020002", "ac_name": "Directors Remunation Tax Fund", "operator": "+"}],
+      "level_1_rollup": "1102-Directors Award Fund",
+      "level_2_rollup": "11-Reserve & Fund (partial)"
+    },
+    "1102-Office Rent Tax Fund": {
+      "level_s_row": "1102-Office Rent Tax Fund",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "11020001", "ac_name": "Directors Award Fund", "operator": "+"}],
+      "level_1_rollup": "1102-Office Rent Tax Fund",
+      "level_2_rollup": "11-Reserve & Fund (partial)"
+    },
+    "1103-Employee Educational Fund": {
+      "level_s_row": "1103-Employee Educational Fund",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "11030001", "ac_name": "Employee Educational Fund", "operator": "+"}],
+      "level_1_rollup": "1103-Employee Educational Fund",
+      "level_2_rollup": "11-Reserve & Funds (partial)"
+    },
+    "1104-Security Deposit Fund": {
+      "level_s_row": "1104-Security Deposit Fund",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "11040001", "ac_name": "Security Deposit Fund", "operator": "+"},
+        {"ac_code": "11040002", "ac_name": "Advance Against Floor Rent", "operator": "+"}
+      ],
+      "level_1_rollup": "1104-Security Deposit Fund",
+      "level_2_rollup": "11-Reserve & Funds (partial)"
+    },
+    "Total Reserve & Funds (D)": {
+      "level_s_row": "Total Reserve & Funds (D)",
+      "type": "calculated",
+      "formula": "Sum_of_all_11xx_rows",
+      "remarks": "Matches Level 2 '11-Reserve & Fund' + '11-Reserve & Funds' combined."
+    },
+    "Total Liabilities": {
+      "level_s_row": "Total Liabilities (A+B+C+D))",
+      "type": "calculated",
+      "formula": "Current_Liability_A + 1001_Bank_B + Total_Short_Term_C + Total_Reserve_D"
+    },
+    "1301-Share Capital": {
+      "level_s_row": "1301-Share Capital",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "13010001", "ac_name": "Capital", "operator": "+"}],
+      "level_1_rollup": "1301-Share Capital",
+      "level_2_rollup": "13-Owners Equity (partial)"
+    },
+    "1301A-Non-Cash Capital (Retained Earning)": {
+      "level_s_row": "1301A-Non-Cash Capital (Retained Earning)",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "13010003", "ac_name": "Retained Earning", "operator": "+"},
+        {"ac_code": "13010004", "ac_name": "Profit & Loss Appropriation", "operator": "+"},
+        {"ac_code": "13010005", "ac_name": "Owner's Capital of Director", "operator": "+"}
+      ],
+      "level_1_rollup": "1301A-Non-Cash Capital",
+      "level_2_rollup": "13-Owners Equity (partial)",
+      "remarks": "Combined retained earnings and P&L appropriation."
+    },
+    "1302-Error Adjustment For Retained Earning": {
+      "level_s_row": "1302-Error Adjustment For Retained Earning",
+      "type": "direct_sum",
+      "level_0_accounts": [
+        {"ac_code": "13020001", "ac_name": "Inventory Raw Materials", "operator": "+"},
+        {"ac_code": "13020002", "ac_name": "Inventory Finished Goods & Trading Item", "operator": "+"},
+        {"ac_code": "13020003", "ac_name": "Sales Return-09050016", "operator": "+"},
+        {"ac_code": "13020004", "ac_name": "Accrued International Purchase", "operator": "+"},
+        {"ac_code": "13020005", "ac_name": "Accrued Raw Material Purchase", "operator": "+"},
+        {"ac_code": "13020006", "ac_name": "Accrued Local Purchase", "operator": "+"},
+        {"ac_code": "13020007", "ac_name": "Reconciliation of the balance sheet to match owner's equity", "operator": "+"},
+        {"ac_code": "13021001", "ac_name": "Cost Of Goods Sold", "operator": "+"}
+      ],
+      "level_1_rollup": "1302-Error Adjustment For Retained Earning",
+      "level_2_rollup": "13-Owners Equity (partial)",
+      "remarks": "Error/reconciliation adjustments to equity."
+    },
+    "Net Profit/Loss (BS)": {
+      "level_s_row": "Net Profit/Loss",
+      "type": "from_income_statement",
+      "remarks": "Injected from Net Income calculation in Income Statement. Same value, sign-flipped for BS (loss is positive asset-side, negative equity-side)."
+    },
+    "Total Equity": {
+      "level_s_row": "Total Equity",
+      "type": "calculated",
+      "formula": "1301_Share_Capital + 1301A_Non_Cash + 1302_Error_Adjustment + Net_Profit_Loss"
+    },
+    "Total Liabilities & Equity": {
+      "level_s_row": "Total Liabilities & Equity",
+      "type": "calculated",
+      "formula": "Total_Liabilities + Total_Equity"
+    },
+    "Balance Check": {
+      "level_s_row": "Balance Check",
+      "type": "calculated",
+      "formula": "Total_Assets + Total_Liabilities_and_Equity",
+      "remarks": "Should be zero (or near-zero). Non-zero indicates unreconciled items in the source data."
+    }
+  },
+  "Cash Flow Statement": {
+    "_note": "The CFS is entirely derived from the IS and BS. Level S CFS rows map directly to Level 0 account movement (delta) values, not balance values. All CFS entries in Level 0 sheet represent year-on-year changes.",
+    "Net Profit/Loss": {
+      "level_s_row": "Net Profit/Loss",
+      "type": "from_income_statement",
+      "remarks": "Taken directly from IS Net Income."
+    },
+    "Depreciation": {
+      "level_s_row": "Depreciation",
+      "type": "direct",
+      "level_0_accounts": [{"ac_code": "06360001", "ac_name": "Depreciation", "operator": "+"}],
+      "level_1_rollup": "0636-Depreciation",
+      "remarks": "Non-cash add-back. Currently zero in recent years."
+    },
+    "Working Capital items": {
+      "level_s_row": "Individual WC lines (0103 through 0906)",
+      "type": "delta_of_balance_sheet",
+      "mapping_rule": "Each WC line in Level S CFS = (current year BS balance - prior year BS balance) for that account group. The accounts are identical to those in the Balance Sheet section above for current assets (0103-0106) and current liabilities (0901-0906).",
+      "level_1_rollup": "Δ Working Capital",
+      "remarks": "The CFS WC section in Level S mirrors Level 0 CFS exactly. Use same ac_code groups as BS current asset/liability sections."
+    },
+    "Cash from Operations": {
+      "level_s_row": "Cash from Operations",
+      "type": "calculated",
+      "formula": "Net_Profit + Depreciation + Delta_Working_Capital"
+    },
+    "CapEx items": {
+      "level_s_row": "Individual CapEx lines (0201-0308 series)",
+      "type": "delta_of_balance_sheet",
+      "mapping_rule": "Each CapEx line = (current year BS balance - prior year BS balance) for fixed/other asset accounts.",
+      "level_1_rollup": "CapEx / Investments",
+      "remarks": "Same ac_code groups as BS Other Asset and Fixed Asset sections."
+    },
+    "Cash from Investing": {
+      "level_s_row": "Cash from Investing",
+      "type": "calculated",
+      "formula": "Sum_of_all_CapEx_delta_lines"
+    },
+    "Financing items": {
+      "level_s_row": "Individual Financing lines (0904 Money Agent, 1001, 1002, 1101-1104, 1301 series)",
+      "type": "delta_of_balance_sheet",
+      "mapping_rule": "Each Financing line = (current year BS balance - prior year BS balance) for liability and equity accounts.",
+      "level_1_rollup": "Cash from Financing",
+      "remarks": "Same ac_code groups as BS liability and equity sections."
+    },
+    "Cash from Financing": {
+      "level_s_row": "Cash from Financing",
+      "type": "calculated",
+      "formula": "Sum_of_all_Financing_delta_lines"
+    },
+    "Opening Cash & CE": {
+      "level_s_row": "Opening Cash & CE",
+      "type": "from_balance_sheet",
+      "remarks": "Prior year closing (0101 + 0102) becomes current year opening."
+    },
+    "Net ΔCash": {
+      "level_s_row": "Net ΔCash",
+      "type": "calculated",
+      "formula": "Cash_from_Operations + Cash_from_Investing + Cash_from_Financing"
+    },
+    "Calculated Closing Cash & CE": {
+      "level_s_row": "Calculated Closing Cash & CE",
+      "type": "calculated",
+      "formula": "Opening_Cash + Net_Delta_Cash"
+    },
+    "Closing Cash & CE": {
+      "level_s_row": "Closing Cash & CE",
+      "type": "from_balance_sheet",
+      "remarks": "Actual closing = current year (0101 + 0102) from Balance Sheet."
+    },
+    "Cash-flow Check": {
+      "level_s_row": "Cash-flow Check",
+      "type": "calculated",
+      "formula": "Calculated_Closing - Actual_Closing",
+      "remarks": "Difference between calculated and actual closing cash. Should be near-zero."
+    }
+  }
+}

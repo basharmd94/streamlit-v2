@@ -105,6 +105,11 @@
                         "constraints": []
                     },
                     {
+                        "name": "sp_id",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
                         "name": "project",
                         "type": "VARCHAR",
                         "constraints": []
@@ -112,6 +117,11 @@
                     {
                         "name": "voucher",
                         "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "row",
+                        "type": "INT",
                         "constraints": []
                     },
                     {
@@ -753,6 +763,33 @@
                     },
                     {
                         "name": "designation",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    }
+                ]
+            },
+            {
+                "name": "business",
+                "columns": [
+                    {
+                        "name": "uuid",
+                        "type": "VARCHAR",
+                        "constraints": [
+                            "PRIMARY KEY"
+                        ]
+                    },
+                    {
+                        "name": "zid",
+                        "type": "INT",
+                        "constraints": []
+                    },
+                    {
+                        "name": "name",
+                        "type": "VARCHAR",
+                        "constraints": []
+                    },
+                    {
+                        "name": "org",
                         "type": "VARCHAR",
                         "constraints": []
                     }
