@@ -165,11 +165,13 @@ def build_level_c(
     _rules = load_consolidation_rules()
     for _fz in _rules.get("force_zero_periods", []):
         _fz_zids  = {int(z) for z in _fz["zids"]}
-        _fz_years = [str(y) for y in _fz["years"]]
+        _fz_years = {str(y) for y in _fz["years"]}   # normalise to str for comparison
         _fz_mask  = combined["zid"].isin(_fz_zids)
-        for _yr in _fz_years:
-            if _yr in combined.columns:
-                combined.loc[_fz_mask, _yr] = 0.0
+        # Year columns from pivot_table come out as integers (2024), not strings
+        # ("2024").  Compare via str() so the rule works regardless of column type.
+        _matching_cols = [c for c in combined.columns if str(c) in _fz_years]
+        for _col in _matching_cols:
+            combined.loc[_fz_mask, _col] = 0.0
 
     return _reorder_periods(combined, num)
 
