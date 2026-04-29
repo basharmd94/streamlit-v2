@@ -1208,5 +1208,12 @@
     "2024",
     "2025",
     "2026"
+  ],
+  "force_zero_periods": [
+    {
+      "description": "2024 accounting model change: 100000 became the consolidated manufacturing/sales entity. Internal entities 100002-100009 (excl. 100006) transferred their Q1-2024 NP to 100000 to seed its opening BS. Zeroing their 2024 IS+BS prevents that Q1 NP appearing twice in the consolidated statements. 2025+ is naturally zero as those entities are idle.",
+      "zids": [100002, 100003, 100004, 100007, 100008],
+      "years": ["2024"]
+    }
   ]
 }

@@ -156,6 +156,21 @@ def build_level_c(
         agg_num = combined.groupby(["zid", "ac_code", "ac_name"], as_index=False)[num].sum()
         combined = agg_num
 
+    # ── Force-zero specific ZID/year cells ────────────────────────────────────
+    # Driven by consolidation_rules.json → "force_zero_periods".
+    # Use case: 2024 model change where internal entities transferred their Q1
+    # NP to 100000.  Zeroing their 2024 IS and BS prevents the Q1 NP appearing
+    # twice in the consolidated statements.  Add new entries to the JSON (not
+    # here) whenever a future model change requires the same treatment.
+    _rules = load_consolidation_rules()
+    for _fz in _rules.get("force_zero_periods", []):
+        _fz_zids  = {int(z) for z in _fz["zids"]}
+        _fz_years = [str(y) for y in _fz["years"]]
+        _fz_mask  = combined["zid"].isin(_fz_zids)
+        for _yr in _fz_years:
+            if _yr in combined.columns:
+                combined.loc[_fz_mask, _yr] = 0.0
+
     return _reorder_periods(combined, num)
 
 
