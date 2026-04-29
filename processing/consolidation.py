@@ -333,6 +333,11 @@ def build_level_c2_bs(level_c_bs: pd.DataFrame) -> pd.DataFrame:
 
     result = pd.concat([p for p in parts if not p.empty], ignore_index=True)
     result[num] = result[num].fillna(0)
+    # Final dedup: the same ac_code can appear in multiple sections when different
+    # ZIDs route it to different buckets (e.g., ARAP for one ZID, allother for
+    # another). Sum into one row so make_cashflow_statement_level0 gets a unique
+    # (ac_code, ac_name) MultiIndex and .loc[key] returns a Series, not a DataFrame.
+    result = _sum_by_code_name(result)
     return _reorder_periods(result, _num_cols(result))
 
 
@@ -429,6 +434,9 @@ def build_level_c2_is(level_c_is: pd.DataFrame) -> pd.DataFrame:
 
     result = pd.concat([p for p in parts if not p.empty], ignore_index=True)
     result[num] = result[num].fillna(0)
+    # Defensive dedup: same ac_code can appear in multiple IS sections when
+    # different ZIDs route it differently. Sum into one row per (ac_code, ac_name).
+    result = _sum_by_code_name(result)
     return _reorder_periods(result, _num_cols(result))
 
 
