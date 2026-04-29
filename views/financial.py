@@ -355,6 +355,36 @@ def display_financial_statements(current_page, zid):
             # Cast zid to str so the numeric formatter ignores it.
             _lc_is_disp = level_c_is.assign(zid=level_c_is["zid"].astype(str))
             _lc_bs_disp = level_c_bs.assign(zid=level_c_bs["zid"].astype(str))
+
+            # ── IS: append Net Profit/Loss row (sum of all numeric cols) ──────
+            _lc_per_cols = [c for c in _lc_is_disp.columns
+                            if c not in {"zid", "ac_code", "ac_name"}
+                            and pd.api.types.is_numeric_dtype(_lc_is_disp[c])]
+            _lc_np_series = _lc_is_disp[_lc_per_cols].sum()
+            _lc_np_row_is = {"zid": "", "ac_code": "", "ac_name": "Net Profit/Loss"}
+            _lc_np_row_is.update(_lc_np_series.to_dict())
+            _lc_is_disp = pd.concat(
+                [_lc_is_disp, pd.DataFrame([_lc_np_row_is])], ignore_index=True
+            )
+
+            # ── BS: append Net Profit/Loss row then Balance Check ─────────────
+            _lc_bs_per_cols = [c for c in _lc_bs_disp.columns
+                               if c not in {"zid", "ac_code", "ac_name"}
+                               and pd.api.types.is_numeric_dtype(_lc_bs_disp[c])]
+            # align NP series to BS period columns (some periods may not overlap)
+            _lc_np_for_bs = _lc_np_series.reindex(_lc_bs_per_cols, fill_value=0)
+            _lc_np_row_bs = {"zid": "", "ac_code": "", "ac_name": "Net Profit/Loss"}
+            _lc_np_row_bs.update(_lc_np_for_bs.to_dict())
+            _lc_bs_plus_np = pd.concat(
+                [_lc_bs_disp, pd.DataFrame([_lc_np_row_bs])], ignore_index=True
+            )
+            _lc_bal_series = _lc_bs_plus_np[_lc_bs_per_cols].sum()
+            _lc_bal_row = {"zid": "", "ac_code": "", "ac_name": "Balance Check"}
+            _lc_bal_row.update(_lc_bal_series.to_dict())
+            _lc_bs_disp = pd.concat(
+                [_lc_bs_plus_np, pd.DataFrame([_lc_bal_row])], ignore_index=True
+            )
+
             _lc_cfs_ok = True
             try:
                 _lc_cfs, _lc_summary = _consol.build_level_c_cfs(
@@ -1171,6 +1201,35 @@ def display_financial_statements(current_page, zid):
             # Level C: simple concat of all ZID frames — ZID column retained.
             _lc_is_disp_m = level_c_is.assign(zid=level_c_is["zid"].astype(str))
             _lc_bs_disp_m = level_c_bs.assign(zid=level_c_bs["zid"].astype(str))
+
+            # ── IS: append Net Profit/Loss row ────────────────────────────────
+            _lc_per_cols_m = [c for c in _lc_is_disp_m.columns
+                              if c not in {"zid", "ac_code", "ac_name"}
+                              and pd.api.types.is_numeric_dtype(_lc_is_disp_m[c])]
+            _lc_np_series_m = _lc_is_disp_m[_lc_per_cols_m].sum()
+            _lc_np_row_is_m = {"zid": "", "ac_code": "", "ac_name": "Net Profit/Loss"}
+            _lc_np_row_is_m.update(_lc_np_series_m.to_dict())
+            _lc_is_disp_m = pd.concat(
+                [_lc_is_disp_m, pd.DataFrame([_lc_np_row_is_m])], ignore_index=True
+            )
+
+            # ── BS: append Net Profit/Loss row then Balance Check ─────────────
+            _lc_bs_per_cols_m = [c for c in _lc_bs_disp_m.columns
+                                 if c not in {"zid", "ac_code", "ac_name"}
+                                 and pd.api.types.is_numeric_dtype(_lc_bs_disp_m[c])]
+            _lc_np_for_bs_m = _lc_np_series_m.reindex(_lc_bs_per_cols_m, fill_value=0)
+            _lc_np_row_bs_m = {"zid": "", "ac_code": "", "ac_name": "Net Profit/Loss"}
+            _lc_np_row_bs_m.update(_lc_np_for_bs_m.to_dict())
+            _lc_bs_plus_np_m = pd.concat(
+                [_lc_bs_disp_m, pd.DataFrame([_lc_np_row_bs_m])], ignore_index=True
+            )
+            _lc_bal_series_m = _lc_bs_plus_np_m[_lc_bs_per_cols_m].sum()
+            _lc_bal_row_m = {"zid": "", "ac_code": "", "ac_name": "Balance Check"}
+            _lc_bal_row_m.update(_lc_bal_series_m.to_dict())
+            _lc_bs_disp_m = pd.concat(
+                [_lc_bs_plus_np_m, pd.DataFrame([_lc_bal_row_m])], ignore_index=True
+            )
+
             _lc_cfs_ok_m = True
             try:
                 _lc_cfs_m, _lc_summary_m = _consol.build_level_c_cfs(

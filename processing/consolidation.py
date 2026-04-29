@@ -374,13 +374,25 @@ def _sales_cogs_rows(
         mask = level_c_is["zid"].isin(zids) & (level_c_is["ac_code"] == code)
         return level_c_is.loc[mask, num]
 
-    # Consolidated Sales = sum of external ZIDs' sales
+    # Consolidated Sales = sum of external ZIDs' sales only
     ext_sales = _slice(ext_zids, sales_code).sum()
 
-    # Consolidated COGS = all COGS - internal Sales
+    # Consolidated COGS
+    # ------------------------------------------------------------------
+    # Sign convention in IS: revenues > 0, COGS/expenses < 0.
+    # External ZIDs' COGS = what they paid internal ZIDs (= int_sales, stored
+    # negative).  Internal ZIDs' COGS = what they paid to real external
+    # suppliers (also negative).
+    #
+    # Elimination:  remove the interco leg by ADDING back int_sales (positive).
+    #   cons_cogs = all_cogs + int_sales
+    #             = (ext_zids_COGS + int_zids_COGS) + int_sales
+    #             = (−int_sales + int_zids_COGS) + int_sales
+    #             = int_zids_COGS          ← correct: only real external costs
+    # ------------------------------------------------------------------
     all_cogs  = _slice(ext_zids + int_zids, cogs_code).sum()
     int_sales = _slice(int_zids, sales_code).sum()
-    cons_cogs = all_cogs - int_sales
+    cons_cogs = all_cogs + int_sales   # NOT minus — COGS stored negative
 
     rows = []
     if (ext_sales.abs() > 0).any():
