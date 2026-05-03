@@ -1297,6 +1297,23 @@ def _ls_sum_raw(df: pd.DataFrame, codes: list, code_col: str = "ac_code") -> pd.
     return df.loc[mask, num].sum()
 
 
+def _ls_sum_raw_by_name(
+    df: pd.DataFrame,
+    codes: list,
+    names: list,
+    code_col: str = "ac_code",
+    name_col: str = "ac_name",
+) -> pd.Series:
+    """
+    Sum Level 0 numeric values filtered by BOTH ac_code AND ac_name WITHOUT sign flip.
+    Used for the consolidated BS/CFS where the same ac_code (e.g. 01030001) appears
+    with different ac_names to distinguish external from internal AR groups.
+    """
+    num = _ls_num_cols(df)
+    mask = df[code_col].isin(codes) & df[name_col].isin(names)
+    return df.loc[mask, num].sum()
+
+
 def _ls_prefix_sum(df: pd.DataFrame, prefix: str, code_col: str = "ac_code") -> pd.Series:
     """Sum all codes that start with the given prefix (raw, no sign flip — used for BS)."""
     num = _ls_num_cols(df)
@@ -1430,7 +1447,7 @@ def build_pl_level_s(
                         "15010001"])   # Sales Return — revenue deduction (pre-2016 only)
     mrp_discount  = s(["07080002"])
 
-    # Adjusted Revenue = Revenue - MRP Discount (display only, no effect on other rows)
+    # Adjusted Revenue = Revenue + MRP Discount (display only, no effect on other rows)
     adj_revenue   = revenue + mrp_discount
 
     # COGS: purchase-related codes only. 05010001/03/04 (0501-Others Direct
@@ -1645,11 +1662,34 @@ def build_bs_level_s(
     # ── Current Assets ───────────────────────────────────────────────────────
     cash_ce       = d(["01010001","01010003","01010004","01010006","01010008"])
     bank_bal      = d(["01020001","01020002","01020003"])
-    ar_main       = d(_routes["ar_main"])
-    ar_internal   = d(_routes["ar_internal"])
-    ar_agent      = d(_routes["ar_agent"])
-    ar_local      = d(_routes["ar_local"])
-    ar_defaulted  = d(_routes["ar_defaulted"])
+    if str(zid) == "consolidated":
+        # Consolidated C2 BS AR mapping:
+        #   ar_main      → (01030001, "Accounts Receivable")
+        #                  external ZIDs: 100001 / 100005 / 100000
+        #   ar_internal  → (01030001, "Accounts Receivable (Internal)") [ARAP ZIDs]
+        #                  + (01030002, "Accounts Receivable (Previous) GTC & Zepto") [100000]
+        #                  both are internal/legacy receivables grouped together
+        #   ar_agent     → (01030002, "Recognized Agent")
+        #                  external trade agent AR
+        #   ar_local     → zero (no local AR bucket at consolidated level)
+        #   ar_defaulted → (01030003, "Accounts Receivable for future Collections")
+        #                  100001's long-term / defaulted receivable bucket
+        def dn(codes, names):
+            return _ls_sum_raw_by_name(bs_raw, codes, names, code_col, "ac_name")
+        ar_main      = dn(["01030001"], ["Accounts Receivable"])
+        ar_internal  = (dn(["01030001"], ["Accounts Receivable (Internal)"])
+                        + dn(["01030002"], ["Accounts Receivable (Previous) GTC & Zepto"]))
+        # "Recognized Agent" rows appear under 01030002 (100001/100005) and also
+        # under 01030003 for ZID 100000 — both must be captured in ar_agent.
+        ar_agent     = dn(["01030002", "01030003"], ["Recognized Agent"])
+        ar_local     = z
+        ar_defaulted = dn(["01030003"], ["Accounts Receivable for future Collections"])
+    else:
+        ar_main      = d(_routes["ar_main"])
+        ar_internal  = d(_routes["ar_internal"])
+        ar_agent     = d(_routes["ar_agent"])
+        ar_local     = d(_routes["ar_local"])
+        ar_defaulted = d(_routes["ar_defaulted"])
     ar_total      = ar_main + ar_internal + ar_agent + ar_local + ar_defaulted
     prepaid       = d(["01040005"])
     advance       = d(["01050001","01050002","01050003","01050004",
@@ -1688,9 +1728,27 @@ def build_bs_level_s(
     # ── Current Liabilities ───────────────────────────────────────────────────
     accrued       = d(["09010001","09010002","09010003","09010004",
                         "09010005","09010006"])
-    ap_local      = d(_routes["ap_local"])
-    ap_internal   = d(_routes["ap_internal"])
-    ap_intl       = d(_routes["ap_intl"])
+    if str(zid) == "consolidated":
+        # AP code mapping varies by ZID — 100001 uses 09030003 for Internal and
+        # 09030004 for International, while all other ZIDs use 09030002/09030003.
+        # Filter by ac_name so each row lands in the correct bucket regardless of code.
+        #   ap_local:    all 09030001 (handles "Accounts Payable(Local)" and
+        #                "Accounts Payable" name variants for ZIDs 100004/100006)
+        #                + 100001's 09030002 "Constraction Materials Suppliers(M.B)"
+        #                which goes to _allother_bs_rows (not in arap_bs) and should
+        #                be classified as local AP per 100001's per-ZID route.
+        #   ap_internal: 09030002 (most ZIDs) + 09030003 (100001) named "Accounts Payable(Internal)"
+        #   ap_intl:     09030003 (most ZIDs) + 09030004 (100001) named "Accounts Payable(International)"
+        ap_local    = (d(["09030001"])   # all 09030001 regardless of name variant
+                       + dn(["09030002"], ["Constraction Materials Suppliers(M.B)"]))
+        ap_internal = dn(["09030002", "09030003"],
+                         ["Accounts Payable(Internal)"])
+        ap_intl     = dn(["09030003", "09030004"],
+                         ["Accounts Payable(International)"])
+    else:
+        ap_local    = d(_routes["ap_local"])
+        ap_internal = d(_routes["ap_internal"])
+        ap_intl     = d(_routes["ap_intl"])
     ap_total      = ap_local + ap_internal + ap_intl
     money_agent   = d(["09040001","09040002","09040003","09040004",
                         "09040005","09040007"])
@@ -1735,6 +1793,64 @@ def build_bs_level_s(
     total_equity  = share_cap + retained + error_adj + np_for_bs
     total_le      = total_liab + total_equity
     balance_check = total_assets + total_le   # should be near-zero
+
+    # ── Consolidated-only netting adjustments ────────────────────────────────
+    # Applied after all raw variables are set so sub-totals stay consistent.
+    # The affected totals are recomputed immediately after.
+    if str(zid) == "consolidated":
+        # Work on mutable copies so the original Series are not aliased elsewhere.
+        ar_internal = ar_internal.copy()
+        ap_local    = ap_local.copy()
+        ap_internal = ap_internal.copy()
+        retained    = retained.copy()
+        error_adj   = error_adj.copy()
+
+        for _col in num:
+            _yr = _period_key(_col)[0]   # calendar-year component of period key
+
+            # ── ARAP netting ──────────────────────────────────────────────────
+            # <= 2022: AR(Internal) + AP(Local) — pre-split era, both sides
+            #          accumulated intercompany balances in these two buckets.
+            # >= 2023: AR(Internal) + AP(Internal) — post-split era, correct
+            #          intercompany buckets on each side.
+            # Sign convention: AR is positive (asset), AP is negative (liability).
+            # Net value → AP bucket if negative, AR bucket if positive; other = 0.
+            _ar_val = float(ar_internal.iat[ar_internal.index.get_loc(_col)])
+            if _yr <= 2022:
+                _ap_val = float(ap_local.iat[ap_local.index.get_loc(_col)])
+                _net    = _ar_val + _ap_val
+                if _net <= 0:
+                    ap_local.at[_col]    = _net
+                    ar_internal.at[_col] = 0.0
+                else:
+                    ar_internal.at[_col] = _net
+                    ap_local.at[_col]    = 0.0
+            else:                                  # >= 2023
+                _ap_val = float(ap_internal.iat[ap_internal.index.get_loc(_col)])
+                _net    = _ar_val + _ap_val
+                if _net <= 0:
+                    ap_internal.at[_col] = _net
+                    ar_internal.at[_col] = 0.0
+                else:
+                    ar_internal.at[_col] = _net
+                    ap_internal.at[_col] = 0.0
+
+        # ── Equity netting ────────────────────────────────────────────────────
+        # Combine 1301A-Non-Cash Capital and 1302-Error Adjustment into one row.
+        # The sum always lands in retained; error_adj is zeroed out.
+        retained  = retained + error_adj
+        error_adj = pd.Series(0.0, index=num)
+
+        # ── Recompute all totals that depend on the netted variables ──────────
+        ar_total      = ar_main + ar_internal + ar_agent + ar_local + ar_defaulted
+        ap_total      = ap_local + ap_internal + ap_intl
+        total_ca      = cash_ce + bank_bal + ar_total + prepaid + advance + stock
+        total_cl      = accrued + ap_total + money_agent + recon_liab + cf_liab + others_liab
+        total_equity  = share_cap + retained + error_adj + np_for_bs
+        total_liab    = total_cl + total_stl + ltl_loan + total_rf
+        total_le      = total_liab + total_equity
+        total_assets  = total_ca + total_oa + total_fa
+        balance_check = total_assets + total_le
 
     rows = [
         _ls_row("0101-Cash & Cash Equivalent",            cash_ce,       name_col),
@@ -1805,6 +1921,7 @@ def build_cfs_level_s(
     bs_raw: pd.DataFrame,
     coc_lv0: pd.DataFrame,
     net_income_series: pd.Series,
+    zid=None,
     code_col: str = "ac_code",
     name_col: str = "ac_name",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -1865,10 +1982,27 @@ def build_cfs_level_s(
     # ── BS group series (same account codes as build_bs_level_s) ──────────
 
     # — Current Assets (WC items only; cash/bank excluded) —
-    ar_main       = d(["01030001"])
-    ar_agent      = d(["01030002"])
-    ar_local      = d(["01030003"])
-    ar_total      = ar_main + ar_agent + ar_local
+    _z_col = pd.Series(0.0, index=col_head)   # zero series for unused AR buckets
+    if str(zid) == "consolidated":
+        # Consolidated C2 BS has name-differentiated rows for the same ac_code.
+        # Use name-based filtering to mirror the same AR split as build_bs_level_s.
+        def dn_cfs(codes, names):
+            return _ls_sum_raw_by_name(bs_raw, codes, names, code_col, "ac_name").reindex(col_head, fill_value=0.0)
+        ar_main      = dn_cfs(["01030001"], ["Accounts Receivable"])
+        ar_internal  = (dn_cfs(["01030001"], ["Accounts Receivable (Internal)"])
+                        + dn_cfs(["01030002"], ["Accounts Receivable (Previous) GTC & Zepto"]))
+        # "Recognized Agent" appears under 01030002 (100001/100005) and also
+        # under 01030003 for ZID 100000 — both must be captured in ar_agent.
+        ar_agent     = dn_cfs(["01030002", "01030003"], ["Recognized Agent"])
+        ar_local     = _z_col
+        ar_defaulted = dn_cfs(["01030003"], ["Accounts Receivable for future Collections"])
+    else:
+        ar_main      = d(["01030001"])
+        ar_internal  = _z_col
+        ar_agent     = d(["01030002"])
+        ar_local     = d(["01030003"])
+        ar_defaulted = _z_col
+    ar_total      = ar_main + ar_internal + ar_agent + ar_local + ar_defaulted
     prepaid       = d(["01040005"])
     advance       = d(["01050001","01050002","01050003","01050004",
                         "01050005","01050006","01050007","01050008"])
@@ -1877,9 +2011,22 @@ def build_cfs_level_s(
     # — Current Liabilities (WC items; money_agent goes to Financing) —
     accrued       = d(["09010001","09010002","09010003","09010004",
                         "09010005","09010006"])
-    ap_local      = d(["09030001","09030002"])
-    ap_internal   = d(["09030003"])
-    ap_intl       = d(["09030004"])
+    if str(zid) == "consolidated":
+        # Mirror the exact same AP split as build_bs_level_s consolidated branch:
+        #   ap_local:    all 09030001 (any name variant) +
+        #                100001's 09030002 "Constraction Materials Suppliers(M.B)"
+        #   ap_internal: 09030002/"09030003" named "Accounts Payable(Internal)"
+        #   ap_intl:     09030003/09030004 named "Accounts Payable(International)"
+        ap_local    = (d(["09030001"])
+                       + dn_cfs(["09030002"], ["Constraction Materials Suppliers(M.B)"]))
+        ap_internal = dn_cfs(["09030002", "09030003"],
+                             ["Accounts Payable(Internal)"])
+        ap_intl     = dn_cfs(["09030003", "09030004"],
+                             ["Accounts Payable(International)"])
+    else:
+        ap_local    = d(["09030001","09030002"])
+        ap_internal = d(["09030003"])
+        ap_intl     = d(["09030004"])
     ap_total      = ap_local + ap_internal + ap_intl
     recon_liab    = d(["09040006"])
     cf_liab       = pfx("09050")   # all C&F / shipping / customs liability codes
@@ -1927,6 +2074,49 @@ def build_cfs_level_s(
     error_adj     = d(["13020001","13020002","13020003","13020004",
                         "13020005","13020006","13020007","13021001"])
 
+    # ── Consolidated-only netting (mirrors build_bs_level_s logic) ───────────
+    # Applied to the balance-level Series before any deltas are taken, so the
+    # CFS movements reflect the netted BS positions at each period boundary.
+    if str(zid) == "consolidated":
+        ar_internal = ar_internal.copy()
+        ap_local    = ap_local.copy()
+        ap_internal = ap_internal.copy()
+        retained    = retained.copy()
+        error_adj   = error_adj.copy()
+
+        for _col in col_head:
+            _yr = _period_key(_col)[0]
+
+            # ARAP: net AR(Internal) against AP(Local) for <=2022,
+            #        net AR(Internal) against AP(Internal) for >=2023.
+            _ar_val = float(ar_internal.iat[ar_internal.index.get_loc(_col)])
+            if _yr <= 2022:
+                _ap_val = float(ap_local.iat[ap_local.index.get_loc(_col)])
+                _net    = _ar_val + _ap_val
+                if _net <= 0:
+                    ap_local.at[_col]    = _net
+                    ar_internal.at[_col] = 0.0
+                else:
+                    ar_internal.at[_col] = _net
+                    ap_local.at[_col]    = 0.0
+            else:
+                _ap_val = float(ap_internal.iat[ap_internal.index.get_loc(_col)])
+                _net    = _ar_val + _ap_val
+                if _net <= 0:
+                    ap_internal.at[_col] = _net
+                    ar_internal.at[_col] = 0.0
+                else:
+                    ar_internal.at[_col] = _net
+                    ap_internal.at[_col] = 0.0
+
+        # Equity: combine retained + error_adj into retained; zero out error_adj.
+        retained  = retained + error_adj
+        error_adj = pd.Series(0.0, index=col_head)
+
+        # Recompute totals that feed into op_total / delta calculations.
+        ar_total = ar_main + ar_internal + ar_agent + ar_local + ar_defaulted
+        ap_total = ap_local + ap_internal + ap_intl
+
     # ── Net Profit for CFS ────────────────────────────────────────────────
     # net_income_series is Level S (positive=profit).  Negate for CFS convention.
     np_cfs = (-net_income_series).reindex(delta_cols, fill_value=0.0)
@@ -1963,8 +2153,10 @@ def build_cfs_level_s(
     # ── Operating WC detail rows ──────────────────────────────────────────
     op_details = pd.concat([
         _row("Accounts Receivable",                   delta(ar_main)),
+        _row("Accounts Receivable (Internal)",        delta(ar_internal)),
         _row("Recognized Agent (Dealers)",            delta(ar_agent)),
         _row("Accounts Receivable (Local)",           delta(ar_local)),
+        _row("Defaulted Receivables",                 delta(ar_defaulted)),
         _row("0103-Accounts Receivable (Total)",      delta(ar_total)),
         _row("0104-Prepaid Expenses",                 delta(prepaid)),
         _row("0105-Advance Accounts",                 delta(advance)),

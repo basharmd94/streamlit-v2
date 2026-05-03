@@ -1,0 +1,467 @@
+{
+  "Revenue": {
+    "description": "Overall Revenue of all external facing businesses.",
+    "notes": "External meaning invoices are printed in the entity's name — no internal sales. Each entity maintains independent accounting."
+  },
+  "Others Revenue": {
+    "description": "Other Revenue includes rent from assets, foreign exchange income from imports, salary deductions, and internal business-unit expense transfers.",
+    "notes": "This value is already included within Revenue in the GP calculation."
+  },
+  "MRP Discount": {
+    "description": "MRP Discount is solely a Zepto (100005) item. Subtracting it shows the real net revenue after maximum retail price concessions.",
+    "notes": ""
+  },
+  "Adjusted Revenue (Pending)": {
+    "description": "Adjusted Revenue = Revenue + MRP Discount (MRP Discount is negative so this is Revenue minus the MRP concession). Reference only — has no effect on GP or Net Income.",
+    "notes": ""
+  },
+  "COGS": {
+    "description": "Cost of Goods Sold — solely on products sold (purchase-related codes). Does not include SG&A, distribution, or other direct expenses.",
+    "notes": ""
+  },
+  "Gross Profit": {
+    "description": "GP = Revenue + Other Income + MRP Discount + COGS (signs are embedded in the numbers).",
+    "notes": ""
+  },
+  "SG&A": {
+    "description": "Selling, General & Administrative costs — administrative costs other than payroll.",
+    "notes": ""
+  },
+  "0612-Salary Expenses": {
+    "description": "Staff salary only (not bonuses or overtime).",
+    "notes": ""
+  },
+  "0613-Employee Bonus": {
+    "description": "Employee bonuses.",
+    "notes": ""
+  },
+  "0614-Overtime": {
+    "description": "Overtime payments.",
+    "notes": ""
+  },
+  "0615-Director Remuneration": {
+    "description": "Salary and remuneration of Directors.",
+    "notes": ""
+  },
+  "Total SG&A": {
+    "description": "Total SG&A = SG&A + Salary + Bonus + Overtime + Director Remuneration.",
+    "notes": ""
+  },
+  "0708-Discount Paid": {
+    "description": "Trade discount paid to customers. Does not include MRP Discounts.",
+    "notes": ""
+  },
+  "Sales & Distribution Expenses": {
+    "description": "Distribution costs — freight, delivery, logistics, and field sales expenses.",
+    "notes": ""
+  },
+  "Total Sales & Distribution": {
+    "description": "Total of all Sales & Distribution line items including Discount Paid.",
+    "notes": ""
+  },
+  "0501-Others Direct Expenses": {
+    "description": "Lost inventory and miscellaneous direct expenses not classified under COGS.",
+    "notes": ""
+  },
+  "EBITDA": {
+    "description": "Earnings Before Interest, Tax, Depreciation and Amortisation. Calculated as GP + SG&A + Distribution Cost (signs included).",
+    "notes": ""
+  },
+  "0630-Bank Interest & Charges": {
+    "description": "Interest expense on short-term bank facilities.",
+    "notes": ""
+  },
+  "0633-Interest-Loan": {
+    "description": "Interest expense on long-term loans.",
+    "notes": ""
+  },
+  "Total Interest & Charges": {
+    "description": "Total of all interest and bank charges.",
+    "notes": "Interest Coverage = EBITDA / |Total Interest|. A ratio above 1.5× is generally considered healthy; below 1× means operations cannot cover interest."
+  },
+  "Net VAT Expenses Cash (B)": {
+    "description": "VAT paid in cash during the period.",
+    "notes": ""
+  },
+  "0629-VAT & Tax Total (A+B+C)": {
+    "description": "Total tax paid — includes VAT expenses from rebate, VAT through cash, company tax, and VAT office expenses.",
+    "notes": ""
+  },
+  "Net Income": {
+    "description": "Net Profit or Loss after all expenses, interest, and tax.",
+    "notes": ""
+  },
+  "0101-Cash & Cash Equivalent": {
+    "description": "Cash in hand across all entities.",
+    "notes": ""
+  },
+  "0102-Bank Balance": {
+    "description": "Actual bank balance across all entities.",
+    "notes": ""
+  },
+  "Accounts Receivable": {
+    "description": "External Accounts Receivable — amounts owed by third-party customers.",
+    "notes": ""
+  },
+  "Accounts Receivable (Internal)": {
+    "description": "Intercompany receivables between group entities. Should be excluded from external liquidity ratios.",
+    "notes": "All internal — ignore in ratios."
+  },
+  "Recognized Agent (Dealers)": {
+    "description": "Balances owed by registered dealer and agent network.",
+    "notes": ""
+  },
+  "Accounts Receivable (Local)": {
+    "description": "Local receivables that are largely intercompany in nature.",
+    "notes": "All internal — ignore in ratios."
+  },
+  "Defaulted Receivables": {
+    "description": "Receivables that are considered doubtful or in default.",
+    "notes": ""
+  },
+  "0103-Accounts Receivable (Total)": {
+    "description": "Total of all receivable buckets. Note: internal receivables inflate this total and should be excluded from liquidity ratios.",
+    "notes": ""
+  },
+  "0104-Prepaid Expenses": {
+    "description": "Prepaid salary advances to employees.",
+    "notes": ""
+  },
+  "0105-Advance Accounts": {
+    "description": "Advances paid to international suppliers, VAT rebate claims, and other advance payments.",
+    "notes": ""
+  },
+  "0106-Stock in Hand": {
+    "description": "Inventory of all finished goods and raw materials on hand across all entities.",
+    "notes": ""
+  },
+  "01-Total Current Assets (A)": {
+    "description": "Sum of all current assets including cash, receivables, prepaid, advances, and stock.",
+    "notes": "For Current Ratio: exclude Accounts Receivable (Internal) and Accounts Receivable (Local) from the asset side, and exclude Accounts Payable (Internal) and Money Agent Liability from the liability side. Quick Ratio additionally excludes Stock in Hand."
+  },
+  "0201-Deferred Capital Expenditure": {
+    "description": "Deferred capital expenditure — amounts paid but not yet capitalised.",
+    "notes": ""
+  },
+  "0202-Gift Items": {
+    "description": "Gift items held as fixed assets.",
+    "notes": ""
+  },
+  "0203-Loan to Hospital (Staff Salary)": {
+    "description": "Loans extended to hospital partners related to staff salary arrangements.",
+    "notes": ""
+  },
+  "0203-Loan to Others Concern (Surma)": {
+    "description": "Long-term loan extended to Surma concern.",
+    "notes": ""
+  },
+  "0204-Security Deposit": {
+    "description": "Security deposits paid to landlords and suppliers.",
+    "notes": ""
+  },
+  "0205-Loan to Others Concern": {
+    "description": "Loans extended to other third-party concerns.",
+    "notes": ""
+  },
+  "0206-Other Investment": {
+    "description": "Other long-term investments.",
+    "notes": ""
+  },
+  "Total Other Assets (B)": {
+    "description": "Total of deferred capex, investments, loans, and security deposits.",
+    "notes": ""
+  },
+  "0301-Office Equipment": {
+    "description": "Office equipment at net book value.",
+    "notes": ""
+  },
+  "0302-Corporate Office Equipments": {
+    "description": "Corporate office equipment at net book value.",
+    "notes": ""
+  },
+  "0303-Furniture & Fixture": {
+    "description": "Furniture and fixtures at net book value.",
+    "notes": ""
+  },
+  "0304-Trading Vehicles": {
+    "description": "Vehicles used for trading and distribution.",
+    "notes": ""
+  },
+  "0305-Private Vehicles": {
+    "description": "Private/executive vehicles.",
+    "notes": ""
+  },
+  "0306-Plants & Machinery": {
+    "description": "Factory plants and machinery.",
+    "notes": ""
+  },
+  "0307-Intangible Asset": {
+    "description": "Intangible assets including software and licences.",
+    "notes": ""
+  },
+  "0308-Land & Building": {
+    "description": "Land and building at cost/valuation.",
+    "notes": ""
+  },
+  "Total Fixed Assets (C)": {
+    "description": "Total net book value of all fixed assets.",
+    "notes": ""
+  },
+  "Total Assets (A+B+C)": {
+    "description": "Total of Current Assets, Other Assets, and Fixed Assets.",
+    "notes": ""
+  },
+  "0901-Accrued Expenses": {
+    "description": "Accrued expenses to be paid later — mostly director and employee salary accruals.",
+    "notes": ""
+  },
+  "Accounts Payable (Local)": {
+    "description": "External local Accounts Payable — amounts owed to third-party local suppliers. Should be included in payables analysis.",
+    "notes": ""
+  },
+  "Accounts Payable (Internal)": {
+    "description": "Intercompany payables between group entities — all internal.",
+    "notes": "Ignore in ratios. Caveat: before 2023 this AP bucket included both local and internal. Only from 2023 onwards was the split introduced, so Current and Quick Ratios may be less accurate for pre-2023 periods."
+  },
+  "Accounts Payable (International)": {
+    "description": "External international Accounts Payable — amounts owed to international suppliers.",
+    "notes": "Include with AP Local in Payable Days calculation."
+  },
+  "0903-Accounts Payable (Total)": {
+    "description": "Total of Local, Internal, and International Accounts Payable.",
+    "notes": ""
+  },
+  "0904-Money Agent Liability": {
+    "description": "Mislabelled in the ERP — this is actually a short-term loan from an NGO, not a trade payable. Should be counted as debt in leverage analysis.",
+    "notes": "Treat as short-term debt, not as operating AP."
+  },
+  "0904-Reconciliation Liability": {
+    "description": "Miscellaneous reconciliation liabilities.",
+    "notes": ""
+  },
+  "0905-C & F Liability": {
+    "description": "Clearing & Forwarding / shipping and customs liabilities.",
+    "notes": ""
+  },
+  "0906-Others Liability": {
+    "description": "Other miscellaneous current liabilities.",
+    "notes": ""
+  },
+  "Current Liability (A)": {
+    "description": "Total current liabilities.",
+    "notes": ""
+  },
+  "1001-Short Term Bank Loan (B)": {
+    "description": "Short-term bank loans and overdraft facilities.",
+    "notes": "Used in Debt-to-Equity calculation together with Money Agent Liability and Long Term Loan."
+  },
+  "1001-Short Term Loan (Related Parties)": {
+    "description": "All intercompany loans — internal. Excluded from the external Debt-to-Equity ratio.",
+    "notes": ""
+  },
+  "Total Short Term Liability (C)": {
+    "description": "Total of Short Term Bank Loan and Related Party Loan.",
+    "notes": ""
+  },
+  "1201-Long Term Bank Loan (E)": {
+    "description": "Long-term factory building loan from banks.",
+    "notes": "Used in both Debt-to-Equity calculations."
+  },
+  "1101-Employee Fund": {
+    "description": "Employee Provident Fund reserves held by the company.",
+    "notes": ""
+  },
+  "1102-Directors Award Fund": {
+    "description": "Director award and deposit fund.",
+    "notes": ""
+  },
+  "1102-Office Rent Tax Fund": {
+    "description": "Fund set aside for office rent tax obligations.",
+    "notes": ""
+  },
+  "1103-Employee Educational Fund": {
+    "description": "Employee educational and social donation fund.",
+    "notes": ""
+  },
+  "1104-Security Deposit Fund": {
+    "description": "Security deposits received from dealers and agents — held as liability.",
+    "notes": ""
+  },
+  "Total Reserve & Funds (D)": {
+    "description": "Total of all employee and dealer fund reserves.",
+    "notes": ""
+  },
+  "Total Liabilities (A+B+C+D+E)": {
+    "description": "All current liabilities, short-term loans, long-term loans, and fund reserves.",
+    "notes": ""
+  },
+  "1301-Share Capital": {
+    "description": "Initial paid-up share capital invested by the founders.",
+    "notes": "The company was established around 1984 — well before the ERP system started in 2016 — so the initial capital figure appears small relative to the size of operations."
+  },
+  "1301A-Non-Cash Capital (Retained Earning)": {
+    "description": "Cumulative earnings retained in the business over its entire history.",
+    "notes": ""
+  },
+  "1302-Error Adjustment For Retained Earning": {
+    "description": "Error adjustments applied against equity when the ERP was established (from 2016 onwards), correcting historical errors in Inventory, Accrued Purchases, COGS, and other entries.",
+    "notes": "These adjustments were required to reconcile the opening balances when the ERP was first set up."
+  },
+  "Net Profit/Loss": {
+    "description": "Current period Net Profit or Loss.",
+    "notes": ""
+  },
+  "Total Equity": {
+    "description": "Total of Share Capital, Retained Earnings, Error Adjustments, and Net Profit/Loss.",
+    "notes": ""
+  },
+  "Total Liabilities & Equity": {
+    "description": "Total Liabilities plus Total Equity — should equal Total Assets if Balance Check = 0.",
+    "notes": ""
+  },
+  "Cash from Operations": {
+    "description": "Operating cash flow — Net Profit adjusted for working capital movements.",
+    "notes": ""
+  },
+  "Cash from Investing": {
+    "description": "Investing cash flow — change in fixed assets, other assets, and long-term investments.",
+    "notes": ""
+  },
+  "Cash from Financing": {
+    "description": "Financing cash flow — change in loans, funds, share capital, and equity adjustments.",
+    "notes": ""
+  },
+  "Cash-flow Check": {
+    "description": "Difference between calculated closing cash and actual closing cash. Should be zero if all balance sheet movements are correctly captured.",
+    "notes": "The Cash Conversion Cycle (DIO + DSO - DPO) measures the number of days between paying for inventory and receiving cash from customers."
+  },
+
+  "_ratios": [
+    {
+      "name": "Markup on COGS (%)",
+      "formula": "( Adjusted Revenue (Pending) ÷ |COGS| − 1 ) × 100",
+      "description": "How much the net selling price (after MRP concession) exceeds the direct cost of goods. A 30% markup means for every 100 of COGS we sell at 130.",
+      "notes": "Adjusted Revenue (Pending) = Revenue + MRP Discount (MRP Discount is negative, so this strips the concession out). Both values carry sign — COGS is negative in the IS, so we divide by its absolute value."
+    },
+    {
+      "name": "Gross Profit Margin (%)",
+      "formula": "Gross Profit ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "The share of total revenue retained after all cost-of-goods items. Reflects pricing power and purchasing efficiency.",
+      "notes": "Denominator uses Adjusted Revenue (Pending) + Others Revenue so that all revenue streams — net of MRP discount — form the base. A declining GP Margin over time signals either rising input costs or pricing pressure."
+    },
+    {
+      "name": "Staff Cost / Revenue (%)",
+      "formula": "| 0612-Salary Expenses + 0613-Employee Bonus + 0614-Overtime | ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "Pure payroll burden (salary, bonus, overtime — excluding director remuneration) as a percentage of revenue. Tracks headcount efficiency.",
+      "notes": "Director remuneration is kept separate in 0615-Director Remuneration and is captured in Total SG&A but not in this sub-ratio. All three IS rows carry a negative sign (expense), so absolute value is taken before dividing."
+    },
+    {
+      "name": "Total SG&A / Revenue (%)",
+      "formula": "| Total SG&A | ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "Total overhead burden — SG&A + Salary + Bonus + Overtime + Director Remuneration — as a share of revenue. The broadest overhead efficiency metric.",
+      "notes": "Total SG&A already aggregates all five payroll and admin sub-rows, so it covers all people-related costs plus administrative expenses."
+    },
+    {
+      "name": "Discount Paid / Revenue (%)",
+      "formula": "| 0708-Discount Paid | ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "Trade discounts given to customers (cash-back style), expressed as a percentage of revenue. Separate from MRP Discount, which is already removed in Adjusted Revenue.",
+      "notes": "A rising discount ratio can indicate increased channel pressure or a deliberate promotional strategy. Watch alongside Distribution cost to see total go-to-market spend."
+    },
+    {
+      "name": "Distribution / Revenue (%)",
+      "formula": "| Sales & Distribution Expenses | ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "Field logistics and distribution cost as a share of revenue — freight, delivery, field sales, and related overheads.",
+      "notes": "This is the distribution sub-row only (not including Discount Paid). Use Total S&D / Revenue for the combined go-to-market cost ratio."
+    },
+    {
+      "name": "Total S&D / Revenue (%)",
+      "formula": "| Total Sales & Distribution | ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "Combined go-to-market cost — Discount Paid plus all Sales & Distribution Expenses — as a percentage of revenue.",
+      "notes": "Total Sales & Distribution aggregates both 0708-Discount Paid and Sales & Distribution Expenses. This is the most complete view of sales-channel cost."
+    },
+    {
+      "name": "EBITDA Margin (%)",
+      "formula": "EBITDA ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "Operating profitability before financing costs and tax. Shows how efficiently the core business converts revenue into operating earnings.",
+      "notes": "EBITDA = Gross Profit + Total SG&A + Total S&D + Others Direct Expenses (signs embedded). A positive and growing EBITDA margin is the primary indicator of operational health. Because we do not add back depreciation separately, this is closer to EBIT in practice — the accumulated depreciation delta is captured in the investing section of the CFS."
+    },
+    {
+      "name": "Interest Coverage (×)",
+      "formula": "EBITDA ÷ | Total Interest & Charges |",
+      "description": "How many times the operating profit can cover the interest bill. Measures the safety margin for debt service.",
+      "notes": "Total Interest & Charges includes 0630-Bank Interest & Charges and 0633-Interest-Loan. A ratio below 1.5× signals potential difficulty meeting interest payments; below 1× means operations alone cannot cover interest and external cash sources are required."
+    },
+    {
+      "name": "VAT Expense / Revenue (%)",
+      "formula": "| Net VAT Expenses Cash (B) | ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "Cash VAT paid (component B only) as a share of revenue.",
+      "notes": "Uses only the cash VAT component B — Net VAT Expenses Cash (B). The full VAT and tax burden (A+B+C) is shown in the Total Tax ratio below."
+    },
+    {
+      "name": "Total Tax / Revenue (%)",
+      "formula": "| 0629-VAT & Tax Total (A+B+C) | ÷ ( Adjusted Revenue (Pending) + Others Revenue ) × 100",
+      "description": "Full tax and VAT burden — all three components (VAT from rebate, cash VAT, company tax and office VAT) — as a percentage of revenue.",
+      "notes": "0629-VAT & Tax Total (A+B+C) is the sum of all four VAT and tax lines on the IS. This is the bottom-line tax drag on revenue."
+    },
+    {
+      "name": "Current Ratio (×)",
+      "formula": "( 01-Total Current Assets (A) − Accounts Receivable (Internal) − Accounts Receivable (Local) ) ÷ ( | Current Liability (A) | − | Accounts Payable (Internal) | − | 0904-Money Agent Liability | )",
+      "description": "Short-term liquidity: how well external current assets cover external current liabilities, after stripping intercompany items from both sides.",
+      "notes": "Accounts Receivable (Internal) and Accounts Receivable (Local) are excluded from the asset side because they are intercompany and not realisable externally. Accounts Payable (Internal) is excluded from the liability side for the same reason. 0904-Money Agent Liability is reclassified as financial debt (short-term NGO loan) rather than a trade payable and is therefore excluded from operating liabilities. Caveat: before 2023 the AP split was not in place, so the ratio may be overstated for earlier periods. A ratio above 1× means external current assets cover external current liabilities."
+    },
+    {
+      "name": "Quick Ratio (×)",
+      "formula": "( 01-Total Current Assets (A) − Accounts Receivable (Internal) − Accounts Receivable (Local) − 0106-Stock in Hand ) ÷ ( | Current Liability (A) | − | Accounts Payable (Internal) | − | 0904-Money Agent Liability | )",
+      "description": "A stricter liquidity test that also removes inventory from the asset side, leaving only the most liquid assets (cash, bank, receivables) against adjusted current liabilities.",
+      "notes": "Same liability-side adjustments as the Current Ratio. Inventory (0106-Stock in Hand) is excluded because it may not convert to cash quickly. A Quick Ratio above 1× is generally considered healthy. The same pre-2023 AP-split caveat applies."
+    },
+    {
+      "name": "DSO — Receivable Days",
+      "formula": "Accounts Receivable × 365 ÷ Adjusted Revenue (Pending)   [yearly; 30 days used for monthly]",
+      "description": "Days Sales Outstanding: the average number of days it takes to collect cash from external customers after a sale.",
+      "notes": "Uses only Accounts Receivable (external, third-party receivables). Accounts Receivable (Internal) and Accounts Receivable (Local) are excluded because they are intercompany and would distort the collection metric. The denominator is Adjusted Revenue (Pending) — Revenue net of MRP Discount — as the best proxy for billable external sales. Lower DSO means faster cash collection."
+    },
+    {
+      "name": "DIO — Inventory Days",
+      "formula": "0106-Stock in Hand × 365 ÷ | COGS |   [yearly; 30 days used for monthly]",
+      "description": "Days Inventory Outstanding: how many days of cost-of-goods-sold is held in stock at any point.",
+      "notes": "Uses 0106-Stock in Hand divided by the annualised COGS (absolute value). A lower DIO means inventory is moving faster through the supply chain. High DIO can tie up working capital and increase obsolescence risk."
+    },
+    {
+      "name": "DPO — Payable Days",
+      "formula": "| Accounts Payable (Local) + Accounts Payable (International) | × 365 ÷ | COGS |   [yearly; 30 days used for monthly]",
+      "description": "Days Payable Outstanding: the average number of days taken to pay external suppliers.",
+      "notes": "Includes Accounts Payable (Local) and Accounts Payable (International) — both are external supplier balances. Accounts Payable (Internal) is excluded as it is intercompany. COGS is used as the proxy for purchases. A higher DPO is generally beneficial for working capital, but excessively long payment terms can damage supplier relationships."
+    },
+    {
+      "name": "Cash Conversion Cycle",
+      "formula": "DIO + DSO − DPO",
+      "description": "The net number of days cash is locked in the operating cycle — from paying for inventory to collecting from customers.",
+      "notes": "CCC = Days Inventory Outstanding + Days Sales Outstanding − Days Payable Outstanding. A lower (or negative) CCC means the business collects cash before it has to pay suppliers, which is ideal. A rising CCC signals that working capital is being consumed faster."
+    },
+    {
+      "name": "D/E 1 — Bank + MA + LT (×)",
+      "formula": "| 1001-Short Term Bank Loan (B) + 0904-Money Agent Liability + 1201-Long Term Bank Loan (E) | ÷ | Total Equity |",
+      "description": "Debt-to-Equity using only external financial debt: short-term bank loans, the NGO loan (Money Agent), and the long-term factory loan — all divided by total equity.",
+      "notes": "0904-Money Agent Liability is reclassified here as financial debt (not a trade payable) because it is a short-term loan from an NGO. 1001-Short Term Loan (Related Parties) is excluded because it is intercompany and does not represent external financial risk. This is the tightest, most meaningful leverage ratio for external debt."
+    },
+    {
+      "name": "D/E 2 — STL + LT (×)",
+      "formula": "| Total Short Term Liability (C) + 1201-Long Term Bank Loan (E) | ÷ | Total Equity |",
+      "description": "A broader debt-to-equity that includes all short-term liabilities (bank and related-party loans) plus the long-term bank loan, divided by total equity.",
+      "notes": "Total Short Term Liability (C) = 1001-Short Term Bank Loan (B) + 1001-Short Term Loan (Related Parties). This ratio will be higher than D/E 1 whenever there are significant related-party loans outstanding. Useful for understanding total leverage including intra-group borrowings."
+    },
+    {
+      "name": "OCF Coverage (×)",
+      "formula": "Cash from Operations ÷ | Current Liability (A) |",
+      "description": "How many times operating cash flow covers total current liabilities. Measures cash generation quality relative to short-term obligations.",
+      "notes": "Cash from Operations is taken directly from the Level S CFS (Net Profit adjusted for working capital movements). A positive and growing ratio indicates the business generates real cash — not just accounting profit — relative to its near-term obligations. A ratio above 0.2× is generally considered adequate."
+    },
+    {
+      "name": "Free Cash Flow",
+      "formula": "Cash from Operations + Cash from Investing",
+      "description": "Cash remaining after funding both operating working capital movements and all capital investment activity. This is the cash available for debt repayment, dividends, or strategic deployment.",
+      "notes": "Both Cash from Operations and Cash from Investing are sourced from the Level S CFS. Cash from Investing includes movements in fixed assets, other long-term assets, and investments — a large negative investing outflow is normal during periods of capital expansion and is not a concern if operating cash flow is strong."
+    }
+  ]
+}

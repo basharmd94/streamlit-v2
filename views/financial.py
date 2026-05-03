@@ -65,6 +65,392 @@ def _merge_ytd(df_prior: pd.DataFrame, df_curr: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
+def _render_ls_notes(key_suffix: str = "") -> None:
+    """
+    Render the Level S account notes expander, loaded from ls_account_notes.json.
+    Displays two tabs inside the expander:
+      • Account Notes  — description + contextual notes for every IS/BS/CFS row
+      • Ratio Notes    — formula (using exact account names) + interpretation for every ratio
+    """
+    import json
+    from pathlib import Path
+
+    _notes_path = Path(__file__).parent.parent / "data" / "ls_account_notes.json"
+    try:
+        with open(_notes_path, encoding="utf-8") as _fh:
+            _all: dict = json.load(_fh)
+    except Exception as _e:
+        st.warning(f"Could not load account notes: {_e}")
+        return
+
+    # Separate account entries (plain string keys) from the ratios list (_ratios key)
+    _acct_notes  = {k: v for k, v in _all.items() if k != "_ratios" and isinstance(v, dict)}
+    _ratio_notes = _all.get("_ratios", [])
+
+    with st.expander("📋 Account Notes & Descriptions", expanded=False):
+        _tab_acct, _tab_ratio = st.tabs(["Account Notes", "Ratio Notes"])
+
+        # ── Account Notes tab ─────────────────────────────────────────────────
+        with _tab_acct:
+            for _account, _info in _acct_notes.items():
+                _desc = _info.get("description", "").strip()
+                _note = _info.get("notes", "").strip()
+                if not _desc and not _note:
+                    continue
+                st.markdown(f"**{_account}**")
+                if _desc:
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;{_desc}", unsafe_allow_html=True)
+                if _note:
+                    st.markdown(
+                        f"&nbsp;&nbsp;&nbsp;📌 *{_note}*",
+                        unsafe_allow_html=True,
+                    )
+                st.markdown("---")
+
+        # ── Ratio Notes tab ───────────────────────────────────────────────────
+        with _tab_ratio:
+            for _r in _ratio_notes:
+                _rname  = _r.get("name", "")
+                _rform  = _r.get("formula", "")
+                _rdesc  = _r.get("description", "").strip()
+                _rnote  = _r.get("notes", "").strip()
+                st.markdown(f"**{_rname}**")
+                if _rform:
+                    st.code(_rform, language=None)
+                if _rdesc:
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;{_rdesc}", unsafe_allow_html=True)
+                if _rnote:
+                    st.markdown(
+                        f"&nbsp;&nbsp;&nbsp;📌 *{_rnote}*",
+                        unsafe_allow_html=True,
+                    )
+                st.markdown("---")
+
+
+def _build_ls_ratios(
+    pl_s: pd.DataFrame,
+    bs_s: pd.DataFrame,
+    cfs_s: pd.DataFrame,
+    perspective: str = "Yearly",
+) -> pd.DataFrame:
+    """
+    Compute Level S financial ratios from IS, BS and CFS DataFrames.
+
+    Returns a formatted string DataFrame with ratio names as rows and
+    period columns as columns — ready for st.dataframe display.
+    """
+    name_col = "ac_name"
+
+    def _g(df: pd.DataFrame, label: str) -> pd.Series:
+        """Return first matching row's numeric values, or zeros aligned to df columns."""
+        num = df.select_dtypes("number").columns
+        mask = df[name_col].astype(str) == label
+        if not mask.any():
+            return pd.Series(0.0, index=num)
+        return df.loc[mask].select_dtypes("number").iloc[0].reindex(num, fill_value=0.0)
+
+    # Period columns from IS (IS and BS share the same period columns)
+    _num_cols = pd.Index(
+        sorted(
+            [c for c in pl_s.columns
+             if c != name_col and pd.api.types.is_numeric_dtype(pl_s[c])],
+            key=financial._period_key,
+        )
+    )
+
+    def _align(s: pd.Series) -> pd.Series:
+        return s.reindex(_num_cols, fill_value=float("nan"))
+
+    # ── IS rows ────────────────────────────────────────────────────────────────
+    adj_rev     = _align(_g(pl_s, "Adjusted Revenue (Pending)"))
+    others_rev  = _align(_g(pl_s, "Others Revenue"))
+    cogs        = _align(_g(pl_s, "COGS"))
+    gp          = _align(_g(pl_s, "Gross Profit"))
+    salary      = _align(_g(pl_s, "0612-Salary Expenses"))
+    bonus       = _align(_g(pl_s, "0613-Employee Bonus"))
+    overtime    = _align(_g(pl_s, "0614-Overtime"))
+    total_sga   = _align(_g(pl_s, "Total SG&A"))
+    disc_paid   = _align(_g(pl_s, "0708-Discount Paid"))
+    sd_exp      = _align(_g(pl_s, "Sales & Distribution Expenses"))
+    total_sd    = _align(_g(pl_s, "Total Sales & Distribution"))
+    ebitda      = _align(_g(pl_s, "EBITDA"))
+    total_int   = _align(_g(pl_s, "Total Interest & Charges"))
+    vat_cash    = _align(_g(pl_s, "Net VAT Expenses Cash (B)"))
+    vat_tax_tot = _align(_g(pl_s, "0629-VAT & Tax Total (A+B+C)"))
+
+    # ── BS rows ────────────────────────────────────────────────────────────────
+    ar_ext      = _align(_g(bs_s, "Accounts Receivable"))
+    ar_internal = _align(_g(bs_s, "Accounts Receivable (Internal)"))
+    ar_local    = _align(_g(bs_s, "Accounts Receivable (Local)"))
+    stock       = _align(_g(bs_s, "0106-Stock in Hand"))
+    total_ca    = _align(_g(bs_s, "01-Total Current Assets (A)"))
+    ap_local    = _align(_g(bs_s, "Accounts Payable (Local)"))
+    ap_intl     = _align(_g(bs_s, "Accounts Payable (International)"))
+    ap_internal = _align(_g(bs_s, "Accounts Payable (Internal)"))
+    money_agent = _align(_g(bs_s, "0904-Money Agent Liability"))
+    total_cl    = _align(_g(bs_s, "Current Liability (A)"))
+    stb_loan    = _align(_g(bs_s, "1001-Short Term Bank Loan (B)"))
+    total_stl   = _align(_g(bs_s, "Total Short Term Liability (C)"))
+    lt_loan     = _align(_g(bs_s, "1201-Long Term Bank Loan (E)"))
+    total_eq    = _align(_g(bs_s, "Total Equity"))
+
+    # ── CFS rows (CFS has delta cols only — align to IS/BS col set) ────────────
+    _cfs_num = pd.Index(
+        sorted(
+            [c for c in cfs_s.columns
+             if c != name_col and pd.api.types.is_numeric_dtype(cfs_s[c])],
+            key=financial._period_key,
+        )
+    )
+    def _gc(label: str) -> pd.Series:
+        mask = cfs_s[name_col].astype(str) == label
+        if not mask.any():
+            return pd.Series(float("nan"), index=_num_cols)
+        raw = cfs_s.loc[mask].select_dtypes("number").iloc[0]
+        return raw.reindex(_cfs_num, fill_value=float("nan")).reindex(_num_cols, fill_value=float("nan"))
+
+    cfo = _gc("Cash from Operations")
+    cfi = _gc("Cash from Investing")
+
+    # ── Denominators (safe against divide-by-zero) ─────────────────────────────
+    _safe = lambda s: s.where(s != 0, other=float("nan"))
+    adj_plus_oth  = _safe(adj_rev + others_rev)   # > 0 (revenue base for %)
+    safe_cogs_abs = _safe(cogs.abs())
+    safe_adj      = _safe(adj_rev.abs())
+    safe_eq       = _safe(total_eq.abs())
+    safe_cl       = _safe(total_cl.abs())
+
+    # Days factor: 365 for yearly, 30 as monthly approximation
+    days = 365 if perspective == "Yearly" else 30
+
+    # ── IS / Profitability ─────────────────────────────────────────────────────
+    markup       = (adj_rev / safe_cogs_abs - 1) * 100
+    gp_margin    = gp / adj_plus_oth * 100
+    staff_pct    = (salary + bonus + overtime).abs() / adj_plus_oth * 100
+    sga_pct      = total_sga.abs() / adj_plus_oth * 100
+    disc_pct     = disc_paid.abs() / adj_plus_oth * 100
+    dist_pct     = sd_exp.abs() / adj_plus_oth * 100
+    tsd_pct      = total_sd.abs() / adj_plus_oth * 100
+    ebitda_pct   = ebitda / adj_plus_oth * 100
+    int_cov      = ebitda / _safe(total_int.abs())
+    vat_pct      = vat_cash.abs() / adj_plus_oth * 100
+    tax_pct      = vat_tax_tot.abs() / adj_plus_oth * 100
+
+    # ── Liquidity ──────────────────────────────────────────────────────────────
+    adj_ca    = total_ca - ar_internal.abs() - ar_local.abs()
+    adj_cl_lq = _safe(total_cl.abs() - ap_internal.abs() - money_agent.abs())
+    curr_rat  = adj_ca / adj_cl_lq
+    quick_rat = (adj_ca - stock) / adj_cl_lq
+
+    # ── Efficiency / Working Capital Days ─────────────────────────────────────
+    dso = ar_ext * days / safe_adj
+    dio = stock  * days / safe_cogs_abs
+    dpo = (ap_local + ap_intl).abs() * days / safe_cogs_abs
+    ccc = dio + dso - dpo
+
+    # ── Leverage ───────────────────────────────────────────────────────────────
+    de1 = (stb_loan + money_agent + lt_loan).abs() / safe_eq
+    de2 = (total_stl + lt_loan).abs() / safe_eq
+
+    # ── CFS ────────────────────────────────────────────────────────────────────
+    ocf_cov = cfo / safe_cl
+    fcf     = cfo + cfi
+
+    # ── Format helper ──────────────────────────────────────────────────────────
+    def _fmt_row(label: str, series: pd.Series, fmt: str) -> dict:
+        row = {"Ratio": label}
+        for col in _num_cols:
+            val = series.get(col, float("nan"))
+            if pd.isna(val) or (fmt and val == 0.0):
+                row[col] = ""
+            else:
+                try:
+                    row[col] = fmt.format(val)
+                except Exception:
+                    row[col] = ""
+        return row
+
+    def _hdr(label: str) -> dict:
+        return {"Ratio": label, **{col: "" for col in _num_cols}}
+
+    rows = [
+        _hdr("── Profitability ───────────────────────────"),
+        _fmt_row("Markup on COGS (%)",          markup,     "{:.1f}%"),
+        _fmt_row("Gross Profit Margin (%)",      gp_margin,  "{:.1f}%"),
+        _fmt_row("Staff Cost / Revenue (%)",     staff_pct,  "{:.1f}%"),
+        _fmt_row("Total SG&A / Revenue (%)",     sga_pct,    "{:.1f}%"),
+        _fmt_row("Discount Paid / Revenue (%)",  disc_pct,   "{:.1f}%"),
+        _fmt_row("Distribution / Revenue (%)",   dist_pct,   "{:.1f}%"),
+        _fmt_row("Total S&D / Revenue (%)",      tsd_pct,    "{:.1f}%"),
+        _fmt_row("EBITDA Margin (%)",            ebitda_pct, "{:.1f}%"),
+        _fmt_row("Interest Coverage (×)",        int_cov,    "{:.2f}×"),
+        _fmt_row("VAT Expense / Revenue (%)",    vat_pct,    "{:.1f}%"),
+        _fmt_row("Total Tax / Revenue (%)",      tax_pct,    "{:.1f}%"),
+        _hdr("── Liquidity ────────────────────────────────"),
+        _fmt_row("Current Ratio (×)",            curr_rat,   "{:.2f}×"),
+        _fmt_row("Quick Ratio (×)",              quick_rat,  "{:.2f}×"),
+        _hdr("── Working Capital Days ─────────────────────"),
+        _fmt_row("DSO — Receivable Days",        dso,        "{:.0f} days"),
+        _fmt_row("DIO — Inventory Days",         dio,        "{:.0f} days"),
+        _fmt_row("DPO — Payable Days",           dpo,        "{:.0f} days"),
+        _fmt_row("Cash Conversion Cycle",        ccc,        "{:.0f} days"),
+        _hdr("── Leverage ────────────────────────────────"),
+        _fmt_row("D/E 1 — Bank + MA + LT (×)",  de1,        "{:.2f}×"),
+        _fmt_row("D/E 2 — STL + LT (×)",        de2,        "{:.2f}×"),
+        _hdr("── Cash Flow ────────────────────────────────"),
+        _fmt_row("OCF Coverage (×)",             ocf_cov,    "{:.2f}×"),
+        _fmt_row("Free Cash Flow",               fcf,        "{:,.0f}"),
+    ]
+    return pd.DataFrame(rows)
+
+
+def _render_zid_contribution_breakdown(
+    pl_s: pd.DataFrame,
+    bs_s: pd.DataFrame,
+    zid_frames_pl: dict,
+    zid_frames_bs: dict,
+    perspective: str,
+    key_suffix: str,
+) -> None:
+    """
+    Render a ZID contribution breakdown panel below the Level S balance check.
+
+    Lets the user pick any Level S IS or BS account name and a period, then
+    shows a per-ZID table and a Plotly pie chart of absolute contributions.
+    Only intended for the consolidated view.
+    """
+    import json
+    import plotly.express as px
+    from pathlib import Path
+
+    # ── ZID display names from businesses.json ────────────────────────────────
+    _biz_path = Path(__file__).parent.parent / "data" / "businesses.json"
+    try:
+        with open(_biz_path, encoding="utf-8") as _fh:
+            _biz_data = json.load(_fh)
+        _zid_name_map = {
+            int(k): v.get("zorg", f"ZID {k}")
+            for k, v in _biz_data.get("businesses", {}).items()
+        }
+    except Exception:
+        _zid_name_map = {}
+
+    def _zid_label(zid: int) -> str:
+        name = _zid_name_map.get(zid, f"ZID {zid}")
+        return f"{zid} — {name}"
+
+    # ── Build Level S IS and BS for each ZID (pure pandas, no DB calls) ───────
+    _zid_pl_ls: dict = {}
+    _zid_bs_ls: dict = {}
+
+    for _bz, _bz_pl in zid_frames_pl.items():
+        _bz_bs = zid_frames_bs.get(_bz, pd.DataFrame())
+        if _bz_pl is None or _bz_pl.empty:
+            continue
+        try:
+            _bz_pl_s = financial.build_pl_level_s(_bz_pl, perspective)
+            _bz_ni   = _extract_row(_bz_pl_s, "Net Income")
+            # BS needs YTD cumulative NI for monthly to balance correctly
+            _bz_ni_bs = _monthly_to_ytd(_bz_ni) if perspective == "Monthly" else _bz_ni
+            _bz_bs_s  = financial.build_bs_level_s(_bz_bs, _bz_ni_bs, zid=_bz)
+            _zid_pl_ls[_bz] = _bz_pl_s
+            _zid_bs_ls[_bz] = _bz_bs_s
+        except Exception:
+            pass
+
+    if not _zid_pl_ls:
+        return
+
+    # ── Collect all Level S account names (IS first, then BS, no duplicates) ──
+    _name_col = "ac_name"
+    _seen: set = set()
+    _all_names: list = []
+    for _nm in list(pl_s[_name_col]) + list(bs_s[_name_col]):
+        if isinstance(_nm, str) and _nm and _nm not in _seen:
+            _seen.add(_nm)
+            _all_names.append(_nm)
+
+    # ── Period columns from consolidated pl_s ────────────────────────────────
+    _period_cols = sorted(
+        [c for c in pl_s.columns
+         if c != _name_col and pd.api.types.is_numeric_dtype(pl_s[c])],
+        key=financial._period_key,
+    )
+    if not _period_cols:
+        return
+
+    # ── UI ────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("ZID Contribution Breakdown")
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        _sel_name = st.selectbox(
+            "Account",
+            _all_names,
+            key=f"zid_brkdn_account_{key_suffix}",
+        )
+    with _c2:
+        _sel_period = st.selectbox(
+            "Period",
+            _period_cols,
+            index=len(_period_cols) - 1,   # default: most recent period
+            key=f"zid_brkdn_period_{key_suffix}",
+        )
+
+    # ── Per-ZID lookup ────────────────────────────────────────────────────────
+    _rows = []
+    for _bz in sorted(_zid_pl_ls.keys()):
+        _val = 0.0
+        # Search IS DataFrame first, then BS
+        for _src_df in (_zid_pl_ls.get(_bz), _zid_bs_ls.get(_bz)):
+            if _src_df is None or _src_df.empty:
+                continue
+            _mask = _src_df[_name_col].astype(str) == str(_sel_name)
+            if not _mask.any():
+                continue
+            if _sel_period in _src_df.columns:
+                # Use chained indexing so tuple period columns (monthly)
+                # are treated as a single column name, not a multi-index key.
+                _val = float(_src_df.loc[_mask][_sel_period].iloc[0])
+            break   # found in this source — don't also search BS
+        _rows.append({"ZID": _zid_label(_bz), "Value": _val})
+
+    _brkdn_df = pd.DataFrame(_rows)
+    # Drop ZIDs with zero contribution to keep the view clean
+    _brkdn_df = _brkdn_df[_brkdn_df["Value"] != 0.0].reset_index(drop=True)
+
+    if _brkdn_df.empty:
+        st.info(f"All ZIDs show zero for '{_sel_name}' in period {_sel_period}.")
+        return
+
+    # ── Table ─────────────────────────────────────────────────────────────────
+    st.dataframe(
+        _brkdn_df.style.format({"Value": "{:,.1f}"}),
+        use_container_width=True,
+    )
+
+    # ── Pie chart (sized by absolute value; note in title if values are mixed) ─
+    _pie_df = _brkdn_df.copy()
+    _pie_df["Abs"] = _pie_df["Value"].abs()
+    _pie_df = _pie_df[_pie_df["Abs"] > 0]
+    if not _pie_df.empty:
+        _has_mixed = (_brkdn_df["Value"] > 0).any() and (_brkdn_df["Value"] < 0).any()
+        _title = (
+            f"{_sel_name}  ·  {_sel_period}"
+            + ("  (absolute — mixed signs present)" if _has_mixed else "")
+        )
+        _fig = px.pie(
+            _pie_df,
+            names="ZID",
+            values="Abs",
+            title=_title,
+            hole=0.3,
+        )
+        _fig.update_traces(textposition="inside", textinfo="percent+label")
+        _fig.update_layout(margin=dict(t=60, b=20, l=20, r=20))
+        st.plotly_chart(_fig, use_container_width=True)
+
+
 def _sanity_checks(
     pl_sorted, pl_lv1, pl_lv2, pl_s,
     bs_lv0, bs_lv1, bs_lv2, bs_s,
@@ -474,8 +860,26 @@ def display_financial_statements(current_page, zid):
             _num_cols = financial._ls_num_cols(pl_raw)
 
             if _is_consolidated:
-                # Consolidated: no per-business VAT breakdown — skip VAT query
-                _vat_rows = None
+                # Consolidated: fetch VAT GL for every ZID and sum them.
+                # The 4 VAT rows are informational references — no interaction with
+                # the rest of the statement, same as for individual entities.
+                _vat_gl_parts = []
+                _all_zids_vat = _consol.load_consolidation_rules().get("all_zids", [])
+                for _vat_zid in _all_zids_vat:
+                    try:
+                        _sql_vat_z, _params_vat_z = queries.get_vat_breakdown_gl(
+                            zid=_vat_zid, year_list=year_list, smonth=1, emonth=12,
+                        )
+                        _gl_vat_z = get_dataframe(_sql_vat_z, _params_vat_z)
+                        if _gl_vat_z is not None and not _gl_vat_z.empty:
+                            _vat_gl_parts.append(_gl_vat_z)
+                    except Exception:
+                        pass
+                _gl_vat_all = (pd.concat(_vat_gl_parts, ignore_index=True)
+                               if _vat_gl_parts else pd.DataFrame())
+                _vat_rows = financial.compute_vat_is_rows(
+                    _gl_vat_all, _num_cols, selected_perspective='Yearly'
+                )
             else:
                 # For Full Year vs YTD: fetch all months (1-12) so prior years are complete;
                 # current year data already bounded by ytd_month via process_data.
@@ -497,7 +901,7 @@ def display_financial_statements(current_page, zid):
             net_income_s = _extract_row(pl_s, "Net Income")
             bs_s  = financial.build_bs_level_s(bs_raw, net_income_s, zid=_az)
             cfs_s, summary_s = financial.build_cfs_level_s(
-                pl_raw, bs_raw, coc_lv0, net_income_s
+                pl_raw, bs_raw, coc_lv0, net_income_s, zid=_az
             )
 
             with st.expander("Income Statement", expanded=True):
@@ -508,6 +912,14 @@ def display_financial_statements(current_page, zid):
                 st.dataframe(_fmt(cfs_s), use_container_width=True)
             with st.expander("Cash Flow Summary", expanded=False):
                 st.dataframe(_fmt(summary_s), use_container_width=True)
+
+            # ── Financial Ratios ──────────────────────────────────────────────
+            with st.expander("📊 Financial Ratios", expanded=False):
+                try:
+                    _ratio_df = _build_ls_ratios(pl_s, bs_s, cfs_s, perspective="Yearly")
+                    st.dataframe(_ratio_df.set_index("Ratio"), use_container_width=True)
+                except Exception as _re:
+                    st.warning(f"Could not compute ratios: {_re}")
 
             _dl_link = common.create_combined_ls_download_link(
                 pl_s=pl_s, bs_s=bs_s, cfs_s=cfs_s,
@@ -521,6 +933,26 @@ def display_financial_statements(current_page, zid):
                 bs_lv0, bs_lv1, bs_lv2, bs_s,
                 summary_df, summary_df1, summary_df2, summary_s,
             )
+
+            # ── Notes / ZID Breakdown panel ───────────────────────────────────
+            if _is_consolidated:
+                _panel_y = st.radio(
+                    "View",
+                    ["📋 Notes & Context", "📊 ZID Contribution Breakdown"],
+                    horizontal=True,
+                    key="ls_panel_y",
+                )
+                if _panel_y == "📋 Notes & Context":
+                    _render_ls_notes(key_suffix="y")
+                else:
+                    _render_zid_contribution_breakdown(
+                        pl_s, bs_s,
+                        _zid_frames_pl, _zid_frames_bs,
+                        perspective="Yearly",
+                        key_suffix="y",
+                    )
+            else:
+                _render_ls_notes(key_suffix="y_single")
 
         elif selected_level == "Level T - Trading Adjustments":
             # ── Step 1: Build Level S base (identical to Level S block) ──────
@@ -542,7 +974,7 @@ def display_financial_statements(current_page, zid):
             net_income_s = _extract_row(pl_s, "Net Income")
             bs_s  = financial.build_bs_level_s(bs_raw, net_income_s, zid=_az)
             cfs_s, summary_s = financial.build_cfs_level_s(
-                pl_raw, bs_raw, coc_lv0, net_income_s
+                pl_raw, bs_raw, coc_lv0, net_income_s, zid=_az
             )
 
             # ── Step 2: Build adj_data — I&H net sales & net cost (years <= 2024)
@@ -743,7 +1175,7 @@ def display_financial_statements(current_page, zid):
             net_income_gi_s = _extract_row(pl_gi_s, "Net Income")
             bs_gi_s         = financial.build_bs_level_s(bs_raw, net_income_gi_s, zid=_gi_az)
             cfs_gi_s, summary_gi_s = financial.build_cfs_level_s(
-                pl_raw, bs_raw, coc_lv0, net_income_gi_s
+                pl_raw, bs_raw, coc_lv0, net_income_gi_s, zid=_gi_az
             )
 
             # Level S kept in memory for the breakdown table; not displayed
@@ -1324,16 +1756,34 @@ def display_financial_statements(current_page, zid):
             _az, _ap = analyse_zid
             _num_cols = financial._ls_num_cols(pl_raw)
 
+            # Period columns span two calendar years (prior year full + current
+            # year up to end_month). Derive all years present so the VAT query
+            # covers every month in the displayed IS.
+            _years_in_data = sorted(set(
+                int(financial._period_key(c)[0]) for c in _num_cols
+            ))
             if _is_consolidated:
-                # Consolidated: no per-business VAT breakdown — skip VAT query
-                _vat_rows = None
+                # Consolidated: fetch VAT GL for every ZID and sum them.
+                # The 4 VAT rows are informational references — no interaction with
+                # the rest of the statement, same as for individual entities.
+                _vat_gl_parts = []
+                _all_zids_vat = _consol.load_consolidation_rules().get("all_zids", [])
+                for _vat_zid in _all_zids_vat:
+                    try:
+                        _sql_vat_z, _params_vat_z = queries.get_vat_breakdown_gl(
+                            zid=_vat_zid, year_list=_years_in_data, smonth=1, emonth=12,
+                        )
+                        _gl_vat_z = get_dataframe(_sql_vat_z, _params_vat_z)
+                        if _gl_vat_z is not None and not _gl_vat_z.empty:
+                            _vat_gl_parts.append(_gl_vat_z)
+                    except Exception:
+                        pass
+                _gl_vat_all = (pd.concat(_vat_gl_parts, ignore_index=True)
+                               if _vat_gl_parts else pd.DataFrame())
+                _vat_rows = financial.compute_vat_is_rows(
+                    _gl_vat_all, _num_cols, selected_perspective='Monthly'
+                )
             else:
-                # Period columns span two calendar years (prior year full + current
-                # year up to end_month). Derive all years present so the VAT query
-                # covers every month in the displayed IS.
-                _years_in_data = sorted(set(
-                    int(financial._period_key(c)[0]) for c in _num_cols
-                ))
                 _sql_vat, _params_vat = queries.get_vat_breakdown_gl(
                     zid=_az, project=_ap, year_list=_years_in_data,
                     smonth=1, emonth=12,
@@ -1354,7 +1804,7 @@ def display_financial_statements(current_page, zid):
             bs_s  = financial.build_bs_level_s(bs_raw, net_income_s_ytd, zid=_az)
             # CFS uses the raw monthly NI (not YTD) — same as Level 0 CFS.
             cfs_s, summary_s = financial.build_cfs_level_s(
-                pl_raw, bs_raw, coc_lv0, net_income_s
+                pl_raw, bs_raw, coc_lv0, net_income_s, zid=_az
             )
 
             with st.expander("Income Statement", expanded=True):
@@ -1365,6 +1815,15 @@ def display_financial_statements(current_page, zid):
                 st.dataframe(_fmt(cfs_s), use_container_width=True)
             with st.expander("Cash Flow Summary", expanded=False):
                 st.dataframe(_fmt(summary_s), use_container_width=True)
+
+            # ── Financial Ratios ──────────────────────────────────────────────
+            with st.expander("📊 Financial Ratios", expanded=False):
+                try:
+                    _ratio_df_m = _build_ls_ratios(pl_s, bs_s, cfs_s, perspective="Monthly")
+                    st.caption("Monthly working-capital days are approximated using 30 days/period.")
+                    st.dataframe(_ratio_df_m.set_index("Ratio"), use_container_width=True)
+                except Exception as _re:
+                    st.warning(f"Could not compute ratios: {_re}")
 
             _dl_link = common.create_combined_ls_download_link(
                 pl_s=pl_s, bs_s=bs_s, cfs_s=cfs_s,
@@ -1378,3 +1837,23 @@ def display_financial_statements(current_page, zid):
                 bs_lv0, bs_lv1, bs_lv2, bs_s,
                 summary_df, summary_df1, summary_df2, summary_s,
             )
+
+            # ── Notes / ZID Breakdown panel ───────────────────────────────────
+            if _is_consolidated:
+                _panel_m = st.radio(
+                    "View",
+                    ["📋 Notes & Context", "📊 ZID Contribution Breakdown"],
+                    horizontal=True,
+                    key="ls_panel_m",
+                )
+                if _panel_m == "📋 Notes & Context":
+                    _render_ls_notes(key_suffix="m")
+                else:
+                    _render_zid_contribution_breakdown(
+                        pl_s, bs_s,
+                        _zid_frames_pl_m, _zid_frames_bs_m,
+                        perspective="Monthly",
+                        key_suffix="m",
+                    )
+            else:
+                _render_ls_notes(key_suffix="m_single")
