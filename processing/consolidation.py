@@ -289,7 +289,13 @@ def _arap_bs_rows(
         lambda r: (int(r["zid"]), str(r["ac_code"])) in zid_code_pairs, axis=1
     )
     subset = level_c_bs.loc[mask].drop(columns=["zid"])
-    return _sum_by_code_name(subset)
+    result = _sum_by_code_name(subset)
+    # Rename internal AR (01030001) so Level S can distinguish it from
+    # external AR (01030001 "Accounts Receivable") produced by _external_bs_rows.
+    # Without this rename, _sum_by_code_name in build_level_c2_bs would merge the
+    # two groups into one undifferentiated "Accounts Receivable" row.
+    result.loc[result["ac_code"] == "01030001", "ac_name"] = "Accounts Receivable (Internal)"
+    return result
 
 
 def _allother_bs_rows(
