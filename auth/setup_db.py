@@ -1,16 +1,8 @@
-import os
 import sys
 import psycopg2
 import bcrypt
+from config.settings import get_db_params
 
-# Manually define database credentials
-db_params = {
-    'host': 'localhost',
-    'database': 'hmbr',
-    'user': 'postgres',
-    'password': 'postgres',  # Replace with your actual password
-    'port': '5432'
-}
 
 def hash_password(password):
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
@@ -19,12 +11,13 @@ def setup_auth_tables():
     conn = None
     cur = None
     try:
+        db_params = get_db_params()
         # Connect to database
         print("Connecting to database...")
         print(f"Host: {db_params['host']}")
-        print(f"Database: {db_params['database']}")
+        print(f"Database: {db_params['dbname']}")
         print(f"User: {db_params['user']}")
-        
+
         conn = psycopg2.connect(**db_params)
         cur = conn.cursor()
         
