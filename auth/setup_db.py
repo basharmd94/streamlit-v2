@@ -6,7 +6,7 @@ import bcrypt
 # Manually define database credentials
 db_params = {
     'host': 'localhost',
-    'database': 'stream2',
+    'database': 'hmbr',
     'user': 'postgres',
     'password': 'postgres',  # Replace with your actual password
     'port': '5432'

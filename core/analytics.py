@@ -55,6 +55,7 @@ class Analytics:
             "casup_simple":     queries.get_casup_simple,
             "stock_movement":   queries.get_stock_movement_data,
             "caitem":           queries.get_caitem_data,
+            "opmob_pending":    queries.get_opmob_pending,
         }
 
         query_func = query_map.get(table_name)

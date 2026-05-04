@@ -1,6 +1,23 @@
 # core/queries.py
 # All SQL query builders. Every function returns (query_string, params_tuple).
 # No f-string interpolation of user-supplied values.
+#
+# Queries run directly against hmbr (ERP) tables.
+# Column/table mapping from hmbr → stream2 aliases (so downstream code is unchanged):
+#   glmst:    xacc→ac_code, xdesc→ac_name, xacctype→ac_type, xhrc1-4→ac_lv1-4, xaccusage→usage
+#   gldetail: xacc→ac_code, xsub→ac_sub, xsp→sp_id, xproj→project, xvoucher→voucher, xrow→row, xprime→value
+#   glheader: xvoucher→voucher, xdate→date, xyear→year, xper→month
+#   cacus:    xcus→cusid, xshort→cusname, xadd2→cusadd, xcity→cuscity, xmobile→cusmobile
+#   caitem:   xitem→itemcode, xdesc→itemname, xgitem→itemgroup, xabc→itemgroup2, xdrawing→packcode
+#   casup:    xsup→supid, xorg→supname, xcity→supadd
+#   prmst:    table renamed from employee; xemp→spid, xname→spname, xdept→department, xdesig→designation
+#   zbusiness: table renamed from business; zorg→org, xshort→name
+#   purchase:  derived — poord JOIN poodt LEFT JOIN pogrn
+#   sales:     derived — opdor LEFT JOIN opddt LEFT JOIN imtrn
+#   return:    derived — opcdt/opcrn/imtrn UNION ALL imtemptdt/imtemptrn/imtrn
+#   stock:     derived — imtrn GROUP BY per transaction (xqty*xsign, xval*xsign)
+#   stock_value: derived — imtrn GROUP BY year/month/warehouse
+#   stock_flow:  derived — imtrn GROUP BY year/month/item/warehouse with in/out CASE
 
 from typing import Iterable, Tuple, Dict, Any
 
@@ -17,47 +34,66 @@ def _build_in_clause(id_iterable: Iterable[int]) -> Tuple[str, Tuple[int, ...]]:
 
 def get_sales_data(filters=None):
     filters = filters or {}
-    query = """SELECT
-                sales.zid,
-                sales.ordernumber as voucher,
-                sales.date,
-                EXTRACT(YEAR FROM sales.date) AS year,
-                EXTRACT(MONTH FROM sales.date) AS month,
-                sales.sp_id as spid,
-                employee.spname,
-                sales.cusid,
-                cacus.cusname,
-                cacus.cusmobile,
-                cacus.cuscity as area,
-                sales.itemcode,
-                caitem.itemname,
-                caitem.itemgroup2 as itemgroup,
-                sales.quantity,
-                sales.altsales,
-                sales.proddiscount,
-                sales.totalsales,
-                sales.cost
-            FROM
-                sales
-            JOIN
-                employee ON sales.sp_id = employee.spid AND sales.zid = employee.zid
-            JOIN
-                cacus ON sales.cusid = cacus.cusid AND sales.zid = cacus.zid
-            JOIN
-                caitem ON sales.itemcode = caitem.itemcode AND sales.zid = caitem.zid
-            WHERE
-                sales.zid = %s"""
+    query = """
+    WITH s AS (
+        SELECT
+            opddt.zid,
+            opdor.xdornum  AS ordernumber,
+            opdor.xdate    AS date,
+            opdor.xsp      AS sp_id,
+            opdor.xcus     AS cusid,
+            opddt.xitem    AS itemcode,
+            opddt.xqty     AS quantity,
+            opddt.xdtwotax AS altsales,
+            opddt.xdtdisc  AS proddiscount,
+            opddt.xlineamt AS totalsales,
+            imtrn.xval     AS cost
+        FROM opdor
+        LEFT JOIN opddt ON opdor.xdornum = opddt.xdornum AND opdor.zid = opddt.zid
+        LEFT JOIN imtrn ON opdor.xdornum  = imtrn.xdocnum
+                       AND opddt.xdornum  = imtrn.xdocnum
+                       AND opddt.xitem    = imtrn.xitem
+                       AND opddt.zid      = imtrn.zid
+                       AND opdor.zid      = imtrn.zid
+                       AND opddt.xrow     = imtrn.xdocrow
+        WHERE opdor.zid = %s
+    )
+    SELECT
+        s.zid,
+        s.ordernumber AS voucher,
+        s.date,
+        EXTRACT(YEAR  FROM s.date) AS year,
+        EXTRACT(MONTH FROM s.date) AS month,
+        s.sp_id  AS spid,
+        p.xname  AS spname,
+        s.cusid,
+        c.xshort AS cusname,
+        c.xmobile AS cusmobile,
+        c.xcity  AS area,
+        s.itemcode,
+        ci.xdesc AS itemname,
+        ci.xabc  AS itemgroup,
+        s.quantity,
+        s.altsales,
+        s.proddiscount,
+        s.totalsales,
+        s.cost
+    FROM s
+    JOIN prmst  p  ON s.sp_id    = p.xemp  AND s.zid = p.zid
+    JOIN cacus  c  ON s.cusid    = c.xcus   AND s.zid = c.zid
+    JOIN caitem ci ON s.itemcode = ci.xitem AND s.zid = ci.zid
+    WHERE 1=1"""
 
     params = [filters["zid"][0]]
 
     if filters.get("year"):
         placeholders = ",".join(["%s"] * len(filters["year"]))
-        query += f" AND EXTRACT(YEAR FROM sales.date) IN ({placeholders})"
+        query += f" AND EXTRACT(YEAR FROM s.date) IN ({placeholders})"
         params.extend(filters["year"])
 
     if filters.get("month"):
         placeholders = ",".join(["%s"] * len(filters["month"]))
-        query += f" AND EXTRACT(MONTH FROM sales.date) IN ({placeholders})"
+        query += f" AND EXTRACT(MONTH FROM s.date) IN ({placeholders})"
         params.extend(filters["month"])
 
     if filters.get("spname"):
@@ -79,11 +115,11 @@ def get_sales_data(filters=None):
         conditions = []
         if spids:
             placeholders = ",".join(["%s"] * len(spids))
-            conditions.append(f"sales.sp_id IN ({placeholders})")
+            conditions.append(f"s.sp_id IN ({placeholders})")
             params.extend(spids)
         if spnames:
             placeholders = ",".join(["%s"] * len(spnames))
-            conditions.append(f"employee.spname IN ({placeholders})")
+            conditions.append(f"p.xname IN ({placeholders})")
             params.extend(spnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
@@ -107,11 +143,11 @@ def get_sales_data(filters=None):
         conditions = []
         if cusids:
             placeholders = ",".join(["%s"] * len(cusids))
-            conditions.append(f"sales.cusid IN ({placeholders})")
+            conditions.append(f"s.cusid IN ({placeholders})")
             params.extend(cusids)
         if cusnames:
             placeholders = ",".join(["%s"] * len(cusnames))
-            conditions.append(f"cacus.cusname IN ({placeholders})")
+            conditions.append(f"c.xshort IN ({placeholders})")
             params.extend(cusnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
@@ -135,23 +171,23 @@ def get_sales_data(filters=None):
         conditions = []
         if itemcodes:
             placeholders = ",".join(["%s"] * len(itemcodes))
-            conditions.append(f"sales.itemcode IN ({placeholders})")
+            conditions.append(f"s.itemcode IN ({placeholders})")
             params.extend(itemcodes)
         if itemnames:
             placeholders = ",".join(["%s"] * len(itemnames))
-            conditions.append(f"caitem.itemname IN ({placeholders})")
+            conditions.append(f"ci.xdesc IN ({placeholders})")
             params.extend(itemnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
 
     if filters.get("area"):
         placeholders = ",".join(["%s"] * len(filters["area"]))
-        query += f" AND cacus.cuscity IN ({placeholders})"
+        query += f" AND c.xcity IN ({placeholders})"
         params.extend(filters["area"])
 
     if filters.get("itemgroup"):
         placeholders = ",".join(["%s"] * len(filters["itemgroup"]))
-        query += f" AND caitem.itemgroup2 IN ({placeholders})"
+        query += f" AND ci.xabc IN ({placeholders})"
         params.extend(filters["itemgroup"])
 
     return query, tuple(params)
@@ -159,46 +195,89 @@ def get_sales_data(filters=None):
 
 def get_return_data(filters=None):
     filters = filters or {}
-    query = """SELECT
-                return.zid,
-                return.revoucher,
-                return.date,
-                EXTRACT(YEAR FROM return.date) AS year,
-                EXTRACT(MONTH FROM return.date) AS month,
-                return.sp_id as spid,
-                employee.spname,
-                return.cusid,
-                cacus.cusname,
-                cacus.cusmobile,
-                cacus.cuscity as area,
-                return.itemcode,
-                return.reason,
-                caitem.itemname,
-                caitem.itemgroup2 as itemgroup,
-                return.returnqty,
-                return.treturnamt,
-                return.returncost
-            FROM
-                return
-            JOIN
-                employee ON return.sp_id = employee.spid AND return.zid = employee.zid
-            JOIN
-                cacus ON return.cusid = cacus.cusid AND return.zid = cacus.zid
-            JOIN
-                caitem ON return.itemcode = caitem.itemcode AND return.zid = caitem.zid
-            WHERE
-                return.zid = %s"""
+    # Two zid params: one per UNION branch in the CTE
+    query = """
+    WITH ret AS (
+        SELECT
+            opcdt.zid,
+            opcrn.xcrnnum  AS revoucher,
+            opcrn.xdate    AS date,
+            opcrn.xcus     AS cusid,
+            opcrn.xemp     AS sp_id,
+            opcdt.xitem    AS itemcode,
+            opcrn.xreason  AS reason,
+            opcdt.xqty     AS returnqty,
+            opcdt.xlineamt AS treturnamt,
+            imtrn.xval     AS returncost
+        FROM opcdt
+        LEFT JOIN opcrn ON opcrn.xcrnnum = opcdt.xcrnnum AND opcrn.zid = opcdt.zid
+        LEFT JOIN imtrn ON opcrn.xcrnnum  = imtrn.xdocnum
+                       AND opcdt.xcrnnum  = imtrn.xdocnum
+                       AND opcdt.xitem    = imtrn.xitem
+                       AND opcdt.zid      = imtrn.zid
+                       AND opcrn.zid      = imtrn.zid
+                       AND opcdt.xrow     = imtrn.xdocrow
+        WHERE opcdt.zid = %s
 
-    params = [filters["zid"][0]]
+        UNION ALL
+
+        SELECT
+            imtemptdt.zid,
+            imtemptrn.ximtmptrn AS revoucher,
+            imtemptrn.xdate     AS date,
+            imtemptrn.xcus      AS cusid,
+            imtemptrn.xemp      AS sp_id,
+            imtemptdt.xitem     AS itemcode,
+            imtemptrn.xrem      AS reason,
+            imtemptdt.xqtyord   AS returnqty,
+            imtemptdt.xlineamt  AS treturnamt,
+            imtrn.xval          AS returncost
+        FROM imtemptdt
+        LEFT JOIN imtemptrn ON imtemptrn.ximtmptrn = imtemptdt.ximtmptrn AND imtemptrn.zid = imtemptdt.zid
+        LEFT JOIN imtrn ON imtemptrn.ximtmptrn  = imtrn.xdocnum
+                       AND imtemptdt.ximtmptrn  = imtrn.xdocnum
+                       AND imtemptdt.xitem       = imtrn.xitem
+                       AND imtemptdt.zid         = imtrn.zid
+                       AND imtemptrn.zid         = imtrn.zid
+                       AND imtemptdt.xtorlno     = imtrn.xdocrow
+        WHERE imtemptdt.zid = %s
+    )
+    SELECT
+        ret.zid,
+        ret.revoucher,
+        ret.date,
+        EXTRACT(YEAR  FROM ret.date) AS year,
+        EXTRACT(MONTH FROM ret.date) AS month,
+        ret.sp_id   AS spid,
+        p.xname     AS spname,
+        ret.cusid,
+        c.xshort    AS cusname,
+        c.xmobile   AS cusmobile,
+        c.xcity     AS area,
+        ret.itemcode,
+        ret.reason,
+        ci.xdesc    AS itemname,
+        ci.xabc     AS itemgroup,
+        ret.returnqty,
+        ret.treturnamt,
+        ret.returncost
+    FROM ret
+    JOIN prmst  p  ON ret.sp_id    = p.xemp  AND ret.zid = p.zid
+    JOIN cacus  c  ON ret.cusid    = c.xcus   AND ret.zid = c.zid
+    JOIN caitem ci ON ret.itemcode = ci.xitem AND ret.zid = ci.zid
+    WHERE 1=1"""
+
+    zid = filters["zid"][0]
+    params = [zid, zid]
 
     if filters.get("year"):
         placeholders = ",".join(["%s"] * len(filters["year"]))
-        query += f" AND EXTRACT(YEAR FROM return.date) IN ({placeholders})"
+        query += f" AND EXTRACT(YEAR FROM ret.date) IN ({placeholders})"
         params.extend(filters["year"])
 
     if filters.get("month"):
         placeholders = ",".join(["%s"] * len(filters["month"]))
-        query += f" AND EXTRACT(MONTH FROM return.date) IN ({placeholders})"
+        query += f" AND EXTRACT(MONTH FROM ret.date) IN ({placeholders})"
         params.extend(filters["month"])
 
     if filters.get("spname"):
@@ -220,11 +299,11 @@ def get_return_data(filters=None):
         conditions = []
         if spids:
             placeholders = ",".join(["%s"] * len(spids))
-            conditions.append(f"return.sp_id IN ({placeholders})")
+            conditions.append(f"ret.sp_id IN ({placeholders})")
             params.extend(spids)
         if spnames:
             placeholders = ",".join(["%s"] * len(spnames))
-            conditions.append(f"employee.spname IN ({placeholders})")
+            conditions.append(f"p.xname IN ({placeholders})")
             params.extend(spnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
@@ -248,11 +327,11 @@ def get_return_data(filters=None):
         conditions = []
         if cusids:
             placeholders = ",".join(["%s"] * len(cusids))
-            conditions.append(f"return.cusid IN ({placeholders})")
+            conditions.append(f"ret.cusid IN ({placeholders})")
             params.extend(cusids)
         if cusnames:
             placeholders = ",".join(["%s"] * len(cusnames))
-            conditions.append(f"cacus.cusname IN ({placeholders})")
+            conditions.append(f"c.xshort IN ({placeholders})")
             params.extend(cusnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
@@ -276,23 +355,23 @@ def get_return_data(filters=None):
         conditions = []
         if itemcodes:
             placeholders = ",".join(["%s"] * len(itemcodes))
-            conditions.append(f"return.itemcode IN ({placeholders})")
+            conditions.append(f"ret.itemcode IN ({placeholders})")
             params.extend(itemcodes)
         if itemnames:
             placeholders = ",".join(["%s"] * len(itemnames))
-            conditions.append(f"caitem.itemname IN ({placeholders})")
+            conditions.append(f"ci.xdesc IN ({placeholders})")
             params.extend(itemnames)
         if conditions:
             query += " AND (" + " OR ".join(conditions) + ")"
 
     if filters.get("area"):
         placeholders = ",".join(["%s"] * len(filters["area"]))
-        query += f" AND cacus.cuscity IN ({placeholders})"
+        query += f" AND c.xcity IN ({placeholders})"
         params.extend(filters["area"])
 
     if filters.get("itemgroup"):
         placeholders = ",".join(["%s"] * len(filters["itemgroup"]))
-        query += f" AND caitem.itemgroup2 IN ({placeholders})"
+        query += f" AND ci.xabc IN ({placeholders})"
         params.extend(filters["itemgroup"])
 
     return query, tuple(params)
@@ -301,9 +380,9 @@ def get_return_data(filters=None):
 def get_collection_data(filters=None):
     """
     Returns one row per collection voucher with:
-      - spid/spname from gldetail.sp_id (the newly added column)
-      - fallback: if gldetail.sp_id is NULL/blank, uses the most recent
-        salesman from the sales table for that customer (last-INOP rule)
+      - spid/spname from gldetail.xsp (the direct sp column)
+      - fallback: if gldetail.xsp is NULL/blank, uses the most recent
+        salesman from opdor for that customer (last-INOP rule)
     """
     filters = filters or {}
     zid = filters["zid"][0]
@@ -311,26 +390,26 @@ def get_collection_data(filters=None):
     # ── CTE 1: aggregate collection vouchers, grab direct sp_id ──────────────
     rct_conditions = [
         "gd.zid = %s",
-        "gm.usage = 'AR'",
-        "(gd.voucher LIKE 'RCT-%%' OR gd.voucher LIKE 'CRCT%%'"
-        " OR gd.voucher LIKE 'STJV%%' OR gd.voucher LIKE 'BRCT%%'"
-        " OR gd.voucher LIKE 'JV--%%')",
+        "gm.xaccusage = 'AR'",
+        "(gd.xvoucher LIKE 'RCT-%%' OR gd.xvoucher LIKE 'CRCT%%'"
+        " OR gd.xvoucher LIKE 'STJV%%' OR gd.xvoucher LIKE 'BRCT%%'"
+        " OR gd.xvoucher LIKE 'JV--%%')",
     ]
     rct_params: list = [zid]
 
     if filters.get("year"):
         ph = ",".join(["%s"] * len(filters["year"]))
-        rct_conditions.append(f"gh.year IN ({ph})")
+        rct_conditions.append(f"gh.xyear IN ({ph})")
         rct_params.extend(filters["year"])
 
     if filters.get("month"):
         ph = ",".join(["%s"] * len(filters["month"]))
-        rct_conditions.append(f"gh.month IN ({ph})")
+        rct_conditions.append(f"gh.xper IN ({ph})")
         rct_params.extend(filters["month"])
 
     rct_where = " AND ".join(rct_conditions)
 
-    # ── CTE 2: last salesman per customer from sales table ────────────────────
+    # ── CTE 2: last salesman per customer from opdor ──────────────────────────
     last_sp_params: list = [zid]
 
     # ── Outer WHERE (cusname / area / spname filters) ─────────────────────────
@@ -354,14 +433,14 @@ def get_collection_data(filters=None):
             outer_params.extend(cusids)
         if cusnames:
             ph = ",".join(["%s"] * len(cusnames))
-            conds.append(f"cc.cusname IN ({ph})")
+            conds.append(f"cc.xshort IN ({ph})")
             outer_params.extend(cusnames)
         if conds:
             outer_conditions.append("(" + " OR ".join(conds) + ")")
 
     if filters.get("area"):
         ph = ",".join(["%s"] * len(filters["area"]))
-        outer_conditions.append(f"cc.cuscity IN ({ph})")
+        outer_conditions.append(f"cc.xcity IN ({ph})")
         outer_params.extend(filters["area"])
 
     if filters.get("spname"):
@@ -381,7 +460,7 @@ def get_collection_data(filters=None):
             outer_params.extend(spids)
         if spnames:
             ph = ",".join(["%s"] * len(spnames))
-            conds.append(f"e.spname IN ({ph})")
+            conds.append(f"e.xname IN ({ph})")
             outer_params.extend(spnames)
         if conds:
             outer_conditions.append("(" + " OR ".join(conds) + ")")
@@ -392,47 +471,46 @@ def get_collection_data(filters=None):
     WITH rct_raw AS (
         SELECT
             gd.zid,
-            gd.voucher,
-            gd.ac_sub::text          AS cusid,
-            gh.date,
-            gh.year,
-            gh.month,
-            ABS(SUM(gd.value))       AS value,
-            MAX(NULLIF(TRIM(gd.sp_id::text), '')) AS direct_sp_id
+            gd.xvoucher                                          AS voucher,
+            gd.xsub::text                                        AS cusid,
+            gh.xdate                                             AS date,
+            gh.xyear                                             AS year,
+            gh.xper                                              AS month,
+            ABS(SUM(gd.xprime))                                  AS value,
+            MAX(NULLIF(TRIM(gd.xsp::text), ''))                  AS direct_sp_id
         FROM gldetail gd
-        JOIN glheader gh ON gd.voucher  = gh.voucher  AND gd.zid = gh.zid
-        JOIN glmst    gm ON gd.ac_code  = gm.ac_code  AND gd.zid = gm.zid
+        JOIN glheader gh ON gd.xvoucher = gh.xvoucher AND gd.zid = gh.zid
+        JOIN glmst    gm ON gd.xacc     = gm.xacc     AND gd.zid = gm.zid
         WHERE {rct_where}
-        GROUP BY gd.zid, gd.voucher, gd.ac_sub, gh.date, gh.year, gh.month
+        GROUP BY gd.zid, gd.xvoucher, gd.xsub, gh.xdate, gh.xyear, gh.xper
     ),
     last_sale_sp AS (
-        -- Most recent salesman per customer from the sales table (last-INOP rule)
-        SELECT DISTINCT ON (cusid::text)
-            cusid::text   AS cusid,
-            sp_id::text   AS sp_id
-        FROM sales
-        WHERE zid = %s
-          AND sp_id IS NOT NULL
-          AND TRIM(sp_id::text) != ''
-        ORDER BY cusid::text, date DESC
+        SELECT DISTINCT ON (opdor.xcus::text)
+            opdor.xcus::text AS cusid,
+            opdor.xsp::text  AS sp_id
+        FROM opdor
+        WHERE opdor.zid = %s
+          AND opdor.xsp IS NOT NULL
+          AND TRIM(opdor.xsp::text) != ''
+        ORDER BY opdor.xcus::text, opdor.xdate DESC
     )
     SELECT
         r.zid,
         r.voucher                                       AS glvoucher,
         r.cusid,
-        cc.cusname,
-        cc.cuscity                                      AS area,
+        cc.xshort                                       AS cusname,
+        cc.xcity                                        AS area,
         r.date,
         r.year,
         r.month,
         r.value,
         COALESCE(r.direct_sp_id, ls.sp_id)             AS spid,
-        e.spname
+        e.xname                                         AS spname
     FROM rct_raw r
-    JOIN  cacus    cc ON r.cusid  = cc.cusid::text AND r.zid = cc.zid
+    JOIN  cacus    cc ON r.cusid  = cc.xcus::text AND r.zid = cc.zid
     LEFT JOIN last_sale_sp ls ON r.cusid = ls.cusid
-    LEFT JOIN employee     e
-           ON COALESCE(r.direct_sp_id, ls.sp_id) = e.spid::text
+    LEFT JOIN prmst        e
+           ON COALESCE(r.direct_sp_id, ls.sp_id) = e.xemp::text
           AND e.zid = r.zid{outer_where}
     """
 
@@ -447,27 +525,27 @@ def get_ar_data(filters=None):
     query = """
     SELECT
       glmst.zid,
-      gldetail.project       AS project,
-      gldetail.voucher       AS voucher,
-      gldetail.ac_sub        AS cusid,
-      cacus.cusname          AS cusname,
-      cacus.cuscity          AS area,
-      glheader.date          AS date,
-      glheader.year          AS year,
-      glheader.month         AS month,
-      SUM(gldetail.value)    AS value
+      gldetail.xproj         AS project,
+      gldetail.xvoucher      AS voucher,
+      gldetail.xsub          AS cusid,
+      cacus.xshort           AS cusname,
+      cacus.xcity            AS area,
+      glheader.xdate         AS date,
+      glheader.xyear         AS year,
+      glheader.xper          AS month,
+      SUM(gldetail.xprime)   AS value
     FROM glmst
     JOIN gldetail
-      ON glmst.ac_code = gldetail.ac_code
+      ON glmst.xacc    = gldetail.xacc
      AND glmst.zid     = gldetail.zid
     JOIN glheader
-      ON gldetail.voucher = glheader.voucher
+      ON gldetail.xvoucher = glheader.xvoucher
      AND glheader.zid      = glmst.zid
     JOIN cacus
-      ON gldetail.ac_sub = cacus.cusid
-     AND cacus.zid       = glmst.zid
+      ON gldetail.xsub = cacus.xcus
+     AND cacus.zid     = glmst.zid
     WHERE glmst.zid        = %s
-      AND glmst.usage      = 'AR'
+      AND glmst.xaccusage  = 'AR'
     """
     params = [zid]
 
@@ -490,134 +568,186 @@ def get_ar_data(filters=None):
         conditions = []
         if cusids:
             placeholders = ",".join(["%s"] * len(cusids))
-            conditions.append(f"gldetail.ac_sub IN ({placeholders})")
+            conditions.append(f"gldetail.xsub IN ({placeholders})")
             params.extend(cusids)
         if cusnames:
             placeholders = ",".join(["%s"] * len(cusnames))
-            conditions.append(f"cacus.cusname IN ({placeholders})")
+            conditions.append(f"cacus.xshort IN ({placeholders})")
             params.extend(cusnames)
         if conditions:
             query += "\n  AND (" + " OR ".join(conditions) + ")"
 
     if filters.get("area"):
         placeholders = ",".join(["%s"] * len(filters["area"]))
-        query += f"\n  AND cacus.cuscity IN ({placeholders})"
+        query += f"\n  AND cacus.xcity IN ({placeholders})"
         params.extend(filters["area"])
 
     if filters.get("year"):
         placeholders = ",".join(["%s"] * len(filters["year"]))
-        query += f"\n  AND glheader.year IN ({placeholders})"
+        query += f"\n  AND glheader.xyear IN ({placeholders})"
         params.extend([str(y) for y in filters["year"]])
 
     if filters.get("month"):
         placeholders = ",".join(["%s"] * len(filters["month"]))
-        query += f"\n  AND glheader.month IN ({placeholders})"
+        query += f"\n  AND glheader.xper IN ({placeholders})"
         params.extend([str(m) for m in filters["month"]])
 
     query += """
     GROUP BY
       glmst.zid,
-      gldetail.project,
-      gldetail.voucher,
-      gldetail.ac_sub,
-      cacus.cusname,
-      cacus.cuscity,
-      glheader.date,
-      glheader.year,
-      glheader.month
-    ORDER BY date, voucher;
+      gldetail.xproj,
+      gldetail.xvoucher,
+      gldetail.xsub,
+      cacus.xshort,
+      cacus.xcity,
+      glheader.xdate,
+      glheader.xyear,
+      glheader.xper
+    ORDER BY glheader.xdate, gldetail.xvoucher;
     """
     return query, tuple(params)
 
 
 def get_purchase_data(filters=None):
-    query = """SELECT
-                purchase.zid,
-                purchase.combinedate,
-                purchase.povoucher,
-                purchase.grnvoucher,
-                CASE
-                    WHEN caitem.packcode IS NOT NULL AND caitem.packcode <> '' AND caitem.packcode != 'NO' THEN caitem.packcode
-                    ELSE purchase.itemcode
-                END AS itemcode,
-                caitem.itemname,
-                purchase.shipmentname,
-                purchase.quantity,
-                purchase.cost,
-                purchase.status
-            FROM
-                purchase
-            JOIN
-                caitem ON purchase.itemcode =  caitem.itemcode AND purchase.zid = caitem.zid
-            WHERE
-                purchase.zid IN (%s,%s)
-                AND purchase.povoucher LIKE 'IP--%%'
-                AND purchase.status IN ('5-Received','1-Open')
-            """
+    # Returns query string only; caller supplies (zid1, zid2) params.
+    query = """
+    WITH purchase AS (
+        SELECT
+            poord.zid,
+            COALESCE(pogrn.xdate, poord.xdate) AS combinedate,
+            poord.xpornum   AS povoucher,
+            pogrn.xgrnnum   AS grnvoucher,
+            poodt.xitem     AS itemcode,
+            poord.xcounterno AS shipmentname,
+            poodt.xqtyord   AS quantity,
+            poodt.xrate     AS cost,
+            poord.xstatuspor AS status
+        FROM poord
+        JOIN poodt ON poord.xpornum = poodt.xpornum AND poord.zid = poodt.zid
+        LEFT JOIN pogrn ON poord.xpornum = pogrn.xpornum AND poord.zid = pogrn.zid
+        WHERE poord.zid IN (%s, %s)
+          AND poord.xstatuspor IN ('5-Received','1-Open')
+    )
+    SELECT
+        purchase.zid,
+        purchase.combinedate,
+        purchase.povoucher,
+        purchase.grnvoucher,
+        CASE
+            WHEN ci.xdrawing IS NOT NULL AND ci.xdrawing <> '' AND ci.xdrawing != 'NO' THEN ci.xdrawing
+            ELSE purchase.itemcode
+        END AS itemcode,
+        ci.xdesc AS itemname,
+        purchase.shipmentname,
+        purchase.quantity,
+        purchase.cost,
+        purchase.status
+    FROM purchase
+    JOIN caitem ci ON purchase.itemcode = ci.xitem AND purchase.zid = ci.zid
+    WHERE purchase.povoucher LIKE 'IP--%%'
+    """
     return query
 
 
 def get_product_inventory_data(filters=None):
-    query = """SELECT
-                stock.zid,
-                stock.year,
-                stock.month,
-                CASE
-                    WHEN caitem.packcode IS NOT NULL
-                    AND caitem.packcode <> ''
-                    AND caitem.packcode != 'NO'
-                    AND LEFT(caitem.packcode,2) != 'KH' THEN caitem.packcode
-                    ELSE stock.itemcode
-                END AS itemcode,
-                caitem.itemname,
-                caitem.itemgroup,
-                stock.warehouse,
-                stock.stockqty,
-                stock.stockvalue
-            FROM
-                stock
-            JOIN
-                caitem ON stock.itemcode = caitem.itemcode AND stock.zid = caitem.zid
-            WHERE
-                stock.zid = (%s)"""
+    # Returns query string only; caller supplies (zid,) param.
+    query = """
+    WITH stock AS (
+        SELECT
+            imtrn.zid,
+            imtrn.xyear  AS year,
+            imtrn.xper   AS month,
+            imtrn.xitem  AS itemcode,
+            imtrn.xwh    AS warehouse,
+            SUM(imtrn.xqty * imtrn.xsign) AS stockqty,
+            SUM(imtrn.xval * imtrn.xsign) AS stockvalue
+        FROM imtrn
+        WHERE imtrn.zid = %s
+        GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper,
+                 imtrn.xdate, imtrn.xdocnum, imtrn.xproj, imtrn.ximtrnnum
+    )
+    SELECT
+        stock.zid,
+        stock.year,
+        stock.month,
+        CASE
+            WHEN ci.xdrawing IS NOT NULL
+             AND ci.xdrawing <> ''
+             AND ci.xdrawing != 'NO'
+             AND LEFT(ci.xdrawing, 2) != 'KH' THEN ci.xdrawing
+            ELSE stock.itemcode
+        END AS itemcode,
+        ci.xdesc  AS itemname,
+        ci.xgitem AS itemgroup,
+        stock.warehouse,
+        stock.stockqty,
+        stock.stockvalue
+    FROM stock
+    JOIN caitem ci ON stock.itemcode = ci.xitem AND stock.zid = ci.zid
+    """
     return query
 
 
 def get_inventory_value_data(filters=None):
-    return """SELECT
-                stock_value.zid,
-                stock_value.year,
-                stock_value.month,
-                stock_value.warehouse,
-                stock_value.stockvalue
-            FROM stock_value WHERE zid = (%s)"""
+    # Returns query string only; caller supplies (zid,) param.
+    return """
+    WITH stock_value AS (
+        SELECT
+            imtrn.zid,
+            imtrn.xyear AS year,
+            imtrn.xper  AS month,
+            imtrn.xwh   AS warehouse,
+            SUM(imtrn.xval * imtrn.xsign) AS stockvalue
+        FROM imtrn
+        WHERE imtrn.zid = %s
+        GROUP BY imtrn.zid, imtrn.xyear, imtrn.xper, imtrn.xwh
+    )
+    SELECT zid, year, month, warehouse, stockvalue
+    FROM stock_value
+    """
 
 
 def get_stock_flow_data(filters=None):
-    # Apply the same packcode CASE logic used in get_product_inventory_data
-    # so that itemcodes here always match those in inv_df (from stock).
-    return """SELECT
-                sf.zid,
-                sf.year,
-                sf.month,
-                sf.warehouse,
-                CASE
-                    WHEN ca.packcode IS NOT NULL
-                     AND ca.packcode <> ''
-                     AND ca.packcode != 'NO'
-                     AND LEFT(ca.packcode, 2) != 'KH' THEN ca.packcode
-                    ELSE sf.itemcode
-                END AS itemcode,
-                sf.qty_in,
-                sf.qty_out,
-                sf.net_qty,
-                sf.val_in,
-                sf.val_out,
-                sf.net_val
-              FROM stock_flow sf
-              LEFT JOIN caitem ca
-                ON sf.itemcode = ca.itemcode AND sf.zid = ca.zid
-              WHERE sf.zid = (%s)"""
+    # Returns query string only; caller supplies (zid,) param.
+    return """
+    WITH stock_flow AS (
+        SELECT
+            imtrn.zid,
+            imtrn.xyear AS year,
+            imtrn.xper  AS month,
+            imtrn.xitem AS itemcode,
+            imtrn.xwh   AS warehouse,
+            SUM(CASE WHEN imtrn.xsign > 0 THEN imtrn.xqty  ELSE 0            END) AS qty_in,
+            SUM(CASE WHEN imtrn.xsign < 0 THEN -imtrn.xqty ELSE 0            END) AS qty_out,
+            SUM(imtrn.xqty * imtrn.xsign)                                         AS net_qty,
+            SUM(CASE WHEN imtrn.xsign > 0 THEN imtrn.xval  ELSE 0            END) AS val_in,
+            SUM(CASE WHEN imtrn.xsign < 0 THEN -imtrn.xval ELSE 0            END) AS val_out,
+            SUM(imtrn.xval * imtrn.xsign)                                         AS net_val
+        FROM imtrn
+        WHERE imtrn.zid = %s
+        GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper
+    )
+    SELECT
+        sf.zid,
+        sf.year,
+        sf.month,
+        sf.warehouse,
+        CASE
+            WHEN ca.xdrawing IS NOT NULL
+             AND ca.xdrawing <> ''
+             AND ca.xdrawing != 'NO'
+             AND LEFT(ca.xdrawing, 2) != 'KH' THEN ca.xdrawing
+            ELSE sf.itemcode
+        END AS itemcode,
+        sf.qty_in,
+        sf.qty_out,
+        sf.net_qty,
+        sf.val_in,
+        sf.val_out,
+        sf.net_val
+    FROM stock_flow sf
+    LEFT JOIN caitem ca ON sf.itemcode = ca.xitem AND sf.zid = ca.zid
+    """
 
 
 def get_stock_movement_data(filters=None) -> Tuple[str, tuple]:
@@ -625,69 +755,80 @@ def get_stock_movement_data(filters=None) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
 
     sql = """
+    WITH stock AS (
         SELECT
-            stock.zid,
-            stock.year,
-            stock.month,
-            stock.date::date AS date,
-            stock.docnum,
-            stock.project,
-            CASE
-                WHEN caitem.packcode IS NOT NULL
-                 AND caitem.packcode <> ''
-                 AND caitem.packcode != 'NO'
-                 AND LEFT(caitem.packcode,2) != 'KH' THEN caitem.packcode
-                ELSE stock.itemcode
-            END AS itemcode,
-            caitem.itemname,
-            caitem.itemgroup,
-            stock.warehouse,
-            stock.stockqty,
-            stock.stockvalue
-        FROM stock
-        JOIN caitem ON stock.itemcode = caitem.itemcode AND stock.zid = caitem.zid
-        WHERE stock.zid = %s
+            imtrn.zid,
+            imtrn.xyear      AS year,
+            imtrn.xper       AS month,
+            imtrn.xdate      AS date,
+            imtrn.xdocnum    AS docnum,
+            imtrn.xproj      AS project,
+            imtrn.xitem      AS itemcode,
+            imtrn.xwh        AS warehouse,
+            SUM(imtrn.xqty * imtrn.xsign) AS stockqty,
+            SUM(imtrn.xval * imtrn.xsign) AS stockvalue
+        FROM imtrn
+        WHERE imtrn.zid = %s
+        GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper,
+                 imtrn.xdate, imtrn.xdocnum, imtrn.xproj, imtrn.ximtrnnum
+    )
+    SELECT
+        stock.zid,
+        stock.year,
+        stock.month,
+        stock.date::date AS date,
+        stock.docnum,
+        stock.project,
+        CASE
+            WHEN ci.xdrawing IS NOT NULL
+             AND ci.xdrawing <> ''
+             AND ci.xdrawing != 'NO'
+             AND LEFT(ci.xdrawing, 2) != 'KH' THEN ci.xdrawing
+            ELSE stock.itemcode
+        END AS itemcode,
+        ci.xdesc  AS itemname,
+        ci.xgitem AS itemgroup,
+        stock.warehouse,
+        stock.stockqty,
+        stock.stockvalue
+    FROM stock
+    JOIN caitem ci ON stock.itemcode = ci.xitem AND stock.zid = ci.zid
     """
     return sql, (zid,)
 
 
 def get_payment_data():
-    return """SELECT
-                glmst.zid as zid,
-                gldetail.voucher as glvoucher,
-                gldetail.ac_sub as account,
-                glmst.ac_name as description,
-                glheader.date,
-                glheader.year,
-                glheader.month,
-                SUM(gldetail.value) as value
-            FROM
-                glmst
-            JOIN
-                gldetail ON glmst.ac_code = gldetail.ac_code AND glmst.zid = gldetail.zid
-            JOIN
-                glheader ON gldetail.voucher = glheader.voucher AND glmst.zid = glheader.zid
-            WHERE
-                glmst.zid = 100001
-                AND gldetail.zid = 100001
-                AND glheader.zid = 100001
-                AND (
-                    gldetail.voucher LIKE 'CPAY%%'
-                    OR gldetail.voucher LIKE 'BPAY%%'
-                    OR gldetail.voucher LIKE 'STJV%%'
-                )
-            GROUP BY
-                glmst.zid,
-                gldetail.voucher,
-                gldetail.ac_sub,
-                glmst.ac_name,
-                glheader.date,
-                glheader.year,
-                glheader.month
-            HAVING
-                SUM(gldetail.value) > 0
-            ORDER BY
-                SUM(gldetail.value) DESC"""
+    return """
+    SELECT
+        glmst.zid                AS zid,
+        gldetail.xvoucher        AS glvoucher,
+        gldetail.xsub            AS account,
+        glmst.xdesc              AS description,
+        glheader.xdate           AS date,
+        glheader.xyear           AS year,
+        glheader.xper            AS month,
+        SUM(gldetail.xprime)     AS value
+    FROM glmst
+    JOIN gldetail ON glmst.xacc     = gldetail.xacc     AND glmst.zid = gldetail.zid
+    JOIN glheader ON gldetail.xvoucher = glheader.xvoucher AND glmst.zid = glheader.zid
+    WHERE glmst.zid     = 100001
+      AND gldetail.zid  = 100001
+      AND glheader.zid  = 100001
+      AND (
+          gldetail.xvoucher LIKE 'CPAY%%'
+          OR gldetail.xvoucher LIKE 'BPAY%%'
+          OR gldetail.xvoucher LIKE 'STJV%%'
+      )
+    GROUP BY
+        glmst.zid,
+        gldetail.xvoucher,
+        gldetail.xsub,
+        glmst.xdesc,
+        glheader.xdate,
+        glheader.xyear,
+        glheader.xper
+    HAVING SUM(gldetail.xprime) > 0
+    ORDER BY SUM(gldetail.xprime) DESC"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -699,9 +840,9 @@ def get_cacus_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     sql = """
         SELECT
             zid,
-            cusid::text AS cusid,
-            cusname,
-            COALESCE(cuscity,'') AS cuscity
+            xcus::text           AS cusid,
+            xshort               AS cusname,
+            COALESCE(xcity, '')  AS cuscity
         FROM cacus
         WHERE zid = %s
     """
@@ -712,13 +853,13 @@ def get_cacus_directory(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     sql = """
         SELECT
-            cusid::text AS cusid,
-            cusname,
-            COALESCE(cusmobile,'') AS cusmobile,
-            COALESCE(cuscity,'') AS area
+            xcus::text              AS cusid,
+            xshort                  AS cusname,
+            COALESCE(xmobile, '')   AS cusmobile,
+            COALESCE(xcity,   '')   AS area
         FROM cacus
         WHERE zid = %s
-        ORDER BY cusname
+        ORDER BY xshort
     """
     return sql, (zid,)
 
@@ -729,13 +870,13 @@ def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     sql = """
         SELECT
             zid,
-            voucher,
-            ac_code,
-            ac_sub::text AS ac_sub,
-            value::numeric AS value
+            xvoucher             AS voucher,
+            xacc                 AS ac_code,
+            xsub::text           AS ac_sub,
+            xprime::numeric      AS value
         FROM gldetail
         WHERE zid = %s
-        AND project = %s
+          AND xproj = %s
     """
     return sql, (zid, project)
 
@@ -745,10 +886,10 @@ def get_glheader_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     sql = """
         SELECT
             zid,
-            voucher,
-            date::date AS date,
-            year::int  AS year,
-            month::int AS month
+            xvoucher         AS voucher,
+            xdate::date      AS date,
+            xyear::int       AS year,
+            xper::int        AS month
         FROM glheader
         WHERE zid = %s
     """
@@ -760,11 +901,11 @@ def get_glmst_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     sql = """
         SELECT
             zid,
-            ac_code,
-            ac_name,
-            ac_type,
-            COALESCE(ac_lv1, '') AS ac_lv1,
-            COALESCE(ac_lv2, '') AS ac_lv2
+            xacc                        AS ac_code,
+            xdesc                       AS ac_name,
+            xacctype                    AS ac_type,
+            COALESCE(xhrc1, '')         AS ac_lv1,
+            COALESCE(xhrc2, '')         AS ac_lv2
         FROM glmst
         WHERE zid = %s
     """
@@ -776,8 +917,8 @@ def get_casup_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     sql = """
         SELECT
             zid,
-            supid::text  AS supid,
-            supname
+            xsup::text  AS supid,
+            xorg        AS supname
         FROM casup
         WHERE zid = %s
     """
@@ -785,15 +926,11 @@ def get_casup_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GL / Financial query builders (moved from db/db_utils.py)
+# GL / Financial query builders
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None,
                    is_bs=False, is_project=False) -> Tuple[str, tuple]:
-    """
-    Builds the GL detail query. Returns (sql, params).
-    Replaces db_utils.get_gl_details() — same logic, standardized return format.
-    """
     where = [
         "glmst.zid = %s",
         "gldetail.zid = %s",
@@ -801,69 +938,68 @@ def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None,
     ]
     params = [zid, zid, zid]
 
-    select = ["glmst.zid", "glmst.ac_code", "glheader.year",
-              "glheader.month", "SUM(gldetail.value) as sum"]
-    # glmst.ac_type is referenced in ORDER BY so it must be in GROUP BY.
-    # Adding it here is safe for all businesses: for those with ac_type set,
-    # (zid, ac_code) already uniquely determines ac_type so the extra GROUP BY
-    # column does not change the result; for those with NULL ac_type (e.g. 100007)
-    # it prevents a PostgreSQL "must appear in GROUP BY" error.
-    group_by = ["glmst.zid", "glmst.ac_code", "glheader.year",
-                "glheader.month", "glmst.usage", "glmst.ac_type"]
+    select = ["glmst.zid", "glmst.xacc AS ac_code", "glheader.xyear AS year",
+              "glheader.xper AS month", "SUM(gldetail.xprime) as sum"]
+    group_by = ["glmst.zid", "glmst.xacc", "glheader.xyear",
+                "glheader.xper", "glmst.xaccusage", "glmst.xacctype"]
 
     if is_project:
-        select.extend(["glmst.ac_type", "glmst.ac_lv1", "glmst.ac_lv2", "glmst.usage"])
-        group_by.extend(["glmst.ac_lv1", "glmst.ac_lv2"])  # ac_type already in base group_by
-        where.append("gldetail.project = %s")
+        select.extend(["glmst.xacctype AS ac_type", "glmst.xhrc1 AS ac_lv1",
+                        "glmst.xhrc2 AS ac_lv2", "glmst.xaccusage AS usage"])
+        group_by.extend(["glmst.xhrc1", "glmst.xhrc2"])
+        where.append("gldetail.xproj = %s")
         params.append(project)
 
-    # Some businesses have NULL ac_type in glmst; fall back to ac_code prefix
-    # so those accounts are not silently excluded from the query.
     if is_bs:
         where.append(
-            "(glmst.ac_type IN ('Asset', 'Liability') "
-            "OR (glmst.ac_type IS NULL "
-            "    AND LEFT(glmst.ac_code, 2) IN ('01','02','03','09','10','11','12','13')))"
+            "(glmst.xacctype IN ('Asset', 'Liability') "
+            "OR (glmst.xacctype IS NULL "
+            "    AND LEFT(glmst.xacc, 2) IN ('01','02','03','09','10','11','12','13')))"
         )
     else:
         where.append(
-            "(glmst.ac_type IN ('Income', 'Expenditure') "
-            "OR (glmst.ac_type IS NULL "
-            "    AND LEFT(glmst.ac_code, 2) IN ('04','05','06','07','08','14','15')))"
+            "(glmst.xacctype IN ('Income', 'Expenditure') "
+            "OR (glmst.xacctype IS NULL "
+            "    AND LEFT(glmst.xacc, 2) IN ('04','05','06','07','08','14','15')))"
         )
 
     if year:
-        where.append("glheader.year = %s")
+        where.append("glheader.xyear = %s")
         params.append(year)
 
     if is_bs:
         if emonth:
-            where.append("glheader.month <= %s")
+            where.append("glheader.xper <= %s")
             params.append(emonth)
     else:
         if smonth:
-            where.append("glheader.month >= %s")
+            where.append("glheader.xper >= %s")
             params.append(smonth)
         if emonth:
-            where.append("glheader.month <= %s")
+            where.append("glheader.xper <= %s")
             params.append(emonth)
 
     sql = f"""
         SELECT {", ".join(select)}
         FROM glmst
-        JOIN gldetail ON glmst.ac_code = gldetail.ac_code
-        JOIN glheader ON gldetail.voucher = glheader.voucher
+        JOIN gldetail ON glmst.xacc     = gldetail.xacc
+        JOIN glheader ON gldetail.xvoucher = glheader.xvoucher
         WHERE {" AND ".join(where)}
         GROUP BY {", ".join(group_by)}
-        ORDER BY glheader.month ASC, glmst.ac_type
+        ORDER BY glheader.xper ASC, glmst.xacctype
     """
     return sql, tuple(params)
 
 
 def get_gl_master(zid) -> Tuple[str, tuple]:
-    """Returns (sql, params) for the GL account master."""
     sql = """
-        SELECT ac_code, ac_name, ac_type, ac_lv1, ac_lv2, ac_lv3, ac_lv4
+        SELECT xacc  AS ac_code,
+               xdesc AS ac_name,
+               xacctype AS ac_type,
+               xhrc1 AS ac_lv1,
+               xhrc2 AS ac_lv2,
+               xhrc3 AS ac_lv3,
+               xhrc4 AS ac_lv4
         FROM glmst WHERE glmst.zid = %s
     """
     return sql, (zid,)
@@ -876,43 +1012,33 @@ def get_vat_breakdown_gl(
     smonth: int = 1,
     emonth: int = 12,
 ) -> Tuple[str, tuple]:
-    """
-    Fetch raw gldetail rows for ac_code IN (1050007, 6290001) so that
-    Level S IS can compute the four VAT/Tax informational rows:
-
-        01050007  — VAT Expense from Rebate (A) and VAT through Cash (i)
-        06290001  — VAT Expenses Office (iii) and Others Company Tax (ii)
-
-    Returns all individual voucher rows (not pre-aggregated) so that
-    processing logic can split by voucher prefix and sign.
-    """
     params: list = [zid]
-    where = ["gldetail.zid = %s", "gldetail.ac_code IN ('01050007', '06290001')"]
+    where = ["gldetail.zid = %s", "gldetail.xacc IN ('01050007', '06290001')"]
 
     if project:
-        where.append("gldetail.project = %s")
+        where.append("gldetail.xproj = %s")
         params.append(project)
 
     if year_list:
         placeholders = ", ".join(["%s"] * len(year_list))
-        where.append(f"glheader.year IN ({placeholders})")
+        where.append(f"glheader.xyear IN ({placeholders})")
         params.extend(year_list)
 
-    where.append("glheader.month >= %s")
+    where.append("glheader.xper >= %s")
     params.append(smonth)
-    where.append("glheader.month <= %s")
+    where.append("glheader.xper <= %s")
     params.append(emonth)
 
     sql = f"""
         SELECT
-            gldetail.ac_code,
-            glheader.year,
-            glheader.month,
-            gldetail.voucher,
-            gldetail.value
+            gldetail.xacc        AS ac_code,
+            glheader.xyear       AS year,
+            glheader.xper        AS month,
+            gldetail.xvoucher    AS voucher,
+            gldetail.xprime      AS value
         FROM gldetail
-        JOIN glheader ON gldetail.voucher = glheader.voucher
-                      AND gldetail.zid    = glheader.zid
+        JOIN glheader ON gldetail.xvoucher = glheader.xvoucher
+                      AND gldetail.zid     = glheader.zid
         WHERE {" AND ".join(where)}
     """
     return sql, tuple(params)
@@ -924,15 +1050,6 @@ def get_ind_hh_net_sales(
     smonth: int = 1,
     emonth: int = 12,
 ) -> Tuple[str, tuple]:
-    """
-    Returns yearly net sales (totalsales - treturnamt) for items where
-    caitem.itemgroup = 'Industrial & Household', for the given ZID.
-
-    Used exclusively by Level T IS to subtract I&H net sales from Revenue
-    for years <= 2024.
-
-    Returns columns: year (int), net_sales (numeric).
-    """
     year_list = list(year_list) if year_list else []
 
     s_year_clause = ""
@@ -942,41 +1059,73 @@ def get_ind_hh_net_sales(
         s_year_clause = f"AND EXTRACT(YEAR FROM s.date)::int IN ({placeholders})"
         r_year_clause = f"AND EXTRACT(YEAR FROM r.date)::int IN ({placeholders})"
 
-    # params: sales subquery first, then return subquery
-    s_params = [zid] + year_list + [smonth, emonth]
-    r_params = [zid] + year_list + [smonth, emonth]
+    # CTE zid params: sales_raw(1) + return_raw UNION branch1(1) + branch2(1)
+    s_params = year_list + [smonth, emonth]
+    r_params = year_list + [smonth, emonth]
 
     sql = f"""
-        WITH sales_agg AS (
+        WITH sales_raw AS (
+            SELECT
+                opddt.zid,
+                opdor.xdate    AS date,
+                opddt.xlineamt AS totalsales,
+                opddt.xitem    AS itemcode
+            FROM opdor
+            LEFT JOIN opddt ON opdor.xdornum = opddt.xdornum AND opdor.zid = opddt.zid
+            WHERE opdor.zid = %s
+        ),
+        return_raw AS (
+            SELECT
+                opcdt.zid,
+                opcrn.xdate    AS date,
+                opcdt.xlineamt AS treturnamt,
+                opcdt.xitem    AS itemcode
+            FROM opcdt
+            LEFT JOIN opcrn ON opcrn.xcrnnum = opcdt.xcrnnum AND opcrn.zid = opcdt.zid
+            WHERE opcdt.zid = %s
+
+            UNION ALL
+
+            SELECT
+                imtemptdt.zid,
+                imtemptrn.xdate    AS date,
+                imtemptdt.xlineamt AS treturnamt,
+                imtemptdt.xitem    AS itemcode
+            FROM imtemptdt
+            LEFT JOIN imtemptrn ON imtemptrn.ximtmptrn = imtemptdt.ximtmptrn
+                                AND imtemptrn.zid       = imtemptdt.zid
+            WHERE imtemptdt.zid = %s
+        ),
+        sales_agg AS (
             SELECT EXTRACT(YEAR FROM s.date)::int AS year,
                    SUM(s.totalsales) AS total_sales
-            FROM sales s
-            JOIN caitem ci ON s.itemcode = ci.itemcode AND s.zid = ci.zid
-            WHERE s.zid = %s
+            FROM sales_raw s
+            JOIN caitem ci ON s.itemcode = ci.xitem AND s.zid = ci.zid
+            WHERE 1=1
               {s_year_clause}
               AND EXTRACT(MONTH FROM s.date)::int BETWEEN %s AND %s
-              AND ci.itemgroup = 'Industrial & Household'
+              AND ci.xgitem = 'Industrial & Household'
             GROUP BY 1
         ),
         return_agg AS (
             SELECT EXTRACT(YEAR FROM r.date)::int AS year,
                    SUM(r.treturnamt) AS total_returns
-            FROM return r
-            JOIN caitem ci ON r.itemcode = ci.itemcode AND r.zid = ci.zid
-            WHERE r.zid = %s
+            FROM return_raw r
+            JOIN caitem ci ON r.itemcode = ci.xitem AND r.zid = ci.zid
+            WHERE 1=1
               {r_year_clause}
               AND EXTRACT(MONTH FROM r.date)::int BETWEEN %s AND %s
-              AND ci.itemgroup = 'Industrial & Household'
+              AND ci.xgitem = 'Industrial & Household'
             GROUP BY 1
         )
         SELECT
-            COALESCE(s.year, r.year)                              AS year,
-            COALESCE(s.total_sales, 0) - COALESCE(r.total_returns, 0) AS net_sales
+            COALESCE(s.year, r.year)                                          AS year,
+            COALESCE(s.total_sales, 0) - COALESCE(r.total_returns, 0)        AS net_sales
         FROM sales_agg s
         FULL OUTER JOIN return_agg r ON s.year = r.year
         ORDER BY 1
     """
-    return sql, tuple(s_params + r_params)
+    return sql, tuple([zid, zid, zid] + s_params + r_params)
 
 
 def get_ind_hh_net_cost(
@@ -985,14 +1134,6 @@ def get_ind_hh_net_cost(
     smonth: int = 1,
     emonth: int = 12,
 ) -> Tuple[str, tuple]:
-    """
-    Returns yearly net cost (sales.cost - return.returncost) for items where
-    caitem.itemgroup = 'Industrial & Household', for the given ZID.
-
-    Used by Level T IS to subtract I&H net cost from COGS for years <= 2024.
-
-    Returns columns: year (int), net_cost (numeric).
-    """
     year_list = list(year_list) if year_list else []
 
     s_year_clause = ""
@@ -1002,30 +1143,80 @@ def get_ind_hh_net_cost(
         s_year_clause = f"AND EXTRACT(YEAR FROM s.date)::int IN ({placeholders})"
         r_year_clause = f"AND EXTRACT(YEAR FROM r.date)::int IN ({placeholders})"
 
-    s_params = [zid] + year_list + [smonth, emonth]
-    r_params = [zid] + year_list + [smonth, emonth]
+    s_params = year_list + [smonth, emonth]
+    r_params = year_list + [smonth, emonth]
 
     sql = f"""
-        WITH sales_cost AS (
+        WITH sales_raw AS (
+            SELECT
+                opddt.zid,
+                opdor.xdate AS date,
+                imtrn.xval  AS cost,
+                opddt.xitem AS itemcode
+            FROM opdor
+            LEFT JOIN opddt ON opdor.xdornum = opddt.xdornum AND opdor.zid = opddt.zid
+            LEFT JOIN imtrn ON opdor.xdornum  = imtrn.xdocnum
+                           AND opddt.xdornum  = imtrn.xdocnum
+                           AND opddt.xitem    = imtrn.xitem
+                           AND opddt.zid      = imtrn.zid
+                           AND opdor.zid      = imtrn.zid
+                           AND opddt.xrow     = imtrn.xdocrow
+            WHERE opdor.zid = %s
+        ),
+        return_raw AS (
+            SELECT
+                opcdt.zid,
+                opcrn.xdate AS date,
+                imtrn.xval  AS returncost,
+                opcdt.xitem AS itemcode
+            FROM opcdt
+            LEFT JOIN opcrn ON opcrn.xcrnnum = opcdt.xcrnnum AND opcrn.zid = opcdt.zid
+            LEFT JOIN imtrn ON opcrn.xcrnnum  = imtrn.xdocnum
+                           AND opcdt.xcrnnum  = imtrn.xdocnum
+                           AND opcdt.xitem    = imtrn.xitem
+                           AND opcdt.zid      = imtrn.zid
+                           AND opcrn.zid      = imtrn.zid
+                           AND opcdt.xrow     = imtrn.xdocrow
+            WHERE opcdt.zid = %s
+
+            UNION ALL
+
+            SELECT
+                imtemptdt.zid,
+                imtemptrn.xdate AS date,
+                imtrn.xval      AS returncost,
+                imtemptdt.xitem AS itemcode
+            FROM imtemptdt
+            LEFT JOIN imtemptrn ON imtemptrn.ximtmptrn = imtemptdt.ximtmptrn
+                                AND imtemptrn.zid       = imtemptdt.zid
+            LEFT JOIN imtrn ON imtemptrn.ximtmptrn  = imtrn.xdocnum
+                           AND imtemptdt.ximtmptrn   = imtrn.xdocnum
+                           AND imtemptdt.xitem        = imtrn.xitem
+                           AND imtemptdt.zid          = imtrn.zid
+                           AND imtemptrn.zid          = imtrn.zid
+                           AND imtemptdt.xtorlno      = imtrn.xdocrow
+            WHERE imtemptdt.zid = %s
+        ),
+        sales_cost AS (
             SELECT EXTRACT(YEAR FROM s.date)::int AS year,
                    SUM(s.cost) AS total_cost
-            FROM sales s
-            JOIN caitem ci ON s.itemcode = ci.itemcode AND s.zid = ci.zid
-            WHERE s.zid = %s
+            FROM sales_raw s
+            JOIN caitem ci ON s.itemcode = ci.xitem AND s.zid = ci.zid
+            WHERE 1=1
               {s_year_clause}
               AND EXTRACT(MONTH FROM s.date)::int BETWEEN %s AND %s
-              AND ci.itemgroup = 'Industrial & Household'
+              AND ci.xgitem = 'Industrial & Household'
             GROUP BY 1
         ),
         return_cost AS (
             SELECT EXTRACT(YEAR FROM r.date)::int AS year,
                    SUM(r.returncost) AS total_returncost
-            FROM return r
-            JOIN caitem ci ON r.itemcode = ci.itemcode AND r.zid = ci.zid
-            WHERE r.zid = %s
+            FROM return_raw r
+            JOIN caitem ci ON r.itemcode = ci.xitem AND r.zid = ci.zid
+            WHERE 1=1
               {r_year_clause}
               AND EXTRACT(MONTH FROM r.date)::int BETWEEN %s AND %s
-              AND ci.itemgroup = 'Industrial & Household'
+              AND ci.xgitem = 'Industrial & Household'
             GROUP BY 1
         )
         SELECT
@@ -1035,27 +1226,45 @@ def get_ind_hh_net_cost(
         FULL OUTER JOIN return_cost r ON s.year = r.year
         ORDER BY 1
     """
-    return sql, tuple(s_params + r_params)
+    return sql, tuple([zid, zid, zid] + s_params + r_params)
 
 
 def get_all_businesses() -> Tuple[str, tuple]:
-    """Returns all businesses from the business table: zid, org.
-    Excludes placeholder/test rows with zid = 1."""
-    sql = "SELECT zid, org FROM business WHERE zid <> 1 ORDER BY zid"
+    sql = "SELECT zid, zorg AS org FROM zbusiness WHERE zid <> 1 ORDER BY zid"
     return sql, ()
 
 
 def get_caitem_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
-    """Returns item master: itemcode, itemname, itemgroup, packcode."""
     zid = filters["zid"][0]
     sql = """
         SELECT
             zid,
-            itemcode,
-            itemname,
-            COALESCE(itemgroup, '') AS itemgroup,
-            COALESCE(packcode,  '') AS packcode
+            xitem                       AS itemcode,
+            xdesc                       AS itemname,
+            COALESCE(xgitem, '')        AS itemgroup,
+            COALESCE(xdrawing,  '')     AS packcode
         FROM caitem
         WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
+def get_opmob_pending(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            om.xcus        AS cusid,
+            c.xshort       AS cusname,
+            om.xemp        AS spid,
+            om.xitem       AS itemcode,
+            ci.xdesc       AS itemname,
+            om.xlinetotal  AS linetotal
+        FROM opmob om
+        LEFT JOIN cacus  c  ON om.xcus  = c.xcus  AND om.zid = c.zid
+        LEFT JOIN caitem ci ON om.xitem = ci.xitem AND om.zid = ci.zid
+        WHERE om.zid = %s
+          AND om.xstatusord = 'Order Created'
+          AND EXTRACT(YEAR  FROM om.xdate)::int = EXTRACT(YEAR  FROM CURRENT_DATE)::int
+          AND EXTRACT(MONTH FROM om.xdate)::int = EXTRACT(MONTH FROM CURRENT_DATE)::int
     """
     return sql, (zid,)

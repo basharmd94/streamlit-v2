@@ -253,6 +253,13 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
 
     # Build order_id (zid + DO number)
     sales_df = sales_df.copy()
+
+    # Compute final_sales (xdtwotax - xdtdisc) consistent with all other views
+    if "altsales" in sales_df.columns and "proddiscount" in sales_df.columns:
+        sales_df["final_sales"] = (
+            pd.to_numeric(sales_df["altsales"], errors="coerce").fillna(0)
+            - pd.to_numeric(sales_df["proddiscount"], errors="coerce").fillna(0)
+        )
     sales_df["zid"] = sales_df["zid"].astype(str)
     sales_df["voucher"] = sales_df["voucher"].astype(str)
     sales_df["order_id"] = sales_df["zid"] + "-" + sales_df["voucher"]
@@ -356,7 +363,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                     order_id_col="order_id",
                     item_col="itemcode",
                     qty_col="quantity",
-                    value_col="totalsales",
+                    value_col="final_sales",
                     anchor_items=anchor_products,
                     anchor_mode=anchor_mode_key,
                     top_n=200,
@@ -405,8 +412,8 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                             "lift": "Strength above baseline: confidence divided by the overall probability of the item.",
                             "avg_qty_when_cooccurs": "Average quantity of the recommended item within anchor orders where it appears.",
                             "total_qty_when_cooccurs": "Total quantity of the recommended item across anchor orders where it appears.",
-                            "avg_value_when_cooccurs": "Average totalsales of the recommended item within anchor orders where it appears.",
-                            "total_value_when_cooccurs": "Total totalsales of the recommended item across anchor orders where it appears.",
+                            "avg_value_when_cooccurs": "Average final_sales of the recommended item within anchor orders where it appears.",
+                            "total_value_when_cooccurs": "Total final_sales of the recommended item across anchor orders where it appears.",
                             "best_months": "Months where co-occurrence is strongest (if seasonality toggle is ON).",
                         },
                         toggles=[
@@ -468,7 +475,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                             tmp["itemcode"] = tmp["itemcode"].astype(str)
                             orders = tmp.groupby([group_col, "itemcode"])["order_id"].nunique().reset_index(name="order_count")
                             qty = tmp.groupby([group_col, "itemcode"])["quantity"].sum().reset_index(name="total_qty")
-                            val = tmp.groupby([group_col, "itemcode"])["totalsales"].sum().reset_index(name="total_value")
+                            val = tmp.groupby([group_col, "itemcode"])["final_sales"].sum().reset_index(name="total_value")
                             out = orders.merge(qty, on=[group_col, "itemcode"], how="left").merge(val, on=[group_col, "itemcode"], how="left")
                             meta = tmp[["itemcode", "itemname", "itemgroup"]].drop_duplicates(subset=["itemcode"])
                             out = out.merge(meta, on="itemcode", how="left")
@@ -476,7 +483,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
 
                         st.write({
                             "customer_orders": int(cdf["order_id"].nunique()),
-                            "customer_total_value": float(pd.to_numeric(cdf["totalsales"], errors="coerce").fillna(0).sum()),
+                            "customer_total_value": float(pd.to_numeric(cdf["final_sales"], errors="coerce").fillna(0).sum()),
                             "customer_total_qty": float(pd.to_numeric(cdf["quantity"], errors="coerce").fillna(0).sum()),
                         })
 
@@ -492,7 +499,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                                 "itemgroup": "Product group (itemgroup2).",
                                 "order_count": "Number of distinct orders (DO) in which the product appears for the selected month.",
                                 "total_qty": "Total quantity sold for the product in the selected month.",
-                                "total_value": "Total sales value (totalsales) for the product in the selected month."
+                                "total_value": "Total sales value (final_sales) for the product in the selected month."
                             }
                         )
 
@@ -508,7 +515,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                                 "itemgroup": "Product group (itemgroup2).",
                                 "order_count": "Number of distinct orders (DO) in which the product appears for the selected day of week.",
                                 "total_qty": "Total quantity sold for the product on that day of week.",
-                                "total_value": "Total sales value (totalsales) for the product on that day of week."
+                                "total_value": "Total sales value (final_sales) for the product on that day of week."
                             }
                         )
 
@@ -524,7 +531,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                                 "itemgroup": "Product group (itemgroup2).",
                                 "order_count": "Number of distinct orders (DO) in which the product appears for the selected day bucket.",
                                 "total_qty": "Total quantity sold for the product in that day bucket.",
-                                "total_value": "Total sales value (totalsales) for the product in that day bucket."
+                                "total_value": "Total sales value (final_sales) for the product in that day bucket."
                             }
                         )
 
@@ -552,7 +559,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                             .reset_index(name="order_count")
                         )
                         qty = adf.groupby(["itemcode"])["quantity"].sum().reset_index(name="total_qty")
-                        val = adf.groupby(["itemcode"])["totalsales"].sum().reset_index(name="total_value")
+                        val = adf.groupby(["itemcode"])["final_sales"].sum().reset_index(name="total_value")
                         top = top.merge(qty, on="itemcode", how="left").merge(val, on="itemcode", how="left")
                         top = top.sort_values("order_count", ascending=False)
                         st.dataframe(top)
@@ -565,7 +572,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                                 "itemgroup": "Product group (itemgroup2).",
                                 "order_count": "Number of distinct orders (DO numbers) in which the product appears within the selected area and time range.",
                                 "total_qty": "Total quantity sold for the product within the selected area and time range.",
-                                "total_value": "Total sales value (totalsales) for the product within the selected area and time range."
+                                "total_value": "Total sales value (final_sales) for the product within the selected area and time range."
                             },
                             toggles=[
                                 "Area dropdown: Filters the analysis to customers whose `cuscity` matches the chosen area.",
@@ -596,7 +603,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                         order_id_col="order_id",
                         group_col="itemgroup",
                         qty_col="quantity",
-                        value_col="totalsales",
+                        value_col="final_sales",
                         anchor_groups=anchor_groups,
                         anchor_mode=anchor_mode_g_key,
                         top_n=200,
@@ -617,7 +624,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                         "confidence": "Likelihood the recommended group appears given the anchor group set.",
                         "lift": "Strength above baseline: confidence divided by the overall probability of the recommended group appearing in any order.",
                         "total_qty_in_anchor_orders": "Total quantity of items belonging to the recommended group within anchor orders where the group appears.",
-                        "total_value_in_anchor_orders": "Total totalsales of items belonging to the recommended group within anchor orders where the group appears.",
+                        "total_value_in_anchor_orders": "Total final_sales of items belonging to the recommended group within anchor orders where the group appears.",
                         },
                         toggles=[
                             "Anchor Rule: **ALL (intersection)** means the order must contain at least one item from every selected anchor group. **ANY (union)** means the order must contain at least one item from any selected anchor group.",
@@ -781,10 +788,10 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                     return pd.DataFrame(columns=["itemcode", "itemname", "qty", "value"])
                 tmp = df_in.copy()
                 tmp["quantity"] = pd.to_numeric(tmp["quantity"], errors="coerce").fillna(0.0)
-                tmp["totalsales"] = pd.to_numeric(tmp["totalsales"], errors="coerce").fillna(0.0)
+                tmp["final_sales"] = pd.to_numeric(tmp["final_sales"], errors="coerce").fillna(0.0)
                 out = tmp.groupby(["itemcode", "itemname"], as_index=False).agg(
                     qty=("quantity", "sum"),
-                    value=("totalsales", "sum"),
+                    value=("final_sales", "sum"),
                 )
                 return out
 
@@ -857,8 +864,8 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                     "qty_after": "Total sales quantity of this item in the **after window** (combinedate to combinedate + N days).",
                     "delta_qty": "qty_after − qty_before.",
                     "pct_qty_change": "Percentage change in quantity from before to after. Blank/NA if qty_before is zero.",
-                    "value_before": "Total sales value (totalsales) of this item in the before window.",
-                    "value_after": "Total sales value (totalsales) of this item in the after window.",
+                    "value_before": "Total sales value (final_sales) of this item in the before window.",
+                    "value_after": "Total sales value (final_sales) of this item in the after window.",
                     "delta_value": "value_after − value_before.",
                     "pct_value_change": "Percentage change in value from before to after. Blank/NA if value_before is zero.",
                 },
@@ -898,7 +905,7 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                         order_id_col="order_id",
                         item_col="itemcode",
                         qty_col="quantity",
-                        value_col="totalsales",
+                        value_col="final_sales",
                         anchor_items=list(ship_items),
                         anchor_mode="ANY",
                         top_n=200,
@@ -950,8 +957,8 @@ def display_basket_analysis_page(current_page, zid: str, data_dict: dict, select
                                     "qty_after": "Total quantity sold in the after window.",
                                     "delta_qty": "qty_after − qty_before.",
                                     "pct_qty_change": "Percentage change in quantity from before to after. Blank/NA if qty_before is zero.",
-                                    "value_before": "Total sales value (totalsales) in the before window.",
-                                    "value_after": "Total sales value (totalsales) in the after window.",
+                                    "value_before": "Total sales value (final_sales) in the before window.",
+                                    "value_after": "Total sales value (final_sales) in the after window.",
                                     "delta_value": "value_after − value_before.",
                                     "pct_value_change": "Percentage change in value from before to after. Blank/NA if value_before is zero.",
                                 },

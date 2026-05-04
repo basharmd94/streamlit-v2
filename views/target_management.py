@@ -106,12 +106,75 @@ def _render_table(
     )
 
 
+def _render_not_ordered_table(
+    df: pd.DataFrame,
+    id_cols: list,
+    current_col: str,
+    pending_cusids: set,
+    dl_key: str,
+    dl_filename: str,
+):
+    """Render the not-ordered pivot with green highlight for rows with pending opmob orders."""
+    if df.empty:
+        st.info("No data.")
+        return
+    row_count = len(df)
+    show_df = _with_totals_row(df, id_cols)
+    st.caption(f"{row_count:,} rows")
+
+    mcols = _month_cols(show_df, id_cols)
+    numeric_cols = mcols + (["Total"] if "Total" in show_df.columns else [])
+
+    def _style_func(d):
+        styles = pd.DataFrame("", index=d.index, columns=d.columns)
+        if current_col in d.columns:
+            styles[current_col] = "background-color: #FFF3CD; font-weight: bold"
+        if "Total" in d.columns:
+            styles["Total"] = "font-weight: bold"
+        if "Pending Order" in d.columns and pending_cusids:
+            pending_mask = d["Pending Order"] == "✓"
+            if pending_mask.any():
+                for col in d.columns:
+                    styles.loc[pending_mask, col] = "background-color: #D4EDDA"
+                styles.loc[pending_mask, "Pending Order"] = (
+                    "background-color: #198754; color: white; font-weight: bold; text-align: center"
+                )
+        return styles
+
+    fmt = {c: "{:,.0f}" for c in numeric_cols if c in show_df.columns}
+    try:
+        st.dataframe(
+            show_df.style.apply(_style_func, axis=None).format(fmt, na_rep="-"),
+            use_container_width=True,
+            height=480,
+        )
+    except Exception:
+        st.dataframe(show_df, use_container_width=True, height=480)
+
+    st.download_button(
+        label=f"⬇ Download CSV ({row_count:,} rows)",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=dl_filename,
+        mime="text/csv",
+        key=f"dl_{dl_key}",
+    )
+
+
 # ── Cacus directory loader ────────────────────────────────────────────────────
 
 @st.cache_data(show_spinner=False)
 def _load_cacus_directory(zid: str) -> pd.DataFrame:
     from core.analytics import Analytics
     df = Analytics("cacus_directory", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+# ── Opmob pending orders loader ───────────────────────────────────────────────
+
+@st.cache_data(show_spinner=False)
+def _load_opmob_pending(zid: str) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("opmob_pending", zid=zid, filters={}).data
     return df if df is not None else pd.DataFrame()
 
 
@@ -286,6 +349,12 @@ def display_target_management_page(current_page, zid, data_dict):
     f_sp       = _filter_code(sales_df,   "spid", sel_spids)
     f_sp_ret   = _filter_code(returns_df, "spid", sel_spids)
 
+    # Load pending opmob orders for this zid and filter by selected spids
+    opmob_df = _load_opmob_pending(str(zid))
+    if not opmob_df.empty:
+        opmob_df = opmob_df[opmob_df["spid"].astype(str).isin([str(s) for s in sel_spids])].copy()
+    pending_cusids = set(opmob_df["cusid"].astype(str).unique()) if not opmob_df.empty else set()
+
     # Customer options cascade from salesman selection
     with fcols[1]:
         sel_cus_raw = st.multiselect("Customer", _cus_opts(f_sp), key="tm_cus")
@@ -342,7 +411,57 @@ def display_target_management_page(current_page, zid, data_dict):
         ordered     = pd.DataFrame(columns=display_pivot.columns)
 
     st.subheader(f"🔴 Not Ordered — {current_col}")
-    _render_table(not_ordered, id_cols_display, current_col, "not_ordered", f"not_ordered_{current_col}.csv")
+
+    # Add pending order indicator column
+    if pending_cusids and not not_ordered.empty:
+        not_ordered["Pending Order"] = not_ordered["Cust. Code"].astype(str).apply(
+            lambda x: "✓" if x in pending_cusids else ""
+        )
+        not_ordered_id_cols = id_cols_display + ["Pending Order"]
+    else:
+        not_ordered_id_cols = id_cols_display
+
+    _render_not_ordered_table(
+        not_ordered, not_ordered_id_cols, current_col, pending_cusids,
+        "not_ordered", f"not_ordered_{current_col}.csv",
+    )
+
+    # Expander: pending order product breakdown
+    if pending_cusids and not not_ordered.empty:
+        not_ordered_cusids = set(not_ordered["Cust. Code"].astype(str).unique())
+        pending_in_not_ordered = pending_cusids & not_ordered_cusids
+        if pending_in_not_ordered and not opmob_df.empty:
+            pending_detail = opmob_df[
+                opmob_df["cusid"].astype(str).isin(pending_in_not_ordered)
+            ].copy()
+            with st.expander(
+                f"📋 Pending opmob Orders — {len(pending_in_not_ordered)} customer(s)", expanded=False
+            ):
+                detail_display = (
+                    pending_detail[["cusname", "cusid", "itemcode", "itemname", "linetotal"]]
+                    .rename(columns={
+                        "cusname":   "Customer",
+                        "cusid":     "Cust. Code",
+                        "itemcode":  "Item Code",
+                        "itemname":  "Item",
+                        "linetotal": "Line Total",
+                    })
+                    .reset_index(drop=True)
+                )
+                try:
+                    st.dataframe(
+                        detail_display.style.format({"Line Total": "{:,.2f}"}, na_rep="-"),
+                        use_container_width=True,
+                    )
+                except Exception:
+                    st.dataframe(detail_display, use_container_width=True)
+                st.download_button(
+                    label=f"⬇ Download CSV ({len(detail_display):,} rows)",
+                    data=detail_display.to_csv(index=False).encode("utf-8"),
+                    file_name=f"pending_orders_{current_col}.csv",
+                    mime="text/csv",
+                    key="dl_pending_orders",
+                )
 
     st.markdown(" ")
     st.subheader(f"✅ Ordered — {current_col}")
