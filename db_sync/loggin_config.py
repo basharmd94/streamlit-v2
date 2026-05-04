@@ -17,11 +17,14 @@ class LogManager:
         log_file_path_safe = log_file_path.replace('\\', '/')
 
         # Configure logging using the INI and injected defaults
-        logging.config.fileConfig(
-            ini_path,
-            defaults={'LOG_FILE': log_file_path_safe},
-            disable_existing_loggers=False
-        )
+        try:
+            logging.config.fileConfig(
+                ini_path,
+                defaults={'LOG_FILE': log_file_path_safe},
+                disable_existing_loggers=False
+            )
+        except Exception:
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
         return logging.getLogger(__name__)
      # Load logging configuration
     

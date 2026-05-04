@@ -96,7 +96,7 @@ streamilt-analysis_v2/
 │   ├── loggin_config.py        # LogManager class with robust fallback initialisation
 │   └── utils.py                # @timed decorator
 │
-└── db_sync/                    # Standalone database sync scripts. Do not modify.
+└── db_sync/                    # Standalone database sync scripts.
 ```
 
 ### ⚠️ Critical Folder Name Rules

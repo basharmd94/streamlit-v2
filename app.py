@@ -1,6 +1,6 @@
 import streamlit as st
 from core.analytics import Analytics
-from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, daily_sales, ar_analysis as ar_view
+from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, daily_sales, ar_analysis as ar_view, target_management as target_mgmt_view
 from views.home import display_home_page
 import pandas as pd
 from io import BytesIO
@@ -243,6 +243,7 @@ class BaseApp:
             "Purchase Analysis",
             "Basket Analysis",
             "Financial Statements",
+            "Target Management",
             "Manufacturing Analysis",
             "Accounting Analysis",
             "Inventory Analysis",
@@ -300,7 +301,8 @@ class BaseApp:
             "Collection Analysis": ("collection","sales","return","ar"),
             "Basket Analysis": ("sales", "return", "purchase", "cacus_simple"),
             "Purchase Analysis": ("sales", "purchase", "stock"),
-            "Customer Data View": ("sales", "return")
+            "Customer Data View": ("sales", "return"),
+            "Target Management":  ("sales", "return")
         }
 
         if self.current_page in self.page_data_map and self.current_page != "Purchase Analysis":
@@ -483,6 +485,8 @@ class BaseApp:
             self.accounting_analysis()
         elif self.current_page == "Inventory Analysis":
             self.inventory_analysis()
+        elif self.current_page == "Target Management":
+            self.call_if_data_loaded(self.target_management_analysis)
         elif self.current_page == "AR Analysis":
             self.call_if_data_loaded(self.ar_analysis_page)
 
@@ -564,6 +568,10 @@ class BaseApp:
     @timed
     def inventory_analysis(self):
         inventory.display_inventory_analysis_main(self.current_page, st.session_state.zid)
+
+    @timed
+    def target_management_analysis(self, data_dict):
+        target_mgmt_view.display_target_management_page(self.current_page, st.session_state.zid, data_dict)
 
     @timed
     def ar_analysis_page(self, data_dict):

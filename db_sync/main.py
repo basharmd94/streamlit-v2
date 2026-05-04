@@ -58,7 +58,7 @@ def main():
         create_schema(local_conn, schema_name, drop_and_recreate=DROP_AND_RECREATE)
 
         # ---- Full replace sync for all tables ----
-        sync_manager = SyncManager(global_conn, local_conn, local_schema=schema_name)
+        sync_manager = SyncManager(global_conn, local_conn, local_schema=schema_name, use_server_side_cursor=True)
         sync_manager.sync_all()
 
     except Exception as e:
