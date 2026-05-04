@@ -27,6 +27,7 @@ def get_sales_data(filters=None):
                 employee.spname,
                 sales.cusid,
                 cacus.cusname,
+                cacus.cusmobile,
                 cacus.cuscity as area,
                 sales.itemcode,
                 caitem.itemname,
@@ -168,6 +169,7 @@ def get_return_data(filters=None):
                 employee.spname,
                 return.cusid,
                 cacus.cusname,
+                cacus.cusmobile,
                 cacus.cuscity as area,
                 return.itemcode,
                 return.reason,
@@ -702,6 +704,21 @@ def get_cacus_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
             COALESCE(cuscity,'') AS cuscity
         FROM cacus
         WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
+def get_cacus_directory(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            cusid::text AS cusid,
+            cusname,
+            COALESCE(cusmobile,'') AS cusmobile,
+            COALESCE(cuscity,'') AS area
+        FROM cacus
+        WHERE zid = %s
+        ORDER BY cusname
     """
     return sql, (zid,)
 

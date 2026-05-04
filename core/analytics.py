@@ -48,6 +48,7 @@ class Analytics:
             "ar":               queries.get_ar_data,
             "payments":         queries.get_payment_data,
             "cacus_simple":     queries.get_cacus_simple,
+            "cacus_directory":  queries.get_cacus_directory,
             "gldetail_simple":  queries.get_gldetail_simple,
             "glheader_simple":  queries.get_glheader_simple,
             "glmst_simple":     queries.get_glmst_simple,
