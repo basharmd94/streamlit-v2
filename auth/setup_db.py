@@ -89,7 +89,6 @@ def setup_auth_tables():
             ('purchase','Inventory Analysis'),
             ('admin', 'AR Analysis'),
             ('finance', 'AR Analysis')
-        ON CONFLICT DO NOTHING
         """)
         
         # Create default users with their roles
@@ -113,8 +112,6 @@ def setup_auth_tables():
             cur.execute("""
             INSERT INTO users (username, password, role)
             VALUES (%s, %s, %s)
-            ON CONFLICT (username) 
-            DO UPDATE SET password = EXCLUDED.password, role = EXCLUDED.role
             """, (username, hashed_password, role))
         
         conn.commit()

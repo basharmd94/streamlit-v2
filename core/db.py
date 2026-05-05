@@ -1,10 +1,11 @@
 import psycopg2
 from psycopg2 import pool
 import pandas as pd
+from typing import Optional
 from config.settings import get_db_params
 from utils.loggin_config import LogManager
 
-_pool: pool.ThreadedConnectionPool | None = None
+_pool: Optional[pool.ThreadedConnectionPool] = None
 
 
 def _get_pool() -> pool.ThreadedConnectionPool:

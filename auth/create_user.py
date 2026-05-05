@@ -21,12 +21,11 @@ def create_user(username, password, role):
         if isinstance(hashed_password, memoryview):
             hashed_password = bytes(hashed_password)
         
-        # Insert or update user
+        # Insert or update user (DELETE + INSERT for PG 9.4 compatibility)
+        cur.execute("DELETE FROM users WHERE username = %s", (username,))
         cur.execute("""
         INSERT INTO users (username, password, role)
         VALUES (%s, %s, %s)
-        ON CONFLICT (username) 
-        DO UPDATE SET password = EXCLUDED.password, role = EXCLUDED.role
         """, (username, psycopg2.Binary(hashed_password), role))
         
         conn.commit()

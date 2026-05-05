@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS page_permissions (
     UNIQUE(role, page_name)
 );
 
--- Insert some default roles and permissions
+-- Insert some default roles and permissions (truncate first for PG 9.4 compatibility)
+DELETE FROM page_permissions;
 INSERT INTO page_permissions (role, page_name) VALUES
     ('admin', 'Home'),
     ('admin', 'Overall Sales Analysis'),
@@ -39,4 +40,4 @@ INSERT INTO page_permissions (role, page_name) VALUES
     ('finance', 'Overall Margin Analysis'),
     ('finance', 'Financial Statements'),
     ('finance', 'Collection Analysis')
-ON CONFLICT DO NOTHING;
+;
