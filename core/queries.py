@@ -1258,7 +1258,8 @@ def get_opmob_pending(filters: Dict[str, Any]) -> Tuple[str, tuple]:
             om.xemp        AS spid,
             om.xitem       AS itemcode,
             ci.xdesc       AS itemname,
-            om.xlinetotal  AS linetotal
+            om.xlinetotal  AS linetotal,
+            om.xdate       AS order_date
         FROM opmob om
         LEFT JOIN cacus  c  ON om.xcus  = c.xcus  AND om.zid = c.zid
         LEFT JOIN caitem ci ON om.xitem = ci.xitem AND om.zid = ci.zid

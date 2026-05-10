@@ -1,8 +1,78 @@
 import calendar
+import json
+from datetime import date, timedelta
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 from processing import common, target_management as tm, buying_pattern as bp
 from utils.utils import timed
+
+
+# ── JSON data paths ────────────────────────────────────────────────────────────
+
+_DATA_DIR = Path(__file__).parent.parent / "data"
+_TARGETS_FILE = _DATA_DIR / "targets.json"
+_HOLIDAYS_FILE = _DATA_DIR / "public_holidays.json"
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _save_json(path: Path, data: dict):
+    _DATA_DIR.mkdir(exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, default=str))
+
+
+def _target_key(zid, spid: str, year: int, month: int) -> str:
+    return f"{zid}_{spid}_{year}-{month:02d}"
+
+
+def _get_target(zid, spid: str, year: int, month: int):
+    return _load_json(_TARGETS_FILE).get(_target_key(zid, spid, year, month))
+
+
+def _save_target(zid, spid: str, year: int, month: int, value: float):
+    data = _load_json(_TARGETS_FILE)
+    data[_target_key(zid, spid, year, month)] = value
+    _save_json(_TARGETS_FILE, data)
+
+
+def _get_holidays() -> set:
+    """Return all saved public holidays as a set of 'YYYY-MM-DD' strings."""
+    return set(_load_json(_HOLIDAYS_FILE).get("holidays", []))
+
+
+def _toggle_holiday(date_str: str, add: bool):
+    data = _load_json(_HOLIDAYS_FILE)
+    holidays = set(data.get("holidays", []))
+    if add:
+        holidays.add(date_str)
+    else:
+        holidays.discard(date_str)
+    data["holidays"] = sorted(holidays)
+    _save_json(_HOLIDAYS_FILE, data)
+
+
+def _is_working_day(d, holidays: set) -> bool:
+    """Mon–Thu and Sat–Sun are working days; Friday and public holidays are off."""
+    return d.weekday() != 4 and d.strftime("%Y-%m-%d") not in holidays
+
+
+def _count_working_days(start_d, end_d, holidays: set) -> int:
+    count = 0
+    cur = start_d
+    while cur <= end_d:
+        if _is_working_day(cur, holidays):
+            count += 1
+        cur += timedelta(days=1)
+    return count
 
 
 # ── Filter helpers ─────────────────────────────────────────────────────────────
@@ -220,7 +290,6 @@ def _render_buying_pattern(bp_df: pd.DataFrame, is_any_filter: bool):
             st.info("No data to analyse for the current selection.")
             return
 
-        # ── Controls ──────────────────────────────────────────────────────────
         ctrl1 = st.columns([3, 1])
         with ctrl1[0]:
             sort_col_map = {
@@ -256,7 +325,6 @@ def _render_buying_pattern(bp_df: pd.DataFrame, is_any_filter: bool):
             key="bp_band",
         )
 
-        # ── Apply filters ─────────────────────────────────────────────────────
         filt = bp_df.copy()
         if tier_sel:
             filt = filt[filt["spend_tier"].isin(tier_sel)]
@@ -270,12 +338,10 @@ def _render_buying_pattern(bp_df: pd.DataFrame, is_any_filter: bool):
         elif priority_band_sel == "🟡 This Month":
             filt = filt[(filt["priority_score"] >= 2.8) & (filt["priority_score"] < 4.0)]
 
-        # ── Sort ──────────────────────────────────────────────────────────────
         sort_internal = sort_col_map[sort_label]
         if sort_internal in filt.columns:
             filt = filt.sort_values(sort_internal, ascending=not sort_desc)
 
-        # ── Build display DataFrame ───────────────────────────────────────────
         display_col_map = {
             "spname":           "Salesman",
             "cusid":            "Cust. Code",
@@ -310,6 +376,223 @@ def _render_buying_pattern(bp_df: pd.DataFrame, is_any_filter: bool):
         )
 
 
+# ── Metric cards ───────────────────────────────────────────────────────────────
+
+def _render_metric_cards(
+    sp_sales: pd.DataFrame,
+    opmob_df: pd.DataFrame,
+    sel_spid: str,
+    zid,
+):
+    """Render the 4 performance metric cards for the selected salesman."""
+    today = pd.Timestamp.today().normalize()
+    holidays = _get_holidays()
+
+    # Last 5 calendar days (excluding today)
+    last5_dates = set((today - pd.Timedelta(days=i)).date() for i in range(1, 6))
+    last5_sorted = sorted(last5_dates, reverse=True)
+
+    # Prepare sales with date column
+    sp = sp_sales.copy()
+    day_sales: dict = {}
+    day_areas: dict = {}
+    if "date" in sp.columns:
+        sp["_dt"] = pd.to_datetime(sp["date"], errors="coerce")
+        sp["_d"] = sp["_dt"].dt.date
+        last5_sp = sp[sp["_d"].isin(last5_dates)]
+        day_sales = last5_sp.groupby("_d")["final_sales"].sum().to_dict()
+        if "area" in last5_sp.columns:
+            day_areas = (
+                last5_sp.dropna(subset=["area"])
+                .groupby("_d")["area"]
+                .apply(lambda x: ", ".join(sorted(x.dropna().unique())))
+                .to_dict()
+            )
+
+    # opmob pending orders for last 5 days
+    opmob_day: dict = {}
+    if not opmob_df.empty and "order_date" in opmob_df.columns:
+        o = opmob_df[opmob_df["spid"].astype(str) == str(sel_spid)].copy()
+        o["_d"] = pd.to_datetime(o["order_date"], errors="coerce").dt.date
+        o5 = o[o["_d"].isin(last5_dates)]
+        if not o5.empty and "linetotal" in o5.columns:
+            opmob_day = o5.groupby("_d")["linetotal"].sum().to_dict()
+
+    # Last 3 complete months
+    mo_start_cur = pd.Timestamp(today.year, today.month, 1)
+    mo_start_3mo = mo_start_cur - pd.DateOffset(months=3)
+    end_3mo = mo_start_cur - pd.Timedelta(days=1)
+
+    total_3mo = 0.0
+    daily_avg_3mo = 0.0
+    if "date" in sp.columns:
+        last3 = sp[(sp["_dt"] >= mo_start_3mo) & (sp["_dt"] <= end_3mo)]
+        total_3mo = float(last3["final_sales"].sum())
+        wd_3mo = _count_working_days(mo_start_3mo.date(), end_3mo.date(), holidays)
+        daily_avg_3mo = total_3mo / wd_3mo if wd_3mo > 0 else 0.0
+
+    monthly_avg_3mo = total_3mo / 3
+
+    # MTD sales (current month up to today)
+    mtd_sales = 0.0
+    if "date" in sp.columns:
+        mtd_sales = float(sp[sp["_dt"] >= mo_start_cur]["final_sales"].sum())
+
+    # Remaining working days in current month (from tomorrow)
+    import calendar as _cal
+    last_day_num = _cal.monthrange(today.year, today.month)[1]
+    month_end = date(today.year, today.month, last_day_num)
+    tomorrow = (today + pd.Timedelta(days=1)).date()
+    remaining_wd = _count_working_days(tomorrow, month_end, holidays) if tomorrow <= month_end else 0
+
+    # Build next-12-months options for target month selector
+    month_options = []
+    for i in range(12):
+        d = today + pd.DateOffset(months=i)
+        label = f"{calendar.month_abbr[int(d.month)]} {int(d.year)}"
+        month_options.append((label, int(d.year), int(d.month)))
+
+
+
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    cols = st.columns([2.5, 1, 1, 1.8])
+
+    # Card A — Last 5 days
+    with cols[0]:
+        st.markdown("**📅 Last 5 Days**")
+        rows = [
+            {
+                "Date": d.strftime("%d %b"),
+                "Area": day_areas.get(d, "—"),
+                "DO Sales": day_sales.get(d, 0),
+                "Pending (opmob)": opmob_day.get(d, 0),
+            }
+            for d in last5_sorted
+        ]
+        df5 = pd.DataFrame(rows)
+        try:
+            st.dataframe(
+                df5.style.format({"DO Sales": "{:,.0f}", "Pending (opmob)": "{:,.0f}"}),
+                use_container_width=True,
+                hide_index=True,
+                height=215,
+            )
+        except Exception:
+            st.dataframe(df5, use_container_width=True, hide_index=True, height=215)
+
+    # Card B — Daily average (last 3 months)
+    with cols[1]:
+        st.markdown("**📊 Daily Avg**")
+        st.caption("last 3 months")
+        st.metric(label=" ", value=f"{daily_avg_3mo:,.0f}")
+
+    # Card C — Monthly average (last 3 months)
+    with cols[2]:
+        st.markdown("**📈 Monthly Avg**")
+        st.caption("last 3 months")
+        st.metric(label=" ", value=f"{monthly_avg_3mo:,.0f}")
+
+    # Card D — Target input + calculations
+    with cols[3]:
+        st.markdown("**🎯 Monthly Target**")
+
+        # Month selector — current month + next 11
+        sel_mo_label = st.selectbox(
+            "Target month",
+            [m[0] for m in month_options],
+            key=f"tm_target_month_{sel_spid}",
+        )
+        sel_mo_year, sel_mo_month = next(
+            (m[1], m[2]) for m in month_options if m[0] == sel_mo_label
+        )
+        is_current_month = (sel_mo_year == today.year and sel_mo_month == today.month)
+
+        saved_target = _get_target(zid, sel_spid, sel_mo_year, sel_mo_month)
+        target_val = st.number_input(
+            "Target",
+            min_value=0.0,
+            value=float(saved_target) if saved_target is not None else 0.0,
+            step=1000.0,
+            format="%.0f",
+            key=f"tm_target_{sel_spid}_{sel_mo_year}_{sel_mo_month}",
+        )
+        if st.button("💾 Save", key=f"tm_save_{sel_spid}"):
+            _save_target(zid, sel_spid, sel_mo_year, sel_mo_month, target_val)
+            st.toast(f"Target saved for {sel_mo_label}!", icon="✅")
+
+        if is_current_month:
+            st.metric("MTD Sales", f"{mtd_sales:,.0f}")
+            if target_val > 0:
+                gap = target_val - mtd_sales
+                if remaining_wd > 0:
+                    daily_req = gap / remaining_wd
+                    icon = (
+                        "🔴" if daily_req > daily_avg_3mo * 1.2
+                        else "🟡" if daily_req > daily_avg_3mo
+                        else "🟢"
+                    )
+                    st.metric(
+                        "Daily Required",
+                        f"{icon} {daily_req:,.0f}",
+                        delta=f"{remaining_wd} days left",
+                        delta_color="off",
+                    )
+                else:
+                    pct = (mtd_sales - target_val) / target_val * 100
+                    label = "Above target 🟢" if pct >= 0 else "Below target 🔴"
+                    st.metric("vs Target", f"{pct:+.1f}%", delta=label, delta_color="off")
+        else:
+            st.caption("MTD & daily required shown for current month only.")
+
+    # Public holidays management (expander below cards — covers full year)
+    with st.expander("🗓 Manage Public Holidays", expanded=False):
+        all_holidays = sorted(_get_holidays())
+
+        h_col1, h_col2 = st.columns([3, 1])
+        with h_col1:
+            hol_range = st.date_input(
+                "Select a day or drag to pick a range (any month, any year)",
+                value=(),
+                key="tm_new_hol",
+            )
+        with h_col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("➕ Add", key="tm_add_hol"):
+                if hol_range:
+                    if isinstance(hol_range, (list, tuple)) and len(hol_range) == 2:
+                        cur_h, end_h = hol_range
+                        while cur_h <= end_h:
+                            _toggle_holiday(str(cur_h), add=True)
+                            cur_h += timedelta(days=1)
+                    else:
+                        single = hol_range[0] if isinstance(hol_range, (list, tuple)) else hol_range
+                        _toggle_holiday(str(single), add=True)
+                    st.rerun()
+
+        if all_holidays:
+            # Group by year-month for readability
+            from itertools import groupby
+            def _ym(d): return d[:7]  # "YYYY-MM"
+            st.write(f"**{len(all_holidays)} holiday(s) saved across all months:**")
+            for ym, group in groupby(all_holidays, key=_ym):
+                yr, mo = int(ym[:4]), int(ym[5:])
+                st.markdown(f"*{calendar.month_abbr[mo]} {yr}*")
+                for h in group:
+                    hc1, hc2 = st.columns([4, 1])
+                    with hc1:
+                        st.write(h)
+                    with hc2:
+                        if st.button("✖", key=f"rm_hol_{h}"):
+                            _toggle_holiday(h, add=False)
+                            st.rerun()
+        else:
+            st.info("No public holidays saved yet.")
+
+    st.markdown("---")
+
+
 # ── Main view ─────────────────────────────────────────────────────────────────
 
 @timed
@@ -331,25 +614,30 @@ def display_target_management_page(current_page, zid, data_dict):
 
     current_col = _current_month_label()
 
-    # ── Cascading in-page filters ─────────────────────────────────────────────
-    # Column placeholders created first so layout is stable regardless of state
+    # ── Filters: salesman (single), customer, area (cascading) ────────────────
     fcols = st.columns(3)
 
     with fcols[0]:
-        sel_sp_raw = st.multiselect(
-            "Salesman *(required)", _sp_opts(sales_df), key="tm_sp"
+        sp_opts = _sp_opts(sales_df)
+        sel_sp_raw = st.selectbox(
+            "Salesman *(required)",
+            [None] + sp_opts,
+            format_func=lambda x: "— select a salesman —" if x is None else x,
+            key="tm_sp",
         )
 
     if not sel_sp_raw:
-        st.info("👆 Select at least one salesman to view reports.")
+        st.info("👆 Select a salesman to view reports.")
         return
 
-    # Filter by salesman
-    sel_spids  = _codes(sel_sp_raw)
-    f_sp       = _filter_code(sales_df,   "spid", sel_spids)
-    f_sp_ret   = _filter_code(returns_df, "spid", sel_spids)
+    sel_spid  = _codes([sel_sp_raw])[0]
+    sel_spids = [sel_spid]
 
-    # Load pending opmob orders for this zid and filter by selected spids
+    # Filter by salesman
+    f_sp     = _filter_code(sales_df,   "spid", sel_spids)
+    f_sp_ret = _filter_code(returns_df, "spid", sel_spids)
+
+    # Load pending opmob orders and filter to this salesman
     opmob_df = _load_opmob_pending(str(zid))
     if not opmob_df.empty:
         opmob_df = opmob_df[opmob_df["spid"].astype(str).isin([str(s) for s in sel_spids])].copy()
@@ -359,9 +647,9 @@ def display_target_management_page(current_page, zid, data_dict):
     with fcols[1]:
         sel_cus_raw = st.multiselect("Customer", _cus_opts(f_sp), key="tm_cus")
 
-    sel_cusids  = _codes(sel_cus_raw)
-    f_sp_cus    = _filter_code(f_sp,     "cusid", sel_cusids) if sel_cusids else f_sp
-    f_sp_cus_r  = _filter_code(f_sp_ret, "cusid", sel_cusids) if sel_cusids else f_sp_ret
+    sel_cusids = _codes(sel_cus_raw)
+    f_sp_cus   = _filter_code(f_sp,     "cusid", sel_cusids) if sel_cusids else f_sp
+    f_sp_cus_r = _filter_code(f_sp_ret, "cusid", sel_cusids) if sel_cusids else f_sp_ret
 
     # Area options cascade from salesman + customer selection
     with fcols[2]:
@@ -371,7 +659,8 @@ def display_target_management_page(current_page, zid, data_dict):
     f_final   = f_sp_cus[f_sp_cus["area"].isin(sel_area)]     if sel_area else f_sp_cus
     f_final_r = f_sp_cus_r[f_sp_cus_r["area"].isin(sel_area)] if sel_area and "area" in f_sp_cus_r.columns else f_sp_cus_r
 
-    st.markdown("---")
+    # ── Metric cards (uses full salesman data, not customer/area filtered) ─────
+    _render_metric_cards(f_sp, opmob_df, sel_spid, zid)
 
     # ── Customer-wise pivot ───────────────────────────────────────────────────
     try:
@@ -473,7 +762,6 @@ def display_target_management_page(current_page, zid, data_dict):
     st.subheader("📦 Customer-Product Breakdown")
     st.caption("Scoped to salesman / customer / area selections above.")
 
-    # Secondary customer filter cascades from f_final
     scols = st.columns(2)
     with scols[0]:
         sel_sec_cus_raw  = st.multiselect("Customer", _cus_opts(f_final), key="tm_sec_cus")
@@ -482,7 +770,6 @@ def display_target_management_page(current_page, zid, data_dict):
     fs2 = _filter_code(f_final,   "cusid", sel_sec_cusids) if sel_sec_cusids else f_final
     fr2 = _filter_code(f_final_r, "cusid", sel_sec_cusids) if sel_sec_cusids else f_final_r
 
-    # Product filter cascades from secondary customer selection
     with scols[1]:
         sel_sec_item_raw = st.multiselect("Product", _item_opts(fs2), key="tm_sec_item")
 
@@ -529,10 +816,8 @@ def display_target_management_page(current_page, zid, data_dict):
     if cacus_df.empty:
         st.warning("Customer directory not available.")
     else:
-        cacus_area_opts = sorted(
-            cacus_df["area"].dropna().replace("", pd.NA).dropna().unique().tolist()
-        )
-        sel_cacus_area = st.multiselect("Filter by Area", cacus_area_opts, key="tm_cacus_area")
+        # Use the same area options as the top filter (salesman's territory)
+        sel_cacus_area = st.multiselect("Filter by Area", area_opts, key="tm_cacus_area")
 
         if not sel_cacus_area:
             st.info("Select one or more areas above to see customers with no sales.")
@@ -577,4 +862,4 @@ def display_target_management_page(current_page, zid, data_dict):
         bp_df = pd.DataFrame()
         st.caption(f"Buying pattern error: {e}")
 
-    _render_buying_pattern(bp_df, is_any_filter=bool(sel_spids))
+    _render_buying_pattern(bp_df, is_any_filter=bool(sel_spid))
