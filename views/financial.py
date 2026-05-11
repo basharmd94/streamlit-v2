@@ -133,6 +133,7 @@ def _build_ls_ratios(
     bs_s: pd.DataFrame,
     cfs_s: pd.DataFrame,
     perspective: str = "Yearly",
+    partial_year_months: int = 12,
 ) -> pd.DataFrame:
     """
     Compute Level S financial ratios from IS, BS and CFS DataFrames.
@@ -221,8 +222,15 @@ def _build_ls_ratios(
     safe_eq       = _safe(total_eq.abs())
     safe_cl       = _safe(total_cl.abs())
 
-    # Days factor: 365 for yearly, 30 as monthly approximation
+    # Days factor: 365 for yearly, 30 as monthly approximation.
+    # For the running (partial) year, scale by months elapsed so WC days
+    # are comparable to full-year prior periods.
     days = 365 if perspective == "Yearly" else 30
+    _max_int_col = max((c for c in _num_cols if isinstance(c, int)), default=None)
+    _days_s = pd.Series(
+        [days * partial_year_months / 12 if c == _max_int_col else days for c in _num_cols],
+        index=_num_cols,
+    )
 
     # ── IS / Profitability ─────────────────────────────────────────────────────
     markup       = (adj_rev / safe_cogs_abs - 1) * 100
@@ -244,9 +252,9 @@ def _build_ls_ratios(
     quick_rat = (adj_ca - stock) / adj_cl_lq
 
     # ── Efficiency / Working Capital Days ─────────────────────────────────────
-    dso = ar_ext * days / safe_adj
-    dio = stock  * days / safe_cogs_abs
-    dpo = (ap_local + ap_intl).abs() * days / safe_cogs_abs
+    dso = ar_ext * _days_s / safe_adj
+    dio = stock  * _days_s / safe_cogs_abs
+    dpo = (ap_local + ap_intl).abs() * _days_s / safe_cogs_abs
     ccc = dio + dso - dpo
 
     # ── Leverage ───────────────────────────────────────────────────────────────
@@ -915,8 +923,13 @@ def display_financial_statements(current_page, zid):
                 st.dataframe(_fmt(summary_s), use_container_width=True)
 
             # Compute ratios once — reused by dashboard and expander
+            _partial_months = ytd_month if _is_lt_persp else 12
             try:
-                _ratio_df = _build_ls_ratios(pl_s, bs_s, cfs_s, perspective="Yearly")
+                _ratio_df = _build_ls_ratios(
+                    pl_s, bs_s, cfs_s,
+                    perspective="Yearly",
+                    partial_year_months=_partial_months,
+                )
             except Exception as _re:
                 _ratio_df = None
 
@@ -970,6 +983,7 @@ def display_financial_statements(current_page, zid):
                         pl_s, bs_s, cfs_s, _ratio_df,
                         _entity_label, _available_years,
                         entity_zid="consolidated",
+                        partial_year_months=_partial_months,
                     )
             else:
                 _panel_y_single = st.radio(
@@ -985,6 +999,7 @@ def display_financial_statements(current_page, zid):
                         pl_s, bs_s, cfs_s, _ratio_df,
                         _entity_label, _available_years,
                         entity_zid=str(_az),
+                        partial_year_months=_partial_months,
                     )
 
         elif selected_level == "Level T - Trading Adjustments":

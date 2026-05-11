@@ -158,8 +158,12 @@ def _apply_layout(fig: go.Figure, height: int = 340, title: str = "", extra: dic
     return fig
 
 
-def _wc_for_year(is_df: pd.DataFrame, bs_df: pd.DataFrame, year) -> dict:
-    """Compute working capital metrics for a single year."""
+def _wc_for_year(is_df: pd.DataFrame, bs_df: pd.DataFrame, year, months: int = 12) -> dict:
+    """Compute working capital metrics for a single year.
+
+    Pass months < 12 for a partial (running) year so WC days are scaled to
+    the actual period elapsed rather than a full 365-day year.
+    """
     adj_rev  = abs(get_val(is_df, "Adjusted Revenue (Pending)", year))
     cogs     = abs(get_val(is_df, "COGS", year))
     ar       = get_val(bs_df, "Accounts Receivable", year)
@@ -174,9 +178,10 @@ def _wc_for_year(is_df: pd.DataFrame, bs_df: pd.DataFrame, year) -> dict:
     total_cl = abs(get_val(bs_df, "Current Liability (A)", year))
     m_agent  = abs(get_val(bs_df, "0904-Money Agent Liability", year))
 
-    dso = _safe_div(ar * 365, adj_rev)
-    dio = _safe_div(stock * 365, cogs)
-    dpo = _safe_div((ap_loc + ap_int) * 365, cogs)
+    days = 365 * months / 12
+    dso = _safe_div(ar * days, adj_rev)
+    dio = _safe_div(stock * days, cogs)
+    dpo = _safe_div((ap_loc + ap_int) * days, cogs)
     ccc = dso + dio - dpo
 
     adj_ca = total_ca - ar_intr - ar_loc
@@ -394,7 +399,7 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
 # ── Tab 2 — Working Capital & Cash Cycle ───────────────────────────────────────
 
 def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
-             years: list, entity_zid: str):
+             years: list, entity_zid: str, partial_year_months: int = 12):
     if not years:
         st.info("No years available for the selected range.")
         return
@@ -406,10 +411,15 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
             "for earlier years will show as zero."
         )
 
+    max_year = max(years)
     end_y  = years[-1]
     prev_y = years[-2] if len(years) >= 2 else None
-    wc_end  = _wc_for_year(is_df, bs_df, end_y)
-    wc_prev = _wc_for_year(is_df, bs_df, prev_y) if prev_y else {}
+
+    def _months_for(y):
+        return partial_year_months if y == max_year else 12
+
+    wc_end  = _wc_for_year(is_df, bs_df, end_y,  _months_for(end_y))
+    wc_prev = _wc_for_year(is_df, bs_df, prev_y, _months_for(prev_y)) if prev_y else {}
 
     def _day_delta(key):
         if not wc_prev:
@@ -429,7 +439,7 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
 
     # ── Chart D — Cash Conversion Cycle ───────────────────────────────────────
     try:
-        wc_all = {y: _wc_for_year(is_df, bs_df, y) for y in years}
+        wc_all = {y: _wc_for_year(is_df, bs_df, y, _months_for(y)) for y in years}
         dio_v = [wc_all[y]["DIO"] for y in years]
         dso_v = [wc_all[y]["DSO"] for y in years]
         dpo_v = [wc_all[y]["DPO"] for y in years]
@@ -533,7 +543,7 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
         key="dash_wc_year",
     )
     try:
-        wc_d = _wc_for_year(is_df, bs_df, wc_year)
+        wc_d = _wc_for_year(is_df, bs_df, wc_year, _months_for(wc_year))
         m1, m2, m3 = st.columns(3)
         m1.metric("Net Working Capital",
                   fmt_cr(wc_d["NWC"]),
@@ -773,6 +783,7 @@ def render_analysis_dashboard(
     entity_label: str,
     available_years: list,
     entity_zid: str = "consolidated",
+    partial_year_months: int = 12,
 ):
     if not available_years:
         st.warning("No year data available for the Analysis Dashboard.")
@@ -808,7 +819,7 @@ def render_analysis_dashboard(
         _tab1_pl(is_df, bs_df, years_in_range, entity_zid)
 
     with tab2:
-        _tab2_wc(is_df, bs_df, cfs_df, years_in_range, entity_zid)
+        _tab2_wc(is_df, bs_df, cfs_df, years_in_range, entity_zid, partial_year_months)
 
     with tab3:
         _tab3_bs(is_df, bs_df, cfs_df, years_in_range, entity_zid)
