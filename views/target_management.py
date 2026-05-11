@@ -494,56 +494,44 @@ def _render_metric_cards(
 
     # ── Layout ────────────────────────────────────────────────────────────────
     st.markdown("---")
-    cols = st.columns([3, 1, 1, 1.8])
 
-    # Card A — Last 5 days mini table
-    with cols[0]:
-        st.markdown("**📅 Last 5 Days**")
-        if mini_rows:
-            df5 = pd.DataFrame(mini_rows)
-            num_cols = ["DO", "Pend", "3MDA"]
-            fmt = {c: "{:,.0f}" for c in num_cols}
-            try:
-                tbl_height = min(35 * len(df5) + 38, 320)
-                st.dataframe(
-                    df5.style.format(fmt),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=tbl_height,
-                )
-            except Exception:
-                st.dataframe(df5, use_container_width=True, hide_index=True)
-        else:
-            st.info("No sales in the last 5 days.")
+    # ── Row 1: Mini table full width ──────────────────────────────────────────
+    st.markdown("**📅 Last 5 Days**")
+    if mini_rows:
+        df5 = pd.DataFrame(mini_rows)
+        fmt = {"DO": "{:,.0f}", "Pend": "{:,.0f}", "3MDA": "{:,.0f}"}
+        try:
+            tbl_height = min(35 * len(df5) + 38, 320)
+            st.dataframe(
+                df5.style.format(fmt),
+                use_container_width=True,
+                hide_index=True,
+                height=tbl_height,
+            )
+        except Exception:
+            st.dataframe(df5, use_container_width=True, hide_index=True)
+    else:
+        st.info("No sales in the last 5 days.")
 
-    # Card B — Daily average (last 3 months)
-    with cols[1]:
-        st.markdown("**📊 Daily Avg**")
-        st.caption("last 3 months")
-        st.metric(label=" ", value=f"{daily_avg_3mo:,.0f}")
+    st.markdown(" ")
 
-    # Card C — Monthly average (last 3 months)
-    with cols[2]:
-        st.markdown("**📈 Monthly Avg**")
-        st.caption("last 3 months")
-        st.metric(label=" ", value=f"{monthly_avg_3mo:,.0f}")
+    # ── Row 2: Target controls — fully horizontal ─────────────────────────────
+    st.markdown("**🎯 Monthly Target**")
+    t_cols = st.columns([1.5, 1.5, 0.7, 1.5, 1.5, 2])
 
-    # Card D — Target input + calculations
-    with cols[3]:
-        st.markdown("**🎯 Monthly Target**")
-
-        # Month selector — current month + next 11
+    with t_cols[0]:
         sel_mo_label = st.selectbox(
-            "Target month",
+            "Month",
             [m[0] for m in month_options],
             key=f"tm_target_month_{sel_spid}",
         )
-        sel_mo_year, sel_mo_month = next(
-            (m[1], m[2]) for m in month_options if m[0] == sel_mo_label
-        )
-        is_current_month = (sel_mo_year == today.year and sel_mo_month == today.month)
+    sel_mo_year, sel_mo_month = next(
+        (m[1], m[2]) for m in month_options if m[0] == sel_mo_label
+    )
+    is_current_month = (sel_mo_year == today.year and sel_mo_month == today.month)
+    saved_target = _get_target(zid, sel_spid, sel_mo_year, sel_mo_month)
 
-        saved_target = _get_target(zid, sel_spid, sel_mo_year, sel_mo_month)
+    with t_cols[1]:
         target_val = st.number_input(
             "Target",
             min_value=0.0,
@@ -552,12 +540,17 @@ def _render_metric_cards(
             format="%.0f",
             key=f"tm_target_{sel_spid}_{sel_mo_year}_{sel_mo_month}",
         )
+
+    with t_cols[2]:
+        st.markdown("<br>", unsafe_allow_html=True)
         if st.button("💾 Save", key=f"tm_save_{sel_spid}"):
             _save_target(zid, sel_spid, sel_mo_year, sel_mo_month, target_val)
             st.toast(f"Target saved for {sel_mo_label}!", icon="✅")
 
-        if is_current_month:
+    if is_current_month:
+        with t_cols[3]:
             st.metric("MTD Sales", f"{mtd_sales:,.0f}")
+        with t_cols[4]:
             if target_val > 0:
                 gap = target_val - mtd_sales
                 if remaining_wd > 0:
@@ -577,19 +570,22 @@ def _render_metric_cards(
                     pct = (mtd_sales - target_val) / target_val * 100
                     label = "Above target 🟢" if pct >= 0 else "Below target 🔴"
                     st.metric("vs Target", f"{pct:+.1f}%", delta=label, delta_color="off")
-        else:
+    else:
+        with t_cols[3]:
             st.caption("MTD & daily required shown for current month only.")
 
-    # ── Second row: unique customer metrics ───────────────────────────────────
-    uc_cols = st.columns([3, 1, 1, 1.8])
-    with uc_cols[1]:
-        st.markdown("**👥 Unique Cust.**")
-        st.caption("last 3 months")
-        st.metric(label=" ", value=f"{total_uc_3mo:,}")
-    with uc_cols[2]:
-        st.markdown("**👤 Avg Daily Cust.**")
-        st.caption("last 3 months")
-        st.metric(label=" ", value=f"{avg_daily_uc:,.1f}")
+    st.markdown(" ")
+
+    # ── Row 3: Summary metrics — 4 equal columns ──────────────────────────────
+    m_cols = st.columns(4)
+    with m_cols[0]:
+        st.metric("📊 Daily Avg Sales", f"{daily_avg_3mo:,.0f}", delta="last 3 months", delta_color="off")
+    with m_cols[1]:
+        st.metric("📈 Monthly Avg Sales", f"{monthly_avg_3mo:,.0f}", delta="last 3 months", delta_color="off")
+    with m_cols[2]:
+        st.metric("👥 Unique Customers", f"{total_uc_3mo:,}", delta="last 3 months", delta_color="off")
+    with m_cols[3]:
+        st.metric("👤 Avg Daily Customers", f"{avg_daily_uc:,.1f}", delta="last 3 months", delta_color="off")
 
     # Public holidays management (expander below cards — covers full year)
     with st.expander("🗓 Manage Public Holidays", expanded=False):
