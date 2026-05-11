@@ -384,103 +384,137 @@ def _render_metric_cards(
     sel_spid: str,
     zid,
 ):
-    """Render the 4 performance metric cards for the selected salesman."""
+    """Render the performance metric cards for the selected salesman."""
     today = pd.Timestamp.today().normalize()
     holidays = _get_holidays()
 
-    # Last 5 calendar days (excluding today)
+    # ── Base data prep ────────────────────────────────────────────────────────
     last5_dates = set((today - pd.Timedelta(days=i)).date() for i in range(1, 6))
     last5_sorted = sorted(last5_dates, reverse=True)
 
-    # Prepare sales with date column
     sp = sp_sales.copy()
-    day_sales: dict = {}
-    day_areas: dict = {}
-    if "date" in sp.columns:
+    has_date = "date" in sp.columns
+    if has_date:
         sp["_dt"] = pd.to_datetime(sp["date"], errors="coerce")
-        sp["_d"] = sp["_dt"].dt.date
-        last5_sp = sp[sp["_d"].isin(last5_dates)]
-        day_sales = last5_sp.groupby("_d")["final_sales"].sum().to_dict()
-        if "area" in last5_sp.columns:
-            day_areas = (
-                last5_sp.dropna(subset=["area"])
-                .groupby("_d")["area"]
-                .apply(lambda x: ", ".join(sorted(x.dropna().unique())))
-                .to_dict()
-            )
+        sp["_d"]  = sp["_dt"].dt.date
 
-    # opmob pending orders for last 5 days
-    opmob_day: dict = {}
-    if not opmob_df.empty and "order_date" in opmob_df.columns:
-        o = opmob_df[opmob_df["spid"].astype(str) == str(sel_spid)].copy()
-        o["_d"] = pd.to_datetime(o["order_date"], errors="coerce").dt.date
-        o5 = o[o["_d"].isin(last5_dates)]
-        if not o5.empty and "linetotal" in o5.columns:
-            opmob_day = o5.groupby("_d")["linetotal"].sum().to_dict()
-
-    # Last 3 complete months
+    # ── Last 3 complete months (computed first — needed for mini table too) ───
     mo_start_cur = pd.Timestamp(today.year, today.month, 1)
     mo_start_3mo = mo_start_cur - pd.DateOffset(months=3)
-    end_3mo = mo_start_cur - pd.Timedelta(days=1)
+    end_3mo      = mo_start_cur - pd.Timedelta(days=1)
 
     total_3mo = 0.0
     daily_avg_3mo = 0.0
-    if "date" in sp.columns:
-        last3 = sp[(sp["_dt"] >= mo_start_3mo) & (sp["_dt"] <= end_3mo)]
+    wd_3mo = 0
+    last3 = pd.DataFrame()
+    if has_date:
+        last3 = sp[(sp["_dt"] >= mo_start_3mo) & (sp["_dt"] <= end_3mo)].copy()
         total_3mo = float(last3["final_sales"].sum())
         wd_3mo = _count_working_days(mo_start_3mo.date(), end_3mo.date(), holidays)
         daily_avg_3mo = total_3mo / wd_3mo if wd_3mo > 0 else 0.0
 
     monthly_avg_3mo = total_3mo / 3
 
-    # MTD sales (current month up to today)
+    # Per-area 3-month daily average  (total area sales / working days)
+    area_3mda: dict = {}
+    if has_date and not last3.empty and "area" in last3.columns:
+        area_totals = last3.groupby("area")["final_sales"].sum()
+        area_3mda = (area_totals / wd_3mo if wd_3mo > 0 else area_totals * 0).to_dict()
+
+    # ── Unique customer metrics (last 3 months) ───────────────────────────────
+    total_uc_3mo   = 0
+    avg_daily_uc   = 0.0
+    if has_date and not last3.empty and "cusid" in last3.columns:
+        total_uc_3mo = int(last3["cusid"].nunique())
+        daily_uc_series = last3.groupby("_d")["cusid"].nunique()
+        avg_daily_uc = float(daily_uc_series.mean()) if not daily_uc_series.empty else 0.0
+
+    # ── Last-5-days mini table (one row per date × area) ─────────────────────
+    mini_rows = []
+    if has_date:
+        last5_sp = sp[sp["_d"].isin(last5_dates)].copy()
+
+        # cusid → area lookup (for mapping opmob orders to areas)
+        cusid_area_map: dict = {}
+        if "cusid" in sp.columns and "area" in sp.columns:
+            cusid_area_map = (
+                sp[["cusid", "area"]].dropna()
+                .drop_duplicates("cusid")
+                .set_index("cusid")["area"]
+                .to_dict()
+            )
+
+        # opmob pending by (date, area)
+        opmob_area_day: dict = {}
+        if not opmob_df.empty and "order_date" in opmob_df.columns:
+            o = opmob_df[opmob_df["spid"].astype(str) == str(sel_spid)].copy()
+            o["_d"]   = pd.to_datetime(o["order_date"], errors="coerce").dt.date
+            o["area"] = o["cusid"].astype(str).map(cusid_area_map)
+            o5 = o[o["_d"].isin(last5_dates)]
+            if not o5.empty and "linetotal" in o5.columns:
+                opmob_area_day = (
+                    o5.groupby(["_d", "area"])["linetotal"].sum().to_dict()
+                )
+
+        if not last5_sp.empty and "area" in last5_sp.columns:
+            grp = (
+                last5_sp.dropna(subset=["area"])
+                .groupby(["_d", "area"])
+                .agg(do=("final_sales", "sum"), uc=("cusid", "nunique"))
+                .reset_index()
+                .sort_values(["_d", "area"], ascending=[False, True])
+            )
+            for _, row in grp.iterrows():
+                mini_rows.append({
+                    "Date":  row["_d"].strftime("%d %b"),
+                    "Area":  row["area"],
+                    "DO":    row["do"],
+                    "Pend":  opmob_area_day.get((row["_d"], row["area"]), 0),
+                    "3MDA":  area_3mda.get(row["area"], 0),
+                    "UC":    int(row["uc"]),
+                })
+
+    # ── MTD + remaining days ──────────────────────────────────────────────────
     mtd_sales = 0.0
-    if "date" in sp.columns:
+    if has_date:
         mtd_sales = float(sp[sp["_dt"] >= mo_start_cur]["final_sales"].sum())
 
-    # Remaining working days in current month (from tomorrow)
     import calendar as _cal
     last_day_num = _cal.monthrange(today.year, today.month)[1]
-    month_end = date(today.year, today.month, last_day_num)
-    tomorrow = (today + pd.Timedelta(days=1)).date()
+    month_end    = date(today.year, today.month, last_day_num)
+    tomorrow     = (today + pd.Timedelta(days=1)).date()
     remaining_wd = _count_working_days(tomorrow, month_end, holidays) if tomorrow <= month_end else 0
 
-    # Build next-12-months options for target month selector
+    # ── Month options for target selector ─────────────────────────────────────
     month_options = []
     for i in range(12):
         d = today + pd.DateOffset(months=i)
         label = f"{calendar.month_abbr[int(d.month)]} {int(d.year)}"
         month_options.append((label, int(d.year), int(d.month)))
 
-
-
-
     # ── Layout ────────────────────────────────────────────────────────────────
     st.markdown("---")
-    cols = st.columns([2.5, 1, 1, 1.8])
+    cols = st.columns([3, 1, 1, 1.8])
 
-    # Card A — Last 5 days
+    # Card A — Last 5 days mini table
     with cols[0]:
         st.markdown("**📅 Last 5 Days**")
-        rows = [
-            {
-                "Date": d.strftime("%d %b"),
-                "Area": day_areas.get(d, "—"),
-                "DO Sales": day_sales.get(d, 0),
-                "Pending (opmob)": opmob_day.get(d, 0),
-            }
-            for d in last5_sorted
-        ]
-        df5 = pd.DataFrame(rows)
-        try:
-            st.dataframe(
-                df5.style.format({"DO Sales": "{:,.0f}", "Pending (opmob)": "{:,.0f}"}),
-                use_container_width=True,
-                hide_index=True,
-                height=215,
-            )
-        except Exception:
-            st.dataframe(df5, use_container_width=True, hide_index=True, height=215)
+        if mini_rows:
+            df5 = pd.DataFrame(mini_rows)
+            num_cols = ["DO", "Pend", "3MDA"]
+            fmt = {c: "{:,.0f}" for c in num_cols}
+            try:
+                tbl_height = min(35 * len(df5) + 38, 320)
+                st.dataframe(
+                    df5.style.format(fmt),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=tbl_height,
+                )
+            except Exception:
+                st.dataframe(df5, use_container_width=True, hide_index=True)
+        else:
+            st.info("No sales in the last 5 days.")
 
     # Card B — Daily average (last 3 months)
     with cols[1]:
@@ -545,6 +579,17 @@ def _render_metric_cards(
                     st.metric("vs Target", f"{pct:+.1f}%", delta=label, delta_color="off")
         else:
             st.caption("MTD & daily required shown for current month only.")
+
+    # ── Second row: unique customer metrics ───────────────────────────────────
+    uc_cols = st.columns([3, 1, 1, 1.8])
+    with uc_cols[1]:
+        st.markdown("**👥 Unique Cust.**")
+        st.caption("last 3 months")
+        st.metric(label=" ", value=f"{total_uc_3mo:,}")
+    with uc_cols[2]:
+        st.markdown("**👤 Avg Daily Cust.**")
+        st.caption("last 3 months")
+        st.metric(label=" ", value=f"{avg_daily_uc:,.1f}")
 
     # Public holidays management (expander below cards — covers full year)
     with st.expander("🗓 Manage Public Holidays", expanded=False):
