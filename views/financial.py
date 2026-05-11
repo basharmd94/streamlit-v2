@@ -6,6 +6,7 @@ from processing import consolidation as _consol
 from utils.utils import timed
 from core import queries
 from core.db import get_dataframe
+from views.financial_dashboard import render_analysis_dashboard
 
 
 def _fmt(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
@@ -913,13 +914,26 @@ def display_financial_statements(current_page, zid):
             with st.expander("Cash Flow Summary", expanded=False):
                 st.dataframe(_fmt(summary_s), use_container_width=True)
 
+            # Compute ratios once — reused by dashboard and expander
+            try:
+                _ratio_df = _build_ls_ratios(pl_s, bs_s, cfs_s, perspective="Yearly")
+            except Exception as _re:
+                _ratio_df = None
+
+            _num_year_cols = [c for c in pl_s.columns if isinstance(c, int)]
+            _available_years = sorted(_num_year_cols)
+            _entity_label = (
+                "Consolidated Group"
+                if _is_consolidated
+                else f"ZID {_az}"
+            )
+
             # ── Financial Ratios ──────────────────────────────────────────────
             with st.expander("📊 Financial Ratios", expanded=False):
-                try:
-                    _ratio_df = _build_ls_ratios(pl_s, bs_s, cfs_s, perspective="Yearly")
+                if _ratio_df is not None:
                     st.dataframe(_ratio_df.set_index("Ratio"), use_container_width=True)
-                except Exception as _re:
-                    st.warning(f"Could not compute ratios: {_re}")
+                else:
+                    st.warning("Could not compute ratios.")
 
             _dl_link = common.create_combined_ls_download_link(
                 pl_s=pl_s, bs_s=bs_s, cfs_s=cfs_s,
@@ -934,27 +948,47 @@ def display_financial_statements(current_page, zid):
                 summary_df, summary_df1, summary_df2, summary_s,
             )
 
-            # ── Notes / ZID Breakdown panel ───────────────────────────────────
+            # ── Notes / ZID Breakdown / Analysis Dashboard panel ─────────────
             if _is_consolidated:
                 _panel_y = st.radio(
                     "View",
-                    ["📋 Notes & Context", "📊 ZID Contribution Breakdown"],
+                    ["📋 Notes & Context", "📊 ZID Contribution Breakdown", "📈 Analysis Dashboard"],
                     horizontal=True,
                     key="ls_panel_y",
                 )
                 if _panel_y == "📋 Notes & Context":
                     _render_ls_notes(key_suffix="y")
-                else:
+                elif _panel_y == "📊 ZID Contribution Breakdown":
                     _render_zid_contribution_breakdown(
                         pl_s, bs_s,
                         _zid_frames_pl, _zid_frames_bs,
                         perspective="Yearly",
                         key_suffix="y",
                     )
+                else:
+                    render_analysis_dashboard(
+                        pl_s, bs_s, cfs_s, _ratio_df,
+                        _entity_label, _available_years,
+                        entity_zid="consolidated",
+                    )
             else:
-                _render_ls_notes(key_suffix="y_single")
+                _panel_y_single = st.radio(
+                    "View",
+                    ["📋 Notes & Context", "📈 Analysis Dashboard"],
+                    horizontal=True,
+                    key="ls_panel_y_single",
+                )
+                if _panel_y_single == "📋 Notes & Context":
+                    _render_ls_notes(key_suffix="y_single")
+                else:
+                    render_analysis_dashboard(
+                        pl_s, bs_s, cfs_s, _ratio_df,
+                        _entity_label, _available_years,
+                        entity_zid=str(_az),
+                    )
 
         elif selected_level == "Level T - Trading Adjustments":
+            st.info("📈 Analysis Dashboard is available at Level S only.")
             # ── Step 1: Build Level S base (identical to Level S block) ──────
             _az, _ap = analyse_zid
             _vat_smonth = 1  if _is_lt_persp else start_month
