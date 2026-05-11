@@ -200,13 +200,16 @@ def _wc_for_year(is_df: pd.DataFrame, bs_df: pd.DataFrame, year, months: int = 1
 
 # ── Tab 1 — Group P&L & Margins ────────────────────────────────────────────────
 
-def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: str):
+def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: str,
+             partial_year_months: int = 12):
     if not years:
         st.info("No years available for the selected range.")
         return
 
-    end_y  = years[-1]
-    prev_y = years[-2] if len(years) >= 2 else None
+    max_year = max(years)
+    end_y    = years[-1]
+    prev_y   = years[-2] if len(years) >= 2 else None
+    is_partial = (end_y == max_year and partial_year_months < 12)
 
     # ── KPI cards ─────────────────────────────────────────────────────────────
     rev       = get_val(is_df, "Adjusted Revenue (Pending)", end_y)
@@ -223,20 +226,42 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
     p_gp_m    = _safe_div(p_gp, abs(p_rev)) * 100 if p_rev else 0
     p_ebitda_m = _safe_div(p_ebitda, abs(p_rev)) * 100 if p_rev else 0
 
+    # For a partial running year, scale prior-year absolute values to the same
+    # number of months so the delta is like-for-like (e.g. 3M 2026 vs 3M est. 2025).
+    # Margin ratios (%) are period-neutral and need no scaling.
+    if is_partial:
+        scale = partial_year_months / 12
+        p_rev_cmp    = p_rev    * scale
+        p_gp_cmp     = p_gp     * scale
+        p_ebitda_cmp = p_ebitda * scale
+        p_net_cmp    = p_net    * scale
+        _mo = partial_year_months
+        _cmp_label = f"vs {_mo}M est. {prev_y}"
+    else:
+        p_rev_cmp, p_gp_cmp, p_ebitda_cmp, p_net_cmp = p_rev, p_gp, p_ebitda, p_net
+        _cmp_label = f"vs {prev_y}"
+
     def _d_pct(c, p):
         v = _delta_pct(c, p)
-        return f"{v:+.1f}% vs {prev_y}" if v is not None else ""
+        return f"{v:+.1f}% {_cmp_label}" if v is not None else ""
 
     def _d_pp(c, p):
         return f"{c - p:+.1f} pp vs {prev_y}" if prev_y else ""
 
+    if is_partial:
+        st.caption(
+            f"⚡ Running year ({end_y}, {partial_year_months} months) — "
+            f"absolute KPI deltas compare against estimated {partial_year_months}-month "
+            f"equivalent from {prev_y}. Margin % deltas compare full-year {prev_y}."
+        )
+
     k = st.columns(6)
-    k[0].metric("Revenue",        fmt_cr(rev),          _d_pct(rev, p_rev))
-    k[1].metric("Gross Profit",   fmt_cr(gp),           _d_pct(gp, p_gp))
+    k[0].metric("Revenue",        fmt_cr(rev),          _d_pct(rev, p_rev_cmp))
+    k[1].metric("Gross Profit",   fmt_cr(gp),           _d_pct(gp, p_gp_cmp))
     k[2].metric("Gross Margin",   f"{gp_m:.1f}%",       _d_pp(gp_m, p_gp_m))
-    k[3].metric("EBITDA",         fmt_cr(ebitda),       _d_pct(ebitda, p_ebitda))
+    k[3].metric("EBITDA",         fmt_cr(ebitda),       _d_pct(ebitda, p_ebitda_cmp))
     k[4].metric("EBITDA Margin",  f"{ebitda_m:.1f}%",   _d_pp(ebitda_m, p_ebitda_m))
-    k[5].metric("Net Income",     fmt_cr(net_inc),      _d_pct(net_inc, p_net))
+    k[5].metric("Net Income",     fmt_cr(net_inc),      _d_pct(net_inc, p_net_cmp))
 
     st.markdown(" ")
 
@@ -816,7 +841,7 @@ def render_analysis_dashboard(
     ])
 
     with tab1:
-        _tab1_pl(is_df, bs_df, years_in_range, entity_zid)
+        _tab1_pl(is_df, bs_df, years_in_range, entity_zid, partial_year_months)
 
     with tab2:
         _tab2_wc(is_df, bs_df, cfs_df, years_in_range, entity_zid, partial_year_months)
