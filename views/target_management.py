@@ -383,6 +383,7 @@ def _render_metric_cards(
     opmob_df: pd.DataFrame,
     sel_spid: str,
     zid,
+    all_sales: pd.DataFrame = None,
 ):
     """Render the performance metric cards for the selected salesman."""
     today = pd.Timestamp.today().normalize()
@@ -436,6 +437,15 @@ def _render_metric_cards(
         total_up_3mo = int(last3["itemcode"].nunique())
         daily_up_series = last3.groupby("_d")["itemcode"].nunique()
         avg_daily_up = float(daily_up_series.mean()) if not daily_up_series.empty else 0.0
+
+    # ── ZID-wide unique products (last 3 months) — for comparison ─────────────
+    zid_up_3mo = 0
+    if all_sales is not None and not all_sales.empty and "itemcode" in all_sales.columns:
+        _all = all_sales.copy()
+        if "date" in _all.columns:
+            _all["_dt"] = pd.to_datetime(_all["date"], errors="coerce")
+            _all3 = _all[(_all["_dt"] >= mo_start_3mo) & (_all["_dt"] <= end_3mo)]
+            zid_up_3mo = int(_all3["itemcode"].nunique())
 
     # ── Last-5-days mini table (one row per date × area) ─────────────────────
     mini_rows = []
@@ -584,8 +594,8 @@ def _render_metric_cards(
 
     st.markdown(" ")
 
-    # ── Row 3: Summary metrics — 6 equal columns ──────────────────────────────
-    m_cols = st.columns(6)
+    # ── Row 3: Summary metrics — 7 equal columns ──────────────────────────────
+    m_cols = st.columns(7)
     with m_cols[0]:
         st.metric("📊 Daily Avg Sales", f"{daily_avg_3mo:,.0f}", delta="last 3 months", delta_color="off")
     with m_cols[1]:
@@ -598,6 +608,9 @@ def _render_metric_cards(
         st.metric("📦 Unique Products", f"{total_up_3mo:,}", delta="last 3 months", delta_color="off")
     with m_cols[5]:
         st.metric("🗂️ Avg Daily Products", f"{avg_daily_up:,.1f}", delta="last 3 months", delta_color="off")
+    with m_cols[6]:
+        _zid_delta = f"of {zid_up_3mo} ZID total" if zid_up_3mo > 0 else "last 3 months"
+        st.metric("🏢 ZID Unique Products", f"{zid_up_3mo:,}", delta=_zid_delta, delta_color="off")
 
     # Public holidays management (expander below cards — covers full year)
     with st.expander("🗓 Manage Public Holidays", expanded=False):
@@ -713,7 +726,7 @@ def display_target_management_page(current_page, zid, data_dict):
     f_final_r = f_sp_cus_r[f_sp_cus_r["area"].isin(sel_area)] if sel_area and "area" in f_sp_cus_r.columns else f_sp_cus_r
 
     # ── Metric cards (uses full salesman data, not customer/area filtered) ─────
-    _render_metric_cards(f_sp, opmob_df, sel_spid, zid)
+    _render_metric_cards(f_sp, opmob_df, sel_spid, zid, all_sales=sales_df)
 
     # ── Customer-wise pivot ───────────────────────────────────────────────────
     try:
