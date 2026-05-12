@@ -296,6 +296,15 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
                       extra=dict(barmode="group",
                                  yaxis=dict(title="৳ Crore", gridcolor="rgba(0,0,0,0.06)")))
         st.plotly_chart(fig_a, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Revenue, Gross Profit & EBITDA** — Bars show annual top-line revenue "
+                "(adjusted for pending sales). Lines track Gross Profit (revenue minus direct cost of goods) "
+                "and EBITDA (operating profit before interest, tax, depreciation & amortisation). "
+                "When GP and EBITDA lines track revenue upwards together, margins are holding. "
+                "A widening gap between revenue and GP indicates rising input costs; a gap between "
+                "GP and EBITDA reflects growing overhead (SG&A / S&D expenses)."
+            )
     except Exception as e:
         st.warning(f"Chart A error: {e}")
 
@@ -327,6 +336,15 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
         _apply_layout(fig_b, 220, "Margin Evolution (%)",
                       extra=dict(yaxis=dict(ticksuffix="%", gridcolor="rgba(0,0,0,0.06)")))
         st.plotly_chart(fig_b, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Margin Evolution** — Shows three profitability rates as a percentage of revenue over time. "
+                "Gross Margin % (green) is revenue minus COGS — this measures pricing power and procurement efficiency. "
+                "EBITDA Margin % (amber) deducts overhead costs; the gap between it and gross margin reveals "
+                "how much overhead consumes each taka earned. Net Income Margin % (red/green dots) is the "
+                "bottom-line return after interest, tax and other charges — points above zero are profitable years. "
+                "Converging lines indicate that overheads or interest are consuming an increasing share of gross profit."
+            )
     except Exception as e:
         st.warning(f"Chart B error: {e}")
 
@@ -359,6 +377,16 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
                       extra=dict(barmode="stack",
                                  xaxis=dict(title="৳ Crore", gridcolor="rgba(0,0,0,0.06)")))
         st.plotly_chart(fig_c, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Revenue Decomposition** — Each horizontal bar represents one year's revenue split into "
+                "its cost layers from left to right: COGS (direct product cost), SG&A (staff and admin overhead), "
+                "Sales & Distribution (field sales, discounts, logistics), Interest & Charges, VAT & Tax, "
+                "and the remaining Net Income slice. The total bar width equals total revenue. "
+                "A shrinking COGS segment means improving gross margins; a shrinking Interest segment "
+                "reflects debt reduction. A green Net Income segment means the year was profitable; red means a loss. "
+                "Use this to quickly see which cost layer is consuming the most revenue in any given year."
+            )
     except Exception as e:
         st.warning(f"Chart C error: {e}")
 
@@ -417,6 +445,15 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
             ))
             _apply_layout(fig_d, 340, f"Cost Composition {drill_y}")
             st.plotly_chart(fig_d, use_container_width=True)
+            with st.expander("ℹ️ How to read this chart", expanded=False):
+                st.caption(
+                    f"**Cost Composition — {drill_y}** — Donut chart showing what share of revenue "
+                    "each cost category consumed in the selected year. Each slice is proportional to "
+                    "its value in ৳ Crore. The Net Income slice (green = profit, red = loss) is the "
+                    "residual after all costs. A large COGS slice is expected in a trading business; "
+                    "a large Interest slice indicates significant debt burden relative to revenue. "
+                    "Hover over a slice to see the exact value."
+                )
     except Exception as e:
         st.warning(f"Year drill error: {e}")
 
@@ -490,6 +527,18 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                       extra=dict(barmode="relative",
                                  yaxis=dict(title="Days", gridcolor="rgba(0,0,0,0.06)")))
         st.plotly_chart(fig_d, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Cash Conversion Cycle (CCC)** — Measures how many days it takes to convert "
+                "inventory purchases into cash collected from customers. "
+                "DIO (purple, above zero) = days inventory is held before sale. "
+                "DSO (blue, above zero) = days taken to collect payment after a sale. "
+                "DPO (red, below zero) = days the business takes to pay its own suppliers — "
+                "this offsets the cycle because supplier credit delays your cash outflow. "
+                "The amber line is the net CCC = DIO + DSO − DPO. "
+                "A shorter CCC means cash recycles faster; a negative CCC (rare) means suppliers "
+                "are effectively financing your operations. Trend downward is a positive signal."
+            )
     except Exception as e:
         st.warning(f"Chart D error: {e}")
 
@@ -525,6 +574,16 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                         showgrid=False, ticksuffix="%"),
         ))
         st.plotly_chart(fig_e, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Net Working Capital Composition** — Stacked bars show the balance sheet components "
+                "that make up working capital. Positive bars (Stock, AR, Advances) are assets that "
+                "tie up cash; the negative bar (AP) is a liability that frees cash — it represents "
+                "financing provided by suppliers. The net height of the stacked bar is Net Working Capital (NWC). "
+                "The dashed line on the right axis shows NWC as a % of revenue: a rising trend means "
+                "the business needs more capital to support each taka of sales, which can strain cash flow. "
+                "A declining trend indicates improving capital efficiency."
+            )
     except Exception as e:
         st.warning(f"Chart E error: {e}")
 
@@ -558,6 +617,17 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                         showgrid=False),
         ))
         st.plotly_chart(fig_f, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Cash Flow Summary** — Three grouped bars per year show where cash came from and went. "
+                "Cash from Operations (green = positive, red = negative) is the core cash the business "
+                "generated from trading — persistent negative CFO means the business cannot self-fund. "
+                "Cash from Investing (blue) reflects capital expenditure and asset sales — typically negative "
+                "in growth years. Cash from Financing (amber) includes loan drawdowns (positive) and "
+                "repayments (negative). The grey line on the right axis tracks Closing Cash & equivalents. "
+                "A healthy pattern: positive CFO funds investing activities with modest financing support. "
+                "Reliance on financing to cover negative CFO signals operational cash stress."
+            )
     except Exception as e:
         st.warning(f"Chart F error: {e}")
 
@@ -592,6 +662,16 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
         _apply_layout(fig_wc, 220, f"Working Capital Breakdown — {wc_year} (৳ Lakh)",
                       extra=dict(xaxis=dict(title="৳ Lakh", gridcolor="rgba(0,0,0,0.06)")))
         st.plotly_chart(fig_wc, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                f"**Working Capital Breakdown — {wc_year}** — Horizontal bars show the four components "
+                "of net working capital in ৳ Lakh. AR (blue), Stock (purple) and Advance Accounts (amber) "
+                "are positive — they represent cash tied up in the business cycle. AP (red) is shown as a "
+                "negative bar because it is supplier-funded capital that offsets your cash requirement. "
+                "Net Working Capital = AR + Stock + Advances − AP. A large Stock bar relative to AR "
+                "suggests inventory is the main cash trap; a large AP bar means suppliers are absorbing "
+                "a significant portion of working capital needs."
+            )
     except Exception as e:
         st.warning(f"WC drill error: {e}")
 
@@ -666,6 +746,18 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                       extra=dict(barmode="relative",
                                  yaxis=dict(title="৳ Crore", gridcolor="rgba(0,0,0,0.06)")))
         st.plotly_chart(fig_g, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Balance Sheet Structure** — A mirrored chart where assets (positive, above zero) "
+                "are matched against their funding sources (negative, below zero). "
+                "Assets are split into Current (blue), Other non-current (blue, faded), and Fixed (purple). "
+                "Funding is split into Current Liabilities (red), Short-term Loans (red, faded), "
+                "Long-term Bank Loan (red, light), and Equity (green). "
+                "The chart should balance — the total positive bar height equals the total negative bar height. "
+                "A shrinking red funding block and growing green equity block indicate deleveraging and "
+                "accumulated retained earnings. A growing fixed asset bar without matching equity growth "
+                "signals debt-funded capital investment."
+            )
     except Exception as e:
         st.warning(f"Chart G error: {e}")
 
@@ -695,6 +787,17 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                         showgrid=False),
         ))
         st.plotly_chart(fig_h, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Debt Profile & Interest Burden** — Grouped bars show outstanding debt broken into "
+                "Short-term Bank Loan (dark red), Long-term Bank Loan (light red), and Related-party "
+                "Short-term Loans (amber) for each year. The black line on the right axis shows the "
+                "total interest and finance charge incurred that year — it is a flow (cost), not a stock. "
+                "Falling bars indicate debt is being repaid. A falling interest line that lags behind "
+                "falling debt is typical when fixed-rate loans are repaid mid-year. "
+                "Compare interest charges against EBITDA (from Tab 1) to assess debt serviceability — "
+                "interest coverage below 1.5× is generally a concern."
+            )
     except Exception as e:
         st.warning(f"Chart H error: {e}")
 
@@ -721,6 +824,16 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                         showgrid=False),
         ))
         st.plotly_chart(fig_i, use_container_width=True)
+        with st.expander("ℹ️ How to read this chart", expanded=False):
+            st.caption(
+                "**Equity & Net Income** — Bars show total equity at year-end (green = grew vs prior year, "
+                "amber = shrank). The line on the right axis shows net income for the year. "
+                "Equity grows when the business retains profits and shrinks when it posts losses or "
+                "distributes more than it earns. A year with positive net income but falling equity "
+                "indicates that owner drawings or prior-year loss write-offs exceeded current earnings. "
+                "Consistently rising equity alongside positive net income is the signature of a "
+                "compounding, self-financing business."
+            )
     except Exception as e:
         st.warning(f"Chart I error: {e}")
 
@@ -794,6 +907,16 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                 ))
                 _apply_layout(fig_am, 260, f"Asset Mix — {bs_year}")
                 st.plotly_chart(fig_am, use_container_width=True)
+                with st.expander("ℹ️ How to read this chart", expanded=False):
+                    st.caption(
+                        f"**Asset Mix — {bs_year}** — Donut showing how total assets are distributed "
+                        "between Current Assets (blue, liquid — cash, receivables, inventory), "
+                        "Other Assets (faded blue — long-term receivables, investments, hospital loan etc.), "
+                        "and Fixed Assets (purple — property, plant & equipment). "
+                        "A trading business typically holds a high proportion of current assets. "
+                        "A large Other Assets slice may indicate tied-up capital in non-core investments. "
+                        "A growing Fixed Assets share suggests capital expenditure on productive capacity."
+                    )
     except Exception as e:
         st.warning(f"BS drill error: {e}")
 
