@@ -429,6 +429,14 @@ def _render_metric_cards(
         daily_uc_series = last3.groupby("_d")["cusid"].nunique()
         avg_daily_uc = float(daily_uc_series.mean()) if not daily_uc_series.empty else 0.0
 
+    # ── Unique product metrics (last 3 months) ────────────────────────────────
+    total_up_3mo  = 0
+    avg_daily_up  = 0.0
+    if has_date and not last3.empty and "itemcode" in last3.columns:
+        total_up_3mo = int(last3["itemcode"].nunique())
+        daily_up_series = last3.groupby("_d")["itemcode"].nunique()
+        avg_daily_up = float(daily_up_series.mean()) if not daily_up_series.empty else 0.0
+
     # ── Last-5-days mini table (one row per date × area) ─────────────────────
     mini_rows = []
     if has_date:
@@ -576,8 +584,8 @@ def _render_metric_cards(
 
     st.markdown(" ")
 
-    # ── Row 3: Summary metrics — 4 equal columns ──────────────────────────────
-    m_cols = st.columns(4)
+    # ── Row 3: Summary metrics — 6 equal columns ──────────────────────────────
+    m_cols = st.columns(6)
     with m_cols[0]:
         st.metric("📊 Daily Avg Sales", f"{daily_avg_3mo:,.0f}", delta="last 3 months", delta_color="off")
     with m_cols[1]:
@@ -586,6 +594,10 @@ def _render_metric_cards(
         st.metric("👥 Unique Customers", f"{total_uc_3mo:,}", delta="last 3 months", delta_color="off")
     with m_cols[3]:
         st.metric("👤 Avg Daily Customers", f"{avg_daily_uc:,.1f}", delta="last 3 months", delta_color="off")
+    with m_cols[4]:
+        st.metric("📦 Unique Products", f"{total_up_3mo:,}", delta="last 3 months", delta_color="off")
+    with m_cols[5]:
+        st.metric("🗂️ Avg Daily Products", f"{avg_daily_up:,.1f}", delta="last 3 months", delta_color="off")
 
     # Public holidays management (expander below cards — covers full year)
     with st.expander("🗓 Manage Public Holidays", expanded=False):
