@@ -10,6 +10,23 @@ from utils.utils import timed
 from auth import auth
 
 
+@st.cache_data(show_spinner=False)
+def _load_raw(tables: tuple[str], zid: str) -> pd.DataFrame:
+    """
+    Load and cache the full combined DataFrame for the given tables + ZID
+    with NO filters.  Called once; both pass-1 and pass-2 of the sidebar
+    reuse this cache entry so only one DB round-trip ever happens.
+    """
+    combined_df = None
+    for table in tables:
+        df = Analytics(table, zid=zid, filters={}).data
+        if df is not None:
+            combined_df = df.copy() if combined_df is None else pd.concat(
+                [combined_df, df], ignore_index=True
+            )
+    return combined_df if combined_df is not None else pd.DataFrame()
+
+
 @timed
 @st.cache_data
 def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str],
@@ -18,22 +35,31 @@ def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str],
     pre_filters: tuple of (key, tuple_of_values) pairs applied as SQL filters
     before building the option lists.  Hashable so st.cache_data works.
     Example: (("year", (2024, 2025)), ("month", (1, 2, 3)))
-    """
-    pre_filter_dict: dict = {}
-    for key, values in pre_filters:
-        if values:
-            pre_filter_dict[key] = list(values)
 
-    combined_df = None
-    for table in tables:
-        df = Analytics(table, zid=zid, filters=pre_filter_dict).data
-        if df is not None:
-            if combined_df is None:
-                combined_df = df.copy()
-            else:
-                combined_df = pd.concat([combined_df, df], ignore_index=True)
+    Internally reuses the _load_raw cache so no second DB query is needed
+    for pass-2 (entity options filtered by year/month).
+    """
+    # Get the full cached DataFrame — zero DB cost on cache hit
+    combined_df = _load_raw(tables, zid)
     if combined_df is None or combined_df.empty:
         return {}
+
+    # Apply pre_filters in pandas instead of re-querying the DB
+    if pre_filters:
+        for key, values in pre_filters:
+            if values and key in combined_df.columns:
+                try:
+                    int_vals = [int(float(v)) for v in values]
+                    combined_df = combined_df[
+                        combined_df[key].apply(lambda x: int(float(x)) if pd.notna(x) else -1)
+                        .isin(int_vals)
+                    ]
+                except Exception:
+                    combined_df = combined_df[combined_df[key].isin(values)]
+
+    if combined_df.empty:
+        return {}
+
     filter_options = {}
     cols_set = set(combined_df.columns)
 

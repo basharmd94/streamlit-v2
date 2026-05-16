@@ -390,16 +390,13 @@ def _render_metric_cards(
     holidays = _get_holidays()
 
     # ── Base data prep ────────────────────────────────────────────────────────
-    last5_dates = set((today - pd.Timedelta(days=i)).date() for i in range(1, 6))
-    last5_sorted = sorted(last5_dates, reverse=True)
-
     sp = sp_sales.copy()
     has_date = "date" in sp.columns
     if has_date:
         sp["_dt"] = pd.to_datetime(sp["date"], errors="coerce")
         sp["_d"]  = sp["_dt"].dt.date
 
-    # ── Last 3 complete months (computed first — needed for mini table too) ───
+    # ── Last 3 complete months ────────────────────────────────────────────────
     mo_start_cur = pd.Timestamp(today.year, today.month, 1)
     mo_start_3mo = mo_start_cur - pd.DateOffset(months=3)
     end_3mo      = mo_start_cur - pd.Timedelta(days=1)
@@ -415,12 +412,6 @@ def _render_metric_cards(
         daily_avg_3mo = total_3mo / wd_3mo if wd_3mo > 0 else 0.0
 
     monthly_avg_3mo = total_3mo / 3
-
-    # Per-area 3-month daily average  (total area sales / working days)
-    area_3mda: dict = {}
-    if has_date and not last3.empty and "area" in last3.columns:
-        area_totals = last3.groupby("area")["final_sales"].sum()
-        area_3mda = (area_totals / wd_3mo if wd_3mo > 0 else area_totals * 0).to_dict()
 
     # ── Unique customer metrics (last 3 months) ───────────────────────────────
     total_uc_3mo   = 0
@@ -447,51 +438,6 @@ def _render_metric_cards(
             _all3 = _all[(_all["_dt"] >= mo_start_3mo) & (_all["_dt"] <= end_3mo)]
             zid_up_3mo = int(_all3["itemcode"].nunique())
 
-    # ── Last-5-days mini table (one row per date × area) ─────────────────────
-    mini_rows = []
-    if has_date:
-        last5_sp = sp[sp["_d"].isin(last5_dates)].copy()
-
-        # cusid → area lookup (for mapping opmob orders to areas)
-        cusid_area_map: dict = {}
-        if "cusid" in sp.columns and "area" in sp.columns:
-            cusid_area_map = (
-                sp[["cusid", "area"]].dropna()
-                .drop_duplicates("cusid")
-                .set_index("cusid")["area"]
-                .to_dict()
-            )
-
-        # opmob pending by (date, area)
-        opmob_area_day: dict = {}
-        if not opmob_df.empty and "order_date" in opmob_df.columns:
-            o = opmob_df[opmob_df["spid"].astype(str) == str(sel_spid)].copy()
-            o["_d"]   = pd.to_datetime(o["order_date"], errors="coerce").dt.date
-            o["area"] = o["cusid"].astype(str).map(cusid_area_map)
-            o5 = o[o["_d"].isin(last5_dates)]
-            if not o5.empty and "linetotal" in o5.columns:
-                opmob_area_day = (
-                    o5.groupby(["_d", "area"])["linetotal"].sum().to_dict()
-                )
-
-        if not last5_sp.empty and "area" in last5_sp.columns:
-            grp = (
-                last5_sp.dropna(subset=["area"])
-                .groupby(["_d", "area"])
-                .agg(do=("final_sales", "sum"), uc=("cusid", "nunique"))
-                .reset_index()
-                .sort_values(["_d", "area"], ascending=[False, True])
-            )
-            for _, row in grp.iterrows():
-                mini_rows.append({
-                    "Date":  row["_d"].strftime("%d %b"),
-                    "Area":  row["area"],
-                    "DO":    row["do"],
-                    "Pend":  opmob_area_day.get((row["_d"], row["area"]), 0),
-                    "3MDA":  area_3mda.get(row["area"], 0),
-                    "UC":    int(row["uc"]),
-                })
-
     # ── MTD + remaining days ──────────────────────────────────────────────────
     mtd_sales = 0.0
     if has_date:
@@ -513,27 +459,7 @@ def _render_metric_cards(
     # ── Layout ────────────────────────────────────────────────────────────────
     st.markdown("---")
 
-    # ── Row 1: Mini table full width ──────────────────────────────────────────
-    st.markdown("**📅 Last 5 Days**")
-    if mini_rows:
-        df5 = pd.DataFrame(mini_rows)
-        fmt = {"DO": "{:,.0f}", "Pend": "{:,.0f}", "3MDA": "{:,.0f}"}
-        try:
-            tbl_height = min(35 * len(df5) + 38, 320)
-            st.dataframe(
-                df5.style.format(fmt),
-                use_container_width=True,
-                hide_index=True,
-                height=tbl_height,
-            )
-        except Exception:
-            st.dataframe(df5, use_container_width=True, hide_index=True)
-    else:
-        st.info("No sales in the last 5 days.")
-
-    st.markdown(" ")
-
-    # ── Row 2: Target controls — fully horizontal ─────────────────────────────
+    # ── Target controls — fully horizontal ───────────────────────────────────
     st.markdown("**🎯 Monthly Target**")
     t_cols = st.columns([1.5, 1.5, 0.7, 1.5, 1.5, 2])
 
@@ -659,6 +585,243 @@ def _render_metric_cards(
     st.markdown("---")
 
 
+# ── All-Salesmen Overview ──────────────────────────────────────────────────────
+
+def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
+    """
+    Two-table overview for the currently selected ZID:
+      Table 1 — one row per salesman: target/MTD/daily-required/3-month metrics
+      Table 2 — one row per salesman × date × area for the current month:
+                 sales, unique customers, unique products, pending opmob total
+    """
+    today        = pd.Timestamp.today().normalize()
+    holidays     = _get_holidays()
+    cur_year     = today.year
+    cur_month    = today.month
+    mo_start_cur = pd.Timestamp(cur_year, cur_month, 1)
+    mo_start_3mo = mo_start_cur - pd.DateOffset(months=3)
+    end_3mo      = mo_start_cur - pd.Timedelta(days=1)
+    month_end    = pd.Timestamp(cur_year, cur_month,
+                                calendar.monthrange(cur_year, cur_month)[1])
+
+    wd_3mo       = _count_working_days(mo_start_3mo.date(), end_3mo.date(), holidays)
+    remaining_wd = _count_working_days(today.date(), month_end.date(), holidays)
+
+    if "date" not in sales_df.columns or "final_sales" not in sales_df.columns:
+        st.warning("Required columns missing.")
+        return
+
+    df = sales_df.copy()
+    df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df["_d"]  = df["_dt"].dt.date
+
+    last3   = df[(df["_dt"] >= mo_start_3mo) & (df["_dt"] <= end_3mo)]
+    mtd_all = df[(df["_dt"] >= mo_start_cur) & (df["_dt"] <= today)]
+
+    # ── ZID-wide unique products (3 months) ───────────────────────────────────
+    zid_up = int(last3["itemcode"].nunique()) if "itemcode" in last3.columns else 0
+
+    # ── opmob pending per salesman × area ────────────────────────────────────
+    pend_sp_area: dict = {}   # (spid, area) -> total pending
+    if not opmob_all.empty:
+        cusid_area = (
+            df[["cusid", "area"]].dropna().drop_duplicates("cusid")
+            .set_index("cusid")["area"].to_dict()
+        )
+        ob = opmob_all.copy()
+        ob["area"] = ob["cusid"].astype(str).map(cusid_area)
+        if "spid" in ob.columns and "linetotal" in ob.columns:
+            for (sp, ar), grp in ob.dropna(subset=["area"]).groupby(["spid", "area"]):
+                pend_sp_area[(str(sp), str(ar))] = float(grp["linetotal"].sum())
+
+    # ── Table 1: salesman summary ─────────────────────────────────────────────
+    st.subheader("📋 Salesman Summary — Current Month")
+    sp_list = (
+        df[["spid", "spname"]].dropna().drop_duplicates()
+        .sort_values("spname")
+    )
+    rows1 = []
+    for _, sp_row in sp_list.iterrows():
+        spid   = str(sp_row["spid"])
+        spname = sp_row["spname"]
+
+        sp3   = last3[last3["spid"].astype(str) == spid]
+        sp_mtd = mtd_all[mtd_all["spid"].astype(str) == spid]
+
+        total_3mo   = float(sp3["final_sales"].sum())
+        daily_avg   = round(total_3mo / wd_3mo, 0)  if wd_3mo > 0 else 0.0
+        monthly_avg = round(total_3mo / 3, 0)
+        mtd_sales   = float(sp_mtd["final_sales"].sum())
+
+        target    = _get_target(zid, spid, cur_year, cur_month) or 0.0
+        gap       = target - mtd_sales
+        daily_req = round(gap / remaining_wd, 0) if remaining_wd > 0 and target > 0 else 0.0
+        pct_tgt   = round(mtd_sales / target * 100, 1) if target > 0 else None
+
+        uc_3mo   = int(sp3["cusid"].nunique())    if "cusid"    in sp3.columns else 0
+        up_3mo   = int(sp3["itemcode"].nunique()) if "itemcode" in sp3.columns else 0
+        daily_uc = round(float(sp3.groupby("_d")["cusid"].nunique().mean()),    1) if not sp3.empty and "cusid"    in sp3.columns else 0.0
+        daily_up = round(float(sp3.groupby("_d")["itemcode"].nunique().mean()), 1) if not sp3.empty and "itemcode" in sp3.columns else 0.0
+
+        rows1.append({
+            "Salesman":         spname,
+            "Target":           target,
+            "MTD Sales":        round(mtd_sales, 0),
+            "% vs Target":      pct_tgt,
+            "Days Left":        remaining_wd,
+            "Daily Required":   daily_req,
+            "Daily Avg (3M)":   daily_avg,
+            "Monthly Avg (3M)": monthly_avg,
+            "Uniq Cust (3M)":   uc_3mo,
+            "Avg Daily Cust":   daily_uc,
+            "Uniq Prods (3M)":  up_3mo,
+            "Avg Daily Prods":  daily_up,
+            "ZID Uniq Prods":   zid_up,
+        })
+
+    if rows1:
+        t1 = pd.DataFrame(rows1).sort_values("MTD Sales", ascending=False).reset_index(drop=True)
+
+        def _style_t1(df):
+            styled = df.style.format({
+                "Target":           "{:,.0f}",
+                "MTD Sales":        "{:,.0f}",
+                "% vs Target":      lambda v: f"{v:.1f}%" if v is not None else "—",
+                "Days Left":        "{:,.0f}",
+                "Daily Required":   "{:,.0f}",
+                "Daily Avg (3M)":   "{:,.0f}",
+                "Monthly Avg (3M)": "{:,.0f}",
+                "Uniq Cust (3M)":   "{:,.0f}",
+                "Avg Daily Cust":   "{:.1f}",
+                "Uniq Prods (3M)":  "{:,.0f}",
+                "Avg Daily Prods":  "{:.1f}",
+                "ZID Uniq Prods":   "{:,.0f}",
+            }, na_rep="—")
+
+            def _col_pct(col):
+                out = []
+                for v in col:
+                    if v is None:
+                        out.append("")
+                    elif v >= 100:
+                        out.append("background-color: #D4EDDA; color: #155724")
+                    elif v >= 75:
+                        out.append("background-color: #FFF3CD; color: #856404")
+                    else:
+                        out.append("background-color: #F8D7DA; color: #721C24")
+                return out
+
+            if "% vs Target" in df.columns:
+                styled = styled.apply(_col_pct, subset=["% vs Target"])
+            return styled
+
+        try:
+            st.dataframe(_style_t1(t1), use_container_width=True, hide_index=True)
+        except Exception:
+            st.dataframe(t1, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "⬇ Download Summary CSV",
+            t1.to_csv(index=False).encode("utf-8"),
+            file_name=f"summary_{zid}_{cur_year}_{cur_month:02d}.csv",
+            mime="text/csv",
+            key="dl_ov_summary",
+        )
+
+
+# ── Salesman daily breakdown (current month) ──────────────────────────────────
+
+def _render_sp_daily_breakdown(
+    sp_sales: pd.DataFrame,
+    opmob_df: pd.DataFrame,
+    sel_spid: str,
+    zid,
+):
+    """
+    Daily breakdown for the selected salesman for the current month:
+    one row per date × area with Sales, Pending opmob, Uniq Cust, Uniq Prods.
+    """
+    today        = pd.Timestamp.today().normalize()
+    cur_year     = today.year
+    cur_month    = today.month
+    mo_start_cur = pd.Timestamp(cur_year, cur_month, 1)
+
+    st.markdown("---")
+    st.subheader("📅 Daily Breakdown — Current Month")
+
+    if "date" not in sp_sales.columns or sp_sales.empty:
+        st.info("No sales data available for the daily breakdown.")
+        return
+
+    df = sp_sales.copy()
+    df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df["_d"]  = df["_dt"].dt.date
+    mtd = df[(df["_dt"] >= mo_start_cur) & (df["_dt"] <= today)]
+
+    if mtd.empty or "area" not in mtd.columns:
+        st.info("No current-month sales data available for this salesman.")
+        return
+
+    # cusid → area lookup for pending opmob mapping
+    cusid_area_map: dict = {}
+    if "cusid" in df.columns and "area" in df.columns:
+        cusid_area_map = (
+            df[["cusid", "area"]].dropna()
+            .drop_duplicates("cusid")
+            .set_index("cusid")["area"]
+            .to_dict()
+        )
+
+    # pending opmob by area for this salesman
+    pend_area: dict = {}
+    if not opmob_df.empty and "cusid" in opmob_df.columns and "linetotal" in opmob_df.columns:
+        ob = opmob_df.copy()
+        ob["area"] = ob["cusid"].astype(str).map(cusid_area_map)
+        for ar, grp in ob.dropna(subset=["area"]).groupby("area"):
+            pend_area[str(ar)] = float(grp["linetotal"].sum())
+
+    grp = (
+        mtd.dropna(subset=["area"])
+        .groupby(["_d", "area"])
+        .agg(
+            Sales       =("final_sales", "sum"),
+            uniq_cust   =("cusid",       pd.Series.nunique),
+            uniq_prods  =("itemcode",    pd.Series.nunique),
+        )
+        .reset_index()
+        .rename(columns={"_d": "Date", "area": "Area",
+                         "uniq_cust": "Uniq Cust", "uniq_prods": "Uniq Prods"})
+        .sort_values(["Date", "Area"], ascending=[False, True])
+    )
+
+    grp["Pending"] = grp["Area"].apply(lambda a: pend_area.get(str(a), 0.0))
+
+    t = grp[["Date", "Area", "Sales", "Pending", "Uniq Cust", "Uniq Prods"]].reset_index(drop=True)
+
+    try:
+        st.dataframe(
+            t.style.format({
+                "Sales":      "{:,.0f}",
+                "Pending":    "{:,.0f}",
+                "Uniq Cust":  "{:,.0f}",
+                "Uniq Prods": "{:,.0f}",
+            }, na_rep="—"),
+            use_container_width=True,
+            hide_index=True,
+            height=min(35 * len(t) + 60, 520),
+        )
+    except Exception:
+        st.dataframe(t, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "⬇ Download Daily Breakdown CSV",
+        t.to_csv(index=False).encode("utf-8"),
+        file_name=f"daily_{sel_spid}_{cur_year}_{cur_month:02d}.csv",
+        mime="text/csv",
+        key="dl_sp_daily",
+    )
+
+
 # ── Main view ─────────────────────────────────────────────────────────────────
 
 @timed
@@ -679,6 +842,19 @@ def display_target_management_page(current_page, zid, data_dict):
         return
 
     current_col = _current_month_label()
+
+    # ── View mode radio ───────────────────────────────────────────────────────
+    _view_mode = st.radio(
+        "View",
+        ["👤 Individual Salesman", "📊 All Salesmen Overview"],
+        horizontal=True,
+        key="tm_view_mode",
+    )
+
+    if _view_mode == "📊 All Salesmen Overview":
+        opmob_all = _load_opmob_pending(str(zid))
+        _render_overview(sales_df, opmob_all, zid)
+        return
 
     # ── Filters: salesman (single), customer, area (cascading) ────────────────
     fcols = st.columns(3)
@@ -913,6 +1089,9 @@ def display_target_management_page(current_page, zid, data_dict):
                     mime="text/csv",
                     key="dl_no_sales",
                 )
+
+    # ── Daily Breakdown for selected salesman ────────────────────────────────
+    _render_sp_daily_breakdown(f_sp, opmob_df, sel_spid, zid)
 
     st.markdown("---")
 
