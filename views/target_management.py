@@ -49,6 +49,47 @@ def _get_holidays() -> set:
     return set(_load_json(_HOLIDAYS_FILE).get("holidays", []))
 
 
+def _prune_targets():
+    """
+    Silently remove target entries older than 24 rolling months.
+    Runs on every page load — no prompt, no notification.
+    """
+    data = _load_json(_TARGETS_FILE)
+    if not data:
+        return
+    cutoff = pd.Timestamp.today().normalize() - pd.DateOffset(months=24)
+    cutoff_ts = pd.Timestamp(cutoff.year, cutoff.month, 1)
+    pruned = {}
+    for key, val in data.items():
+        try:
+            # key format: {zid}_{spid}_{YYYY}-{MM}
+            date_part = key.rsplit("_", 1)[-1]   # "YYYY-MM"
+            y, m = int(date_part[:4]), int(date_part[5:7])
+            if pd.Timestamp(y, m, 1) >= cutoff_ts:
+                pruned[key] = val
+        except Exception:
+            pruned[key] = val  # keep unparseable entries
+    if len(pruned) != len(data):
+        _save_json(_TARGETS_FILE, pruned)
+
+
+def _prune_holidays():
+    """
+    Silently remove holidays from calendar years older than (current_year - 1).
+    Keeps exactly 2 calendar years: previous year and current year.
+    Runs on every page load — no prompt.
+    """
+    data = _load_json(_HOLIDAYS_FILE)
+    if not data:
+        return
+    keep_from = pd.Timestamp.today().year - 1
+    holidays = data.get("holidays", [])
+    pruned = [h for h in holidays if int(h[:4]) >= keep_from]
+    if len(pruned) != len(holidays):
+        data["holidays"] = sorted(pruned)
+        _save_json(_HOLIDAYS_FILE, data)
+
+
 def _toggle_holiday(date_str: str, add: bool):
     data = _load_json(_HOLIDAYS_FILE)
     holidays = set(data.get("holidays", []))
@@ -538,50 +579,6 @@ def _render_metric_cards(
         _zid_delta = f"of {zid_up_3mo} ZID total" if zid_up_3mo > 0 else "last 3 months"
         st.metric("🏢 ZID Unique Products", f"{zid_up_3mo:,}", delta=_zid_delta, delta_color="off")
 
-    # Public holidays management (expander below cards — covers full year)
-    with st.expander("🗓 Manage Public Holidays", expanded=False):
-        all_holidays = sorted(_get_holidays())
-
-        h_col1, h_col2 = st.columns([3, 1])
-        with h_col1:
-            hol_range = st.date_input(
-                "Select a day or drag to pick a range (any month, any year)",
-                value=(),
-                key="tm_new_hol",
-            )
-        with h_col2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("➕ Add", key="tm_add_hol"):
-                if hol_range:
-                    if isinstance(hol_range, (list, tuple)) and len(hol_range) == 2:
-                        cur_h, end_h = hol_range
-                        while cur_h <= end_h:
-                            _toggle_holiday(str(cur_h), add=True)
-                            cur_h += timedelta(days=1)
-                    else:
-                        single = hol_range[0] if isinstance(hol_range, (list, tuple)) else hol_range
-                        _toggle_holiday(str(single), add=True)
-                    st.rerun()
-
-        if all_holidays:
-            # Group by year-month for readability
-            from itertools import groupby
-            def _ym(d): return d[:7]  # "YYYY-MM"
-            st.write(f"**{len(all_holidays)} holiday(s) saved across all months:**")
-            for ym, group in groupby(all_holidays, key=_ym):
-                yr, mo = int(ym[:4]), int(ym[5:])
-                st.markdown(f"*{calendar.month_abbr[mo]} {yr}*")
-                for h in group:
-                    hc1, hc2 = st.columns([4, 1])
-                    with hc1:
-                        st.write(h)
-                    with hc2:
-                        if st.button("✖", key=f"rm_hol_{h}"):
-                            _toggle_holiday(h, add=False)
-                            st.rerun()
-        else:
-            st.info("No public holidays saved yet.")
-
     st.markdown("---")
 
 
@@ -728,6 +725,164 @@ def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
             key="dl_ov_summary",
         )
 
+    # ── Prior 3 months — one expander each ───────────────────────────────────
+    st.markdown("---")
+    st.subheader("📆 Previous 3 Months")
+    for _i in range(1, 4):
+        _prior = mo_start_cur - pd.DateOffset(months=_i)
+        _render_prior_month_section(
+            df, zid, int(_prior.year), int(_prior.month), holidays
+        )
+
+
+# ── Prior-month salesman performance section ─────────────────────────────────
+
+def _render_prior_month_section(
+    sales_df: pd.DataFrame,
+    zid,
+    year: int,
+    month: int,
+    holidays: set,
+):
+    """
+    Render one prior month's salesman performance inside an expander.
+    Columns match the current-month summary table, with Days Left / Daily Required
+    fixed at 0 and Sales showing the full-month total.
+    Monthly Avg (3M) = average of the 3 months immediately before this month.
+    """
+    import calendar as _cal
+
+    mo_start  = pd.Timestamp(year, month, 1)
+    last_day  = _cal.monthrange(year, month)[1]
+    mo_end    = pd.Timestamp(year, month, last_day)
+    mo_label  = f"{_cal.month_abbr[month]} {year}"
+
+    # Working days in this month
+    wd_month = _count_working_days(mo_start.date(), mo_end.date(), holidays)
+
+    # 3-month lookback window (months immediately before this month)
+    m3_end   = mo_start - pd.Timedelta(days=1)
+    m3_start = mo_start - pd.DateOffset(months=3)
+
+    df = sales_df.copy()
+    if "_dt" not in df.columns:
+        df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    if "_d" not in df.columns:
+        df["_d"] = df["_dt"].dt.date
+
+    mo_data = df[(df["_dt"] >= mo_start) & (df["_dt"] <= mo_end)]
+    m3_data = df[(df["_dt"] >= m3_start) & (df["_dt"] < mo_start)]
+
+    # ZID-wide unique products for this month
+    zid_up = int(mo_data["itemcode"].nunique()) if "itemcode" in mo_data.columns else 0
+
+    sp_list = (
+        df[["spid", "spname"]].dropna().drop_duplicates()
+        .sort_values("spname")
+    )
+
+    rows = []
+    for _, sp_row in sp_list.iterrows():
+        spid   = str(sp_row["spid"])
+        spname = sp_row["spname"]
+
+        sp_mo = mo_data[mo_data["spid"].astype(str) == spid]
+        sp_m3 = m3_data[m3_data["spid"].astype(str) == spid]
+
+        sales      = float(sp_mo["final_sales"].sum())
+        target     = float(_get_target(zid, spid, year, month) or 0.0)
+        pct_tgt    = round(sales / target * 100, 1) if target > 0 else 0.0
+        daily_avg  = round(sales / wd_month, 0) if wd_month > 0 else 0.0
+        monthly_avg_3m = round(float(sp_m3["final_sales"].sum()) / 3, 0)
+
+        uc = int(sp_mo["cusid"].nunique())    if "cusid"    in sp_mo.columns else 0
+        up = int(sp_mo["itemcode"].nunique()) if "itemcode" in sp_mo.columns else 0
+
+        avg_daily_uc = (
+            round(float(sp_mo.groupby("_d")["cusid"].nunique().mean()), 1)
+            if not sp_mo.empty and "cusid" in sp_mo.columns else 0.0
+        )
+        avg_daily_up = (
+            round(float(sp_mo.groupby("_d")["itemcode"].nunique().mean()), 1)
+            if not sp_mo.empty and "itemcode" in sp_mo.columns else 0.0
+        )
+
+        rows.append({
+            "Salesman":         spname,
+            "Target":           target,
+            "Sales":            round(sales, 0),
+            "% vs Target":      pct_tgt,
+            "Days Left":        0,
+            "Daily Required":   0,
+            "Daily Avg":        daily_avg,
+            "Monthly Avg (3M)": monthly_avg_3m,
+            "Uniq Cust":        uc,
+            "Avg Daily Cust":   avg_daily_uc,
+            "Uniq Prods":       up,
+            "Avg Daily Prods":  avg_daily_up,
+            "ZID Uniq Prods":   zid_up,
+        })
+
+    with st.expander(f"📅 {mo_label}", expanded=False):
+        if not rows:
+            st.info("No data available for this month.")
+            return
+
+        t = (
+            pd.DataFrame(rows)
+            .sort_values("Sales", ascending=False)
+            .reset_index(drop=True)
+        )
+
+        def _style_prior(df_inner):
+            styled = df_inner.style.format(
+                {
+                    "Target":           "{:,.0f}",
+                    "Sales":            "{:,.0f}",
+                    "% vs Target":      "{:.1f}%",
+                    "Days Left":        "{:,.0f}",
+                    "Daily Required":   "{:,.0f}",
+                    "Daily Avg":        "{:,.0f}",
+                    "Monthly Avg (3M)": "{:,.0f}",
+                    "Uniq Cust":        "{:,.0f}",
+                    "Avg Daily Cust":   "{:.1f}",
+                    "Uniq Prods":       "{:,.0f}",
+                    "Avg Daily Prods":  "{:.1f}",
+                    "ZID Uniq Prods":   "{:,.0f}",
+                },
+                na_rep="—",
+            )
+
+            def _col_pct(col):
+                out = []
+                for v in col:
+                    if not v:
+                        out.append("")
+                    elif v >= 100:
+                        out.append("background-color: #D4EDDA; color: #155724")
+                    elif v >= 75:
+                        out.append("background-color: #FFF3CD; color: #856404")
+                    else:
+                        out.append("background-color: #F8D7DA; color: #721C24")
+                return out
+
+            if "% vs Target" in df_inner.columns:
+                styled = styled.apply(_col_pct, subset=["% vs Target"])
+            return styled
+
+        try:
+            st.dataframe(_style_prior(t), use_container_width=True, hide_index=True)
+        except Exception:
+            st.dataframe(t, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            f"⬇ Download {mo_label} CSV",
+            t.to_csv(index=False).encode("utf-8"),
+            file_name=f"summary_{zid}_{year}_{month:02d}.csv",
+            mime="text/csv",
+            key=f"dl_prior_{year}_{month:02d}",
+        )
+
 
 # ── Salesman daily breakdown (current month) ──────────────────────────────────
 
@@ -828,6 +983,21 @@ def _render_sp_daily_breakdown(
 def display_target_management_page(current_page, zid, data_dict):
     st.title("Target Management")
 
+    # ── Maintenance: prune stale JSON entries on every load ───────────────────
+    _prune_targets()
+    _prune_holidays()
+
+    # ── Holiday warning: prompt if no holidays entered for current year ────────
+    _cur_year = pd.Timestamp.today().year
+    _cur_year_holidays = [h for h in _get_holidays() if h.startswith(str(_cur_year))]
+    if not _cur_year_holidays:
+        st.warning(
+            f"⚠️ No public holidays have been entered for **{_cur_year}**. "
+            "Working-day calculations (daily averages, daily required, days left) "
+            "will not account for public holidays until you add them. "
+            "Please open the **🗓 Manage Public Holidays** panel above and add this year's holidays."
+        )
+
     raw_sales   = data_dict.get("sales",  pd.DataFrame())
     raw_returns = data_dict.get("return", pd.DataFrame())
 
@@ -850,6 +1020,49 @@ def display_target_management_page(current_page, zid, data_dict):
         horizontal=True,
         key="tm_view_mode",
     )
+
+    # ── Public holidays management (always accessible) ───────────────────────
+    with st.expander("🗓 Manage Public Holidays", expanded=False):
+        all_holidays = sorted(_get_holidays())
+
+        h_col1, h_col2 = st.columns([3, 1])
+        with h_col1:
+            hol_range = st.date_input(
+                "Select a day or drag to pick a range (any month, any year)",
+                value=(),
+                key="tm_new_hol",
+            )
+        with h_col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("➕ Add", key="tm_add_hol"):
+                if hol_range:
+                    if isinstance(hol_range, (list, tuple)) and len(hol_range) == 2:
+                        cur_h, end_h = hol_range
+                        while cur_h <= end_h:
+                            _toggle_holiday(str(cur_h), add=True)
+                            cur_h += timedelta(days=1)
+                    else:
+                        single = hol_range[0] if isinstance(hol_range, (list, tuple)) else hol_range
+                        _toggle_holiday(str(single), add=True)
+                    st.rerun()
+
+        if all_holidays:
+            from itertools import groupby
+            def _ym(d): return d[:7]  # "YYYY-MM"
+            st.write(f"**{len(all_holidays)} holiday(s) saved across all months:**")
+            for ym, group in groupby(all_holidays, key=_ym):
+                yr, mo = int(ym[:4]), int(ym[5:])
+                st.markdown(f"*{calendar.month_abbr[mo]} {yr}*")
+                for h in group:
+                    hc1, hc2 = st.columns([4, 1])
+                    with hc1:
+                        st.write(h)
+                    with hc2:
+                        if st.button("✖", key=f"rm_hol_{h}"):
+                            _toggle_holiday(h, add=False)
+                            st.rerun()
+        else:
+            st.info("No public holidays saved yet.")
 
     if _view_mode == "📊 All Salesmen Overview":
         opmob_all = _load_opmob_pending(str(zid))
