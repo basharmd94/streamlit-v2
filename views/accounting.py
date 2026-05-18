@@ -8,29 +8,29 @@ from utils.utils import timed
 
 
 # ---------- Cached loaders (simple table pulls) ----------
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_cacus(zid: str) -> pd.DataFrame:
     df = Analytics("cacus_simple", zid=zid, filters={"zid": (str(zid),)}).data
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_gldetail(zid: str) -> pd.DataFrame:
     project = st.session_state.proj
     filters = {"zid": (str(zid),)}
     df = Analytics("gldetail_simple", zid=zid, project=project, filters=filters).data
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_glheader(zid: str) -> pd.DataFrame:
     df = Analytics("glheader_simple", zid=zid, filters={"zid": (str(zid),)}).data
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_glmst(zid: str) -> pd.DataFrame:
     df = Analytics("glmst_simple", zid=zid, filters={"zid": (str(zid),)}).data
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_casup(zid: str) -> pd.DataFrame:
     df = Analytics("casup_simple", zid=zid, filters={"zid": (str(zid),)}).data
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
@@ -162,7 +162,7 @@ def _compute_ap_balances(zid: str, year: int, month: int) -> tuple[pd.DataFrame,
 
     return out, trail_asof
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _ledger_accounts_by_type(zid: str, ac_type: str) -> pd.DataFrame:
     glm = _load_glmst(zid)
     if glm.empty:
@@ -171,7 +171,7 @@ def _ledger_accounts_by_type(zid: str, ac_type: str) -> pd.DataFrame:
     df["label"] = df["ac_code"].astype(str) + " — " + df["ac_name"].astype(str)
     return df.sort_values("ac_code")
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _compute_ledger(zid: str, ac_type: str, ac_codes: list[str], year: int, month: int,
                     mode: str, ignore_ob: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
     """

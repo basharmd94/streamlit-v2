@@ -239,7 +239,7 @@ def compute_order_frequency_metrics(filtered_data_ar: pd.DataFrame) -> Tuple[pd.
 
     return order_count_df, avg_interval_df, std_interval_df
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def compute_payment_timeliness_metrics(df: pd.DataFrame,tolerance: float = 10,on_time_limit: int = 30) -> Dict[str, pd.DataFrame]:
     # 1) Parse dates
     df = df.copy()

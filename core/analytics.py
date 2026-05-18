@@ -92,7 +92,7 @@ def basket_scope_zids(selected_zid: str) -> list[str]:
     return [z]
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def basket_load_sales(scope_zids: tuple[str, ...], filters: dict) -> pd.DataFrame:
     dfs = []
     for z in scope_zids:
@@ -104,7 +104,7 @@ def basket_load_sales(scope_zids: tuple[str, ...], filters: dict) -> pd.DataFram
     return pd.concat(dfs, ignore_index=True)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def basket_load_purchase_for_basket(selected_zid: str) -> pd.DataFrame:
     z = str(selected_zid)
 
@@ -118,13 +118,13 @@ def basket_load_purchase_for_basket(selected_zid: str) -> pd.DataFrame:
     return _load_pair(z, z)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def basket_load_cacus(zid: str) -> pd.DataFrame:
     df = Analytics("cacus_simple", zid=str(zid), filters={}).data
     return df if df is not None else pd.DataFrame()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def basket_prepare(selected_zid: str, filters: dict) -> dict:
     scope = basket_scope_zids(selected_zid)
     scope_tuple = tuple(scope)

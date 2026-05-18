@@ -317,7 +317,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
             st.dataframe(stats_df, use_container_width=True)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _build_customer_data_view_options(zid: int,sales_shape: tuple,sales_cols: tuple,sales_df: pd.DataFrame):
     """
     Cached builder for dropdown options to avoid repeated drop_duplicates()

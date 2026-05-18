@@ -15,7 +15,7 @@ def _effective_zids(primary_zid: str) -> list[str]:
     p = str(primary_zid)
     return [p, "100009"] if p == "100001" else [p]
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_stock_flow(zid: str) -> pd.DataFrame:
     zids = _effective_zids(zid)  # keep your 100001 → also 100009 rule
     frames = []
@@ -28,7 +28,7 @@ def _load_stock_flow(zid: str) -> pd.DataFrame:
             st.error(f"Error loading stock_flow for zid={z}: {e}")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_product_inventory(zid: str) -> pd.DataFrame:
     """
     Loads monthly product-level inventory transactions from `stock` joined to `caitem`.
@@ -48,7 +48,7 @@ def _load_product_inventory(zid: str) -> pd.DataFrame:
             st.error(f"Error loading product inventory for zid={z}: {e}")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_inventory_value(zid: str) -> pd.DataFrame:
     """
     Loads warehouse-level monthly stock value snapshots from `stock_value`.

@@ -273,7 +273,7 @@ def _render_not_ordered_table(
 
 # ── Cacus directory loader ────────────────────────────────────────────────────
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_cacus_directory(zid: str) -> pd.DataFrame:
     from core.analytics import Analytics
     df = Analytics("cacus_directory", zid=zid, filters={}).data
@@ -282,7 +282,7 @@ def _load_cacus_directory(zid: str) -> pd.DataFrame:
 
 # ── Opmob pending orders loader ───────────────────────────────────────────────
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_opmob_pending(zid: str) -> pd.DataFrame:
     from core.analytics import Analytics
     df = Analytics("opmob_pending", zid=zid, filters={}).data

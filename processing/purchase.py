@@ -375,7 +375,7 @@ def _onhand_series(stock_mv: pd.DataFrame) -> pd.DataFrame:
 
     return daily[["date", "itemcode", "onhand_qty", "onhand_cost"]]
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def _prep_stock_timeseries(stock_movement_df: pd.DataFrame, zids: List[str]) -> Dict[str, pd.DataFrame]:
     """
     Shared stock truth engine:
@@ -2527,7 +2527,7 @@ def warehouse_value_snapshot(
     out["totalvalue"] = out["totalvalue"].astype(float)
     return out
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def total_inventory_value_timeseries(
 
     stock_movement_df: pd.DataFrame,

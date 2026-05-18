@@ -10,7 +10,7 @@ from utils.utils import timed
 from auth import auth
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_raw(tables: tuple[str], zid: str) -> pd.DataFrame:
     """
     Load and cache the full combined DataFrame for the given tables + ZID
@@ -28,7 +28,7 @@ def _load_raw(tables: tuple[str], zid: str) -> pd.DataFrame:
 
 
 @timed
-@st.cache_data
+@st.cache_data(ttl=86400)
 def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str],
                         pre_filters: tuple = ()):
     """
@@ -110,7 +110,7 @@ def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str],
 
     return filter_options
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def load_employee_options(zid: str) -> list[str]:
     """Load salesman options for the AR Analysis sidebar."""
     from core.db import get_dataframe
@@ -123,7 +123,7 @@ def load_employee_options(zid: str) -> list[str]:
     return []
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def _load_zid_dict() -> dict:
     """Load business display names from the database business table."""
     from core.db import get_dataframe
@@ -136,7 +136,7 @@ def _load_zid_dict() -> dict:
     return {}
 
 @timed
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=86400)
 def process_data(zid: str,filters: dict, tables: tuple[str], page: str = None) -> dict:
     data_dict = {}
     for table in tables:
@@ -235,6 +235,9 @@ class BaseApp:
             self.navigation()
             # Add logout button in sidebar
             st.sidebar.markdown("---")
+            if st.sidebar.button("🔄 Refresh All Data", key="refresh_all_data", help="Clear all cached data and reload from the database"):
+                st.cache_data.clear()
+                st.rerun()
             if st.sidebar.button("Logout", key='logout_button'):
                 auth.logout()
                 try:

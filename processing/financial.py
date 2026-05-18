@@ -13,12 +13,12 @@ import re, ast
 HERE = Path(__file__).resolve().parent.parent
 JSON_PATH = HERE / "data" / "hierarchy.json"
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def _load_raw() -> dict:
     with open(JSON_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=86400)
 def get_filtered_master(zid, excluded_acctypes):
     _sql, _params = queries.get_gl_master(zid)
     df_master = get_dataframe(_sql, _params)
@@ -36,7 +36,7 @@ def get_filtered_master(zid, excluded_acctypes):
 
     return df_master[~df_master['ac_type'].isin(excluded_acctypes)]
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=86400)
 def process_data_month(zid, year, start_month, end_month,label_col, label_df, project=None, account_types=None):
     df_master = get_filtered_master(zid, account_types)
     df_new    = df_master.copy()
@@ -204,7 +204,7 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
 
     return df_new.rename(columns={'Income Statement': 'ac_lv5'})
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=86400)
 def process_data(
     zid,
     year_list,                 # list[int] – e.g. [2024, 2023]
@@ -309,7 +309,7 @@ def _period_key(col):
         pass
     return (9999, 99) 
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def _cash_codes_from_json() -> List[str]:
     raw = _load_raw()                            # ← uses your cached loader
     bs_tree = raw.get("Balance Sheet Hierarchy", {})
@@ -330,7 +330,7 @@ def _cash_codes_from_json() -> List[str]:
 
     return list(walk(bs_tree))
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def _codes_to_exclude() -> Set[str]:
     raw = _load_raw()                                  # already cached JSON
     _EXCLUDE_BUCKETS = {
@@ -727,7 +727,7 @@ def make_cashflow_statement_level0(pl_df: pd.DataFrame,bs_df: pd.DataFrame, coc_
 
     return cfs_df, summary_df
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def _build_lookup() -> Tuple[Dict[str, Tuple[str, str]],Dict[str, Tuple[str, str]],Dict[str, list[str]],Dict[str, list[str]]]:
     raw = _load_raw()
 
