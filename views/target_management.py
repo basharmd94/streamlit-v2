@@ -425,6 +425,7 @@ def _render_metric_cards(
     sel_spid: str,
     zid,
     all_sales: pd.DataFrame = None,
+    sp_returns: pd.DataFrame = None,
 ):
     """Render the performance metric cards for the selected salesman."""
     today = pd.Timestamp.today().normalize()
@@ -479,10 +480,16 @@ def _render_metric_cards(
             _all3 = _all[(_all["_dt"] >= mo_start_3mo) & (_all["_dt"] <= end_3mo)]
             zid_up_3mo = int(_all3["itemcode"].nunique())
 
-    # ── MTD + remaining days ──────────────────────────────────────────────────
+    # ── MTD sales + returns ───────────────────────────────────────────────────
     mtd_sales = 0.0
     if has_date:
         mtd_sales = float(sp[sp["_dt"] >= mo_start_cur]["final_sales"].sum())
+
+    mtd_return = 0.0
+    if sp_returns is not None and not sp_returns.empty and "treturnamt" in sp_returns.columns:
+        _r = sp_returns.copy()
+        _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
+        mtd_return = float(_r[_r["_dt"] >= mo_start_cur]["treturnamt"].sum())
 
     import calendar as _cal
     last_day_num = _cal.monthrange(today.year, today.month)[1]
@@ -502,7 +509,7 @@ def _render_metric_cards(
 
     # ── Target controls — fully horizontal ───────────────────────────────────
     st.markdown("**🎯 Monthly Target**")
-    t_cols = st.columns([1.5, 1.5, 0.7, 1.5, 1.5, 2])
+    t_cols = st.columns([1.5, 1.5, 0.7, 1.3, 1.3, 1.3, 1.5])
 
     with t_cols[0]:
         sel_mo_label = st.selectbox(
@@ -536,6 +543,11 @@ def _render_metric_cards(
         with t_cols[3]:
             st.metric("MTD Sales", f"{mtd_sales:,.0f}")
         with t_cols[4]:
+            st.metric("MTD Return", f"{mtd_return:,.0f}")
+        with t_cols[5]:
+            net_sales = mtd_sales - mtd_return
+            st.metric("Net Sales", f"{net_sales:,.0f}")
+        with t_cols[6]:
             if target_val > 0:
                 gap = target_val - mtd_sales
                 if remaining_wd > 0:
@@ -552,7 +564,7 @@ def _render_metric_cards(
                         delta_color="off",
                     )
                 else:
-                    pct = (mtd_sales - target_val) / target_val * 100
+                    pct = ((mtd_sales - mtd_return) - target_val) / target_val * 100
                     label = "Above target 🟢" if pct >= 0 else "Below target 🔴"
                     st.metric("vs Target", f"{pct:+.1f}%", delta=label, delta_color="off")
     else:
@@ -584,7 +596,7 @@ def _render_metric_cards(
 
 # ── All-Salesmen Overview ──────────────────────────────────────────────────────
 
-def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
+def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
     """
     Two-table overview for the currently selected ZID:
       Table 1 — one row per salesman: target/MTD/daily-required/3-month metrics
@@ -614,6 +626,15 @@ def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
 
     last3   = df[(df["_dt"] >= mo_start_3mo) & (df["_dt"] <= end_3mo)]
     mtd_all = df[(df["_dt"] >= mo_start_cur) & (df["_dt"] <= today)]
+
+    # ── MTD returns per salesman ───────────────────────────────────────────────
+    mtd_ret_by_sp: dict = {}   # spid -> mtd treturnamt
+    if returns_df is not None and not returns_df.empty and "treturnamt" in returns_df.columns:
+        _r = returns_df.copy()
+        _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
+        _r_mtd = _r[(_r["_dt"] >= mo_start_cur) & (_r["_dt"] <= today)]
+        if "spid" in _r_mtd.columns:
+            mtd_ret_by_sp = _r_mtd.groupby(_r_mtd["spid"].astype(str))["treturnamt"].sum().to_dict()
 
     # ── ZID-wide unique products (3 months) ───────────────────────────────────
     zid_up = int(last3["itemcode"].nunique()) if "itemcode" in last3.columns else 0
@@ -650,10 +671,13 @@ def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
         monthly_avg = round(total_3mo / 3, 0)
         mtd_sales   = float(sp_mtd["final_sales"].sum())
 
+        mtd_ret   = round(mtd_ret_by_sp.get(spid, 0.0), 0)
+        net_sales = round(mtd_sales - mtd_ret, 0)
+
         target    = _get_target(zid, spid, cur_year, cur_month) or 0.0
         gap       = target - mtd_sales
         daily_req = round(gap / remaining_wd, 0) if remaining_wd > 0 and target > 0 else 0.0
-        pct_tgt   = round(mtd_sales / target * 100, 1) if target > 0 else None
+        pct_tgt   = round(net_sales / target * 100, 1) if target > 0 else None
 
         uc_3mo   = int(sp3["cusid"].nunique())    if "cusid"    in sp3.columns else 0
         up_3mo   = int(sp3["itemcode"].nunique()) if "itemcode" in sp3.columns else 0
@@ -664,6 +688,8 @@ def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
             "Salesman":         spname,
             "Target":           target,
             "MTD Sales":        round(mtd_sales, 0),
+            "MTD Return":       mtd_ret,
+            "Net Sales":        net_sales,
             "% vs Target":      pct_tgt,
             "Days Left":        remaining_wd,
             "Daily Required":   daily_req,
@@ -683,6 +709,8 @@ def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
             styled = df.style.format({
                 "Target":           "{:,.0f}",
                 "MTD Sales":        "{:,.0f}",
+                "MTD Return":       "{:,.0f}",
+                "Net Sales":        "{:,.0f}",
                 "% vs Target":      lambda v: f"{v:.1f}%" if v is not None else "—",
                 "Days Left":        "{:,.0f}",
                 "Daily Required":   "{:,.0f}",
@@ -731,7 +759,7 @@ def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
     for _i in range(1, 4):
         _prior = mo_start_cur - pd.DateOffset(months=_i)
         _render_prior_month_section(
-            df, zid, int(_prior.year), int(_prior.month), holidays
+            df, returns_df, zid, int(_prior.year), int(_prior.month), holidays
         )
 
 
@@ -739,6 +767,7 @@ def _render_overview(sales_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
 
 def _render_prior_month_section(
     sales_df: pd.DataFrame,
+    returns_df: pd.DataFrame,
     zid,
     year: int,
     month: int,
@@ -773,6 +802,15 @@ def _render_prior_month_section(
     mo_data = df[(df["_dt"] >= mo_start) & (df["_dt"] <= mo_end)]
     m3_data = df[(df["_dt"] >= m3_start) & (df["_dt"] < mo_start)]
 
+    # ── Returns for this month per salesman ───────────────────────────────────
+    ret_by_sp: dict = {}
+    if returns_df is not None and not returns_df.empty and "treturnamt" in returns_df.columns:
+        _r = returns_df.copy()
+        _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
+        _r_mo = _r[(_r["_dt"] >= mo_start) & (_r["_dt"] <= mo_end)]
+        if "spid" in _r_mo.columns:
+            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().to_dict()
+
     # ZID-wide unique products for this month
     zid_up = int(mo_data["itemcode"].nunique()) if "itemcode" in mo_data.columns else 0
 
@@ -790,8 +828,10 @@ def _render_prior_month_section(
         sp_m3 = m3_data[m3_data["spid"].astype(str) == spid]
 
         sales      = float(sp_mo["final_sales"].sum())
+        ret        = round(ret_by_sp.get(spid, 0.0), 0)
+        net_sales  = round(sales - ret, 0)
         target     = float(_get_target(zid, spid, year, month) or 0.0)
-        pct_tgt    = round(sales / target * 100, 1) if target > 0 else 0.0
+        pct_tgt    = round(net_sales / target * 100, 1) if target > 0 else 0.0
         daily_avg  = round(sales / wd_month, 0) if wd_month > 0 else 0.0
         monthly_avg_3m = round(float(sp_m3["final_sales"].sum()) / 3, 0)
 
@@ -811,6 +851,8 @@ def _render_prior_month_section(
             "Salesman":         spname,
             "Target":           target,
             "Sales":            round(sales, 0),
+            "Return":           ret,
+            "Net Sales":        net_sales,
             "% vs Target":      pct_tgt,
             "Days Left":        0,
             "Daily Required":   0,
@@ -839,6 +881,8 @@ def _render_prior_month_section(
                 {
                     "Target":           "{:,.0f}",
                     "Sales":            "{:,.0f}",
+                    "Return":           "{:,.0f}",
+                    "Net Sales":        "{:,.0f}",
                     "% vs Target":      "{:.1f}%",
                     "Days Left":        "{:,.0f}",
                     "Daily Required":   "{:,.0f}",
@@ -1066,7 +1110,7 @@ def display_target_management_page(current_page, zid, data_dict):
 
     if _view_mode == "📊 All Salesmen Overview":
         opmob_all = _load_opmob_pending(str(zid))
-        _render_overview(sales_df, opmob_all, zid)
+        _render_overview(sales_df, returns_df, opmob_all, zid)
         return
 
     # ── Filters: salesman (single), customer, area (cascading) ────────────────
@@ -1115,7 +1159,7 @@ def display_target_management_page(current_page, zid, data_dict):
     f_final_r = f_sp_cus_r[f_sp_cus_r["area"].isin(sel_area)] if sel_area and "area" in f_sp_cus_r.columns else f_sp_cus_r
 
     # ── Metric cards (uses full salesman data, not customer/area filtered) ─────
-    _render_metric_cards(f_sp, opmob_df, sel_spid, zid, all_sales=sales_df)
+    _render_metric_cards(f_sp, opmob_df, sel_spid, zid, all_sales=sales_df, sp_returns=f_sp_ret)
 
     # ── Customer-wise pivot ───────────────────────────────────────────────────
     try:
