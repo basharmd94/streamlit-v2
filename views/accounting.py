@@ -281,11 +281,9 @@ def display_accounting_analysis_main(current_page, zid: str):
                     if cust_trail.empty:
                         st.info("No GL lines up to the selected month for this customer.")
                     else:
-                        st.dataframe(
-                            cust_trail[["date","voucher","ac_code","ac_name","value"]]
-                            .reset_index(drop=True),
-                            use_container_width=True, height=420
-                        )
+                        trail_display = cust_trail[["date","voucher","ac_code","ac_name","value"]].reset_index(drop=True).copy()
+                        trail_display["ending_balance"] = trail_display["value"].cumsum()
+                        st.dataframe(trail_display, use_container_width=True, height=420)
                         st.write(common.create_download_link(cust_trail,"ar_trail.xlsx"), unsafe_allow_html=True)
 
     # ───────────────────────────── AP Analysis (placeholder) ──────────────────
@@ -333,54 +331,48 @@ def display_accounting_analysis_main(current_page, zid: str):
                         )
                         st.write(common.create_download_link(sup_trail,"ap_trail.xlsx"), unsafe_allow_html=True)
 
-    # ───────────────────────── Ledger Entries (placeholder) ───────────────────
+    # ───────────────────────── Ledger Entries ─────────────────────────────────
     with tab_ledger:
-        colL, colR = st.columns([2,3], gap="large")
-        with colL:
-            st.subheader("Filters")
+        st.subheader("Filters")
 
-            mode = st.radio(
-                "Computation",
-                options=["Income (this month)", "Balance (as-of)"],
-                index=0,
-                help="Income: only the picked month. Balance: up to & including the picked month."
-            )
+        mode = st.radio(
+            "Computation",
+            options=["Income (this month)", "Balance (as-of)"],
+            index=0,
+            help="Income: only the picked month. Balance: up to & including the picked month."
+        )
 
-            ac_choices = ["Income", "Expenditure"] if mode == "Income (this month)" else ["Asset", "Liability"]
+        ac_choices = ["Income", "Expenditure"] if mode == "Income (this month)" else ["Asset", "Liability"]
 
-            if st.session_state.get("ledger_prev_mode") != mode:
-                st.session_state["ledger_prev_mode"] = mode
-                st.session_state.pop("ledger_ac_type", None)
-                st.session_state.pop("ledger_accounts", None)  # if you keyed your multiselect
+        if st.session_state.get("ledger_prev_mode") != mode:
+            st.session_state["ledger_prev_mode"] = mode
+            st.session_state.pop("ledger_ac_type", None)
+            st.session_state.pop("ledger_accounts", None)
 
-            c1, c2 = st.columns(2)
-            with c1:
-                year = st.number_input("Year", min_value=2018, max_value=2035,
-                                        value=pd.Timestamp.today().year, step=1, key="led_year")
-            with c2:
-                month = st.number_input("Month", min_value=1, max_value=12,
-                                        value=pd.Timestamp.today().month, step=1, key="led_month")
+        year = st.number_input("Year", min_value=2018, max_value=2035,
+                                value=pd.Timestamp.today().year, step=1, key="led_year")
+        month = st.number_input("Month", min_value=1, max_value=12,
+                                value=pd.Timestamp.today().month, step=1, key="led_month")
 
-            ignore_ob = st.toggle("Ignore OB (OB--)", value=True,
-                                    help="If ON, OB amounts are excluded from totals. OB values still appear in a separate column.")
+        ignore_ob = st.toggle("Ignore OB (OB--)", value=True,
+                                help="If ON, OB amounts are excluded from totals. OB values still appear in a separate column.")
 
-            # Account type → account picker
-            ac_type = st.selectbox("Account Type", ac_choices, index=0, key="ledger_ac_type")
-            acc_df  = _ledger_accounts_by_type(zid, ac_type)
-            acc_labels = acc_df["label"].tolist()
-            label2code = dict(zip(acc_df["label"], acc_df["ac_code"]))
+        # Account type → account picker
+        ac_type = st.selectbox("Account Type", ac_choices, index=0, key="ledger_ac_type")
+        acc_df  = _ledger_accounts_by_type(zid, ac_type)
+        acc_labels = acc_df["label"].tolist()
+        label2code = dict(zip(acc_df["label"], acc_df["ac_code"]))
 
-            picked_labels = st.multiselect("Accounts (ac_code — ac_name)", options=acc_labels, placeholder="Pick one or more (empty = all in type)")
-            ac_codes = [label2code[l] for l in picked_labels]
+        picked_labels = st.multiselect("Accounts (ac_code — ac_name)", options=acc_labels, placeholder="Pick one or more (empty = all in type)")
+        ac_codes = [label2code[l] for l in picked_labels]
 
-            go = st.button("Load ledger", type="primary")
+        go = st.button("Load ledger", type="primary")
 
-        with colR:
-            if go:
-                lines = _compute_ledger(zid, ac_type, ac_codes, int(year), int(month), mode, bool(ignore_ob))
-                if lines.empty:
-                    st.info("No postings for the selected filters.")
-                else:
-                    st.caption("Line entries (no narration)")
-                    st.dataframe(lines, use_container_width=True, height=420)
-                    st.write(common.create_download_link(lines,"ledger_lines.xlsx"), unsafe_allow_html=True)
+        if go:
+            lines = _compute_ledger(zid, ac_type, ac_codes, int(year), int(month), mode, bool(ignore_ob))
+            if lines.empty:
+                st.info("No postings for the selected filters.")
+            else:
+                st.caption("Line entries (no narration)")
+                st.dataframe(lines, use_container_width=True, height=420)
+                st.write(common.create_download_link(lines,"ledger_lines.xlsx"), unsafe_allow_html=True)

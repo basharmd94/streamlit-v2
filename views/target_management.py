@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from processing import common, target_management as tm, buying_pattern as bp
+from processing import common, target_management as tm, buying_pattern as bp, daily_sales as ds
 from utils.utils import timed
 
 
@@ -269,6 +269,104 @@ def _render_not_ordered_table(
         mime="text/csv",
         key=f"dl_{dl_key}",
     )
+
+
+# ── Inventory default warehouses (mirrors views/inventory.py) ─────────────────
+
+_INV_DEFAULT_WAREHOUSES = [
+    "Finished Goods Store Packaging",
+    "HMBR -Main Store (4th Floor)",
+    "HMBR -W5 (MirerBaazar 2nd Floor)",
+    "HMBR -W7 (2) (MirerBaazar 3rd Floor)",
+    "HMBR -W7 (MirerBaazar 3rd Floor)",
+    "HMBR Showroom (Mirer Bazar)",
+    "Raw Material Store Packaging",
+]
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def _load_inv_stock_summed(zid: str, cutoff_year: int, cutoff_month: int) -> pd.DataFrame:
+    """
+    Load final stock summed at item level (warehouse column OFF).
+    Applies the default warehouse list, excludes items whose code/name
+    starts with 'Z' or 'RAW', and keeps only items with final_qty > 50.
+    Cutoff is the last snapshot at or before cutoff_year/cutoff_month.
+    """
+    from core.analytics import Analytics
+
+    def _effective_zids(primary: str) -> list:
+        return [primary, "100009"] if primary == "100001" else [primary]
+
+    frames = []
+    for z in _effective_zids(str(zid)):
+        try:
+            df = Analytics("stock", zid=z, filters={"zid": (str(z),)}).data
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                frames.append(df.assign(_src_zid=str(z)))   # tag source zid
+        except Exception:
+            pass
+    if not frames:
+        return pd.DataFrame()
+
+    inv = pd.concat(frames, ignore_index=True)
+
+    # Normalize types
+    for col in ["year", "month"]:
+        if col in inv.columns:
+            inv[col] = pd.to_numeric(inv[col], errors="coerce")
+    for c in ["warehouse", "itemcode", "itemname", "itemgroup"]:
+        if c in inv.columns:
+            inv[c] = inv[c].astype(str)
+    if "stockqty" in inv.columns:
+        inv["stockqty"] = pd.to_numeric(inv["stockqty"], errors="coerce").fillna(0.0)
+
+    # Apply cutoff
+    inv["ym"] = inv["year"].fillna(0).astype(int) * 100 + inv["month"].fillna(0).astype(int)
+    inv = inv[inv["ym"] <= (cutoff_year * 100 + cutoff_month)]
+
+    if inv.empty:
+        return pd.DataFrame()
+
+    # Filter to default warehouses (intersect with available)
+    if "warehouse" in inv.columns:
+        available_wh = set(inv["warehouse"].unique())
+        wh_filter = [w for w in _INV_DEFAULT_WAREHOUSES if w in available_wh]
+        if wh_filter:
+            inv = inv[inv["warehouse"].isin(wh_filter)]
+
+    # Sum by itemcode ONLY — do NOT include itemname/itemgroup in the groupby.
+    # The same itemcode can appear in both zids with different caitem names/groups
+    # (100009 xdrawing maps to a 100001 code but keeps 100009's xdesc).
+    # Grouping by name/group would produce two rows instead of one summed row.
+    agg_qty = (
+        inv.groupby("itemcode", as_index=False)
+           .agg(final_qty=("stockqty", "sum"))
+    )
+
+    # Name/group lookup — prefer primary zid's caitem so the displayed name
+    # matches what the main company's inventory shows.
+    _meta = (
+        inv[["itemcode", "itemname", "itemgroup", "_src_zid"]]
+        .drop_duplicates()
+        .sort_values("_src_zid", key=lambda s: s.map(lambda x: 0 if x == str(zid) else 1))
+        .drop_duplicates("itemcode", keep="first")
+        [["itemcode", "itemname", "itemgroup"]]
+    )
+    agg = agg_qty.merge(_meta, on="itemcode", how="left")
+
+    # Exclude items whose code or name starts with Z, RAW, or M
+    name_up = agg["itemname"].str.upper()
+    code_up = agg["itemcode"].str.upper()
+    exclude = (
+        name_up.str.startswith("Z")   | name_up.str.startswith("RAW") | name_up.str.startswith("M") |
+        code_up.str.startswith("Z")   | code_up.str.startswith("RAW") | code_up.str.startswith("M")
+    )
+    agg = agg[~exclude]
+
+    # Exclude zero-stock items
+    agg = agg[agg["final_qty"] >= 1]
+
+    return agg.reset_index(drop=True)
 
 
 # ── Cacus directory loader ────────────────────────────────────────────────────
@@ -1021,6 +1119,197 @@ def _render_sp_daily_breakdown(
     )
 
 
+# ── Inventory coverage vs this month's sales ──────────────────────────────────
+
+def _render_inventory_coverage(sp_sales: pd.DataFrame, zid: str):
+    """
+    Compare what the salesman sold this month against stock available at the
+    end of the previous month (warehouse-summed, qty >= 1, no Z/RAW/M items).
+
+    🟢 Green       — in inventory AND sold this month
+    🟣 Purple      — NOT sold this month BUT sold to these customers in the
+                     loaded timeline (historical); shown even at 0 stock
+    🔴 Red         — in inventory but never sold historically, not this month
+    🔵 Blue        — sold this month but NOT in the inventory list
+    """
+    st.markdown("---")
+    st.subheader("🗂️ Inventory Coverage — This Month vs Prior-Month Stock")
+
+    today = pd.Timestamp.today()
+    cur_year, cur_month = today.year, today.month
+
+    # Cutoff = end of previous month
+    prev = today - pd.DateOffset(months=1)
+    cutoff_year, cutoff_month = int(prev.year), int(prev.month)
+    mo_start = pd.Timestamp(cur_year, cur_month, 1)
+
+    st.caption(
+        f"Stock cutoff: **{cutoff_year}-{cutoff_month:02d}** · "
+        f"Excludes items starting with **Z**, **RAW**, or **M** · "
+        f"Default warehouses only (warehouse toggle OFF)"
+    )
+
+    # ── Guard ─────────────────────────────────────────────────────────────────
+    if sp_sales.empty or "date" not in sp_sales.columns:
+        st.info("No sales data available.")
+        return
+
+    sp = sp_sales.copy()
+    sp["_dt"] = pd.to_datetime(sp["date"], errors="coerce")
+
+    # ── Full item name lookup from all sales history ───────────────────────────
+    name_lookup: dict = {}   # {itemcode: itemname}
+    if "itemcode" in sp.columns and "itemname" in sp.columns:
+        name_lookup = (
+            sp[["itemcode", "itemname"]]
+            .dropna(subset=["itemcode"])
+            .drop_duplicates("itemcode")
+            .assign(itemcode=lambda d: d["itemcode"].astype(str),
+                    itemname=lambda d: d["itemname"].astype(str))
+            .set_index("itemcode")["itemname"]
+            .to_dict()
+        )
+
+    group_lookup: dict = {}  # {itemcode: itemgroup}
+    if "itemcode" in sp.columns and "itemgroup" in sp.columns:
+        group_lookup = (
+            sp[["itemcode", "itemgroup"]]
+            .dropna(subset=["itemcode"])
+            .drop_duplicates("itemcode")
+            .assign(itemcode=lambda d: d["itemcode"].astype(str),
+                    itemgroup=lambda d: d["itemgroup"].astype(str))
+            .set_index("itemcode")["itemgroup"]
+            .to_dict()
+        )
+
+    # ── Products sold THIS month ───────────────────────────────────────────────
+    sold_this_month = sp[sp["_dt"] >= mo_start]
+    sold_codes: set = set()
+    if not sold_this_month.empty and "itemcode" in sold_this_month.columns:
+        sold_codes = set(sold_this_month["itemcode"].dropna().astype(str).unique())
+
+    # ── Products sold in ANY PREVIOUS month (historical) ──────────────────────
+    sold_prev = sp[sp["_dt"] < mo_start]
+    historical_codes: set = set()
+    if not sold_prev.empty and "itemcode" in sold_prev.columns:
+        historical_codes = set(sold_prev["itemcode"].dropna().astype(str).unique())
+    # Green takes full precedence — purple pool never contains current-month items
+    purple_codes = historical_codes - sold_codes
+
+    # ── Inventory stock at prior-month cutoff ──────────────────────────────────
+    with st.spinner("Loading inventory data…"):
+        inv_df = _load_inv_stock_summed(str(zid), cutoff_year, cutoff_month)
+
+    if inv_df.empty:
+        st.warning(
+            f"No inventory data found for cutoff {cutoff_year}-{cutoff_month:02d}. "
+            "The stock query may not have returned results for this period."
+        )
+        return
+
+    inv_items: set = set(inv_df["itemcode"].astype(str).unique())
+    # Build quick lookup for inv rows
+    inv_row_map = {
+        str(r["itemcode"]): r
+        for _, r in inv_df.iterrows()
+    }
+
+    # ── Build combined table ───────────────────────────────────────────────────
+    rows = []
+
+    # Pass 1 — inventory items (qty >= 1)
+    # Precedence: 🟢 green (sold this month) > 🟣 purple (historical) > 🔴 red (never)
+    for code, inv_row in inv_row_map.items():
+        if code in sold_codes:          # green always wins
+            status = "🟢 Sold"
+        elif code in purple_codes:      # previously sold but not this month
+            status = "🟣 Previously Sold"
+        else:                           # in stock, no sales history with this salesman
+            status = "🔴 Not Sold"
+        rows.append({
+            "Status":     status,
+            "Item Code":  code,
+            "Item Name":  str(inv_row["itemname"]),
+            "Item Group": str(inv_row["itemgroup"]),
+            "Stock Qty":  inv_row["final_qty"],
+        })
+
+    # Pass 2 — historically sold items with 0/no stock (purple_codes already excludes sold_codes)
+    for code in purple_codes:
+        if code not in inv_items:
+            rows.append({
+                "Status":     "🟣 Previously Sold",
+                "Item Code":  code,
+                "Item Name":  name_lookup.get(code, "—"),
+                "Item Group": group_lookup.get(code, "—"),
+                "Stock Qty":  0,
+            })
+
+    # Pass 3 — sold this month but not in inventory list
+    for code in sold_codes:
+        if code not in inv_items:
+            rows.append({
+                "Status":     "🔵 Not in Inventory",
+                "Item Code":  code,
+                "Item Name":  name_lookup.get(code, "—"),
+                "Item Group": group_lookup.get(code, "—"),
+                "Stock Qty":  None,
+            })
+
+    if not rows:
+        st.info("No data to display.")
+        return
+
+    result = pd.DataFrame(rows)
+    _order = {"🟢 Sold": 0, "🟣 Previously Sold": 1, "🔴 Not Sold": 2, "🔵 Not in Inventory": 3}
+    result = (
+        result.assign(_sort=result["Status"].map(_order))
+              .sort_values(["_sort", "Item Name"])
+              .drop(columns=["_sort"])
+              .reset_index(drop=True)
+    )
+
+    # ── Summary metrics ────────────────────────────────────────────────────────
+    n_sold     = int((result["Status"] == "🟢 Sold").sum())
+    n_prev     = int((result["Status"] == "🟣 Previously Sold").sum())
+    n_unsold   = int((result["Status"] == "🔴 Not Sold").sum())
+    n_missing  = int((result["Status"] == "🔵 Not in Inventory").sum())
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("🟢 Sold from Stock",    n_sold,    f"of {len(inv_df)} stocked items")
+    mc2.metric("🟣 Previously Sold",    n_prev,    "not sold this month")
+    mc3.metric("🔴 Never Sold",         n_unsold,  "stocked, no history with salesman")
+    mc4.metric("🔵 Not in Stock",       n_missing, "sold but absent from stock list")
+
+    # ── Colour-coded table ─────────────────────────────────────────────────────
+    _BG = {
+        "🟢 Sold":             ("background-color: #D4EDDA", "color: #155724"),
+        "🟣 Previously Sold":  ("background-color: #E8D5F5", "color: #4B006E"),
+        "🔴 Not Sold":         ("background-color: #F8D7DA", "color: #721C24"),
+        "🔵 Not in Inventory": ("background-color: #CCE5FF", "color: #004085"),
+    }
+
+    def _colour(row):
+        bg, fg = _BG.get(row["Status"], ("", ""))
+        return [f"{bg}; {fg}"] * len(row)
+
+    fmt = {"Stock Qty": lambda v: f"{v:,.0f}" if v is not None and pd.notna(v) else "—"}
+
+    try:
+        styled = result.style.apply(_colour, axis=1).format(fmt, na_rep="—")
+        st.dataframe(styled, use_container_width=True, height=520, hide_index=True)
+    except Exception:
+        st.dataframe(result, use_container_width=True, height=520, hide_index=True)
+
+    st.download_button(
+        label=f"⬇ Download Coverage CSV ({len(result):,} rows)",
+        data=result.to_csv(index=False).encode("utf-8"),
+        file_name=f"inv_coverage_{cur_year}_{cur_month:02d}_{zid}.csv",
+        mime="text/csv",
+        key="dl_inv_coverage",
+    )
+
+
 # ── Main view ─────────────────────────────────────────────────────────────────
 
 @timed
@@ -1060,7 +1349,7 @@ def display_target_management_page(current_page, zid, data_dict):
     # ── View mode radio ───────────────────────────────────────────────────────
     _view_mode = st.radio(
         "View",
-        ["👤 Individual Salesman", "📊 All Salesmen Overview"],
+        ["👤 Individual Salesman", "📊 All Salesmen Overview", "📈 Moving Average"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -1111,6 +1400,42 @@ def display_target_management_page(current_page, zid, data_dict):
     if _view_mode == "📊 All Salesmen Overview":
         opmob_all = _load_opmob_pending(str(zid))
         _render_overview(sales_df, returns_df, opmob_all, zid)
+        return
+
+    if _view_mode == "📈 Moving Average":
+        from datetime import date as _date
+        st.subheader("📈 Moving Average Analysis")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            ma_entity = st.selectbox(
+                "Entity", ["Salesman", "Product", "Product Group"], key="tm_ma_entity"
+            )
+        with col2:
+            ma_metric = st.selectbox(
+                "Metric", ["Net Sales", "Net Returns"], key="tm_ma_metric"
+            )
+        with col3:
+            ma_end_date = st.date_input(
+                "End Date", value=_date.today(), key="tm_ma_end_date"
+            )
+
+        try:
+            ma_df = ds.compute_moving_avg_table(
+                sales_df=sales_df,
+                returns_df=returns_df,
+                entity=ma_entity,
+                metric=ma_metric,
+                end_date=ma_end_date,
+                collection_df=None,
+            )
+            if ma_df is not None and not ma_df.empty:
+                st.dataframe(ma_df, use_container_width=True)
+            else:
+                st.info("No moving average data available for the selected filters.")
+        except Exception as _ma_err:
+            st.warning("Unable to compute moving average.")
+            st.caption(f"Details: {_ma_err}")
         return
 
     # ── Filters: salesman (single), customer, area (cascading) ────────────────
@@ -1365,3 +1690,6 @@ def display_target_management_page(current_page, zid, data_dict):
         st.caption(f"Buying pattern error: {e}")
 
     _render_buying_pattern(bp_df, is_any_filter=bool(sel_spid))
+
+    # ── Inventory Coverage ────────────────────────────────────────────────────
+    _render_inventory_coverage(f_sp, str(zid))
