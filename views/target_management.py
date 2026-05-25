@@ -283,6 +283,29 @@ _INV_DEFAULT_WAREHOUSES = [
     "Raw Material Store Packaging",
 ]
 
+# Per-ZID default item groups for inventory coverage.
+# When defined, only these groups are shown and prefix exclusions (Z/RAW/M)
+# are skipped. ZIDs not listed here fall back to the prefix exclusions.
+_INV_DEFAULT_ITEMGROUPS_BY_ZID = {
+    "100000": [
+        "Blank",
+        "Chemical Item",
+        "Steel Item",
+        "Plastic Item",
+        "Thread Tape Item",
+        "Multiplug",
+        "Drain Cover",
+        "Paint Roller Item",
+    ],
+    "100005": [
+        "Industrial & Household",
+        "Marble Cleaner",
+        "Multisurface Cleaner",
+        "Laundry Detergent",
+        "Steel Scrubber",
+    ],
+}
+
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def _load_inv_stock_summed(zid: str, cutoff_year: int, cutoff_month: int) -> pd.DataFrame:
@@ -354,14 +377,20 @@ def _load_inv_stock_summed(zid: str, cutoff_year: int, cutoff_month: int) -> pd.
     )
     agg = agg_qty.merge(_meta, on="itemcode", how="left")
 
-    # Exclude items whose code or name starts with Z, RAW, or M
-    name_up = agg["itemname"].str.upper()
-    code_up = agg["itemcode"].str.upper()
-    exclude = (
-        name_up.str.startswith("Z")   | name_up.str.startswith("RAW") | name_up.str.startswith("M") |
-        code_up.str.startswith("Z")   | code_up.str.startswith("RAW") | code_up.str.startswith("M")
-    )
-    agg = agg[~exclude]
+    # Apply item group filter or prefix exclusions depending on ZID
+    default_groups = _INV_DEFAULT_ITEMGROUPS_BY_ZID.get(str(zid))
+    if default_groups and "itemgroup" in agg.columns:
+        # ZID has explicit item groups defined — filter to those only
+        agg = agg[agg["itemgroup"].isin(default_groups)]
+    else:
+        # No explicit groups defined — exclude items starting with Z, RAW, or M
+        name_up = agg["itemname"].str.upper()
+        code_up = agg["itemcode"].str.upper()
+        exclude = (
+            name_up.str.startswith("Z")   | name_up.str.startswith("RAW") | name_up.str.startswith("M") |
+            code_up.str.startswith("Z")   | code_up.str.startswith("RAW") | code_up.str.startswith("M")
+        )
+        agg = agg[~exclude]
 
     # Exclude zero-stock items
     agg = agg[agg["final_qty"] >= 1]
