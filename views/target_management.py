@@ -1218,42 +1218,40 @@ def _render_inventory_coverage(sp_sales: pd.DataFrame, zid: str):
     rows = []
 
     # Pass 1 — inventory items (qty >= 1)
-    # Precedence: 🟢 green (sold this month) > 🟣 purple (historical) > 🔴 red (never)
     for code, inv_row in inv_row_map.items():
-        if code in sold_codes:          # green always wins
-            status = "🟢 Sold"
-        elif code in purple_codes:      # previously sold but not this month
-            status = "🟣 Previously Sold"
-        else:                           # in stock, no sales history with this salesman
-            status = "🔴 Not Sold"
+        sold_tm  = code in sold_codes
+        prev_sold = code in purple_codes   # purple_codes already excludes sold_codes
         rows.append({
-            "Status":     status,
-            "Item Code":  code,
-            "Item Name":  str(inv_row["itemname"]),
-            "Item Group": str(inv_row["itemgroup"]),
-            "Stock Qty":  inv_row["final_qty"],
+            "This Month":    "✅ Sold" if sold_tm else "❌ Not Sold",
+            "Prev. Sold":    "🟣" if prev_sold else "",
+            "Item Code":     code,
+            "Item Name":     str(inv_row["itemname"]),
+            "Item Group":    str(inv_row["itemgroup"]),
+            "Stock Qty":     inv_row["final_qty"],
         })
 
-    # Pass 2 — historically sold items with 0/no stock (purple_codes already excludes sold_codes)
+    # Pass 2 — historically sold items with 0/no inventory stock
     for code in purple_codes:
         if code not in inv_items:
             rows.append({
-                "Status":     "🟣 Previously Sold",
-                "Item Code":  code,
-                "Item Name":  name_lookup.get(code, "—"),
-                "Item Group": group_lookup.get(code, "—"),
-                "Stock Qty":  0,
+                "This Month":  "❌ Not Sold",
+                "Prev. Sold":  "🟣",
+                "Item Code":   code,
+                "Item Name":   name_lookup.get(code, "—"),
+                "Item Group":  group_lookup.get(code, "—"),
+                "Stock Qty":   0,
             })
 
     # Pass 3 — sold this month but not in inventory list
     for code in sold_codes:
         if code not in inv_items:
             rows.append({
-                "Status":     "🔵 Not in Inventory",
-                "Item Code":  code,
-                "Item Name":  name_lookup.get(code, "—"),
-                "Item Group": group_lookup.get(code, "—"),
-                "Stock Qty":  None,
+                "This Month":  "✅ Sold",
+                "Prev. Sold":  "🟣" if code in historical_codes else "",
+                "Item Code":   code,
+                "Item Name":   name_lookup.get(code, "—"),
+                "Item Group":  group_lookup.get(code, "—"),
+                "Stock Qty":   None,
             })
 
     if not rows:
@@ -1261,37 +1259,41 @@ def _render_inventory_coverage(sp_sales: pd.DataFrame, zid: str):
         return
 
     result = pd.DataFrame(rows)
-    _order = {"🟢 Sold": 0, "🟣 Previously Sold": 1, "🔴 Not Sold": 2, "🔵 Not in Inventory": 3}
+    # Sort: sold this month first, then not sold; within each group alphabetically
     result = (
-        result.assign(_sort=result["Status"].map(_order))
+        result.assign(_sort=result["This Month"].map({"✅ Sold": 0, "❌ Not Sold": 1}))
               .sort_values(["_sort", "Item Name"])
               .drop(columns=["_sort"])
               .reset_index(drop=True)
     )
 
     # ── Summary metrics ────────────────────────────────────────────────────────
-    n_sold     = int((result["Status"] == "🟢 Sold").sum())
-    n_prev     = int((result["Status"] == "🟣 Previously Sold").sum())
-    n_unsold   = int((result["Status"] == "🔴 Not Sold").sum())
-    n_missing  = int((result["Status"] == "🔵 Not in Inventory").sum())
+    n_sold    = int((result["This Month"] == "✅ Sold").sum())
+    n_unsold  = int((result["This Month"] == "❌ Not Sold").sum())
+    n_prev    = int((result["Prev. Sold"] == "🟣").sum())
+    n_missing = int(
+        ((result["This Month"] == "✅ Sold") & result["Stock Qty"].isna()).sum()
+    )
 
     mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("🟢 Sold from Stock",    n_sold,    f"of {len(inv_df)} stocked items")
-    mc2.metric("🟣 Previously Sold",    n_prev,    "not sold this month")
-    mc3.metric("🔴 Never Sold",         n_unsold,  "stocked, no history with salesman")
-    mc4.metric("🔵 Not in Stock",       n_missing, "sold but absent from stock list")
+    mc1.metric("✅ Sold This Month",   n_sold,    f"of {len(inv_df)} stocked items")
+    mc2.metric("❌ Not Sold",          n_unsold,  "stocked but not sold this month")
+    mc3.metric("🟣 Previously Sold",  n_prev,    "have prior history (any month)")
+    mc4.metric("⚠️ Not in Stock",     n_missing, "sold but absent from stock list")
 
     # ── Colour-coded table ─────────────────────────────────────────────────────
-    _BG = {
-        "🟢 Sold":             ("background-color: #D4EDDA", "color: #155724"),
-        "🟣 Previously Sold":  ("background-color: #E8D5F5", "color: #4B006E"),
-        "🔴 Not Sold":         ("background-color: #F8D7DA", "color: #721C24"),
-        "🔵 Not in Inventory": ("background-color: #CCE5FF", "color: #004085"),
+    # Row color driven by "This Month" only — "Prev. Sold" column is a quiet indicator
+    _ROW_BG = {
+        "✅ Sold":    ("background-color: #D4EDDA", "color: #155724"),
+        "❌ Not Sold": ("background-color: #F8D7DA", "color: #721C24"),
     }
 
     def _colour(row):
-        bg, fg = _BG.get(row["Status"], ("", ""))
-        return [f"{bg}; {fg}"] * len(row)
+        bg, fg = _ROW_BG.get(row["This Month"], ("", ""))
+        base = f"{bg}; {fg}"
+        styles = [base] * len(row)
+        # "Prev. Sold" cell gets no extra styling — neutral against the row bg
+        return styles
 
     fmt = {"Stock Qty": lambda v: f"{v:,.0f}" if v is not None and pd.notna(v) else "—"}
 
