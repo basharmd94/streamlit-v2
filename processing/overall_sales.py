@@ -454,8 +454,8 @@ def plot_yoy_monthly_comparison(filtered_data,filtered_data_r,code_col,selected_
     st.plotly_chart(fig, use_container_width=True)
 
     # Show Table
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_yoy_daily_comparison(filtered_data, filtered_data_r, code_col, selected_codes, metric, selected_years, start_date, end_date):
@@ -541,8 +541,8 @@ def plot_yoy_daily_comparison(filtered_data, filtered_data_r, code_col, selected
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_yoy_dow_comparison(filtered_data, filtered_data_r, code_col, selected_codes, metric, selected_years, average_or_total):
@@ -627,8 +627,8 @@ def plot_yoy_dow_comparison(filtered_data, filtered_data_r, code_col, selected_c
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_yoy_dom_comparison(filtered_data, filtered_data_r, code_col, selected_codes, metric, selected_years, selected_month_names, average_or_total):
@@ -706,8 +706,8 @@ def plot_yoy_dom_comparison(filtered_data, filtered_data_r, code_col, selected_c
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_month_vs_month_comparison(filtered_data,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months):
@@ -790,8 +790,8 @@ def plot_month_vs_month_comparison(filtered_data,filtered_data_r,code_col,name_c
 
     # Data Table
     pivot = df.pivot(index="month_label", columns="entity_label", values="value").fillna(0)
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_month_vs_month_dow_comparison(filtered_data,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months,aggregation_type):
@@ -890,8 +890,8 @@ def plot_month_vs_month_dow_comparison(filtered_data,filtered_data_r,code_col,na
 
     # Data Table
     pivot = df.pivot_table(index=["DOW"], columns=["entity_label", "month_label"], values="value", aggfunc="sum").fillna(0)
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_month_vs_month_dom_comparison(filtered_data,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months,aggregation_type,selected_days=None):
@@ -989,8 +989,8 @@ def plot_month_vs_month_dom_comparison(filtered_data,filtered_data_r,code_col,na
 
     # Table
     pivot = agg_df.pivot(index="month_label", columns="entity_label", values="value").fillna(0)
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_distribution_analysis(filtered_data, filtered_data_r, metric, group_by, value_min=None, value_max=None, nbins=100):

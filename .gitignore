@@ -66,3 +66,8 @@ nssm.exe
 
 # Runtime logs directory
 logs/
+
+# Runtime user data — updated live by app users, not version-controlled
+data/targets.json
+data/public_holidays.json
+data/warehouse_filters.json

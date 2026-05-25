@@ -352,107 +352,104 @@ def display_payment_timeliness_page(filtered_data_ar: pd.DataFrame):
     st.subheader("Year-Month Financial Summary")
     st.dataframe(data['ym_summary'])
 
-    #bucket summary
-    st.subheader("Bucket Summary")
-    filter_type = st.radio("Filter timeline by:", ["Yearly", "Monthly", "Period"], horizontal=True)
+    # Bucket Summary in expander
+    with st.expander("🪣 Bucket Summary", expanded=True):
+        filter_type = st.radio("Filter timeline by:", ["Yearly", "Monthly", "Period"], horizontal=True)
 
-    invoices = data['bucket_info']
-    ledger = data['ledger_txns']
+        invoices = data['bucket_info']
+        ledger = data['ledger_txns']
 
-    if filter_type == "Yearly":
-        years = sorted(invoices['year'].unique())
-        year = st.selectbox("Select year", years, index=len(years)-1)
-        inv_mask = invoices['year'] == year
-        led_mask = ledger['year'] == year
+        if filter_type == "Yearly":
+            years = sorted(invoices['year'].unique())
+            year = st.selectbox("Select year", years, index=len(years)-1)
+            inv_mask = invoices['year'] == year
+            led_mask = ledger['year'] == year
 
-    elif filter_type == "Monthly":
-        invoices = invoices.assign(ym=invoices['year'].astype(str) + "-" + invoices['month'].astype(str).str.zfill(2))
-        ledger = ledger.assign(ym=ledger['year'].astype(str) + "-" + ledger['month'].astype(str).str.zfill(2))
-        options = sorted(invoices['ym'].unique())
-        sel = st.selectbox("Select year-month", options, index=len(options)-1)
-        inv_mask = invoices['ym'] == sel
-        led_mask = ledger['ym'] == sel
+        elif filter_type == "Monthly":
+            invoices = invoices.assign(ym=invoices['year'].astype(str) + "-" + invoices['month'].astype(str).str.zfill(2))
+            ledger = ledger.assign(ym=ledger['year'].astype(str) + "-" + ledger['month'].astype(str).str.zfill(2))
+            options = sorted(invoices['ym'].unique())
+            sel = st.selectbox("Select year-month", options, index=len(options)-1)
+            inv_mask = invoices['ym'] == sel
+            led_mask = ledger['ym'] == sel
 
-    else: 
-        min_date = invoices['invoice_date'].min().date()
-        max_date = invoices['invoice_date'].max().date()
-        start, end = st.date_input("Select period", [min_date, max_date])
-        start_ts = pd.to_datetime(start)
-        end_ts   = pd.to_datetime(end)
-        inv_mask = invoices['invoice_date'].between(start_ts, end_ts)
-        led_mask = ledger['date'].between(start_ts, end_ts)
+        else:
+            min_date = invoices['invoice_date'].min().date()
+            max_date = invoices['invoice_date'].max().date()
+            start, end = st.date_input("Select period", [min_date, max_date])
+            start_ts = pd.to_datetime(start)
+            end_ts   = pd.to_datetime(end)
+            inv_mask = invoices['invoice_date'].between(start_ts, end_ts)
+            led_mask = ledger['date'].between(start_ts, end_ts)
 
-    inv_filt = invoices[inv_mask].copy()
-    led_filt = ledger[led_mask].copy()
+        inv_filt = invoices[inv_mask].copy()
+        led_filt = ledger[led_mask].copy()
 
-    cust = (inv_filt.groupby(['cusid','cusname','area']).agg(Avg_Days_to_Pay=('days_to_pay','mean'),Total_Sales=('invoice_amount','sum')).reset_index())
-    end_bal = (led_filt.sort_values(['cusid','date']).groupby('cusid')['running_balance'].last().reset_index(name='Ending_Balance'))
-    cust = cust.merge(end_bal, on='cusid', how='left')
-    cust['pay_bucket'] = (pd.cut(cust['Avg_Days_to_Pay'],bins=[0,10,20,30,40,np.inf],labels=['0–10','11–20','21–30','31–40','>45'],right=True).cat.add_categories(['Unknown']).fillna('Unknown'))
-    bucket_summary = (cust.groupby('pay_bucket').agg(Avg_Days_to_Pay=('Avg_Days_to_Pay','mean'),Total_Customers=('cusid','nunique'),Total_Sales=('Total_Sales','sum'),Total_Ending_Balance =('Ending_Balance','sum')).reset_index())
-    st.dataframe(bucket_summary)
+        cust = (inv_filt.groupby(['cusid','cusname','area']).agg(Avg_Days_to_Pay=('days_to_pay','mean'),Total_Sales=('invoice_amount','sum')).reset_index())
+        end_bal = (led_filt.sort_values(['cusid','date']).groupby('cusid')['running_balance'].last().reset_index(name='Ending_Balance'))
+        cust = cust.merge(end_bal, on='cusid', how='left')
+        cust['pay_bucket'] = (pd.cut(cust['Avg_Days_to_Pay'],bins=[0,10,20,30,40,np.inf],labels=['0–10','11–20','21–30','31–40','>45'],right=True).cat.add_categories(['Unknown']).fillna('Unknown'))
+        bucket_summary = (cust.groupby('pay_bucket').agg(Avg_Days_to_Pay=('Avg_Days_to_Pay','mean'),Total_Customers=('cusid','nunique'),Total_Sales=('Total_Sales','sum'),Total_Ending_Balance=('Ending_Balance','sum')).reset_index())
+        st.dataframe(bucket_summary)
 
-    #opening balances
-    if filter_type == "Yearly": 
-        st.subheader(f"Opening Balances Without Transactions in {year}")
-        no_tx = data['no_tx'][data['no_tx']['year'] == year]
-        st.dataframe(no_tx)
+        if filter_type == "Yearly":
+            st.subheader(f"Opening Balances Without Transactions in {year}")
+            no_tx = data['no_tx'][data['no_tx']['year'] == year]
+            st.dataframe(no_tx)
 
-    # --- Days-to-Pay Summary ---
-    st.subheader("Days-to-Pay Summary")
+    # Days-to-Pay Summary in expander
+    with st.expander("📅 Days-to-Pay Summary", expanded=True):
+        view = st.radio("View by:", ["Yearly", "Monthly"], horizontal=True)
 
-    view = st.radio("View by:", ["Yearly", "Monthly"], horizontal=True)
+        days_summary = data['days_summary']
+        invoices    = data['invoices']
+        ledger_txns = data['ledger_txns']
 
-    days_summary = data['days_summary']
-    invoices    = data['invoices']
-    ledger_txns = data['ledger_txns']
+        if view == "Yearly":
+            metric = st.selectbox("Select metric", ["Avg_Days_to_Pay", "Med_Days_to_Pay", "P90_Days_to_Pay", "Pct_On_Time"])
+            prefix = f"{metric}_"
+            year_cols = [c for c in days_summary.columns if c.startswith(prefix)]
+            df_year = days_summary[["cusid", "cusname", "area"] + year_cols].copy()
 
-    if view == "Yearly":
-        metric = st.selectbox("Select metric", ["Avg_Days_to_Pay", "Med_Days_to_Pay", "P90_Days_to_Pay", "Pct_On_Time"])
-        prefix = f"{metric}_"
-        year_cols = [c for c in days_summary.columns if c.startswith(prefix)]
-        df_year = days_summary[["cusid", "cusname", "area"] + year_cols].copy()
+            sales = (invoices.groupby(["cusid","year"])["invoice_amount"].sum().unstack(fill_value=0))
+            sales.columns = [f"Sales_{y}" for y in sales.columns]
+            sales = sales.reset_index()
 
-        sales = (invoices.groupby(["cusid","year"])["invoice_amount"].sum().unstack(fill_value=0))
-        sales.columns = [f"Sales_{y}" for y in sales.columns]
-        sales = sales.reset_index()
+            coll = (ledger_txns[ledger_txns["value"] < 0].groupby(["cusid","year"])["value"].sum().abs().unstack(fill_value=0))
+            coll.columns = [f"Collection_{y}" for y in coll.columns]
+            coll = coll.reset_index()
 
-        coll = (ledger_txns[ledger_txns["value"] < 0].groupby(["cusid","year"])["value"].sum().abs().unstack(fill_value=0))
-        coll.columns = [f"Collection_{y}" for y in coll.columns]
-        coll = coll.reset_index()
+            df_year = (df_year.merge(sales, on="cusid", how="left").merge(coll, on="cusid", how="left"))
+            st.dataframe(df_year)
 
-        df_year = (df_year.merge(sales, on="cusid", how="left").merge(coll, on="cusid", how="left"))
-        st.dataframe(df_year)
+        else:  # Monthly view
+            inv = invoices.copy()
+            inv["YM"] = (inv["year"].astype(str) + "-" + inv["month"].astype(str).str.zfill(2))
+            pivot = (inv.groupby(["cusid","cusname","area","YM"])["days_to_pay"].mean().unstack(fill_value=np.nan).reset_index())
+            total_sales = (invoices.groupby("cusid")["invoice_amount"].sum().rename("Total_Sales_All").reset_index())
+            total_coll = (ledger_txns[ledger_txns["value"] < 0].groupby("cusid")["value"].sum().abs().rename("Total_Collection_All").reset_index())
+            df_month = (pivot.merge(total_sales, on="cusid", how="left").merge(total_coll, on="cusid", how="left"))
+            st.dataframe(df_month)
 
-    else:  # Monthly view
-        inv = invoices.copy()
-        inv["YM"] = (inv["year"].astype(str) + "-" + inv["month"].astype(str).str.zfill(2))
-        pivot = (inv.groupby(["cusid","cusname","area","YM"])["days_to_pay"].mean().unstack(fill_value=np.nan).reset_index())
+    # DSO Summary in expander
+    with st.expander("📊 DSO Summary", expanded=True):
+        view = st.radio("DSO View", ["Average", "Monthly"], horizontal=True)
+
+        dso = data['dso_summary'].copy()
+        invoices = data['invoices']
+        ledger_txns = data['ledger_txns']
         total_sales = (invoices.groupby("cusid")["invoice_amount"].sum().rename("Total_Sales_All").reset_index())
         total_coll = (ledger_txns[ledger_txns["value"] < 0].groupby("cusid")["value"].sum().abs().rename("Total_Collection_All").reset_index())
-        df_month = (pivot.merge(total_sales, on="cusid", how="left").merge(total_coll, on="cusid", how="left"))
-        st.dataframe(df_month)
 
-    # --- DSO Summary ---
-    st.subheader("DSO Summary")
+        if view == "Average":
+            df_avg = (dso.set_index(['cusid','cusname','area']).mean(axis=1).rename("Avg_DSO").reset_index())
+            df_avg = (df_avg.merge(total_sales, on="cusid", how="left").merge(total_coll, on="cusid", how="left"))
+            st.dataframe(df_avg)
 
-    view = st.radio("DSO View", ["Average", "Monthly"], horizontal=True)
-
-    dso = data['dso_summary'].copy()
-    invoices = data['invoices']
-    ledger_txns = data['ledger_txns']
-    total_sales = (invoices.groupby("cusid")["invoice_amount"].sum().rename("Total_Sales_All").reset_index())
-    total_coll = (ledger_txns[ledger_txns["value"] < 0].groupby("cusid")["value"].sum().abs().rename("Total_Collection_All").reset_index())
-
-    if view == "Average":
-        df_avg = (dso.set_index(['cusid','cusname','area']).mean(axis=1).rename("Avg_DSO").reset_index())
-        df_avg = (df_avg.merge(total_sales, on="cusid", how="left").merge(total_coll, on="cusid", how="left"))
-        st.dataframe(df_avg)
-
-    else:  # Monthly
-        df_monthly = dso.copy()
-        df_monthly = (df_monthly.merge(total_sales, on="cusid", how="left").merge(total_coll, on="cusid", how="left"))
-        st.dataframe(df_monthly)
+        else:  # Monthly
+            df_monthly = dso.copy()
+            df_monthly = (df_monthly.merge(total_sales, on="cusid", how="left").merge(total_coll, on="cusid", how="left"))
+            st.dataframe(df_monthly)
 
 def display_composite_scoring_page(filtered_data_ar):
     data = compute_payment_timeliness_metrics(filtered_data_ar)
@@ -549,15 +546,15 @@ def display_composite_scoring_page(filtered_data_ar):
         )
 
         # 5) Show results
-        st.markdown("### Composite Scores")
-        st.dataframe(
-            df.sort_values('Composite_Score', ascending=False)
-            .loc[:, ['cusid','cusname','area',
-                       'Days_to_Pay','DSO','Total_Sales','Total_Collection',
-                       'Composite_Score']],
-            use_container_width=True
-        )
-    
+        with st.expander("📊 Composite Scores", expanded=True):
+            st.dataframe(
+                df.sort_values('Composite_Score', ascending=False)
+                .loc[:, ['cusid','cusname','area',
+                           'Days_to_Pay','DSO','Total_Sales','Total_Collection',
+                           'Composite_Score']],
+                use_container_width=True
+            )
+
     hist_metric = st.selectbox("Histogram Metric", ["Days_to_Pay", "DSO", "Total_Sales", "Total_Collection", "Ending_Balance"])
 
     fig = px.histogram(df,x=hist_metric,nbins=10,title=f"Distribution of {hist_metric}")
@@ -630,10 +627,11 @@ def display_composite_scoring_page(filtered_data_ar):
         .reset_index()
     )
 
-    st.dataframe(summary_table,use_container_width=True)
+    with st.expander("📋 Segment Summary Table", expanded=True):
+        st.dataframe(summary_table, use_container_width=True)
 
-    st.subheader("Full composite score list")
-    st.dataframe(df,use_container_width=True)
+    with st.expander("📄 Full Composite Score List", expanded=True):
+        st.dataframe(df, use_container_width=True)
 
 
 def make_dynamic_bins(scores: pd.Series,seed_width: float = 0.1,top_n: int = 3,split_pcts: list = [0.25, 0.5, 0.75, 0.99]) -> list:
@@ -1003,8 +1001,8 @@ def plot_yoy_monthly_comparison(filtered_data_c,filtered_data_s,filtered_data_r,
     st.plotly_chart(fig, use_container_width=True)
 
     # Show Table
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_yoy_daily_comparison(filtered_data_c,filtered_data_s, filtered_data_r, code_col, selected_codes, metric, selected_years, start_date, end_date):
@@ -1085,8 +1083,8 @@ def plot_yoy_daily_comparison(filtered_data_c,filtered_data_s, filtered_data_r, 
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_yoy_dow_comparison(filtered_data_c, filtered_data_s, filtered_data_r, code_col, selected_codes, metric, selected_years, average_or_total):
@@ -1169,8 +1167,8 @@ def plot_yoy_dow_comparison(filtered_data_c, filtered_data_s, filtered_data_r, c
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_yoy_dom_comparison(filtered_data_c, filtered_data_s, filtered_data_r, code_col, selected_codes, metric, selected_years, selected_month_names, average_or_total):
@@ -1246,8 +1244,8 @@ def plot_yoy_dom_comparison(filtered_data_c, filtered_data_s, filtered_data_r, c
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_month_vs_month_comparison(filtered_data_c,filtered_data_s,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months):
@@ -1326,8 +1324,8 @@ def plot_month_vs_month_comparison(filtered_data_c,filtered_data_s,filtered_data
 
     # Data Table
     pivot = df.pivot(index="month_label", columns="entity_label", values="value").fillna(0)
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_month_vs_month_dow_comparison(filtered_data_c,filtered_data_s,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months,aggregation_type):
@@ -1419,8 +1417,8 @@ def plot_month_vs_month_dow_comparison(filtered_data_c,filtered_data_s,filtered_
 
     # Data Table
     pivot = df.pivot_table(index=["DOW"], columns=["entity_label", "month_label"], values="value", aggfunc="sum").fillna(0)
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_month_vs_month_dom_comparison(filtered_data_c,filtered_data_s,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months,aggregation_type,selected_days=None):
@@ -1516,8 +1514,8 @@ def plot_month_vs_month_dom_comparison(filtered_data_c,filtered_data_s,filtered_
 
     # Table
     pivot = agg_df.pivot(index="month_label", columns="entity_label", values="value").fillna(0)
-    st.markdown("### 📋 Corresponding Data")
-    st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+    with st.expander("📋 Corresponding Data", expanded=False):
+        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
 
 @timed
 def plot_metric_comparison_monthly(filtered_data_c, filtered_data_s, filtered_data_r, code_col, selected_codes, metric_x, metric_y, selected_years, selected_month_names):
@@ -1603,8 +1601,8 @@ def plot_metric_comparison_monthly(filtered_data_c, filtered_data_s, filtered_da
             )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📋 Comparison Table")
-    st.dataframe(merged.style.format({"Metric_X": "{:,.0f}", "Metric_Y": "{:,.0f}", "% B / A": "{:.1f}%"}), use_container_width=True)
+    with st.expander("📋 Comparison Table", expanded=False):
+        st.dataframe(merged.style.format({"Metric_X": "{:,.0f}", "Metric_Y": "{:,.0f}", "% B / A": "{:.1f}%"}), use_container_width=True)
 
 @timed
 def plot_distribution_analysis(filtered_data_s, filtered_data_r, filtered_data_c, metric, group_by, value_min=None, value_max=None, nbins=100):

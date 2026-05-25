@@ -238,6 +238,10 @@ def _basket_recommendations_groups(df: pd.DataFrame,order_id_col: str,group_col:
     return base.reset_index(drop=True)
 
 def display_basket_analysis_page(current_page, zid: str, data_dict: dict, selected_filters: dict):
+    # ── Basket Analysis is temporarily disabled ──
+    st.info("Basket Analysis is currently unavailable.")
+
+def _display_basket_analysis_page_disabled(current_page, zid: str, data_dict: dict, selected_filters: dict):
     st.header("Basket Analysis")
 
     # Prepare merged datasets (Basket-only merge rule) using navbar filters

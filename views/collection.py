@@ -50,20 +50,14 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         # Expandable section for pivot tables
         collection.display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_r, current_page)
 
-        collection.display_cross_relation_pivot(filtered_data_c, filtered_data_s, filtered_data_r, current_page)
-
     elif analysis_mode == "Comparison":
-        st.subheader("🧭 Compare Multiple Entities")
-
         all_years = sorted(filtered_data_c["year"].dropna().unique().astype(int).tolist())
-        # Step 2: Metric and Compare By — in single line
         compare_type = st.selectbox("Compare Across", ["Year-over-Year (YOY)", "Month vs Month"])
         if compare_type == "Year-over-Year (YOY)":
             st.subheader("📅 Year-over-Year (YOY) Comparison")
             selected_years = st.multiselect("Select Years", all_years, default=all_years)
             granularity = st.selectbox("Group By", ["Monthly", "Daily", "Day of Week", "Day of Month"])
             if granularity == "Monthly":
-                # filtered_data_c["month_numeric"] = filtered_data_c["month"].apply(safe_month_to_num)
                 all_months = sorted(filtered_data_c["month"].dropna().unique().astype(int).tolist())
                 month_map = {i: calendar.month_abbr[i] for i in all_months}
                 selected_months = st.multiselect("Select Months", [month_map[m] for m in all_months], default=[month_map[m] for m in all_months])
@@ -75,7 +69,6 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             elif granularity == "Day of Week":
                 average_or_total_YOY_DOW = st.radio("Aggregation", ["Total", "Average"], horizontal=True)
             elif granularity == "Day of Month":
-                # filtered_data_c["month_numeric"] = filtered_data_c["month"].apply(safe_month_to_num)
                 all_months = sorted(filtered_data_c["month"].dropna().unique().astype(int).tolist())
                 month_map = {i: calendar.month_abbr[i] for i in all_months}
                 selected_months = st.multiselect("Select Months", [month_map[m] for m in all_months], default=[month_map[m] for m in all_months])
@@ -83,20 +76,18 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         elif compare_type == "Month vs Month":
             st.subheader("📅 Month vs Month Comparison")
             granularity = st.selectbox("Group By", ["Monthly", "Day of Week", "Day of Month"])
-            filtered_data_c["month_label"] = (filtered_data_c["month"].astype(int).apply(lambda x: f"{x:02d}")+ "-" + filtered_data_c["year"].astype(str))
+            filtered_data_c["month_label"] = (filtered_data_c["month"].astype(int).apply(lambda x: f"{x:02d}") + "-" + filtered_data_c["year"].astype(str))
             month_options = sorted(filtered_data_c["month_label"].dropna().unique().tolist())
             selected_months = st.multiselect("Select Months to Compare", options=month_options, default=month_options[:3])
             if granularity == 'Day of Week':
                 average_or_total_MOM_DOW = st.radio("Aggregation", ["Total", "Average"], horizontal=True)
             elif granularity == 'Day of Month':
                 average_or_total_MOM_DOM = st.radio("Aggregation", ["Total", "Average"], horizontal=True)
-                day_options = list(range(1, 32))  # 1 to 31
-                selected_dom_days = st.multiselect("Select Days (leave empty to include all days)",options=day_options)
+                day_options = list(range(1, 32))
+                selected_dom_days = st.multiselect("Select Days (leave empty to include all days)", options=day_options)
 
-        # 4. Compare By — match the Overview pivot table's "Select Entity" list
         compare_by = st.selectbox("Compare By", ["Salesman", "Customer", "Product", "Product Group", "Area"])
 
-        # 5. Metric Choices (Collection only available for non-product entities)
         if compare_by in ["Product", "Product Group"]:
             metric_options = ["Net Sales", "Total Returns", "Total Discounts", "Net Units Sold"]
         else:
@@ -104,7 +95,6 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 
         metric = st.selectbox("Metric", metric_options)
 
-        # 6. Build Entity List (codes and names)
         dimension_column_map = {
             "Salesman":      ("spid",      "spname"),
             "Customer":      ("cusid",     "cusname"),
@@ -139,7 +129,6 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             )
             selected_codes = [selected_display.split(" - ")[0]] if selected_display != "(All)" else []
 
-        # Plot
         if compare_type == "Year-over-Year (YOY)" and granularity == "Monthly":
             collection.plot_yoy_monthly_comparison(
                 filtered_data_c=filtered_data_c,
@@ -426,62 +415,30 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 
             summary_df = collection.customer_segmentation_by_collection_days(avg_days)
 
-            # Display metrics
-            for title, df in {
-                "Average Days to Collection": avg_days,
-                "Customer Segmentation by Days to Collection": summary_df,
-                "Collection Days by Year/Month": pivot_df,
-                "Average Days Between Collections": avg_days_between
-            }.items():
+            # Display metrics in new order:
+            # ① Customer Segmentation, ② Avg Days to Collection, ③ Avg Days Between, ④ Collection Days by Year/Month
+            for title, df in [
+                ("Customer Segmentation by Days to Collection", summary_df),
+                ("Average Days to Collection", avg_days),
+                ("Average Days Between Collections", avg_days_between),
+                ("Collection Days by Year/Month", pivot_df),
+            ]:
                 st.markdown(title)
                 st.write(df)
 
-            # Step 1: Pull unique customer list from collection_df
-            combined_df = combined_df[['year','month','cusid','cusname','date','final_sales','treturnamt','value']]
-            customer_options = (
-                collection_df[['cusid', 'cusname']]
-                .drop_duplicates()
-                .sort_values(by='cusname')
-            )
-            customer_options["combined"] = customer_options["cusid"].astype(str) + " - " + customer_options["cusname"]
+            # Timeframe / DOW / DOM comparison in expander, defaulting to Monthly
+            with st.expander("📊 Sales/Collection Comparison by Timeframe", expanded=True):
+                timeframe = st.selectbox('Select Time Range', ['Daily', 'Monthly', 'Yearly'], index=1)
+                grouped_df, grouped_df_DOM, grouped_df_DOW = collection.get_grouped_df_collection(sales_df, returns_df, collection_df, timeframe)
 
-            if customer_options.empty:
-                st.warning(
-                    "⚠️ No customers found for the selected filters. "
-                    "Please reselect your options — the current combination may lack sufficient data for valid reporting."
-                )
-                st.stop()
-
-            default_customer = customer_options["combined"].iloc[0]
-            selected_customer = st.selectbox(
-                "Select Customer",
-                options=customer_options["combined"].tolist(),
-                index=customer_options["combined"].tolist().index(default_customer)
-            )
-
-            selected_cusid = selected_customer.split(" - ")[0]
-            ledger_df = combined_df[combined_df['cusid'] == selected_cusid]
-            ledger_df = ledger_df.sort_values(by='date')
-
-            columns_to_hide = ['cusid', 'cusname']
-            display_df = ledger_df.drop(columns=columns_to_hide)
-
-            st.markdown("Customer Ledger")
-            st.write(display_df)
-
-            # Analysis and Metric Selection
-            timeframe = st.selectbox('Select Time Range', ['Daily', 'Monthly', 'Yearly'], index=2)
-            grouped_df, grouped_df_DOM, grouped_df_DOW = collection.get_grouped_df_collection(sales_df, returns_df, collection_df, timeframe)
-
-            # Display and visualize data
-            for title, (df, x_axis) in {
-                    f"Comparison of Sales/Collection {timeframe}": (grouped_df, 'timeframe'),
-                    "Comparison of Sales/Collection DOM": (grouped_df_DOM, 'DOM'),
-                    "Comparison of Sales/Collection DOW": (grouped_df_DOW, 'DOW')
-            }.items():
-                st.markdown(title)
-                df = df.rename(columns={'value':'value_collection'})
-                st.write(df)
+                for title, (df, x_axis) in {
+                        f"Comparison of Sales/Collection {timeframe}": (grouped_df, 'timeframe'),
+                        "Comparison of Sales/Collection DOM": (grouped_df_DOM, 'DOM'),
+                        "Comparison of Sales/Collection DOW": (grouped_df_DOW, 'DOW')
+                }.items():
+                    st.markdown(title)
+                    df = df.rename(columns={'value': 'value_collection'})
+                    st.write(df)
 
         except Exception as _cp_err:
             st.warning(
@@ -500,16 +457,16 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         if performance_analysis_type == "Order Timeliness Metrics":
             order_df, avg_df, std_df = collection.compute_order_frequency_metrics(filtered_data_ar)
 
-            st.subheader("Order Frequency (Count per Year)")
-            st.dataframe(order_df)
+            with st.expander("📦 Order Frequency (Count per Year)", expanded=True):
+                st.dataframe(order_df)
 
-            st.subheader("Average Interval Between Orders (Days)")
-            st.write("Average number of days between consecutive orders.")
-            st.dataframe(avg_df)
+            with st.expander("📅 Average Interval Between Orders (Days)", expanded=True):
+                st.write("Average number of days between consecutive orders.")
+                st.dataframe(avg_df)
 
-            st.subheader("Std. Dev. of Interval Between Orders (Days)")
-            st.write("Standard deviation of inter‐order intervals (low sd ⇒ regular orders).")
-            st.dataframe(std_df)
+            with st.expander("📉 Std. Dev. of Interval Between Orders (Days)", expanded=True):
+                st.write("Standard deviation of inter‐order intervals (low sd ⇒ regular orders).")
+                st.dataframe(std_df)
 
         elif performance_analysis_type == "Payment Timeliness":
             collection.display_payment_timeliness_page(filtered_data_ar)
@@ -520,8 +477,44 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
     elif analysis_mode == "Customer Ledger":
         st.subheader("Customer Ledger")
 
-        cust_df = (filtered_data_ar.loc[:,['cusid','cusname']].drop_duplicates().sort_values('cusname').assign(option=lambda df: df['cusid'].astype(str) + " - " + df['cusname']))
-        selected = st.selectbox("Select customer",cust_df['option'].tolist())
+        # --- Sales / Returns / Collections Ledger (moved from CP) ---
+        try:
+            sales_df_cl = filtered_data_s.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).final_sales.sum().reset_index()
+            returns_df_cl = filtered_data_r.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).treturnamt.sum().reset_index()
+            collection_df_cl = filtered_data_c.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).value.sum().reset_index()
+
+            _, _, _, combined_df_cl = collection.average_days_to_collection(sales_df_cl, returns_df_cl, collection_df_cl)
+            combined_df_cl = combined_df_cl[['year', 'month', 'cusid', 'cusname', 'date', 'final_sales', 'treturnamt', 'value']]
+
+            customer_options_cl = (
+                collection_df_cl[['cusid', 'cusname']]
+                .drop_duplicates()
+                .sort_values(by='cusname')
+            )
+            customer_options_cl["combined"] = customer_options_cl["cusid"].astype(str) + " - " + customer_options_cl["cusname"]
+
+            if not customer_options_cl.empty:
+                selected_customer_cl = st.selectbox(
+                    "Select Customer",
+                    options=customer_options_cl["combined"].tolist(),
+                    key="cl_src_customer_select"
+                )
+                selected_cusid_cl = selected_customer_cl.split(" - ")[0]
+                ledger_src_df = combined_df_cl[combined_df_cl['cusid'] == selected_cusid_cl].sort_values(by='date')
+                display_src_df = ledger_src_df.drop(columns=['cusid', 'cusname'])
+                st.markdown("**Customer Ledger (Sales / Returns / Collections)**")
+                st.write(display_src_df)
+        except Exception as _cl_err:
+            st.warning("⚠️ Unable to load customer sales/collection ledger.")
+            st.caption(f"Details: {_cl_err}")
+
+        st.divider()
+
+        # --- AR-based Customer Ledger ---
+        st.subheader("AR Customer Ledger")
+        cust_df = (filtered_data_ar.loc[:, ['cusid', 'cusname']].drop_duplicates().sort_values('cusname').assign(option=lambda df: df['cusid'].astype(str) + " - " + df['cusname']))
+        selected = st.selectbox("Select customer", cust_df['option'].tolist(), key="cl_ar_select")
         selected_cusid = selected.split(" - ")[0]
-        ledger_df = (filtered_data_ar[filtered_data_ar['cusid'] == selected_cusid].sort_values('date'))
+        ledger_df = filtered_data_ar[filtered_data_ar['cusid'] == selected_cusid].sort_values('date').copy()
+        ledger_df["ending_balance"] = ledger_df["value"].cumsum()
         st.dataframe(ledger_df)
