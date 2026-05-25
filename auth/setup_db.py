@@ -1,7 +1,12 @@
 import sys
+import os
 import psycopg2
 import bcrypt
+from dotenv import load_dotenv
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import get_db_params
+
+load_dotenv()
 
 
 def hash_password(password):
@@ -88,17 +93,20 @@ def setup_auth_tables():
             ('purchase', 'Distribution & Histograms'),
             ('purchase','Inventory Analysis'),
             ('admin', 'AR Analysis'),
-            ('finance', 'AR Analysis')
+            ('finance', 'AR Analysis'),
+            ('hr', 'Target Management')
         """)
         
         # Create default users with their roles
         default_users = [
-            ('admin_user', 'admin123', 'admin'),
-            ('sales_user', 'sales123', 'sales'),
-            ('finance_user', 'finance123', 'finance'),
-            ('purchase_user', 'purchase123', 'purchase'),
-            ('crm_user', 'crm3210', 'crm'),
-            ('SOP_user', 'sop123', 'SOP')
+            (os.getenv('ADMIN_USERNAME'), os.getenv('ADMIN_PASSWORD'), 'admin'),
+            (os.getenv('SALES_USERNAME'), os.getenv('SALES_PASSWORD'), 'sales'),
+            (os.getenv('FINANCE_USERNAME'), os.getenv('FINANCE_PASSWORD'), 'finance'),
+            (os.getenv('PURCHASE_USERNAME'), os.getenv('PURCHASE_PASSWORD'), 'purchase'),
+            (os.getenv('CRM_USERNAME'), os.getenv('CRM_PASSWORD'), 'crm'),
+            (os.getenv('SOP_USERNAME'), os.getenv('SOP_PASSWORD'), 'SOP'),
+            (os.getenv('HR_USERNAME'), os.getenv('HR_PASSWORD'), 'hr'),
+           
         ]
         
         # Clear existing users to avoid duplicates
@@ -116,31 +124,6 @@ def setup_auth_tables():
         
         conn.commit()
         print("\nDatabase setup completed successfully!")
-        print("\nDefault Users Created:")
-        print("1. Admin User:")
-        print("   - Username: admin_user")
-        print("   - Password: admin123")
-        print("   - Access: All pages")
-        print("\n2. Sales User:")
-        print("   - Username: sales_user")
-        print("   - Password: sales123")
-        print("   - Access: Home, Overall Sales Analysis, YOY Analysis, Basket Analysis")
-        print("\n3. Finance User:")
-        print("   - Username: finance_user")
-        print("   - Password: finance123")
-        print("   - Access: Home, Overall Margin Analysis, Financial Statements, Collection Analysis")
-        print("\n4. Purchase User:")
-        print("   - Username: purchase_user")
-        print("   - Password: purchase123")
-        print("   - Access: Home, Purchase Analysis, YOY Analysis, Distribution & Histograms")
-        print("\n5. CRM User:")
-        print("   - Username: crm_user")
-        print("   - Password: crm3210")
-        print("   - Access: Home, Collection Analysis, Overall Sales Analysis")
-        print("\n6. SOP User:")
-        print("   - Username: SOP_user")
-        print("   - Password: sop123")
-        print("   - Access: Home, Customer Data View")
     except (Exception, psycopg2.DatabaseError) as error:
         print(f"Error: {error}")
         if conn:
