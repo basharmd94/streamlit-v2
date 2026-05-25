@@ -288,7 +288,7 @@ _INV_DEFAULT_WAREHOUSES = [
 # are skipped. ZIDs not listed here fall back to the prefix exclusions.
 _INV_DEFAULT_ITEMGROUPS_BY_ZID = {
     "100000": [
-        "Blank",
+        "",          # items with no/empty itemgroup value
         "Chemical Item",
         "Steel Item",
         "Plastic Item",
@@ -380,8 +380,14 @@ def _load_inv_stock_summed(zid: str, cutoff_year: int, cutoff_month: int) -> pd.
     # Apply item group filter or prefix exclusions depending on ZID
     default_groups = _INV_DEFAULT_ITEMGROUPS_BY_ZID.get(str(zid))
     if default_groups and "itemgroup" in agg.columns:
-        # ZID has explicit item groups defined — filter to those only
-        agg = agg[agg["itemgroup"].isin(default_groups)]
+        # ZID has explicit item groups defined — filter to those only.
+        # "" in the list also catches null/NaN itemgroup values.
+        named = [g for g in default_groups if g != ""]
+        include_blank = "" in default_groups
+        mask = agg["itemgroup"].isin(named)
+        if include_blank:
+            mask |= agg["itemgroup"].isna() | (agg["itemgroup"].str.strip() == "")
+        agg = agg[mask]
     else:
         # No explicit groups defined — exclude items starting with Z, RAW, or M
         name_up = agg["itemname"].str.upper()
