@@ -276,10 +276,6 @@ def _render_not_ordered_table(
 _INV_DEFAULT_WAREHOUSES = [
     "Finished Goods Store Packaging",
     "HMBR -Main Store (4th Floor)",
-    "HMBR -W5 (MirerBaazar 2nd Floor)",
-    "HMBR -W7 (2) (MirerBaazar 3rd Floor)",
-    "HMBR -W7 (MirerBaazar 3rd Floor)",
-    "HMBR Showroom (Mirer Bazar)",
     "Raw Material Store Packaging",
 ]
 
