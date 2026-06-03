@@ -262,12 +262,16 @@ def _render_mtd_dashboard(pl_s: pd.DataFrame, mtd: dict) -> None:
     # In both cases Δ > 0 with Level S sign = better, so colour logic is unified:
     #   Δ > 0  →  green  (revenue up, or expense less negative = spending down)
     #   Δ < 0  →  red
-    _calc_mask = df_disp["_calc"].tolist()
+    # Note: _calc is dropped before the styler runs, so use row.name (= "Line Item" index)
+
+    df_show = df_disp.drop(columns=["_calc"])
 
     def _style_row(row):
-        delta = row["Δ"]
-        n = len(row)
-        base_bg = "background-color: rgba(55,138,221,0.07); font-weight: 600" if row["_calc"] else ""
+        # row.name is the "Line Item" string because df_show is indexed by "Line Item"
+        is_calc = row.name in _CALC_ROWS
+        delta   = row["Δ"]
+        n       = len(row)
+        base_bg = "background-color: rgba(55,138,221,0.07); font-weight: 600" if is_calc else ""
 
         delta_colour = (
             "color: #1D9E75; font-weight: 600" if delta > 0
@@ -286,8 +290,6 @@ def _render_mtd_dashboard(pl_s: pd.DataFrame, mtd: dict) -> None:
         except ValueError:
             pass
         return styles
-
-    df_show = df_disp.drop(columns=["_calc"])
     fmt = {
         mtd_col_label: "{:,.1f}",
         "3M Average":  "{:,.1f}",
