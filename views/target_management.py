@@ -517,6 +517,7 @@ def _render_buying_pattern(bp_df: pd.DataFrame, is_any_filter: bool):
             "cusid":            "Cust. Code",
             "cusname":          "Customer",
             "cusmobile":        "Mobile",
+            "whatsapp":         "WhatsApp Number",
             "area":             "Area",
             "total_sales":      "Total Sales",
             "spend_tier":       "Tier",
@@ -1537,7 +1538,7 @@ def display_target_management_page(current_page, zid, data_dict):
         st.warning("No data for the current selection.")
         return
 
-    id_raw      = ["spid", "spname", "cusid", "cusname", "cusmobile", "area"]
+    id_raw      = ["spid", "spname", "cusid", "cusname", "cusmobile", "whatsapp", "area"]
     month_col_list = [c for c in pivot.columns if c not in id_raw and c != "Total"]
 
     rename_map = {
@@ -1545,6 +1546,7 @@ def display_target_management_page(current_page, zid, data_dict):
         "cusid":     "Cust. Code",
         "cusname":   "Customer",
         "cusmobile": "Mobile",
+        "whatsapp":  "WhatsApp Number",
         "area":      "Area",
     }
     display_pivot = (
@@ -1653,11 +1655,12 @@ def display_target_management_page(current_page, zid, data_dict):
             "cusid":     "Cust. Code",
             "cusname":   "Customer",
             "cusmobile": "Mobile",
+            "whatsapp":  "WhatsApp Number",
             "area":      "Area",
             "itemcode":  "Item Code",
             "itemname":  "Item",
         }
-        prod_id_raw = ["spname", "cusid", "cusname", "cusmobile", "area", "itemcode", "itemname"]
+        prod_id_raw = ["spname", "cusid", "cusname", "cusmobile", "whatsapp", "area", "itemcode", "itemname"]
         prod_display = (
             prod_pivot
             .drop(columns=["spid"], errors="ignore")
@@ -1693,8 +1696,9 @@ def display_target_management_page(current_page, zid, data_dict):
 
             no_sales_display = (
                 no_sales_df
-                .rename(columns={"cusname": "Customer", "cusmobile": "Mobile", "area": "Area"})
-                [["Customer", "Mobile", "Area"]]
+                .rename(columns={"cusname": "Customer", "cusmobile": "Mobile",
+                                  "whatsapp": "WhatsApp Number", "area": "Area"})
+                [["Customer", "Mobile", "WhatsApp Number", "Area"]]
                 .reset_index(drop=True)
             )
             st.caption(f"{len(no_sales_display):,} customers with no sales in the selected area(s)")
