@@ -1,4 +1,7 @@
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import psycopg2
 import bcrypt
 from config.settings import get_db_params
