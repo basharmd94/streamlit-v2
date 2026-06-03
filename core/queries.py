@@ -991,6 +991,36 @@ def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None,
     return sql, tuple(params)
 
 
+def get_gl_mtd(zid, year: int, month: int) -> Tuple[str, tuple]:
+    """
+    MTD Income Statement: SUM(xprime) per xacc from gldetail for a single
+    year/month.  IS accounts only (Income + Expenditure, inferred where NULL).
+    Used for the MTD IS dashboard in views/financial.py.
+    """
+    sql = """
+        SELECT
+            glmst.xacc           AS ac_code,
+            glmst.xdesc          AS ac_name,
+            SUM(gldetail.xprime) AS sum
+        FROM glmst
+        JOIN gldetail ON glmst.xacc        = gldetail.xacc
+                     AND glmst.zid         = gldetail.zid
+        JOIN glheader ON gldetail.xvoucher = glheader.xvoucher
+                     AND gldetail.zid      = glheader.zid
+        WHERE glmst.zid      = %s
+          AND glheader.xyear = %s
+          AND glheader.xper  = %s
+          AND (
+              glmst.xacctype IN ('Income', 'Expenditure')
+              OR (glmst.xacctype IS NULL
+                  AND LEFT(glmst.xacc, 2) IN ('04','05','06','07','08','14','15'))
+          )
+        GROUP BY glmst.xacc, glmst.xdesc
+        ORDER BY glmst.xacc
+    """
+    return sql, (zid, year, month)
+
+
 def get_gl_master(zid) -> Tuple[str, tuple]:
     sql = """
         SELECT xacc  AS ac_code,

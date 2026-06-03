@@ -1556,6 +1556,252 @@ def build_pl_level_s(
     return pd.concat(rows, ignore_index=True)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MTD Income Statement helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ac_code sets mirroring build_pl_level_s — kept in one place so both stay in sync
+_MTD_CODES: dict = {
+    "mrp_discount":  ["07080002"],
+    "others_rev":    ["08010002","08020001","08020002","08020003","08030001","08030002",
+                      "08040001","08050001","08050002","08050003","08050004","08050005",
+                      "08050006","08050007","08050008","08050009","08050010","08050011",
+                      "15010001"],
+    "sga_base":      ["06010001","06010002","06010003","06010004","06010005",
+                      "06010006","06010007","06010008","06010009","06020001",
+                      "06030001","06030002","06030003","06030004","06030005","06030006",
+                      "06030007","06030008","06030009","06030010","06030011","06030012",
+                      "06030013","06030014","06040001","06040002","06040003","06040004",
+                      "06040005","06040006","06040007","06040008","06060001","06060002",
+                      "06070001","06070002","06070003","06100001","06160001","06160002",
+                      "06160003","06160004","06160005","06160006","06160007","06160008",
+                      "06160009","06160010","06170001","06180001","06180002","06180003",
+                      "06180004","06190001","06190002","06190003","06190004","06190005",
+                      "06200001","06210001","06210002","06210003","06220001","06220002",
+                      "06220003","06220004","06220005","06220006","06220007","06220008",
+                      "06220009","06220010","06220011","06220012","06220013","06220014",
+                      "06230001","06230002","06230003","06230004","06240001","06240002",
+                      "06250001","06250002","06250003","06260001","06260002","06260003",
+                      "06270001","06280001","06310001","06310002","06310003","06310004",
+                      "06310005","06310006","06310007","06320001","06320002","06340001",
+                      "06360001","06370001","06380001","06390001","06290003","06290004",
+                      "05010002"],
+    "salary":        ["06120001","06120002"],
+    "bonus":         ["06130001","06130002"],
+    "overtime":      ["06140001","06140002"],
+    "director_rem":  ["06150001","06150002","06150003"],
+    "discount_paid": ["07080001"],
+    "sd_expenses":   ["07010001","07010002","07010003","07010004","07010005",
+                      "07010006","07010007","07010008","07010009","07020001","07020002",
+                      "07020003","07020004","07030001","07030002","07030003","07040001",
+                      "07040002","07040003","07040005","07050001","07050002","07050003",
+                      "07060001","07060002","07060003","07060004","07060005","07090001",
+                      "07100001","07100002","07110001","07110002","07110003","07110004",
+                      "07120001","07120002","07120003","07120004","07120005",
+                      "07130001","07130002","07130003","07140001"],
+    "others_direct": ["05010001","05010003","05010004"],
+    "bank_interest": ["06300001","06300002","06300003"],
+    "loan_interest": ["06330001","06350001","06350002"],
+    "income_tax":    ["06290002"],
+    "net_vat_cash":  ["06290001"],
+}
+
+
+@st.cache_data(ttl=3600)
+def _load_gl_mtd_raw(zid, year: int, month: int) -> pd.DataFrame:
+    """Cached: single-month gldetail sums per xacc."""
+    from core import queries as _q
+    from core.db import get_dataframe
+    sql, params = _q.get_gl_mtd(zid, year, month)
+    result = get_dataframe(sql, params)
+    return result if result is not None else pd.DataFrame(columns=["ac_code", "ac_name", "sum"])
+
+
+@st.cache_data(ttl=3600)
+def _load_sales_mtd_raw(zid, year: int, month: int) -> pd.DataFrame:
+    """Cached: MTD sales rows from the opdor/opddt/imtrn pipeline."""
+    from core import queries as _q
+    from core.db import get_dataframe
+    sql, params = _q.get_sales_data({"zid": [zid], "year": [year], "month": [month]})
+    result = get_dataframe(sql, params)
+    return result if result is not None else pd.DataFrame(columns=["altsales", "cost"])
+
+
+def compute_mtd_is(
+    zid_list: list,
+    year: int,
+    month: int,
+    pl_s: pd.DataFrame,
+) -> dict:
+    """
+    Build MTD Income Statement actuals + 3-month averages.
+
+    Parameters
+    ----------
+    zid_list : list of int/str
+        One ZID for a single entity, multiple for consolidated.
+    year, month : int
+        Current partial month.
+    pl_s : pd.DataFrame
+        Level S IS in Monthly perspective (period tuple columns).
+
+    Returns
+    -------
+    dict with keys:
+        'year', 'month'
+        'actuals'   : {label: float}  — Level S sign (revenue +, cost -)
+        'avgs'      : {label: float}  — same sign, from pl_s 3M average
+        'avg_cols'  : list            — the period columns used for averaging
+        'breakdown' : {'sga': DataFrame, 'sd': DataFrame, 'interest': DataFrame}
+    """
+
+    # ── 1. Load gldetail MTD for all ZIDs, aggregate by ac_code ───────────
+    gl_parts = []
+    for zid in zid_list:
+        part = _load_gl_mtd_raw(zid, year, month)
+        if not part.empty:
+            gl_parts.append(part)
+
+    if gl_parts:
+        gl_raw = (
+            pd.concat(gl_parts, ignore_index=True)
+            .groupby(["ac_code", "ac_name"], as_index=False)["sum"].sum()
+        )
+    else:
+        gl_raw = pd.DataFrame(columns=["ac_code", "ac_name", "sum"])
+
+    gl_dict  = {row.ac_code: (float(row.sum) if pd.notna(row.sum) else 0.0)
+                for row in gl_raw.itertuples(index=False)}
+    gl_names = {row.ac_code: row.ac_name
+                for row in gl_raw.itertuples(index=False)}
+
+    def _s(codes: list) -> float:
+        """Sum raw GL values for codes and NEGATE → Level S sign."""
+        return -sum(gl_dict.get(c, 0.0) for c in codes)
+
+    # ── 2. Load Sales/COGS MTD from imtrn/opdor pipeline ─────────────────
+    sales_parts = []
+    for zid in zid_list:
+        part = _load_sales_mtd_raw(zid, year, month)
+        if not part.empty:
+            sales_parts.append(part)
+
+    if sales_parts:
+        sales_df     = pd.concat(sales_parts, ignore_index=True)
+        revenue_mtd  = float(sales_df["altsales"].fillna(0).sum())
+        cogs_mtd     = -float(sales_df["cost"].fillna(0).sum())   # negate → negative
+    else:
+        revenue_mtd = 0.0
+        cogs_mtd    = 0.0
+
+    # ── 3. Compute all IS line values ─────────────────────────────────────
+    mrp_discount  = _s(_MTD_CODES["mrp_discount"])
+    others_rev    = _s(_MTD_CODES["others_rev"])
+    sga_base      = _s(_MTD_CODES["sga_base"])
+    salary        = _s(_MTD_CODES["salary"])
+    bonus         = _s(_MTD_CODES["bonus"])
+    overtime      = _s(_MTD_CODES["overtime"])
+    director_rem  = _s(_MTD_CODES["director_rem"])
+    discount_paid = _s(_MTD_CODES["discount_paid"])
+    sd_expenses   = _s(_MTD_CODES["sd_expenses"])
+    others_direct = _s(_MTD_CODES["others_direct"])
+    bank_interest = _s(_MTD_CODES["bank_interest"])
+    loan_interest = _s(_MTD_CODES["loan_interest"])
+    income_tax    = _s(_MTD_CODES["income_tax"])
+    net_vat_cash  = _s(_MTD_CODES["net_vat_cash"])
+
+    adj_revenue    = revenue_mtd + mrp_discount
+    # GP includes others_rev + mrp_discount to match Level S definition
+    gross_profit   = revenue_mtd + others_rev + mrp_discount + cogs_mtd
+    total_sga      = sga_base + salary + bonus + overtime + director_rem
+    total_sd       = discount_paid + sd_expenses
+    ebitda         = gross_profit + total_sga + total_sd + others_direct
+    total_interest = bank_interest + loan_interest
+    vat_tax_total  = net_vat_cash + income_tax
+    net_income     = ebitda + total_interest + vat_tax_total
+
+    actuals = {
+        "Revenue":                         revenue_mtd,
+        "COGS":                            cogs_mtd,
+        "MRP Discount":                    mrp_discount,
+        "Adjusted Revenue (Pending)":      adj_revenue,
+        "Gross Profit":                    gross_profit,
+        "SG&A":                            sga_base,
+        "0612-Salary Expenses":            salary,
+        "0613-Employee Bonus":             bonus,
+        "0614-Overtime":                   overtime,
+        "0615-Director Remuneration":      director_rem,
+        "Total SG&A":                      total_sga,
+        "0708-Discount Paid":              discount_paid,
+        "Sales & Distribution Expenses":   sd_expenses,
+        "Total Sales & Distribution":      total_sd,
+        "0501-Others Direct Expenses":     others_direct,
+        "EBITDA":                          ebitda,
+        "0630-Bank Interest & Charges":    bank_interest,
+        "0633-Interest-Loan":              loan_interest,
+        "Total Interest & Charges":        total_interest,
+        "Net VAT Expenses Cash (B)":       net_vat_cash,
+        "0629-Income Tax Expenses (C)":    income_tax,
+        "0629-VAT & Tax Total (A+B+C)":    vat_tax_total,
+        "Net Income":                      net_income,
+    }
+
+    # ── 4. 3M averages: last 3 completed period columns before (year, month) ─
+    _num_cols = [c for c in pl_s.columns
+                 if c not in {"ac_name"} and pd.api.types.is_numeric_dtype(pl_s[c])]
+    _sorted   = sorted(_num_cols, key=_period_key)
+    _done     = [c for c in _sorted
+                 if _period_key(c)[0] * 100 + _period_key(c)[1] < year * 100 + month]
+    avg_cols  = _done[-3:] if len(_done) >= 3 else _done
+
+    def _avg(label: str) -> float:
+        row = pl_s.loc[pl_s["ac_name"] == label]
+        if row.empty or not avg_cols:
+            return 0.0
+        vals = [float(v) for v in row[avg_cols].values[0] if pd.notna(v)]
+        return float(np.mean(vals)) if vals else 0.0
+
+    avgs = {lbl: _avg(lbl) for lbl in actuals}
+
+    # ── 5. Per-section breakdown DataFrames for expanders ─────────────────
+    def _breakdown_df(codes: list) -> pd.DataFrame:
+        rows = []
+        for code in codes:
+            if code not in gl_dict:
+                continue
+            rows.append({
+                "ac_code": code,
+                "ac_name": gl_names.get(code, ""),
+                "MTD Actual": -gl_dict[code],   # Level S sign
+            })
+        if not rows:
+            return pd.DataFrame(columns=["ac_code", "ac_name", "MTD Actual"])
+        return (pd.DataFrame(rows)
+                .sort_values("ac_code")
+                .reset_index(drop=True))
+
+    sga_all_codes      = (_MTD_CODES["sga_base"] + _MTD_CODES["salary"]
+                          + _MTD_CODES["bonus"] + _MTD_CODES["overtime"]
+                          + _MTD_CODES["director_rem"])
+    sd_all_codes       = _MTD_CODES["discount_paid"] + _MTD_CODES["sd_expenses"]
+    interest_all_codes = _MTD_CODES["bank_interest"] + _MTD_CODES["loan_interest"]
+
+    breakdown = {
+        "sga":      _breakdown_df(sga_all_codes),
+        "sd":       _breakdown_df(sd_all_codes),
+        "interest": _breakdown_df(interest_all_codes),
+    }
+
+    return {
+        "year":      year,
+        "month":     month,
+        "actuals":   actuals,
+        "avgs":      avgs,
+        "avg_cols":  avg_cols,
+        "breakdown": breakdown,
+    }
+
+
 # ── Per-business Level S BS code routing ─────────────────────────────────────
 # Each entry overrides which ac_codes map to which AR/AP buckets.
 # Businesses not listed use the default routing below.

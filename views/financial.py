@@ -128,6 +128,230 @@ def _render_ls_notes(key_suffix: str = "") -> None:
                 st.markdown("---")
 
 
+def _render_mtd_dashboard(pl_s: pd.DataFrame, mtd: dict) -> None:
+    """
+    Render the MTD Income Statement dashboard inside the Level S Monthly view.
+
+    Parameters
+    ----------
+    pl_s : Level S IS DataFrame (Monthly perspective, period tuple columns).
+    mtd  : dict returned by financial.compute_mtd_is().
+    """
+    import calendar as _cal
+
+    year      = mtd["year"]
+    month     = mtd["month"]
+    avg_cols  = mtd["avg_cols"]
+    actuals   = mtd["actuals"]
+    avgs      = mtd["avgs"]
+
+    month_name = _cal.month_name[month]
+
+    # Describe the 3 months being averaged
+    avg_labels = []
+    for c in avg_cols:
+        y, m = financial._period_key(c)
+        avg_labels.append(f"{_cal.month_abbr[m]} {y}")
+    avg_period_str = ", ".join(avg_labels) if avg_labels else "N/A (no prior months in range)"
+
+    st.subheader(f"📊 MTD Income Statement — {month_name} {year}")
+    st.caption(
+        f"**MTD Actual** = transactions posted in {month_name} {year} up to today &nbsp;|&nbsp; "
+        f"**3M Avg** = average of: {avg_period_str}",
+        unsafe_allow_html=True,
+    )
+
+    use_avg = st.toggle(
+        "Use 3M Averages for SG&A, Interest & Tax in Net Income",
+        value=False,
+        key="mtd_use_avg_toggle",
+    )
+
+    # Lines whose calculated aggregates are replaced by 3M avg when toggle is ON
+    # (Discount Paid and S&D always stay as MTD actual per spec)
+    _AVG_KEYS = {
+        "Total SG&A",
+        "Total Interest & Charges",
+        "Net VAT Expenses Cash (B)",
+        "0629-Income Tax Expenses (C)",
+        "0629-VAT & Tax Total (A+B+C)",
+    }
+
+    def _eff(label: str) -> float:
+        """Return the effective value: avg when toggle is ON and label is controlled."""
+        if use_avg and label in _AVG_KEYS:
+            return avgs.get(label, 0.0)
+        return actuals.get(label, 0.0)
+
+    # Recalculate EBITDA and Net Income with effective values
+    eff_gross_profit  = actuals["Gross Profit"]
+    eff_total_sga     = _eff("Total SG&A")
+    eff_total_sd      = actuals["Total Sales & Distribution"]   # always actual
+    eff_others_direct = actuals["0501-Others Direct Expenses"]  # always actual
+    eff_ebitda        = eff_gross_profit + eff_total_sga + eff_total_sd + eff_others_direct
+    eff_total_int     = _eff("Total Interest & Charges")
+    eff_vat_total     = _eff("0629-VAT & Tax Total (A+B+C)")
+    eff_net_income    = eff_ebitda + eff_total_int + eff_vat_total
+
+    # Rows marked as calculated totals (bold in table)
+    _CALC_ROWS = {
+        "Adjusted Revenue (Pending)", "Gross Profit", "Total SG&A",
+        "Total Sales & Distribution", "EBITDA",
+        "Total Interest & Charges", "0629-VAT & Tax Total (A+B+C)", "Net Income",
+    }
+
+    # Display order
+    _DISPLAY = [
+        "Revenue",
+        "COGS",
+        "MRP Discount",
+        "Adjusted Revenue (Pending)",
+        "Gross Profit",
+        "SG&A",
+        "0612-Salary Expenses",
+        "0613-Employee Bonus",
+        "0614-Overtime",
+        "0615-Director Remuneration",
+        "Total SG&A",
+        "0708-Discount Paid",
+        "Sales & Distribution Expenses",
+        "Total Sales & Distribution",
+        "0501-Others Direct Expenses",
+        "EBITDA",
+        "0630-Bank Interest & Charges",
+        "0633-Interest-Loan",
+        "Total Interest & Charges",
+        "Net VAT Expenses Cash (B)",
+        "0629-Income Tax Expenses (C)",
+        "0629-VAT & Tax Total (A+B+C)",
+        "Net Income",
+    ]
+
+    mtd_col_label = "MTD Actual" if not use_avg else "MTD / Avg-Adj ★"
+
+    rows = []
+    for lbl in _DISPLAY:
+        a = actuals.get(lbl, 0.0)
+        v = avgs.get(lbl, 0.0)
+
+        # Override calculated totals with effective values when toggle is ON
+        if lbl == "EBITDA":
+            a = eff_ebitda
+        elif lbl == "Net Income":
+            a = eff_net_income
+        elif use_avg and lbl in _AVG_KEYS:
+            a = avgs.get(lbl, 0.0)
+
+        delta     = a - v
+        delta_pct = (delta / abs(v) * 100.0) if v != 0.0 else 0.0
+
+        rows.append({
+            "Line Item":      lbl,
+            mtd_col_label:    a,
+            "3M Average":     v,
+            "Δ":              delta,
+            "Δ %":            delta_pct,
+            "_calc":          lbl in _CALC_ROWS,
+        })
+
+    df_disp = pd.DataFrame(rows)
+
+    # ── Styling ───────────────────────────────────────────────────────────
+    # Revenue / profit rows: higher MTD vs avg = good (green)
+    # Cost / expense rows  : lower MTD vs avg (i.e. Δ > 0 because both negative) = good
+    # In both cases Δ > 0 with Level S sign = better, so colour logic is unified:
+    #   Δ > 0  →  green  (revenue up, or expense less negative = spending down)
+    #   Δ < 0  →  red
+    _calc_mask = df_disp["_calc"].tolist()
+
+    def _style_row(row):
+        delta = row["Δ"]
+        n = len(row)
+        base_bg = "background-color: rgba(55,138,221,0.07); font-weight: 600" if row["_calc"] else ""
+
+        delta_colour = (
+            "color: #1D9E75; font-weight: 600" if delta > 0
+            else "color: #E24B4A; font-weight: 600" if delta < 0
+            else "color: inherit"
+        )
+        if base_bg:
+            delta_colour += "; background-color: rgba(55,138,221,0.07)"
+
+        styles = [base_bg] * n
+        try:
+            d_idx = list(row.index).index("Δ")
+            p_idx = list(row.index).index("Δ %")
+            styles[d_idx] = delta_colour
+            styles[p_idx] = delta_colour
+        except ValueError:
+            pass
+        return styles
+
+    df_show = df_disp.drop(columns=["_calc"])
+    fmt = {
+        mtd_col_label: "{:,.1f}",
+        "3M Average":  "{:,.1f}",
+        "Δ":           "{:+,.1f}",
+        "Δ %":         "{:+.1f}%",
+    }
+    styler = (
+        df_show
+        .set_index("Line Item")
+        .style
+        .format(fmt, na_rep="—")
+        .apply(_style_row, axis=1)
+    )
+
+    if use_avg:
+        st.caption(
+            "★ **Toggle ON**: Rows marked with ★ use 3M Average values. "
+            "EBITDA and Net Income recalculate using averaged SG&A, Interest & Tax. "
+            "Discount Paid and S&D always reflect MTD actuals."
+        )
+
+    st.dataframe(styler, use_container_width=True)
+
+    # ── Breakdown expanders ────────────────────────────────────────────────
+    def _render_breakdown(title: str, df: pd.DataFrame,
+                          total_actual: float, total_avg: float) -> None:
+        with st.expander(f"📋 {title} — Account Breakdown", expanded=False):
+            if df.empty:
+                st.info(f"No GL activity found for {title} this month.")
+                return
+            total_delta = total_actual - total_avg
+            st.caption(
+                f"**Total MTD**: `{total_actual:,.1f}` &nbsp;|&nbsp; "
+                f"**3M Avg**: `{total_avg:,.1f}` &nbsp;|&nbsp; "
+                f"**Δ**: `{total_delta:+,.1f}`",
+                unsafe_allow_html=True,
+            )
+            fmt_bd = {"MTD Actual": "{:,.1f}"}
+            st.dataframe(
+                df.set_index("ac_code")
+                  .style.format(fmt_bd, na_rep="—"),
+                use_container_width=True,
+            )
+
+    _render_breakdown(
+        "SG&A",
+        mtd["breakdown"]["sga"],
+        actuals["Total SG&A"],
+        avgs["Total SG&A"],
+    )
+    _render_breakdown(
+        "Sales & Distribution",
+        mtd["breakdown"]["sd"],
+        actuals["Total Sales & Distribution"],
+        avgs["Total Sales & Distribution"],
+    )
+    _render_breakdown(
+        "Interest & Charges",
+        mtd["breakdown"]["interest"],
+        actuals["Total Interest & Charges"],
+        avgs["Total Interest & Charges"],
+    )
+
+
 def _build_ls_ratios(
     pl_s: pd.DataFrame,
     bs_s: pd.DataFrame,
@@ -1887,22 +2111,50 @@ def display_financial_statements(current_page, zid):
                 summary_df, summary_df1, summary_df2, summary_s,
             )
 
-            # ── Notes / ZID Breakdown panel ───────────────────────────────────
+            # ── Notes / ZID Breakdown / MTD Dashboard panel ──────────────────
+            # Determine ZID list and current month for MTD query
+            _now           = datetime.now()
+            _mtd_year      = _now.year
+            _mtd_month     = _now.month
+            if _is_consolidated:
+                _mtd_zids = _consol.load_consolidation_rules().get("all_zids", [])
+            else:
+                _mtd_zids = [_az]
+
             if _is_consolidated:
                 _panel_m = st.radio(
                     "View",
-                    ["📋 Notes & Context", "📊 ZID Contribution Breakdown"],
+                    ["📋 Notes & Context", "📊 ZID Contribution Breakdown", "📊 MTD Dashboard"],
                     horizontal=True,
                     key="ls_panel_m",
                 )
                 if _panel_m == "📋 Notes & Context":
                     _render_ls_notes(key_suffix="m")
-                else:
+                elif _panel_m == "📊 ZID Contribution Breakdown":
                     _render_zid_contribution_breakdown(
                         pl_s, bs_s,
                         _zid_frames_pl_m, _zid_frames_bs_m,
                         perspective="Monthly",
                         key_suffix="m",
                     )
+                else:
+                    try:
+                        _mtd = financial.compute_mtd_is(_mtd_zids, _mtd_year, _mtd_month, pl_s)
+                        _render_mtd_dashboard(pl_s, _mtd)
+                    except Exception as _mtd_err:
+                        st.error(f"MTD Dashboard error: {_mtd_err}")
             else:
-                _render_ls_notes(key_suffix="m_single")
+                _panel_m_single = st.radio(
+                    "View",
+                    ["📋 Notes & Context", "📊 MTD Dashboard"],
+                    horizontal=True,
+                    key="ls_panel_m_single",
+                )
+                if _panel_m_single == "📋 Notes & Context":
+                    _render_ls_notes(key_suffix="m_single")
+                else:
+                    try:
+                        _mtd = financial.compute_mtd_is(_mtd_zids, _mtd_year, _mtd_month, pl_s)
+                        _render_mtd_dashboard(pl_s, _mtd)
+                    except Exception as _mtd_err:
+                        st.error(f"MTD Dashboard error: {_mtd_err}")
