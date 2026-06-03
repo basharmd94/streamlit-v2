@@ -627,11 +627,12 @@ def _render_metric_cards(
     remaining_wd = _count_working_days(tomorrow, month_end, holidays) if tomorrow <= month_end else 0
 
     # ── Month options for target selector ─────────────────────────────────────
+    # Show full current year: Jan <current_year> → Dec <current_year>
     month_options = []
-    for i in range(12):
-        d = today + pd.DateOffset(months=i)
-        label = f"{calendar.month_abbr[int(d.month)]} {int(d.year)}"
-        month_options.append((label, int(d.year), int(d.month)))
+    current_year = today.year
+    for m in range(1, 13):
+        label = f"{calendar.month_abbr[m]} {current_year}"
+        month_options.append((label, current_year, m))
 
     # ── Layout ────────────────────────────────────────────────────────────────
     st.markdown("---")
@@ -641,9 +642,14 @@ def _render_metric_cards(
     t_cols = st.columns([1.5, 1.5, 0.7, 1.3, 1.3, 1.3, 1.5])
 
     with t_cols[0]:
+        _default_mo_idx = next(
+            (i for i, m in enumerate(month_options) if m[1] == today.year and m[2] == today.month),
+            0,
+        )
         sel_mo_label = st.selectbox(
             "Month",
             [m[0] for m in month_options],
+            index=_default_mo_idx,
             key=f"tm_target_month_{sel_spid}",
         )
     sel_mo_year, sel_mo_month = next(
