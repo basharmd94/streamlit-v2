@@ -67,9 +67,10 @@ def get_sales_data(filters=None):
         s.sp_id  AS spid,
         p.xname  AS spname,
         s.cusid,
-        c.xshort AS cusname,
-        c.xmobile AS cusmobile,
-        c.xcity  AS area,
+        c.xshort   AS cusname,
+        c.xmobile  AS cusmobile,
+        c.xtaxnum  AS whatsapp,
+        c.xcity    AS area,
         s.itemcode,
         ci.xdesc AS itemname,
         ci.xabc  AS itemgroup,
@@ -855,8 +856,9 @@ def get_cacus_directory(filters: Dict[str, Any]) -> Tuple[str, tuple]:
         SELECT
             xcus::text              AS cusid,
             xshort                  AS cusname,
-            COALESCE(xmobile, '')   AS cusmobile,
-            COALESCE(xcity,   '')   AS area
+            COALESCE(xmobile,  '')  AS cusmobile,
+            COALESCE(xtaxnum,  '')  AS whatsapp,
+            COALESCE(xcity,    '')  AS area
         FROM cacus
         WHERE zid = %s
         ORDER BY xshort
