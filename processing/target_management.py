@@ -87,7 +87,7 @@ def build_customer_wise_monthly(sales_df: pd.DataFrame, returns_df: pd.DataFrame
     """Report 1: one row per (salesman × customer), monthly net sales columns."""
     if sales_df.empty or "final_sales" not in sales_df.columns:
         return pd.DataFrame()
-    id_cols = ["spid", "spname", "cusid", "cusname", "cusmobile", "area"]
+    id_cols = ["spid", "spname", "cusid", "cusname", "cusmobile", "whatsapp", "area"]
     return _build_pivot(sales_df, returns_df, id_cols)
 
 
@@ -95,5 +95,5 @@ def build_customer_product_monthly(sales_df: pd.DataFrame, returns_df: pd.DataFr
     """Report 2: one row per (salesman × customer × product), monthly net sales columns."""
     if sales_df.empty or "final_sales" not in sales_df.columns:
         return pd.DataFrame()
-    id_cols = ["spid", "spname", "cusid", "cusname", "cusmobile", "area", "itemcode", "itemname"]
+    id_cols = ["spid", "spname", "cusid", "cusname", "cusmobile", "whatsapp", "area", "itemcode", "itemname"]
     return _build_pivot(sales_df, returns_df, id_cols)
