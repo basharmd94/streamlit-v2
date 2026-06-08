@@ -56,6 +56,7 @@ class Analytics:
             "stock_movement":   queries.get_stock_movement_data,
             "caitem":           queries.get_caitem_data,
             "opmob_pending":    queries.get_opmob_pending,
+            "final_items_view": queries.get_final_items_view,
         }
 
         query_func = query_map.get(table_name)

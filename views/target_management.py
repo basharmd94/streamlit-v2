@@ -409,6 +409,15 @@ def _load_cacus_directory(zid: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+# ── Final items view loader ───────────────────────────────────────────────────
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_final_items(zid: str) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("final_items_view", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
 # ── Opmob pending orders loader ───────────────────────────────────────────────
 
 @st.cache_data(show_spinner=False, ttl=86400)
@@ -763,6 +772,15 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
     last3   = df[(df["_dt"] >= mo_start_3mo) & (df["_dt"] <= end_3mo)]
     mtd_all = df[(df["_dt"] >= mo_start_cur) & (df["_dt"] <= today)]
 
+    # Warn if historical data is missing — 3M averages will show as 0 without it
+    if last3.empty:
+        st.warning(
+            f"⚠️ No data found for the 3-month lookback window "
+            f"({mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}). "
+            "**Daily Avg (3M)** and **Monthly Avg (3M)** will show 0. "
+            "Please load at least 3 prior months in the sidebar filters."
+        )
+
     # ── MTD returns per salesman ───────────────────────────────────────────────
     mtd_ret_by_sp: dict = {}   # spid -> mtd treturnamt
     if returns_df is not None and not returns_df.empty and "treturnamt" in returns_df.columns:
@@ -880,6 +898,15 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
             st.dataframe(_style_t1(t1), use_container_width=True, hide_index=True)
         except Exception:
             st.dataframe(t1, use_container_width=True, hide_index=True)
+
+        _3m_period = (f"{mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}"
+                      f" ({wd_3mo} working days)")
+        st.caption(
+            f"**Daily Avg (3M)** = total sales in prior 3 months ÷ working days in that period &nbsp;|&nbsp; "
+            f"**Monthly Avg (3M)** = total ÷ 3 months &nbsp;|&nbsp; "
+            f"3M window: {_3m_period}",
+            unsafe_allow_html=True,
+        )
 
         st.download_button(
             "⬇ Download Summary CSV",
@@ -1389,7 +1416,7 @@ def display_target_management_page(current_page, zid, data_dict):
     # ── View mode radio ───────────────────────────────────────────────────────
     _view_mode = st.radio(
         "View",
-        ["👤 Individual Salesman", "📊 All Salesmen Overview", "📈 Moving Average"],
+        ["👤 Individual Salesman", "📊 All Salesmen Overview", "📈 Moving Average", "📦 Current Stock"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -1476,6 +1503,52 @@ def display_target_management_page(current_page, zid, data_dict):
         except Exception as _ma_err:
             st.warning("Unable to compute moving average.")
             st.caption(f"Details: {_ma_err}")
+        return
+
+    if _view_mode == "📦 Current Stock":
+        st.subheader("📦 Current Stock")
+        with st.spinner("Loading stock data…"):
+            stock_df = _load_final_items(str(zid))
+
+        if stock_df.empty:
+            st.warning("No stock data available from final_items_view for this entity.")
+        else:
+            # Rename columns for display
+            _col_map = {
+                "item_id":    "Item ID",
+                "item_name":  "Item Name",
+                "item_group": "Item Group",
+                "stock":      "Stock",
+            }
+            disp = (
+                stock_df
+                .rename(columns=_col_map)
+                [[c for c in _col_map.values() if c in stock_df.rename(columns=_col_map).columns]]
+                .reset_index(drop=True)
+            )
+
+            # Search filter
+            _search = st.text_input("🔍 Search by Item Name or Group", key="tm_stock_search")
+            if _search:
+                _mask = (
+                    disp["Item Name"].str.contains(_search, case=False, na=False) |
+                    disp["Item Group"].str.contains(_search, case=False, na=False)
+                )
+                disp = disp[_mask].reset_index(drop=True)
+
+            st.caption(f"{len(disp):,} items")
+            st.dataframe(
+                disp.style.format({"Stock": "{:,.0f}"}, na_rep="—"),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.download_button(
+                "⬇ Download CSV",
+                disp.to_csv(index=False).encode("utf-8"),
+                file_name=f"current_stock_{zid}.csv",
+                mime="text/csv",
+                key="dl_current_stock",
+            )
         return
 
     # ── Filters: salesman (single), customer, area (cascading) ────────────────

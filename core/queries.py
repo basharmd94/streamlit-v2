@@ -866,6 +866,25 @@ def get_cacus_directory(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_final_items_view(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """
+    Query the final_items_view database view.
+    Returns item_id, item_name, item_group, stock filtered by zid.
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            item_id,
+            item_name,
+            item_group,
+            stock
+        FROM final_items_view
+        WHERE zid = %s
+        ORDER BY item_name
+    """
+    return sql, (zid,)
+
+
 def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     project = filters.get("project")
