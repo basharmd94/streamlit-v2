@@ -763,6 +763,15 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
     last3   = df[(df["_dt"] >= mo_start_3mo) & (df["_dt"] <= end_3mo)]
     mtd_all = df[(df["_dt"] >= mo_start_cur) & (df["_dt"] <= today)]
 
+    # Warn if historical data is missing — 3M averages will show as 0 without it
+    if last3.empty:
+        st.warning(
+            f"⚠️ No data found for the 3-month lookback window "
+            f"({mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}). "
+            "**Daily Avg (3M)** and **Monthly Avg (3M)** will show 0. "
+            "Please load at least 3 prior months in the sidebar filters."
+        )
+
     # ── MTD returns per salesman ───────────────────────────────────────────────
     mtd_ret_by_sp: dict = {}   # spid -> mtd treturnamt
     if returns_df is not None and not returns_df.empty and "treturnamt" in returns_df.columns:
@@ -880,6 +889,15 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
             st.dataframe(_style_t1(t1), use_container_width=True, hide_index=True)
         except Exception:
             st.dataframe(t1, use_container_width=True, hide_index=True)
+
+        _3m_period = (f"{mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}"
+                      f" ({wd_3mo} working days)")
+        st.caption(
+            f"**Daily Avg (3M)** = total sales in prior 3 months ÷ working days in that period &nbsp;|&nbsp; "
+            f"**Monthly Avg (3M)** = total ÷ 3 months &nbsp;|&nbsp; "
+            f"3M window: {_3m_period}",
+            unsafe_allow_html=True,
+        )
 
         st.download_button(
             "⬇ Download Summary CSV",
