@@ -1320,3 +1320,103 @@ def get_opmob_pending(filters: Dict[str, Any]) -> Tuple[str, tuple]:
           AND EXTRACT(MONTH FROM om.xdate)::int = EXTRACT(MONTH FROM CURRENT_DATE)::int
     """
     return sql, (zid,)
+
+
+def get_ar_due_ledger(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Row-level AR ledger for Salesman Due (Collection Analysis).
+
+    Mirrors jupyter_audits/HM_36_*_Due.py: every AR posting with the salesman
+    that should be credited for it (own xsp, falling back to the xsp on the
+    related INOP sales voucher), plus customer city/state and salesman name.
+    """
+    zid = filters["zid"][0]
+    project = filters.get("project")
+    sql = """
+        SELECT
+            gd.zid,
+            gd.xvoucher,
+            gh.xdate,
+            gd.xrow,
+            EXTRACT(YEAR  FROM gh.xdate)::int AS year,
+            EXTRACT(MONTH FROM gh.xdate)::int AS month,
+            gd.xsub,
+            cacus.xshort AS customer_name,
+            cacus.xcity,
+            cacus.xstate,
+            gd.xprime,
+            COALESCE(gd.xsp, sp_source.inop_sp) AS xsp,
+            prmst.xname AS salesman_name
+        FROM gldetail gd
+        JOIN glheader gh
+          ON gd.zid = gh.zid
+         AND gd.xvoucher = gh.xvoucher
+        LEFT JOIN cacus
+          ON gd.zid = cacus.zid
+         AND gd.xsub = cacus.xcus
+        LEFT JOIN (
+            SELECT DISTINCT ON (zid, xvoucher) zid, xvoucher, xsp AS inop_sp
+            FROM gldetail
+            WHERE xaccusage != 'AR'
+              AND xvoucher LIKE 'INOP%%'
+              AND xsp IS NOT NULL
+              AND xsp != ''
+            ORDER BY zid, xvoucher, xrow
+        ) sp_source
+          ON gd.zid = sp_source.zid
+         AND gd.xvoucher = sp_source.xvoucher
+        LEFT JOIN prmst
+          ON gd.zid = prmst.zid
+         AND COALESCE(gd.xsp, sp_source.inop_sp) = prmst.xemp
+        WHERE gd.zid = %s
+          AND gh.zid = %s
+          AND gd.xaccusage = 'AR'
+          AND gd.xproj = %s
+          AND (
+                gd.xvoucher LIKE 'INOP%%'
+             OR gd.xvoucher LIKE 'RCT%%'
+             OR gd.xvoucher LIKE 'BRCT%%'
+             OR gd.xvoucher LIKE 'CRCT%%'
+             OR gd.xvoucher LIKE 'SRJV%%'
+             OR gd.xvoucher LIKE 'SRT%%'
+             OR gd.xvoucher LIKE 'JV%%'
+             OR gd.xvoucher LIKE 'IMSA%%'
+             OR gd.xvoucher LIKE 'STJV%%'
+             OR gd.xvoucher LIKE 'CPAY%%'
+             OR gd.xvoucher LIKE 'PAY%%'
+             OR gd.xvoucher LIKE 'CHQ%%'
+             OR gd.xvoucher LIKE 'ADJV%%'
+             OR gd.xvoucher LIKE 'TR%%'
+             OR gd.xvoucher LIKE 'BPAY%%'
+             OR gd.xvoucher LIKE 'BTJV%%'
+          )
+        ORDER BY gd.xsub, gh.xdate, gd.xrow, gd.xvoucher
+    """
+    return sql, (zid, zid, project)
+
+
+def get_cacus_master(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Customer master for Salesman Due name/area lookups."""
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            xcus   AS cusid,
+            xshort AS cusname,
+            xcity,
+            xstate
+        FROM cacus
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
+def get_prmst_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Salesman master for Salesman Due name lookups."""
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            xemp  AS spid,
+            xname AS spname
+        FROM prmst
+        WHERE zid = %s
+    """
+    return sql, (zid,)

@@ -2,8 +2,28 @@ import streamlit as st
 import pandas as pd
 import calendar
 from datetime import datetime
-from processing import common, collection
+from core.analytics import Analytics
+from processing import common, collection, salesman_due
 from utils.utils import timed
+
+
+@st.cache_data(ttl=3600, show_spinner="Building Salesman Due report...")
+def _load_salesman_due_reports(zid: str, project: str) -> dict:
+    """Load + build the Salesman Due reports for one business (zid/project)."""
+    ar_df = Analytics("ar_due_ledger", zid=zid, project=project, filters={}).data
+    if ar_df is None or ar_df.empty:
+        return {}
+
+    cacus_df = Analytics("cacus_master", zid=zid, filters={}).data
+    if cacus_df is None:
+        cacus_df = pd.DataFrame(columns=["cusid", "cusname", "xcity", "xstate"])
+
+    prmst_df = Analytics("prmst_simple", zid=zid, filters={}).data
+    if prmst_df is None:
+        prmst_df = pd.DataFrame(columns=["spid", "spname"])
+
+    market_split = str(zid) in ("100000", "100001")
+    return salesman_due.build_salesman_due_reports(ar_df, cacus_df, prmst_df, market_split)
 
 
 @timed
@@ -13,7 +33,7 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
     #collection using sales, returns and collection separately
     filtered_data_c, filtered_data_s,filtered_data_r = common.data_copy_add_columns(data_dict['collection'],data_dict['sales'], data_dict['return'])
     filtered_data_c = common.enrich_collection_with_sales_info(filtered_data_c, filtered_data_s)
-    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP","CPA","Customer Ledger"],horizontal=True)
+    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP","CPA","Customer Ledger","Salesman Due"],horizontal=True)
 
     #collection using glheader and details.
     filtered_data_ar = data_dict['ar']
@@ -518,3 +538,48 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         ledger_df = filtered_data_ar[filtered_data_ar['cusid'] == selected_cusid].sort_values('date').copy()
         ledger_df["ending_balance"] = ledger_df["value"].cumsum()
         st.dataframe(ledger_df)
+
+    elif analysis_mode == "Salesman Due":
+        st.subheader("Salesman Due")
+        st.caption("Salesman-wise customer due report, ported from the HM_36 daily due scripts.")
+
+        sub_report = st.radio(
+            "Select Report:",
+            ["Main Due Report", "Latest Sale & Collection", "Customer Credit Trickle-down", "Missing Customers"],
+            horizontal=True,
+            key="salesman_due_sub_report",
+        )
+
+        try:
+            reports = _load_salesman_due_reports(zid, project)
+        except Exception as _sd_err:
+            st.warning("⚠️ Unable to load Salesman Due report.")
+            st.caption(f"Details: {_sd_err}")
+            reports = {}
+
+        if not reports:
+            st.info("No AR customer due data found for this business.")
+        else:
+            report_map = {
+                "Main Due Report": "main_due_report",
+                "Latest Sale & Collection": "report_df",
+                "Customer Credit Trickle-down": "report_cc_with_names",
+                "Missing Customers": "missing_customers_df",
+            }
+            report_key = report_map[sub_report]
+            df_sd = reports[report_key]
+
+            st.caption(f"{len(df_sd):,} rows")
+            if len(df_sd) > 50_000:
+                st.info("Showing first 50,000 rows. Download the CSV for full data.")
+                st.dataframe(df_sd.head(50_000))
+            else:
+                st.dataframe(df_sd)
+
+            st.download_button(
+                "Download CSV",
+                data=df_sd.to_csv(index=False).encode("utf-8"),
+                file_name=f"salesman_due_{report_key}_{zid}.csv",
+                mime="text/csv",
+                key=f"salesman_due_download_{report_key}",
+            )

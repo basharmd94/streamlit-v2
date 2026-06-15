@@ -57,6 +57,9 @@ class Analytics:
             "caitem":           queries.get_caitem_data,
             "opmob_pending":    queries.get_opmob_pending,
             "final_items_view": queries.get_final_items_view,
+            "ar_due_ledger":    queries.get_ar_due_ledger,
+            "cacus_master":     queries.get_cacus_master,
+            "prmst_simple":     queries.get_prmst_simple,
         }
 
         query_func = query_map.get(table_name)
