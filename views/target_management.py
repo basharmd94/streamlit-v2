@@ -842,7 +842,7 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         daily_req = round(gap / remaining_wd, 0) if remaining_wd > 0 and target > 0 else 0.0
         pct_tgt   = round(net_sales / target * 100, 1) if target > 0 else None
 
-        mtd_coll  = round(coll_by_sp.get((spid, cur_year, cur_month), 0.0), 0)
+        mtd_coll  = round(float(coll_by_sp.get((spid, cur_year, cur_month), 0.0)), 0)
         pct_coll  = round(mtd_coll / (1.02 * mtd_sales) * 100, 1) if mtd_sales > 0 else None
 
         uc_3mo   = int(sp3["cusid"].nunique())    if "cusid"    in sp3.columns else 0
@@ -1027,7 +1027,7 @@ def _render_prior_month_section(
         daily_avg  = round(sales / wd_month, 0) if wd_month > 0 else 0.0
         monthly_avg_3m = round(float(sp_m3["final_sales"].sum()) / 3, 0)
 
-        coll       = round(prior_coll_by_sp.get(spid, 0.0), 0)
+        coll       = round(float(prior_coll_by_sp.get(spid, 0.0)), 0)
         pct_coll   = round(coll / (1.02 * sales) * 100, 1) if sales > 0 else 0.0
 
         uc = int(sp_mo["cusid"].nunique())    if "cusid"    in sp_mo.columns else 0
