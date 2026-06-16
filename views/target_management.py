@@ -741,7 +741,7 @@ def _render_metric_cards(
 
 # ── All-Salesmen Overview ──────────────────────────────────────────────────────
 
-def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all: pd.DataFrame, zid):
+def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all: pd.DataFrame, zid, collection_df: pd.DataFrame = None):
     """
     Two-table overview for the currently selected ZID:
       Table 1 — one row per salesman: target/MTD/daily-required/3-month metrics
@@ -790,6 +790,15 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         if "spid" in _r_mtd.columns:
             mtd_ret_by_sp = _r_mtd.groupby(_r_mtd["spid"].astype(str))["treturnamt"].sum().to_dict()
 
+    # ── Collection per salesman × year × month ────────────────────────────────
+    coll_by_sp: dict = {}  # (spid, year, month) -> collection value
+    if collection_df is not None and not collection_df.empty and "value" in collection_df.columns:
+        _c = collection_df.copy()
+        _c["spid"]  = _c["spid"].astype(str)
+        _c["year"]  = pd.to_numeric(_c["year"],  errors="coerce")
+        _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
+        coll_by_sp = _c.groupby(["spid", "year", "month"])["value"].sum().to_dict()
+
     # ── ZID-wide unique products (3 months) ───────────────────────────────────
     zid_up = int(last3["itemcode"].nunique()) if "itemcode" in last3.columns else 0
 
@@ -833,6 +842,9 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         daily_req = round(gap / remaining_wd, 0) if remaining_wd > 0 and target > 0 else 0.0
         pct_tgt   = round(net_sales / target * 100, 1) if target > 0 else None
 
+        mtd_coll  = round(coll_by_sp.get((spid, cur_year, cur_month), 0.0), 0)
+        pct_coll  = round(mtd_coll / (1.02 * mtd_sales) * 100, 1) if mtd_sales > 0 else None
+
         uc_3mo   = int(sp3["cusid"].nunique())    if "cusid"    in sp3.columns else 0
         up_3mo   = int(sp3["itemcode"].nunique()) if "itemcode" in sp3.columns else 0
         daily_uc = round(float(sp3.groupby("_d")["cusid"].nunique().mean()),    1) if not sp3.empty and "cusid"    in sp3.columns else 0.0
@@ -845,6 +857,8 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
             "MTD Return":       mtd_ret,
             "Net Sales":        net_sales,
             "% vs Target":      pct_tgt,
+            "MTD Collection":   mtd_coll,
+            "% Collection":     pct_coll,
             "Days Left":        remaining_wd,
             "Daily Required":   daily_req,
             "Daily Avg (3M)":   daily_avg,
@@ -866,6 +880,8 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
                 "MTD Return":       "{:,.0f}",
                 "Net Sales":        "{:,.0f}",
                 "% vs Target":      lambda v: f"{v:.1f}%" if v is not None else "—",
+                "MTD Collection":   "{:,.0f}",
+                "% Collection":     lambda v: f"{v:.1f}%" if v is not None else "—",
                 "Days Left":        "{:,.0f}",
                 "Daily Required":   "{:,.0f}",
                 "Daily Avg (3M)":   "{:,.0f}",
@@ -892,6 +908,8 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
 
             if "% vs Target" in df.columns:
                 styled = styled.apply(_col_pct, subset=["% vs Target"])
+            if "% Collection" in df.columns:
+                styled = styled.apply(_col_pct, subset=["% Collection"])
             return styled
 
         try:
@@ -922,7 +940,7 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
     for _i in range(1, 4):
         _prior = mo_start_cur - pd.DateOffset(months=_i)
         _render_prior_month_section(
-            df, returns_df, zid, int(_prior.year), int(_prior.month), holidays
+            df, returns_df, zid, int(_prior.year), int(_prior.month), holidays, collection_df
         )
 
 
@@ -935,6 +953,7 @@ def _render_prior_month_section(
     year: int,
     month: int,
     holidays: set,
+    collection_df: pd.DataFrame = None,
 ):
     """
     Render one prior month's salesman performance inside an expander.
@@ -977,6 +996,16 @@ def _render_prior_month_section(
     # ZID-wide unique products for this month
     zid_up = int(mo_data["itemcode"].nunique()) if "itemcode" in mo_data.columns else 0
 
+    # ── Collection per salesman for this month ────────────────────────────────
+    prior_coll_by_sp: dict = {}
+    if collection_df is not None and not collection_df.empty and "value" in collection_df.columns:
+        _c = collection_df.copy()
+        _c["spid"]  = _c["spid"].astype(str)
+        _c["year"]  = pd.to_numeric(_c["year"],  errors="coerce")
+        _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
+        _mo_c = _c[(_c["year"] == year) & (_c["month"] == month)]
+        prior_coll_by_sp = _mo_c.groupby("spid")["value"].sum().to_dict()
+
     sp_list = (
         df[["spid", "spname"]].dropna().drop_duplicates()
         .sort_values("spname")
@@ -998,6 +1027,9 @@ def _render_prior_month_section(
         daily_avg  = round(sales / wd_month, 0) if wd_month > 0 else 0.0
         monthly_avg_3m = round(float(sp_m3["final_sales"].sum()) / 3, 0)
 
+        coll       = round(prior_coll_by_sp.get(spid, 0.0), 0)
+        pct_coll   = round(coll / (1.02 * sales) * 100, 1) if sales > 0 else 0.0
+
         uc = int(sp_mo["cusid"].nunique())    if "cusid"    in sp_mo.columns else 0
         up = int(sp_mo["itemcode"].nunique()) if "itemcode" in sp_mo.columns else 0
 
@@ -1017,6 +1049,8 @@ def _render_prior_month_section(
             "Return":           ret,
             "Net Sales":        net_sales,
             "% vs Target":      pct_tgt,
+            "Collection":       coll,
+            "% Collection":     pct_coll,
             "Days Left":        0,
             "Daily Required":   0,
             "Daily Avg":        daily_avg,
@@ -1047,6 +1081,8 @@ def _render_prior_month_section(
                     "Return":           "{:,.0f}",
                     "Net Sales":        "{:,.0f}",
                     "% vs Target":      "{:.1f}%",
+                    "Collection":       "{:,.0f}",
+                    "% Collection":     "{:.1f}%",
                     "Days Left":        "{:,.0f}",
                     "Daily Required":   "{:,.0f}",
                     "Daily Avg":        "{:,.0f}",
@@ -1075,6 +1111,8 @@ def _render_prior_month_section(
 
             if "% vs Target" in df_inner.columns:
                 styled = styled.apply(_col_pct, subset=["% vs Target"])
+            if "% Collection" in df_inner.columns:
+                styled = styled.apply(_col_pct, subset=["% Collection"])
             return styled
 
         try:
@@ -1466,7 +1504,8 @@ def display_target_management_page(current_page, zid, data_dict):
 
     if _view_mode == "📊 All Salesmen Overview":
         opmob_all = _load_opmob_pending(str(zid))
-        _render_overview(sales_df, returns_df, opmob_all, zid)
+        _render_overview(sales_df, returns_df, opmob_all, zid,
+                         collection_df=data_dict.get("collection", pd.DataFrame()))
         return
 
     if _view_mode == "📈 Moving Average":
