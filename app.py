@@ -327,7 +327,7 @@ class BaseApp:
             "Basket Analysis": ("sales", "return", "purchase", "cacus_simple"),
             "Purchase Analysis": ("sales", "purchase", "stock"),
             "Customer Data View": ("sales", "return"),
-            "Target Management":  ("sales", "return")
+            "Target Management":  ("sales", "return", "collection")
         }
 
         if self.current_page in self.page_data_map and self.current_page != "Purchase Analysis":
