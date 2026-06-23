@@ -1420,3 +1420,86 @@ def get_prmst_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
         WHERE zid = %s
     """
     return sql, (zid,)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manufacturing Analysis (moord/moodt) — 100000 / 100005 / 100009
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_mo_header_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """MO header (moord): one row per manufacturing order — the finished good
+    produced, qty produced, and the MO's open date. Only 'Completed' MOs are
+    returned — xdatecom is unreliable (always 2999-12-31 in this DB, even for
+    completed orders), so xdatemo is the only usable date and status filter
+    happens here rather than per-caller.
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            moord.zid,
+            moord.xmoord     AS monumber,
+            moord.xitem      AS itemcode,
+            moord.xqtyprd    AS qtyprd,
+            moord.xunit      AS unit,
+            moord.xstatusmor AS status,
+            moord.xdatemo    AS date,
+            EXTRACT(YEAR  FROM moord.xdatemo)::int AS year,
+            EXTRACT(MONTH FROM moord.xdatemo)::int AS month,
+            ci.xdesc         AS itemname,
+            ci.xgitem        AS itemgroup
+        FROM moord
+        LEFT JOIN caitem ci ON moord.xitem = ci.xitem AND moord.zid = ci.zid
+        WHERE moord.zid = %s
+          AND moord.xstatusmor = 'Completed'
+    """
+    return sql, (zid,)
+
+
+def get_mo_detail_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """MO detail (moodt): one row per BOM/raw-material line consumed against
+    an MO. No date of its own — join to mo_header on (zid, monumber) in the
+    processing layer to get the MO's date/status/finished-good context.
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            moodt.zid,
+            moodt.xmoord   AS monumber,
+            moodt.xmorlno  AS lineno,
+            moodt.xitem    AS itemcode,
+            moodt.xwh      AS warehouse,
+            moodt.xqty     AS qty,
+            moodt.xqtyord  AS qtyord,
+            moodt.xunit    AS unit,
+            moodt.xrate    AS rate,
+            ci.xdesc       AS itemname,
+            ci.xgitem      AS itemgroup
+        FROM moodt
+        LEFT JOIN caitem ci ON moodt.xitem = ci.xitem AND moodt.zid = ci.zid
+        WHERE moodt.zid = %s
+    """
+    return sql, (zid,)
+
+
+def get_admin_expense_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Total Office & Administrative expense (GL ac_code prefix '06') per
+    month, for allocating overhead across finished goods by their share of
+    that month's total production material cost (Manufacturing Analysis ->
+    FG Costing tab).
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            glheader.zid,
+            glheader.xyear::int AS year,
+            glheader.xper::int  AS month,
+            SUM(gldetail.xprime) AS value
+        FROM gldetail
+        JOIN glheader
+          ON gldetail.xvoucher = glheader.xvoucher
+         AND gldetail.zid      = glheader.zid
+        WHERE gldetail.zid = %s
+          AND LEFT(gldetail.xacc, 2) = '06'
+        GROUP BY glheader.zid, glheader.xyear, glheader.xper
+    """
+    return sql, (zid,)

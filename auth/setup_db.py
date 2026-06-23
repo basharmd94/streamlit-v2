@@ -67,6 +67,7 @@ def setup_auth_tables():
             ('admin','Customer Data View'),
             ('admin','Daily Sales Analysis'),
             ('admin','Target Management'),
+            ('admin','Manufacturing Analysis'),
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
             ('sales', 'Daily Sales Analysis'),
@@ -85,11 +86,13 @@ def setup_auth_tables():
             ('finance', 'Collection Analysis'),
             ('finance', 'Accounting Analysis'),
             ('finance','Inventory Analysis'),
+            ('finance','Manufacturing Analysis'),
             ('purchase', 'Home'),
             ('purchase', 'Purchase Analysis'),
             ('purchase', 'Basket Analysis'),
             ('purchase', 'Distribution & Histograms'),
             ('purchase','Inventory Analysis'),
+            ('purchase','Manufacturing Analysis'),
             ('admin', 'AR Analysis'),
             ('finance', 'AR Analysis')
         """)

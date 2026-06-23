@@ -60,6 +60,9 @@ class Analytics:
             "ar_due_ledger":    queries.get_ar_due_ledger,
             "cacus_master":     queries.get_cacus_master,
             "prmst_simple":     queries.get_prmst_simple,
+            "mo_header":        queries.get_mo_header_data,
+            "mo_detail":        queries.get_mo_detail_data,
+            "admin_expense_monthly": queries.get_admin_expense_monthly,
         }
 
         query_func = query_map.get(table_name)
