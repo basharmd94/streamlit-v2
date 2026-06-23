@@ -1,6 +1,6 @@
 import streamlit as st
 from core.analytics import Analytics
-from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, target_management as target_mgmt_view
+from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, target_management as target_mgmt_view, manufacturing
 from views.home import display_home_page
 import pandas as pd
 from io import BytesIO
@@ -274,6 +274,7 @@ class BaseApp:
             "Target Management",
             "Accounting Analysis",
             "Inventory Analysis",
+            "Manufacturing Analysis",
         ]
 
          # Filter menu based on user's role
@@ -442,6 +443,8 @@ class BaseApp:
             self.accounting_analysis()
         elif self.current_page == "Inventory Analysis":
             self.inventory_analysis()
+        elif self.current_page == "Manufacturing Analysis":
+            self.manufacturing_analysis()
         elif self.current_page == "Target Management":
             self.call_if_data_loaded(self.target_management_analysis)
 
@@ -519,6 +522,10 @@ class BaseApp:
     @timed
     def inventory_analysis(self):
         inventory.display_inventory_analysis_main(self.current_page, st.session_state.zid)
+
+    @timed
+    def manufacturing_analysis(self):
+        manufacturing.display_manufacturing_analysis_page(self.current_page, st.session_state.zid)
 
     @timed
     def target_management_analysis(self, data_dict):

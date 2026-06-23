@@ -71,3 +71,6 @@ logs/
 data/targets.json
 data/public_holidays.json
 data/warehouse_filters.json
+
+# Personal Claude Code tool permissions — local to this machine
+.claude/settings.local.json
