@@ -1,8 +1,11 @@
+import time
+
 from core.db import get_data
 from core import queries
 from processing import common
 import streamlit as st
 import pandas as pd
+from utils.loggin_config import LogManager
 
 # core/analytics.py
 
@@ -15,6 +18,14 @@ class Analytics:
           2) Calling the appropriate SQL builder which returns (query, params)
           3) Executing via core.db.get_data(query, *params)
         """
+        _start = time.perf_counter()
+        try:
+            self._load(table_name, zid, project, filters)
+        finally:
+            elapsed = time.perf_counter() - _start
+            LogManager.logger.info(f"Analytics({table_name}) took {elapsed:.4f} s")
+
+    def _load(self, table_name, zid=None, project=None, filters=None):
         self.data = None
         filters = filters.copy() if filters else {}
 
