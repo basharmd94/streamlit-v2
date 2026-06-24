@@ -1,12 +1,13 @@
 # processing/salesman_score.py
 # Composite performance score per salesman for Target Management's
-# "Salesman Score" tab. Builds on the same AR ledger cleanup as
-# processing/salesman_due.py (prep_ar_ledger) for point-in-time balance
-# snapshots, which is a different number from that module's trickledown
-# due-by-origin-month columns — see compute_salesman_balance_asof.
+# "Salesman Score" tab. Balances reuse salesman_due.build_trickledown_balances
+# directly (same FIFO due-by-origin-month methodology as Collection Analysis
+# -> Salesman Due -> main due report) so the numbers match exactly.
 
 import numpy as np
 import pandas as pd
+
+from processing import salesman_due as sd
 
 
 def month_choices(today: pd.Timestamp) -> list:
@@ -25,44 +26,34 @@ def is_real_current_month(year: int, month: int, today: pd.Timestamp) -> bool:
     return int(year) == today.year and int(month) == today.month
 
 
-def balance_cutoff_date(year: int, month: int, today: pd.Timestamp) -> pd.Timestamp:
-    """As-of date for a balance snapshot: today if (year, month) is the real
-    current calendar month (running, incomplete); otherwise that month's
-    last day (a completed past month)."""
-    if is_real_current_month(year, month, today):
-        return today
-    return pd.Timestamp(year, month, 1) + pd.DateOffset(months=1) - pd.Timedelta(days=1)
+def compute_salesman_balances_trickledown(ar_clean: pd.DataFrame, months_back: int = 5) -> pd.DataFrame:
+    """Per-salesman AR balance broken down by origin month, reusing
+    salesman_due.build_trickledown_balances directly — the same FIFO
+    customer-credit allocation Collection Analysis -> Salesman Due ->
+    main due report uses — so the numbers match exactly.
 
+    months_back only controls which months get their own named "YYYY_MM"
+    column vs. fold into the opening-balance bucket; the per-month value
+    itself is unaffected. Default of 5 covers every (year, month) the
+    Salesman Score month dropdown can ever need: the dropdown offers the
+    current month and the 2 before it, and for each selection we look back
+    2 more months, so the oldest possible origin month is (today - 4
+    months) — exactly the start of a 5-month window anchored on today.
 
-def compute_salesman_balance_asof(ar_clean: pd.DataFrame, cutoff: pd.Timestamp) -> pd.Series:
-    """Per-salesman AR balance as of cutoff (inclusive) — a true historical
-    snapshot of the running balance, NOT the trickledown due-by-origin-month
-    breakdown in salesman_due.py (that shows how much of *today's* balance
-    originated in month X; this shows what the balance actually was on a
-    specific past date).
-
-    ar_clean: output of salesman_due.prep_ar_ledger (per-row running_balance
-    per customer, xsp already bfilled/ffilled).
-
-    For each customer, takes their last transaction at or before cutoff and
-    reads its running_balance, then sums per salesman. Customers with no
-    transactions yet at or before cutoff are absent (no balance existed for
-    them at that point).
+    Returns a DataFrame indexed by xsp (salesman id, str), one column per
+    "YYYY_MM" window month plus salesman_due._OPENING_LABEL for anything
+    older (not expected to be looked up given the months_back=5 guarantee
+    above, but present for completeness).
     """
     if ar_clean is None or ar_clean.empty:
-        return pd.Series(dtype=float)
+        return pd.DataFrame()
 
-    d = ar_clean[ar_clean["xdate"] <= cutoff]
-    if d.empty:
-        return pd.Series(dtype=float)
+    report = sd.build_trickledown_balances(ar_clean, months_back=months_back)
+    if report.empty:
+        return pd.DataFrame()
 
-    last = (
-        d.sort_values(["xsub", "xdate", "xrow"], kind="mergesort")
-         .groupby("xsub", as_index=False)
-         .last()[["xsub", "xsp", "running_balance"]]
-    )
-    last["xsp"] = last["xsp"].astype(str)
-    return last.groupby("xsp")["running_balance"].sum()
+    value_cols = [c for c in report.columns if c not in ("xsp", "xsub")]
+    return report.groupby("xsp")[value_cols].sum()
 
 
 def _peer_relative(series: pd.Series) -> pd.Series:

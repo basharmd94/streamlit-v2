@@ -145,6 +145,28 @@ def process_data(zid: str,filters: dict, tables: tuple[str], page: str = None) -
         data_dict[table] = df if df is not None else pd.DataFrame()
     return data_dict
 
+
+@timed
+@st.cache_data(show_spinner=False, ttl=86400)
+def load_purchase_data(zid: str, project: str) -> dict:
+    """Cached loader for Purchase Analysis (same caching pattern as process_data —
+    previously this loop had no caching at all, re-pulling everything on every click).
+
+    GL tables are only fetched here when the selected zid is 100001. For any other
+    zid, purchase_analysis() always overrides glheader/gldetail/glmst with 100001's
+    data anyway (the overhead/profitability pools are always sourced from trading),
+    so fetching them here for a different zid would just be discarded unused.
+    """
+    purchase_tables = ["sales", "return", "purchase", "stock", "stock_movement"]
+    if str(zid) == "100001":
+        purchase_tables += ["glheader_simple", "gldetail_simple", "glmst_simple"]
+
+    data_dict = {}
+    for table in purchase_tables:
+        df = Analytics(table, zid=zid, project=project, filters={}).data
+        data_dict[table] = df if df is not None else pd.DataFrame()
+    return data_dict
+
 def create_multi_download_buttons(data_dict: dict):
     st.sidebar.markdown("### 📥 Download Filtered Data")
     for table_name, df in data_dict.items():
@@ -404,14 +426,9 @@ class BaseApp:
 
             if st.sidebar.button("🔄 Load Purchase Data"):
                 # We need returns + GL tables for batch profitability + overhead pools
-                purchase_tables = ("sales", "return", "purchase","stock", "stock_movement", "glheader_simple", "gldetail_simple", "glmst_simple")
-
-                data_dict = {}
-                for table in purchase_tables:
-                    df = Analytics(table, zid=st.session_state.zid, project=st.session_state.proj,filters={}).data
-                    data_dict[table] = df if df is not None else pd.DataFrame()
-
-                st.session_state.purchase_data_dict = data_dict
+                st.session_state.purchase_data_dict = load_purchase_data(
+                    str(st.session_state.zid), st.session_state.proj
+                )
                 st.session_state.purchase_ready = True
 
             if st.session_state.get("purchase_ready"):
