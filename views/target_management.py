@@ -1182,8 +1182,10 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
     the real current month, or one of the 2 months before it. Same metrics
     as the All Salesmen Overview Table 1 (computed for whichever month is
     selected, current- or prior-month style as appropriate), plus a Salesman
-    ID column and 3 point-in-time AR balance columns (selected month + the 2
-    before it). Sorted ascending by score (lowest/most-attention-needed first).
+    ID column and 3 AR balance columns (selected month + the 2 before it,
+    via salesman_due's FIFO trickledown — matches Collection Analysis ->
+    Salesman Due -> main due report exactly). Sorted ascending by score
+    (lowest/most-attention-needed first).
     """
     st.subheader("🎯 Salesman Score")
     today = pd.Timestamp.today().normalize()
@@ -1249,7 +1251,9 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
 
     zid_up = int(last3["itemcode"].nunique()) if "itemcode" in last3.columns else 0
 
-    # ── Point-in-time AR balances: selected month + the 2 before it ───────────
+    # ── AR balances: selected month + the 2 before it, from the same FIFO ─────
+    # trickledown methodology as Collection Analysis -> Salesman Due -> main
+    # due report, so the numbers match that report exactly.
     proj = st.session_state.get("proj")
     with st.spinner("Loading AR ledger…"):
         ar_clean = _load_ar_ledger_clean(str(zid), proj)
@@ -1262,10 +1266,15 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         for i in (2, 1, 0)
     ]
     oldest_label, mid_label, newest_label = [b[0] for b in bal_months]
-    bal_by_month = {
-        label: ssc.compute_salesman_balance_asof(ar_clean, ssc.balance_cutoff_date(y, m, today))
-        for label, y, m in bal_months
-    }
+    bal_table = ssc.compute_salesman_balances_trickledown(ar_clean, months_back=5)
+
+    def _bal_lookup(spid: str, y: int, m: int) -> float:
+        col = f"{y}_{m:02d}"
+        if bal_table.empty or col not in bal_table.columns or spid not in bal_table.index:
+            return 0.0
+        return float(bal_table.loc[spid, col])
+
+    bal_by_month = {label: (y, m) for label, y, m in bal_months}
 
     # ── Build per-salesman rows ────────────────────────────────────────────────
     sp_list = df[["spid", "spname"]].dropna().drop_duplicates().sort_values("spname")
@@ -1304,9 +1313,9 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
             if not sp3.empty and "itemcode" in sp3.columns else 0.0
         )
 
-        bal_oldest = float(bal_by_month[oldest_label].get(spid, 0.0))
-        bal_mid = float(bal_by_month[mid_label].get(spid, 0.0))
-        bal_newest = float(bal_by_month[newest_label].get(spid, 0.0))
+        bal_oldest = _bal_lookup(spid, *bal_by_month[oldest_label])
+        bal_mid = _bal_lookup(spid, *bal_by_month[mid_label])
+        bal_newest = _bal_lookup(spid, *bal_by_month[newest_label])
 
         rows.append({
             "spid": spid,
