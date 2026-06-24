@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from processing import common, target_management as tm, buying_pattern as bp, daily_sales as ds, next_month_target as nmt
+from processing import (
+    common, target_management as tm, buying_pattern as bp, daily_sales as ds,
+    next_month_target as nmt, salesman_due as sd, salesman_score as ssc,
+)
 from utils.utils import timed
 
 
@@ -453,6 +456,20 @@ def _load_purchase_open_combined() -> pd.DataFrame:
     from core.analytics import Analytics
     df = Analytics("purchase", zid=["100001", "100009"], filters={}).data
     return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_ar_ledger_clean(zid: str, proj: str) -> pd.DataFrame:
+    """Cleaned AR ledger (per-row running_balance per customer, salesman code
+    bfilled/ffilled) for the Salesman Score tab's point-in-time balance
+    snapshots — same source/cleanup as Collection Analysis's Salesman Due
+    report, via salesman_due.prep_ar_ledger.
+    """
+    from core.analytics import Analytics
+    ar_df = Analytics("ar_due_ledger", zid=zid, project=proj, filters={}).data
+    if ar_df is None or ar_df.empty:
+        return pd.DataFrame()
+    return sd.prep_ar_ledger(ar_df)
 
 
 # ── Buying Pattern section ────────────────────────────────────────────────────
@@ -1157,6 +1174,233 @@ def _render_prior_month_section(
         )
 
 
+# ── Salesman Score ──────────────────────────────────────────────────────────────
+
+def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid, collection_df: pd.DataFrame = None):
+    """
+    Composite 0-100 performance score per salesman for one selected month —
+    the real current month, or one of the 2 months before it. Same metrics
+    as the All Salesmen Overview Table 1 (computed for whichever month is
+    selected, current- or prior-month style as appropriate), plus a Salesman
+    ID column and 3 point-in-time AR balance columns (selected month + the 2
+    before it). Sorted ascending by score (lowest/most-attention-needed first).
+    """
+    st.subheader("🎯 Salesman Score")
+    today = pd.Timestamp.today().normalize()
+    holidays = _get_holidays()
+
+    month_opts = ssc.month_choices(today)
+    sel_label = st.selectbox("Month", [m[0] for m in month_opts], index=0, key="tm_score_month")
+    sel_year, sel_month = next((y, m) for (lbl, y, m) in month_opts if lbl == sel_label)
+    is_current = ssc.is_real_current_month(sel_year, sel_month, today)
+
+    if "date" not in sales_df.columns or "final_sales" not in sales_df.columns:
+        st.warning("Required columns missing.")
+        return
+
+    df = sales_df.copy()
+    df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df["_d"] = df["_dt"].dt.date
+
+    mo_start = pd.Timestamp(sel_year, sel_month, 1)
+    mo_end_full = pd.Timestamp(sel_year, sel_month, calendar.monthrange(sel_year, sel_month)[1])
+    mo_end = today if is_current else mo_end_full
+
+    m3_start = mo_start - pd.DateOffset(months=3)
+    m3_end = mo_start - pd.Timedelta(days=1)
+    wd_3mo = _count_working_days(m3_start.date(), m3_end.date(), holidays)
+
+    mo_data = df[(df["_dt"] >= mo_start) & (df["_dt"] <= mo_end)]
+    last3 = df[(df["_dt"] >= m3_start) & (df["_dt"] <= m3_end)]
+
+    if last3.empty:
+        st.warning(
+            f"⚠️ No data found for the 3-month lookback window "
+            f"({m3_start.strftime('%b %Y')} – {m3_end.strftime('%b %Y')}). "
+            "**Daily Avg (3M)**, **Uniq Cust (3M)**, and **Uniq Prods (3M)** will show 0. "
+            "Please load at least 3 prior months in the sidebar filters."
+        )
+
+    if is_current:
+        remaining_wd = _count_working_days(today.date(), mo_end_full.date(), holidays)
+    else:
+        remaining_wd = 0
+
+    # ── Returns for the selected month, per salesman ──────────────────────────
+    ret_by_sp: dict = {}
+    if returns_df is not None and not returns_df.empty and "treturnamt" in returns_df.columns:
+        _r = returns_df.copy()
+        _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
+        _r_mo = _r[(_r["_dt"] >= mo_start) & (_r["_dt"] <= mo_end)]
+        if "spid" in _r_mo.columns:
+            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().to_dict()
+
+    # ── Collection for the selected month, per salesman ───────────────────────
+    coll_by_sp: dict = {}
+    if collection_df is not None and not collection_df.empty and "value" in collection_df.columns:
+        _c = collection_df.copy()
+        _c["spid"] = _c["spid"].astype(str)
+        _c["year"] = pd.to_numeric(_c["year"], errors="coerce")
+        _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
+        coll_by_sp = (
+            _c[(_c["year"] == sel_year) & (_c["month"] == sel_month)]
+            .groupby("spid")["value"].sum().to_dict()
+        )
+
+    zid_up = int(last3["itemcode"].nunique()) if "itemcode" in last3.columns else 0
+
+    # ── Point-in-time AR balances: selected month + the 2 before it ───────────
+    proj = st.session_state.get("proj")
+    with st.spinner("Loading AR ledger…"):
+        ar_clean = _load_ar_ledger_clean(str(zid), proj)
+
+    cur = pd.Timestamp(sel_year, sel_month, 1)
+    bal_months = [
+        ((cur - pd.DateOffset(months=i)).strftime("%b %Y"),
+         int((cur - pd.DateOffset(months=i)).year),
+         int((cur - pd.DateOffset(months=i)).month))
+        for i in (2, 1, 0)
+    ]
+    oldest_label, mid_label, newest_label = [b[0] for b in bal_months]
+    bal_by_month = {
+        label: ssc.compute_salesman_balance_asof(ar_clean, ssc.balance_cutoff_date(y, m, today))
+        for label, y, m in bal_months
+    }
+
+    # ── Build per-salesman rows ────────────────────────────────────────────────
+    sp_list = df[["spid", "spname"]].dropna().drop_duplicates().sort_values("spname")
+
+    rows = []
+    for _, sp_row in sp_list.iterrows():
+        spid = str(sp_row["spid"])
+        spname = sp_row["spname"]
+
+        sp_mo = mo_data[mo_data["spid"].astype(str) == spid]
+        sp3 = last3[last3["spid"].astype(str) == spid]
+
+        sales = float(sp_mo["final_sales"].sum())
+        ret = round(ret_by_sp.get(spid, 0.0), 0)
+        net_sales = round(sales - ret, 0)
+
+        target = float(_get_target(zid, spid, sel_year, sel_month) or 0.0)
+        gap = target - sales
+        daily_req = round(gap / remaining_wd, 0) if is_current and remaining_wd > 0 and target > 0 else 0.0
+        pct_tgt = round(net_sales / target * 100, 1) if target > 0 else None
+
+        daily_avg = round(float(sp3["final_sales"].sum()) / wd_3mo, 0) if wd_3mo > 0 else 0.0
+        monthly_avg_3m = round(float(sp3["final_sales"].sum()) / 3, 0)
+
+        coll = round(float(coll_by_sp.get(spid, 0.0)), 0)
+        pct_coll = round(coll / (1.02 * sales) * 100, 1) if sales > 0 else None
+
+        uc_3mo = int(sp3["cusid"].nunique()) if "cusid" in sp3.columns else 0
+        up_3mo = int(sp3["itemcode"].nunique()) if "itemcode" in sp3.columns else 0
+        avg_daily_uc = (
+            round(float(sp3.groupby("_d")["cusid"].nunique().mean()), 1)
+            if not sp3.empty and "cusid" in sp3.columns else 0.0
+        )
+        avg_daily_up = (
+            round(float(sp3.groupby("_d")["itemcode"].nunique().mean()), 1)
+            if not sp3.empty and "itemcode" in sp3.columns else 0.0
+        )
+
+        bal_oldest = float(bal_by_month[oldest_label].get(spid, 0.0))
+        bal_mid = float(bal_by_month[mid_label].get(spid, 0.0))
+        bal_newest = float(bal_by_month[newest_label].get(spid, 0.0))
+
+        rows.append({
+            "spid": spid,
+            "Salesman ID": spid,
+            "Salesman": spname,
+            "Target": target,
+            "Sales": round(sales, 0),
+            "Return": ret,
+            "Net Sales": net_sales,
+            "% vs Target": pct_tgt,
+            "Collection": coll,
+            "% Collection": pct_coll,
+            "Days Left": remaining_wd,
+            "Daily Required": daily_req,
+            "Daily Avg (3M)": daily_avg,
+            "Monthly Avg (3M)": monthly_avg_3m,
+            "Uniq Cust (3M)": uc_3mo,
+            "Avg Daily Cust": avg_daily_uc,
+            "Uniq Prods (3M)": up_3mo,
+            "Avg Daily Prods": avg_daily_up,
+            "ZID Uniq Prods": zid_up,
+            f"Balance ({oldest_label})": round(bal_oldest, 0),
+            f"Balance ({mid_label})": round(bal_mid, 0),
+            f"Balance ({newest_label})": round(bal_newest, 0),
+            # scoring inputs — not displayed directly under these keys
+            "target": target, "sales": sales, "net_sales": net_sales, "coll": coll,
+            "uniq_prods": up_3mo, "uniq_cust": uc_3mo,
+            "balance_recent2": bal_oldest + bal_mid,
+            "balance_this_month": bal_newest,
+        })
+
+    if not rows:
+        st.info("No salesmen found for this selection.")
+        return
+
+    scored = ssc.compute_salesman_scores(pd.DataFrame(rows))
+
+    bal_cols = [f"Balance ({oldest_label})", f"Balance ({mid_label})", f"Balance ({newest_label})"]
+    display_cols = [
+        "Salesman ID", "Salesman", "Target", "Sales", "Return", "Net Sales", "% vs Target",
+        "Collection", "% Collection", "Days Left", "Daily Required",
+        "Daily Avg (3M)", "Monthly Avg (3M)", "Uniq Cust (3M)", "Avg Daily Cust",
+        "Uniq Prods (3M)", "Avg Daily Prods", "ZID Uniq Prods",
+        *bal_cols, "score",
+    ]
+    t = scored[display_cols].rename(columns={"score": "Score"}).reset_index(drop=True)
+    has_target_mask = scored["has_target"].reset_index(drop=True)
+
+    fmt = {
+        "Target": "{:,.0f}", "Sales": "{:,.0f}", "Return": "{:,.0f}", "Net Sales": "{:,.0f}",
+        "% vs Target": lambda v: f"{v:.1f}%" if v is not None else "—",
+        "Collection": "{:,.0f}",
+        "% Collection": lambda v: f"{v:.1f}%" if v is not None else "—",
+        "Days Left": "{:,.0f}", "Daily Required": "{:,.0f}",
+        "Daily Avg (3M)": "{:,.0f}", "Monthly Avg (3M)": "{:,.0f}",
+        "Uniq Cust (3M)": "{:,.0f}", "Avg Daily Cust": "{:.1f}",
+        "Uniq Prods (3M)": "{:,.0f}", "Avg Daily Prods": "{:.1f}",
+        "ZID Uniq Prods": "{:,.0f}",
+        **{c: "{:,.0f}" for c in bal_cols},
+        "Score": "{:.1f}",
+    }
+
+    def _row_style(row):
+        if not has_target_mask.iloc[row.name]:
+            return ["background-color: #F8D7DA"] * len(row)
+        return [""] * len(row)
+
+    try:
+        styled = t.style.format(fmt, na_rep="—").apply(_row_style, axis=1)
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+    except Exception:
+        st.dataframe(t, use_container_width=True, hide_index=True)
+
+    newest_asof = "as of today" if is_current else f"as of {mo_end_full.strftime('%b %d')}"
+    st.caption(
+        f"**Score** (0–100, sorted lowest first): 45% Sales vs Target + 45% Collection vs Sales "
+        f"(both capped at 100%) + 5% Unique Products (3M) + 5% Unique Customers (3M) — the last two "
+        f"scored relative to the top salesman in this table — minus up to 20% in negative points, "
+        f"also peer-relative: 6 pts for Return vs Sales %, 12 pts for the combined "
+        f"{oldest_label} + {mid_label} balance, 2 pts for the {newest_label} balance. "
+        f"Rows highlighted red have no target set for {sel_label} — scored 0 on that 45% component. "
+        f"Balance columns are point-in-time snapshots: {newest_label} is {newest_asof}, "
+        f"{mid_label} and {oldest_label} are as of their own month-end."
+    )
+
+    st.download_button(
+        "⬇ Download Salesman Score CSV",
+        t.to_csv(index=False).encode("utf-8"),
+        file_name=f"salesman_score_{zid}_{sel_year}_{sel_month:02d}.csv",
+        mime="text/csv",
+        key="dl_salesman_score",
+    )
+
+
 # ── Salesman daily breakdown (current month) ──────────────────────────────────
 
 def _render_sp_daily_breakdown(
@@ -1599,14 +1843,6 @@ def _render_next_month_target(zid):
         use_container_width=True, hide_index=True,
     )
 
-    st.download_button(
-        "⬇ Download Next Month Estimate CSV",
-        estimate_df.to_csv(index=False).encode("utf-8"),
-        file_name=f"next_month_target_{zid}_{next_month_start.strftime('%Y_%m')}.csv",
-        mime="text/csv",
-        key="dl_next_month_target",
-    )
-
     # ── Salesman × Area performance ───────────────────────────────────────────
     st.markdown("---")
     st.subheader("👤 Salesman × Area Performance")
@@ -1663,14 +1899,6 @@ def _render_next_month_target(zid):
                 "Low Amount": "{:,.0f}", "Median Amount": "{:,.0f}", "High Amount": "{:,.0f}",
             }, na_rep="—"),
             use_container_width=True, hide_index=True,
-        )
-
-        st.download_button(
-            "⬇ Download Salesman × Area CSV",
-            sp_area_disp.to_csv(index=False).encode("utf-8"),
-            file_name=f"next_month_target_salesman_area_{zid}_{next_month_start.strftime('%Y_%m')}.csv",
-            mime="text/csv",
-            key="dl_next_month_target_salesman_area",
         )
 
         # ── Per-salesman product breakdown ─────────────────────────────────────
@@ -1730,8 +1958,6 @@ def _render_next_month_target(zid):
                     "itemcode": "Item Code", "itemname": "Item Name", "itemgroup": "Item Group",
                     "low_qty": "12M Low Qty", "median_qty": "12M Median Qty", "high_qty": "12M High Qty",
                     "avg_price": "Avg Price",
-                    "est_low_qty": "Est. Low Qty", "est_median_qty": "Est. Median Qty",
-                    "est_high_qty": "Est. High Qty",
                     "est_low_amt": "Est. Low Amt", "est_median_amt": "Est. Median Amt",
                     "est_high_amt": "Est. High Amt",
                 }
@@ -1742,18 +1968,9 @@ def _render_next_month_target(zid):
                     drill_disp.style.format({
                         "12M Low Qty": "{:,.0f}", "12M Median Qty": "{:,.0f}", "12M High Qty": "{:,.0f}",
                         "Avg Price": "{:,.2f}",
-                        "Est. Low Qty": "{:,.0f}", "Est. Median Qty": "{:,.0f}", "Est. High Qty": "{:,.0f}",
                         "Est. Low Amt": "{:,.0f}", "Est. Median Amt": "{:,.0f}", "Est. High Amt": "{:,.0f}",
                     }, na_rep="—"),
                     use_container_width=True, hide_index=True,
-                )
-
-                st.download_button(
-                    "⬇ Download Salesman Product Breakdown CSV",
-                    drill_df.to_csv(index=False).encode("utf-8"),
-                    file_name=f"next_month_target_sp_{sel_spid}_{zid}_{next_month_start.strftime('%Y_%m')}.csv",
-                    mime="text/csv",
-                    key="dl_next_month_target_sp_drilldown",
                 )
 
     # ── Notes ──────────────────────────────────────────────────────────────────
@@ -1804,7 +2021,8 @@ def display_target_management_page(current_page, zid, data_dict):
     # ── View mode radio ───────────────────────────────────────────────────────
     _view_mode = st.radio(
         "View",
-        ["👤 Individual Salesman", "📊 All Salesmen Overview", "📈 Moving Average", "📦 Current Stock", "🔮 Next Month Target"],
+        ["👤 Individual Salesman", "📊 All Salesmen Overview", "🎯 Salesman Score",
+         "📈 Moving Average", "📦 Current Stock", "🔮 Next Month Target"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -1856,6 +2074,11 @@ def display_target_management_page(current_page, zid, data_dict):
         opmob_all = _load_opmob_pending(str(zid))
         _render_overview(sales_df, returns_df, opmob_all, zid,
                          collection_df=data_dict.get("collection", pd.DataFrame()))
+        return
+
+    if _view_mode == "🎯 Salesman Score":
+        _render_salesman_score(sales_df, returns_df, zid,
+                                collection_df=data_dict.get("collection", pd.DataFrame()))
         return
 
     if _view_mode == "📈 Moving Average":
