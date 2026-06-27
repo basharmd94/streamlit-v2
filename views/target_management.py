@@ -610,6 +610,7 @@ def _render_metric_cards(
     zid,
     all_sales: pd.DataFrame = None,
     sp_returns: pd.DataFrame = None,
+    collection_df: pd.DataFrame = None,
 ):
     """Render the performance metric cards for the selected salesman."""
     today = pd.Timestamp.today().normalize()
@@ -665,15 +666,38 @@ def _render_metric_cards(
             zid_up_3mo = int(_all3["itemcode"].nunique())
 
     # ── MTD sales + returns ───────────────────────────────────────────────────
+    mtd_df = pd.DataFrame()
     mtd_sales = 0.0
+    mtd_unique_products = 0
+    mtd_unique_customers = 0
     if has_date:
-        mtd_sales = float(sp[sp["_dt"] >= mo_start_cur]["final_sales"].sum())
+        mtd_df = sp[sp["_dt"] >= mo_start_cur]
+        mtd_sales = float(mtd_df["final_sales"].sum())
+        mtd_unique_products = int(mtd_df["itemcode"].nunique()) if "itemcode" in mtd_df.columns else 0
+        mtd_unique_customers = int(mtd_df["cusid"].nunique()) if "cusid" in mtd_df.columns else 0
 
     mtd_return = 0.0
     if sp_returns is not None and not sp_returns.empty and "treturnamt" in sp_returns.columns:
         _r = sp_returns.copy()
         _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
         mtd_return = float(_r[_r["_dt"] >= mo_start_cur]["treturnamt"].sum())
+
+    net_sales = mtd_sales - mtd_return
+
+    # ── MTD collection for this salesman, current calendar month ─────────────
+    mtd_collection = 0.0
+    if (
+        collection_df is not None and not collection_df.empty
+        and "value" in collection_df.columns and "spid" in collection_df.columns
+    ):
+        _c = collection_df.copy()
+        _c["spid"]  = _c["spid"].astype(str)
+        _c["year"]  = pd.to_numeric(_c["year"],  errors="coerce")
+        _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
+        _c_mtd = _c[
+            (_c["spid"] == str(sel_spid)) & (_c["year"] == today.year) & (_c["month"] == today.month)
+        ]
+        mtd_collection = float(_c_mtd["value"].sum())
 
     import calendar as _cal
     last_day_num = _cal.monthrange(today.year, today.month)[1]
@@ -735,7 +759,6 @@ def _render_metric_cards(
         with t_cols[4]:
             st.metric("MTD Return", f"{mtd_return:,.0f}")
         with t_cols[5]:
-            net_sales = mtd_sales - mtd_return
             st.metric("Net Sales", f"{net_sales:,.0f}")
         with t_cols[6]:
             if target_val > 0:
@@ -760,6 +783,46 @@ def _render_metric_cards(
     else:
         with t_cols[3]:
             st.caption("MTD & daily required shown for current month only.")
+
+    # ── Row 2: MTD performance — collection, activity, % vs target ───────────
+    mtd_json: dict = {}
+    if is_current_month:
+        pct_mtd_vs_target = round(net_sales / target_val * 100, 1) if target_val > 0 else None
+        pct_coll_vs_mtd_sales = round(mtd_collection / (1.02 * mtd_sales) * 100, 1) if mtd_sales > 0 else None
+
+        p_cols = st.columns(5)
+        with p_cols[0]:
+            st.metric("💰 Collection (MTD)", f"{mtd_collection:,.0f}")
+        with p_cols[1]:
+            st.metric("📦 Products Sold (MTD)", f"{mtd_unique_products:,}")
+        with p_cols[2]:
+            st.metric("👥 Customers Visited (MTD)", f"{mtd_unique_customers:,}")
+        with p_cols[3]:
+            st.metric("🎯 % MTD Sales vs Target", f"{pct_mtd_vs_target:.1f}%" if pct_mtd_vs_target is not None else "—")
+        with p_cols[4]:
+            st.metric("💧 % Collection vs MTD Sales", f"{pct_coll_vs_mtd_sales:.1f}%" if pct_coll_vs_mtd_sales is not None else "—")
+
+        spname_val = ""
+        if "spname" in sp.columns and not sp["spname"].dropna().empty:
+            spname_val = str(sp["spname"].dropna().iloc[0])
+
+        mtd_json = {
+            "Salesman ID": str(sel_spid),
+            "Salesman Name": spname_val,
+            "Month": sel_mo_label,
+            "Target": target_val,
+            "MTD Sales": round(mtd_sales, 0),
+            "MTD Return": round(mtd_return, 0),
+            "Net Sales": round(net_sales, 0),
+            "% MTD Sales vs Target": pct_mtd_vs_target,
+            "Collection (MTD)": round(mtd_collection, 0),
+            "% Collection vs MTD Sales": pct_coll_vs_mtd_sales,
+            "Products Sold (MTD)": mtd_unique_products,
+            "Customers Visited (MTD)": mtd_unique_customers,
+        }
+
+        with st.expander("📋 Raw JSON (copy/paste)", expanded=False):
+            st.code(json.dumps(mtd_json, indent=2), language="json")
 
     st.markdown(" ")
 
@@ -2222,7 +2285,10 @@ def display_target_management_page(current_page, zid, data_dict):
     f_final_r = f_sp_cus_r[f_sp_cus_r["area"].isin(sel_area)] if sel_area and "area" in f_sp_cus_r.columns else f_sp_cus_r
 
     # ── Metric cards (uses full salesman data, not customer/area filtered) ─────
-    _render_metric_cards(f_sp, opmob_df, sel_spid, zid, all_sales=sales_df, sp_returns=f_sp_ret)
+    _render_metric_cards(
+        f_sp, opmob_df, sel_spid, zid, all_sales=sales_df, sp_returns=f_sp_ret,
+        collection_df=data_dict.get("collection", pd.DataFrame()),
+    )
 
     # ── Customer-wise pivot ───────────────────────────────────────────────────
     try:
