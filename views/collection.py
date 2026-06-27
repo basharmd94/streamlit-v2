@@ -569,6 +569,25 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             report_key = report_map[sub_report]
             df_sd = reports[report_key]
 
+            if sub_report == "Latest Sale & Collection" and "Salesman Code" in df_sd.columns:
+                sp_opts = (
+                    df_sd[["Salesman Code", "Salesman Name"]]
+                    .dropna(subset=["Salesman Code"])
+                    .drop_duplicates()
+                    .sort_values("Salesman Code")
+                )
+                sp_opts["label"] = (
+                    sp_opts["Salesman Code"].astype(str) + " - " + sp_opts["Salesman Name"].astype(str)
+                )
+                sel_sp_label = st.selectbox(
+                    "Filter by Salesman (leave empty for all)",
+                    options=[""] + sp_opts["label"].tolist(),
+                    key="salesman_due_latest_sp_filter",
+                )
+                if sel_sp_label:
+                    sel_sp_code = sel_sp_label.split(" - ")[0]
+                    df_sd = df_sd[df_sd["Salesman Code"].astype(str) == sel_sp_code].copy()
+
             st.caption(f"{len(df_sd):,} rows")
             if len(df_sd) > 50_000:
                 st.info("Showing first 50,000 rows. Download the CSV for full data.")
