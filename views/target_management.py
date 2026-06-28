@@ -1490,9 +1490,6 @@ def _render_sp_daily_breakdown(
     cur_month    = today.month
     mo_start_cur = pd.Timestamp(cur_year, cur_month, 1)
 
-    st.markdown("---")
-    st.subheader("📅 Daily Breakdown — Current Month")
-
     if "date" not in sp_sales.columns or sp_sales.empty:
         st.info("No sales data available for the daily breakdown.")
         return
@@ -1563,6 +1560,76 @@ def _render_sp_daily_breakdown(
         file_name=f"daily_{sel_spid}_{cur_year}_{cur_month:02d}.csv",
         mime="text/csv",
         key="dl_sp_daily",
+    )
+
+
+# ── Collection detail — vouchers behind the MTD Collection figure ─────────────
+
+def _render_collection_detail(collection_df: pd.DataFrame, sel_spid: str, zid):
+    """
+    Voucher-level rows (RCT/SRCT/CRCT/BRCT/STJV/JV--) for this salesman, current
+    calendar month — the same spid/year/month filter as the "Collection (MTD)"
+    metric in _render_metric_cards, so this table's total ties to that figure.
+    """
+    st.markdown("---")
+    st.subheader("🧾 Collection Detail — Current Month")
+
+    if collection_df is None or collection_df.empty:
+        st.info("No collection data loaded.")
+        return
+
+    required = {"spid", "year", "month", "glvoucher", "date", "cusid", "value"}
+    if not required.issubset(collection_df.columns):
+        st.info("Collection data is missing required columns for this breakdown.")
+        return
+
+    today = pd.Timestamp.today().normalize()
+    c = collection_df.copy()
+    c["spid"]  = c["spid"].astype(str)
+    c["year"]  = pd.to_numeric(c["year"],  errors="coerce")
+    c["month"] = pd.to_numeric(c["month"], errors="coerce")
+
+    detail = c[
+        (c["spid"] == str(sel_spid)) & (c["year"] == today.year) & (c["month"] == today.month)
+    ].copy()
+
+    if detail.empty:
+        st.info("No collection transactions for this salesman this month.")
+        return
+
+    detail["date"] = pd.to_datetime(detail["date"], errors="coerce")
+
+    rename = {
+        "date":      "Date",
+        "glvoucher": "Transaction Code",
+        "cusid":     "Customer Code (xsub)",
+        "cusname":   "Customer",
+        "value":     "Amount",
+    }
+    cols = ["date", "glvoucher", "cusid"] + (["cusname"] if "cusname" in detail.columns else []) + ["value"]
+    t = (
+        detail[cols]
+        .rename(columns=rename)
+        .sort_values("Date", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    st.caption(f"{len(t):,} transaction(s) — total {t['Amount'].sum():,.0f} (matches Collection (MTD) above)")
+    try:
+        st.dataframe(
+            t.style.format({"Date": "{:%Y-%m-%d}", "Amount": "{:,.0f}"}, na_rep="—"),
+            use_container_width=True,
+            hide_index=True,
+        )
+    except Exception:
+        st.dataframe(t, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "⬇ Download Collection Detail CSV",
+        t.to_csv(index=False).encode("utf-8"),
+        file_name=f"collection_detail_{sel_spid}_{today.year}_{today.month:02d}.csv",
+        mime="text/csv",
+        key="dl_collection_detail",
     )
 
 
@@ -2285,9 +2352,10 @@ def display_target_management_page(current_page, zid, data_dict):
     f_final_r = f_sp_cus_r[f_sp_cus_r["area"].isin(sel_area)] if sel_area and "area" in f_sp_cus_r.columns else f_sp_cus_r
 
     # ── Metric cards (uses full salesman data, not customer/area filtered) ─────
+    collection_df_all = data_dict.get("collection", pd.DataFrame())
     _render_metric_cards(
         f_sp, opmob_df, sel_spid, zid, all_sales=sales_df, sp_returns=f_sp_ret,
-        collection_df=data_dict.get("collection", pd.DataFrame()),
+        collection_df=collection_df_all,
     )
 
     # ── Customer-wise pivot ───────────────────────────────────────────────────
@@ -2479,24 +2547,27 @@ def display_target_management_page(current_page, zid, data_dict):
                     key="dl_no_sales",
                 )
 
-    # ── Daily Breakdown for selected salesman ────────────────────────────────
-    _render_sp_daily_breakdown(f_sp, opmob_df, sel_spid, zid)
-
+    # ── Daily Breakdown for selected salesman (collapsed by default) ──────────
     st.markdown("---")
+    with st.expander("📅 Daily Breakdown — Current Month", expanded=False):
+        _render_sp_daily_breakdown(f_sp, opmob_df, sel_spid, zid)
 
-    # ── Buying Pattern Analysis ───────────────────────────────────────────────
-    try:
-        bp_df = bp.compute_buying_pattern(
-            pivot_df   = pivot,
-            sales_df   = f_final,
-            id_cols    = [c for c in id_raw if c in pivot.columns],
-            month_cols = month_col_list,
-        )
-    except Exception as e:
-        bp_df = pd.DataFrame()
-        st.caption(f"Buying pattern error: {e}")
-
-    _render_buying_pattern(bp_df, is_any_filter=bool(sel_spid))
+    # ── Buying Pattern Analysis — commented out for now ───────────────────────
+    # try:
+    #     bp_df = bp.compute_buying_pattern(
+    #         pivot_df   = pivot,
+    #         sales_df   = f_final,
+    #         id_cols    = [c for c in id_raw if c in pivot.columns],
+    #         month_cols = month_col_list,
+    #     )
+    # except Exception as e:
+    #     bp_df = pd.DataFrame()
+    #     st.caption(f"Buying pattern error: {e}")
+    #
+    # _render_buying_pattern(bp_df, is_any_filter=bool(sel_spid))
 
     # ── Inventory Coverage ────────────────────────────────────────────────────
     _render_inventory_coverage(f_sp, str(zid))
+
+    # ── Collection Detail — voucher-level rows behind the MTD Collection figure ─
+    _render_collection_detail(collection_df_all, sel_spid, zid)
