@@ -84,6 +84,13 @@ def filtered_options_for_collection(sales_data, returns_data, collections_data):
     return datasets['sales'], datasets['returns'], datasets['collections']
 
 def get_grouped_df_collection(sales_df, returns_df, collection_df, timeframe):
+    # NOTE (2026-06-28): collection_df["value"] is now sign-correct (see
+    # core/queries.get_collection_data docstring) — a period can legitimately
+    # net negative if net-debit adjustment vouchers (JV--/STJV/ADJV) outweigh
+    # real receipts in that window. The trailing .abs() below would silently
+    # flip that back to positive. Left as-is since true receipts (RCT-) make
+    # up 99%+ of volume and this is very unlikely in practice, but if a
+    # period's collection figure looks too high, check here.
     # Step 1: Determine group key
     if timeframe == "Yearly":
         group_key = ["year"]

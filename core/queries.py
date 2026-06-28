@@ -384,6 +384,20 @@ def get_collection_data(filters=None):
       - spid/spname from gldetail.xsp (the direct sp column)
       - fallback: if gldetail.xsp is NULL/blank, uses the most recent
         salesman from opdor for that customer (last-INOP rule)
+
+    SIGN NOTE (read this before touching `value` below):
+    AR is credited (xprime negative) when a customer pays, so a real
+    collection nets negative. `value` is computed as -SUM(xprime) so a
+    real collection becomes positive — NOT ABS(SUM(xprime)). Until
+    2026-06-28 this used ABS(), which silently flipped any voucher whose
+    net was a positive (debit-to-AR) amount — e.g. a correction/reversal
+    booked under JV--/STJV/ADJV — into a *positive* "collection" instead
+    of correctly subtracting it. Verified against zid 100001: ABS() had
+    been overstating total collections by ~359M (3.71B vs the
+    sign-correct 3.35B), almost entirely from JV-- vouchers (40% of which
+    net positive). If collection totals ever look off again, check here
+    first — and check whether any *new* voucher prefix added to the list
+    below also needs this same sign treatment.
     """
     filters = filters or {}
     zid = filters["zid"][0]
@@ -394,7 +408,7 @@ def get_collection_data(filters=None):
         "gm.xaccusage = 'AR'",
         "(gd.xvoucher LIKE 'RCT-%%' OR gd.xvoucher LIKE 'CRCT%%'"
         " OR gd.xvoucher LIKE 'STJV%%' OR gd.xvoucher LIKE 'BRCT%%'"
-        " OR gd.xvoucher LIKE 'JV--%%')",
+        " OR gd.xvoucher LIKE 'JV--%%' OR gd.xvoucher LIKE 'ADJV%%')",
     ]
     rct_params: list = [zid]
 
@@ -477,7 +491,7 @@ def get_collection_data(filters=None):
             gh.xdate                                             AS date,
             gh.xyear                                             AS year,
             gh.xper                                              AS month,
-            ABS(SUM(gd.xprime))                                  AS value,
+            -SUM(gd.xprime)                                      AS value,  -- sign-preserving; see docstring above — do NOT change to ABS()
             MAX(NULLIF(TRIM(gd.xsp::text), ''))                  AS direct_sp_id
         FROM gldetail gd
         JOIN glheader gh ON gd.xvoucher = gh.xvoucher AND gd.zid = gh.zid
