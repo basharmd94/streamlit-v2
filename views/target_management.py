@@ -155,6 +155,13 @@ def _filter_code(df: pd.DataFrame, col: str, codes: list) -> pd.DataFrame:
 
 # ── Display helpers ────────────────────────────────────────────────────────────
 
+def _format_unquoted_dict(d: dict) -> str:
+    """Pretty-prints a dict as {key: value, ...} with no quotes around keys or
+    string values — for copy/paste into systems that don't want JSON quoting."""
+    lines = [f"  {k}: {v}" for k, v in d.items()]
+    return "{\n" + ",\n".join(lines) + "\n}"
+
+
 def _current_month_label() -> str:
     now = pd.Timestamp.today()
     return f"{calendar.month_abbr[now.month]}-{str(now.year)[-2:]}"
@@ -608,7 +615,6 @@ def _render_metric_cards(
     opmob_df: pd.DataFrame,
     sel_spid: str,
     zid,
-    all_sales: pd.DataFrame = None,
     sp_returns: pd.DataFrame = None,
     collection_df: pd.DataFrame = None,
 ):
@@ -639,31 +645,6 @@ def _render_metric_cards(
         daily_avg_3mo = total_3mo / wd_3mo if wd_3mo > 0 else 0.0
 
     monthly_avg_3mo = total_3mo / 3
-
-    # ── Unique customer metrics (last 3 months) ───────────────────────────────
-    total_uc_3mo   = 0
-    avg_daily_uc   = 0.0
-    if has_date and not last3.empty and "cusid" in last3.columns:
-        total_uc_3mo = int(last3["cusid"].nunique())
-        daily_uc_series = last3.groupby("_d")["cusid"].nunique()
-        avg_daily_uc = float(daily_uc_series.mean()) if not daily_uc_series.empty else 0.0
-
-    # ── Unique product metrics (last 3 months) ────────────────────────────────
-    total_up_3mo  = 0
-    avg_daily_up  = 0.0
-    if has_date and not last3.empty and "itemcode" in last3.columns:
-        total_up_3mo = int(last3["itemcode"].nunique())
-        daily_up_series = last3.groupby("_d")["itemcode"].nunique()
-        avg_daily_up = float(daily_up_series.mean()) if not daily_up_series.empty else 0.0
-
-    # ── ZID-wide unique products (last 3 months) — for comparison ─────────────
-    zid_up_3mo = 0
-    if all_sales is not None and not all_sales.empty and "itemcode" in all_sales.columns:
-        _all = all_sales.copy()
-        if "date" in _all.columns:
-            _all["_dt"] = pd.to_datetime(_all["date"], errors="coerce")
-            _all3 = _all[(_all["_dt"] >= mo_start_3mo) & (_all["_dt"] <= end_3mo)]
-            zid_up_3mo = int(_all3["itemcode"].nunique())
 
     # ── MTD sales + returns ───────────────────────────────────────────────────
     mtd_df = pd.DataFrame()
@@ -784,13 +765,12 @@ def _render_metric_cards(
         with t_cols[3]:
             st.caption("MTD & daily required shown for current month only.")
 
-    # ── Row 2: MTD performance — collection, activity, % vs target ───────────
-    mtd_json: dict = {}
+    # ── Row 2: MTD performance — collection, activity, % vs target, 3M avg ───
     if is_current_month:
         pct_mtd_vs_target = round(net_sales / target_val * 100, 1) if target_val > 0 else None
         pct_coll_vs_mtd_sales = round(mtd_collection / (1.02 * mtd_sales) * 100, 1) if mtd_sales > 0 else None
 
-        p_cols = st.columns(5)
+        p_cols = st.columns(6)
         with p_cols[0]:
             st.metric("💰 Collection (MTD)", f"{mtd_collection:,.0f}")
         with p_cols[1]:
@@ -801,48 +781,8 @@ def _render_metric_cards(
             st.metric("🎯 % MTD Sales vs Target", f"{pct_mtd_vs_target:.1f}%" if pct_mtd_vs_target is not None else "—")
         with p_cols[4]:
             st.metric("💧 % Collection vs MTD Sales", f"{pct_coll_vs_mtd_sales:.1f}%" if pct_coll_vs_mtd_sales is not None else "—")
-
-        spname_val = ""
-        if "spname" in sp.columns and not sp["spname"].dropna().empty:
-            spname_val = str(sp["spname"].dropna().iloc[0])
-
-        mtd_json = {
-            "Salesman ID": str(sel_spid),
-            "Salesman Name": spname_val,
-            "Month": sel_mo_label,
-            "Target": target_val,
-            "MTD Sales": round(mtd_sales, 0),
-            "MTD Return": round(mtd_return, 0),
-            "Net Sales": round(net_sales, 0),
-            "% MTD Sales vs Target": pct_mtd_vs_target,
-            "Collection (MTD)": round(mtd_collection, 0),
-            "% Collection vs MTD Sales": pct_coll_vs_mtd_sales,
-            "Products Sold (MTD)": mtd_unique_products,
-            "Customers Visited (MTD)": mtd_unique_customers,
-        }
-
-        with st.expander("📋 Raw JSON (copy/paste)", expanded=False):
-            st.code(json.dumps(mtd_json, indent=2), language="json")
-
-    st.markdown(" ")
-
-    # ── Row 3: Summary metrics — 7 equal columns ──────────────────────────────
-    m_cols = st.columns(7)
-    with m_cols[0]:
-        st.metric("📊 Daily Avg Sales", f"{daily_avg_3mo:,.0f}", delta="last 3 months", delta_color="off")
-    with m_cols[1]:
-        st.metric("📈 Monthly Avg Sales", f"{monthly_avg_3mo:,.0f}", delta="last 3 months", delta_color="off")
-    with m_cols[2]:
-        st.metric("👥 Unique Customers", f"{total_uc_3mo:,}", delta="last 3 months", delta_color="off")
-    with m_cols[3]:
-        st.metric("👤 Avg Daily Customers", f"{avg_daily_uc:,.1f}", delta="last 3 months", delta_color="off")
-    with m_cols[4]:
-        st.metric("📦 Unique Products", f"{total_up_3mo:,}", delta="last 3 months", delta_color="off")
-    with m_cols[5]:
-        st.metric("🗂️ Avg Daily Products", f"{avg_daily_up:,.1f}", delta="last 3 months", delta_color="off")
-    with m_cols[6]:
-        _zid_delta = f"of {zid_up_3mo} ZID total" if zid_up_3mo > 0 else "last 3 months"
-        st.metric("🏢 ZID Unique Products", f"{zid_up_3mo:,}", delta=_zid_delta, delta_color="off")
+        with p_cols[5]:
+            st.metric("📈 Monthly Avg Sales (3M)", f"{monthly_avg_3mo:,.0f}", delta="last 3 months", delta_color="off")
 
     st.markdown("---")
 
@@ -866,7 +806,6 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
     month_end    = pd.Timestamp(cur_year, cur_month,
                                 calendar.monthrange(cur_year, cur_month)[1])
 
-    wd_3mo       = _count_working_days(mo_start_3mo.date(), end_3mo.date(), holidays)
     remaining_wd = _count_working_days(today.date(), month_end.date(), holidays)
 
     if "date" not in sales_df.columns or "final_sales" not in sales_df.columns:
@@ -880,12 +819,12 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
     last3   = df[(df["_dt"] >= mo_start_3mo) & (df["_dt"] <= end_3mo)]
     mtd_all = df[(df["_dt"] >= mo_start_cur) & (df["_dt"] <= today)]
 
-    # Warn if historical data is missing — 3M averages will show as 0 without it
+    # Warn if historical data is missing — Monthly Avg (3M) will show as 0 without it
     if last3.empty:
         st.warning(
             f"⚠️ No data found for the 3-month lookback window "
             f"({mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}). "
-            "**Daily Avg (3M)** and **Monthly Avg (3M)** will show 0. "
+            "**Monthly Avg (3M)** will show 0. "
             "Please load at least 3 prior months in the sidebar filters."
         )
 
@@ -906,9 +845,6 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         _c["year"]  = pd.to_numeric(_c["year"],  errors="coerce")
         _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
         coll_by_sp = _c.groupby(["spid", "year", "month"])["value"].sum().to_dict()
-
-    # ── ZID-wide unique products (3 months) ───────────────────────────────────
-    zid_up = int(last3["itemcode"].nunique()) if "itemcode" in last3.columns else 0
 
     # ── opmob pending per salesman × area ────────────────────────────────────
     pend_sp_area: dict = {}   # (spid, area) -> total pending
@@ -938,7 +874,6 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         sp_mtd = mtd_all[mtd_all["spid"].astype(str) == spid]
 
         total_3mo   = float(sp3["final_sales"].sum())
-        daily_avg   = round(total_3mo / wd_3mo, 0)  if wd_3mo > 0 else 0.0
         monthly_avg = round(total_3mo / 3, 0)
         mtd_sales   = float(sp_mtd["final_sales"].sum())
 
@@ -953,29 +888,23 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         mtd_coll  = round(float(coll_by_sp.get((spid, cur_year, cur_month), 0.0)), 0)
         pct_coll  = round(mtd_coll / (1.02 * mtd_sales) * 100, 1) if mtd_sales > 0 else None
 
-        uc_3mo   = int(sp3["cusid"].nunique())    if "cusid"    in sp3.columns else 0
-        up_3mo   = int(sp3["itemcode"].nunique()) if "itemcode" in sp3.columns else 0
-        daily_uc = round(float(sp3.groupby("_d")["cusid"].nunique().mean()),    1) if not sp3.empty and "cusid"    in sp3.columns else 0.0
-        daily_up = round(float(sp3.groupby("_d")["itemcode"].nunique().mean()), 1) if not sp3.empty and "itemcode" in sp3.columns else 0.0
+        mtd_up = int(sp_mtd["itemcode"].nunique()) if "itemcode" in sp_mtd.columns else 0
+        mtd_uc = int(sp_mtd["cusid"].nunique())    if "cusid"    in sp_mtd.columns else 0
 
         rows1.append({
-            "Salesman":         spname,
-            "Target":           target,
-            "MTD Sales":        round(mtd_sales, 0),
-            "MTD Return":       mtd_ret,
-            "Net Sales":        net_sales,
-            "% vs Target":      pct_tgt,
-            "MTD Collection":   mtd_coll,
-            "% Collection":     pct_coll,
-            "Days Left":        remaining_wd,
-            "Daily Required":   daily_req,
-            "Daily Avg (3M)":   daily_avg,
-            "Monthly Avg (3M)": monthly_avg,
-            "Uniq Cust (3M)":   uc_3mo,
-            "Avg Daily Cust":   daily_uc,
-            "Uniq Prods (3M)":  up_3mo,
-            "Avg Daily Prods":  daily_up,
-            "ZID Uniq Prods":   zid_up,
+            "Salesman":                 spname,
+            "Target":                   target,
+            "MTD Sales":                round(mtd_sales, 0),
+            "MTD Return":               mtd_ret,
+            "Net Sales":                net_sales,
+            "% vs Target":              pct_tgt,
+            "MTD Collection":           mtd_coll,
+            "% Collection":             pct_coll,
+            "Products Sold (MTD)":      mtd_up,
+            "Customers Visited (MTD)":  mtd_uc,
+            "Days Left":                remaining_wd,
+            "Daily Required":           daily_req,
+            "Monthly Avg (3M)":         monthly_avg,
         })
 
     if rows1:
@@ -983,22 +912,18 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
 
         def _style_t1(df):
             styled = df.style.format({
-                "Target":           "{:,.0f}",
-                "MTD Sales":        "{:,.0f}",
-                "MTD Return":       "{:,.0f}",
-                "Net Sales":        "{:,.0f}",
-                "% vs Target":      lambda v: f"{v:.1f}%" if v is not None else "—",
-                "MTD Collection":   "{:,.0f}",
-                "% Collection":     lambda v: f"{v:.1f}%" if v is not None else "—",
-                "Days Left":        "{:,.0f}",
-                "Daily Required":   "{:,.0f}",
-                "Daily Avg (3M)":   "{:,.0f}",
-                "Monthly Avg (3M)": "{:,.0f}",
-                "Uniq Cust (3M)":   "{:,.0f}",
-                "Avg Daily Cust":   "{:.1f}",
-                "Uniq Prods (3M)":  "{:,.0f}",
-                "Avg Daily Prods":  "{:.1f}",
-                "ZID Uniq Prods":   "{:,.0f}",
+                "Target":                   "{:,.0f}",
+                "MTD Sales":                "{:,.0f}",
+                "MTD Return":               "{:,.0f}",
+                "Net Sales":                "{:,.0f}",
+                "% vs Target":              lambda v: f"{v:.1f}%" if v is not None else "—",
+                "MTD Collection":           "{:,.0f}",
+                "% Collection":             lambda v: f"{v:.1f}%" if v is not None else "—",
+                "Products Sold (MTD)":      "{:,.0f}",
+                "Customers Visited (MTD)":  "{:,.0f}",
+                "Days Left":                "{:,.0f}",
+                "Daily Required":           "{:,.0f}",
+                "Monthly Avg (3M)":         "{:,.0f}",
             }, na_rep="—")
 
             def _col_pct(col):
@@ -1025,12 +950,11 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         except Exception:
             st.dataframe(t1, use_container_width=True, hide_index=True)
 
-        _3m_period = (f"{mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}"
-                      f" ({wd_3mo} working days)")
+        _3m_period = f"{mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}"
         st.caption(
-            f"**Daily Avg (3M)** = total sales in prior 3 months ÷ working days in that period &nbsp;|&nbsp; "
-            f"**Monthly Avg (3M)** = total ÷ 3 months &nbsp;|&nbsp; "
-            f"3M window: {_3m_period}",
+            f"**Monthly Avg (3M)** = total sales in prior 3 months ÷ 3 &nbsp;|&nbsp; "
+            f"3M window: {_3m_period} &nbsp;|&nbsp; "
+            f"see the **3 Month Averages** tab for the full 3-month breakdown per salesman.",
             unsafe_allow_html=True,
         )
 
@@ -1041,6 +965,15 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
             mime="text/csv",
             key="dl_ov_summary",
         )
+
+        # ── Raw data export — pick a salesman, get their row as copy/paste text ──
+        with st.expander("📋 Raw Data Export (copy/paste)", expanded=False):
+            sel_export_sp = st.selectbox(
+                "Select Salesman", t1["Salesman"].tolist(), key="tm_ov_export_sp"
+            )
+            if sel_export_sp:
+                export_row = t1[t1["Salesman"] == sel_export_sp].iloc[0].to_dict()
+                st.code(_format_unquoted_dict(export_row), language=None)
 
     # ── Prior 3 months — one expander each ───────────────────────────────────
     st.markdown("---")
@@ -1101,9 +1034,6 @@ def _render_prior_month_section(
         if "spid" in _r_mo.columns:
             ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().to_dict()
 
-    # ZID-wide unique products for this month
-    zid_up = int(mo_data["itemcode"].nunique()) if "itemcode" in mo_data.columns else 0
-
     # ── Collection per salesman for this month ────────────────────────────────
     prior_coll_by_sp: dict = {}
     if collection_df is not None and not collection_df.empty and "value" in collection_df.columns:
@@ -1141,33 +1071,21 @@ def _render_prior_month_section(
         uc = int(sp_mo["cusid"].nunique())    if "cusid"    in sp_mo.columns else 0
         up = int(sp_mo["itemcode"].nunique()) if "itemcode" in sp_mo.columns else 0
 
-        avg_daily_uc = (
-            round(float(sp_mo.groupby("_d")["cusid"].nunique().mean()), 1)
-            if not sp_mo.empty and "cusid" in sp_mo.columns else 0.0
-        )
-        avg_daily_up = (
-            round(float(sp_mo.groupby("_d")["itemcode"].nunique().mean()), 1)
-            if not sp_mo.empty and "itemcode" in sp_mo.columns else 0.0
-        )
-
         rows.append({
-            "Salesman":         spname,
-            "Target":           target,
-            "Sales":            round(sales, 0),
-            "Return":           ret,
-            "Net Sales":        net_sales,
-            "% vs Target":      pct_tgt,
-            "Collection":       coll,
-            "% Collection":     pct_coll,
-            "Days Left":        0,
-            "Daily Required":   0,
-            "Daily Avg":        daily_avg,
-            "Monthly Avg (3M)": monthly_avg_3m,
-            "Uniq Cust":        uc,
-            "Avg Daily Cust":   avg_daily_uc,
-            "Uniq Prods":       up,
-            "Avg Daily Prods":  avg_daily_up,
-            "ZID Uniq Prods":   zid_up,
+            "Salesman":                spname,
+            "Target":                  target,
+            "Sales":                   round(sales, 0),
+            "Return":                  ret,
+            "Net Sales":               net_sales,
+            "% vs Target":             pct_tgt,
+            "Collection":              coll,
+            "% Collection":            pct_coll,
+            "Products Sold":           up,
+            "Customers Visited":       uc,
+            "Days Left":               0,
+            "Daily Required":          0,
+            "Daily Avg":               daily_avg,
+            "Monthly Avg (3M)":        monthly_avg_3m,
         })
 
     with st.expander(f"📅 {mo_label}", expanded=False):
@@ -1184,22 +1102,19 @@ def _render_prior_month_section(
         def _style_prior(df_inner):
             styled = df_inner.style.format(
                 {
-                    "Target":           "{:,.0f}",
-                    "Sales":            "{:,.0f}",
-                    "Return":           "{:,.0f}",
-                    "Net Sales":        "{:,.0f}",
-                    "% vs Target":      "{:.1f}%",
-                    "Collection":       "{:,.0f}",
-                    "% Collection":     "{:.1f}%",
-                    "Days Left":        "{:,.0f}",
-                    "Daily Required":   "{:,.0f}",
-                    "Daily Avg":        "{:,.0f}",
-                    "Monthly Avg (3M)": "{:,.0f}",
-                    "Uniq Cust":        "{:,.0f}",
-                    "Avg Daily Cust":   "{:.1f}",
-                    "Uniq Prods":       "{:,.0f}",
-                    "Avg Daily Prods":  "{:.1f}",
-                    "ZID Uniq Prods":   "{:,.0f}",
+                    "Target":              "{:,.0f}",
+                    "Sales":               "{:,.0f}",
+                    "Return":              "{:,.0f}",
+                    "Net Sales":           "{:,.0f}",
+                    "% vs Target":         "{:.1f}%",
+                    "Collection":          "{:,.0f}",
+                    "% Collection":        "{:.1f}%",
+                    "Products Sold":       "{:,.0f}",
+                    "Customers Visited":   "{:,.0f}",
+                    "Days Left":           "{:,.0f}",
+                    "Daily Required":      "{:,.0f}",
+                    "Daily Avg":           "{:,.0f}",
+                    "Monthly Avg (3M)":    "{:,.0f}",
                 },
                 na_rep="—",
             )
@@ -1242,17 +1157,24 @@ def _render_prior_month_section(
 def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid, collection_df: pd.DataFrame = None):
     """
     Composite 0-100 performance score per salesman for one selected month —
-    the real current month, or one of the 2 months before it. Same metrics
-    as the All Salesmen Overview Table 1 (computed for whichever month is
-    selected, current- or prior-month style as appropriate), plus a Salesman
+    the real current month, or one of the 2 months before it, plus a Salesman
     ID column and 3 AR balance columns (selected month + the 2 before it,
     via salesman_due's FIFO trickledown — matches Collection Analysis ->
     Salesman Due -> main due report exactly). Sorted ascending by score
     (lowest/most-attention-needed first).
+
+    Every performance metric (Sales, Collection, Products Sold, Customers
+    Visited) is scoped to the selected month only — no 3-month window is used
+    for scoring. The balance columns are the one intentional exception: they
+    track AR aging (debt accumulated over the 2 months before the selected
+    one), which is a different kind of signal than "this month's activity."
+
+    Only shows columns that feed the score (directly or as the displayed
+    preview of a value the score function recomputes internally) — see
+    processing/salesman_score.compute_salesman_scores for the formula.
     """
     st.subheader("🎯 Salesman Score")
     today = pd.Timestamp.today().normalize()
-    holidays = _get_holidays()
 
     month_opts = ssc.month_choices(today)
     sel_label = st.selectbox("Month", [m[0] for m in month_opts], index=0, key="tm_score_month")
@@ -1265,31 +1187,12 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
 
     df = sales_df.copy()
     df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
-    df["_d"] = df["_dt"].dt.date
 
     mo_start = pd.Timestamp(sel_year, sel_month, 1)
     mo_end_full = pd.Timestamp(sel_year, sel_month, calendar.monthrange(sel_year, sel_month)[1])
     mo_end = today if is_current else mo_end_full
 
-    m3_start = mo_start - pd.DateOffset(months=3)
-    m3_end = mo_start - pd.Timedelta(days=1)
-    wd_3mo = _count_working_days(m3_start.date(), m3_end.date(), holidays)
-
     mo_data = df[(df["_dt"] >= mo_start) & (df["_dt"] <= mo_end)]
-    last3 = df[(df["_dt"] >= m3_start) & (df["_dt"] <= m3_end)]
-
-    if last3.empty:
-        st.warning(
-            f"⚠️ No data found for the 3-month lookback window "
-            f"({m3_start.strftime('%b %Y')} – {m3_end.strftime('%b %Y')}). "
-            "**Daily Avg (3M)**, **Uniq Cust (3M)**, and **Uniq Prods (3M)** will show 0. "
-            "Please load at least 3 prior months in the sidebar filters."
-        )
-
-    if is_current:
-        remaining_wd = _count_working_days(today.date(), mo_end_full.date(), holidays)
-    else:
-        remaining_wd = 0
 
     # ── Returns for the selected month, per salesman ──────────────────────────
     ret_by_sp: dict = {}
@@ -1311,8 +1214,6 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
             _c[(_c["year"] == sel_year) & (_c["month"] == sel_month)]
             .groupby("spid")["value"].sum().to_dict()
         )
-
-    zid_up = int(last3["itemcode"].nunique()) if "itemcode" in last3.columns else 0
 
     # ── AR balances: selected month + the 2 before it, from the same FIFO ─────
     # trickledown methodology as Collection Analysis -> Salesman Due -> main
@@ -1348,33 +1249,19 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         spname = sp_row["spname"]
 
         sp_mo = mo_data[mo_data["spid"].astype(str) == spid]
-        sp3 = last3[last3["spid"].astype(str) == spid]
 
         sales = float(sp_mo["final_sales"].sum())
         ret = round(ret_by_sp.get(spid, 0.0), 0)
         net_sales = round(sales - ret, 0)
 
         target = float(_get_target(zid, spid, sel_year, sel_month) or 0.0)
-        gap = target - sales
-        daily_req = round(gap / remaining_wd, 0) if is_current and remaining_wd > 0 and target > 0 else 0.0
         pct_tgt = round(net_sales / target * 100, 1) if target > 0 else None
-
-        daily_avg = round(float(sp3["final_sales"].sum()) / wd_3mo, 0) if wd_3mo > 0 else 0.0
-        monthly_avg_3m = round(float(sp3["final_sales"].sum()) / 3, 0)
 
         coll = round(float(coll_by_sp.get(spid, 0.0)), 0)
         pct_coll = round(coll / (1.02 * sales) * 100, 1) if sales > 0 else None
 
-        uc_3mo = int(sp3["cusid"].nunique()) if "cusid" in sp3.columns else 0
-        up_3mo = int(sp3["itemcode"].nunique()) if "itemcode" in sp3.columns else 0
-        avg_daily_uc = (
-            round(float(sp3.groupby("_d")["cusid"].nunique().mean()), 1)
-            if not sp3.empty and "cusid" in sp3.columns else 0.0
-        )
-        avg_daily_up = (
-            round(float(sp3.groupby("_d")["itemcode"].nunique().mean()), 1)
-            if not sp3.empty and "itemcode" in sp3.columns else 0.0
-        )
+        uc_mo = int(sp_mo["cusid"].nunique()) if "cusid" in sp_mo.columns else 0
+        up_mo = int(sp_mo["itemcode"].nunique()) if "itemcode" in sp_mo.columns else 0
 
         bal_oldest = _bal_lookup(spid, *bal_by_month[oldest_label])
         bal_mid = _bal_lookup(spid, *bal_by_month[mid_label])
@@ -1391,21 +1278,14 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
             "% vs Target": pct_tgt,
             "Collection": coll,
             "% Collection": pct_coll,
-            "Days Left": remaining_wd,
-            "Daily Required": daily_req,
-            "Daily Avg (3M)": daily_avg,
-            "Monthly Avg (3M)": monthly_avg_3m,
-            "Uniq Cust (3M)": uc_3mo,
-            "Avg Daily Cust": avg_daily_uc,
-            "Uniq Prods (3M)": up_3mo,
-            "Avg Daily Prods": avg_daily_up,
-            "ZID Uniq Prods": zid_up,
+            "Customers Visited": uc_mo,
+            "Products Sold": up_mo,
             f"Balance ({oldest_label})": round(bal_oldest, 0),
             f"Balance ({mid_label})": round(bal_mid, 0),
             f"Balance ({newest_label})": round(bal_newest, 0),
             # scoring inputs — not displayed directly under these keys
             "target": target, "sales": sales, "net_sales": net_sales, "coll": coll,
-            "uniq_prods": up_3mo, "uniq_cust": uc_3mo,
+            "uniq_prods": up_mo, "uniq_cust": uc_mo,
             "balance_recent2": bal_oldest + bal_mid,
             "balance_this_month": bal_newest,
         })
@@ -1419,9 +1299,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
     bal_cols = [f"Balance ({oldest_label})", f"Balance ({mid_label})", f"Balance ({newest_label})"]
     display_cols = [
         "Salesman ID", "Salesman", "Target", "Sales", "Return", "Net Sales", "% vs Target",
-        "Collection", "% Collection", "Days Left", "Daily Required",
-        "Daily Avg (3M)", "Monthly Avg (3M)", "Uniq Cust (3M)", "Avg Daily Cust",
-        "Uniq Prods (3M)", "Avg Daily Prods", "ZID Uniq Prods",
+        "Collection", "% Collection", "Customers Visited", "Products Sold",
         *bal_cols, "score",
     ]
     t = scored[display_cols].rename(columns={"score": "Score"}).reset_index(drop=True)
@@ -1432,11 +1310,8 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         "% vs Target": lambda v: f"{v:.1f}%" if v is not None else "—",
         "Collection": "{:,.0f}",
         "% Collection": lambda v: f"{v:.1f}%" if v is not None else "—",
-        "Days Left": "{:,.0f}", "Daily Required": "{:,.0f}",
-        "Daily Avg (3M)": "{:,.0f}", "Monthly Avg (3M)": "{:,.0f}",
-        "Uniq Cust (3M)": "{:,.0f}", "Avg Daily Cust": "{:.1f}",
-        "Uniq Prods (3M)": "{:,.0f}", "Avg Daily Prods": "{:.1f}",
-        "ZID Uniq Prods": "{:,.0f}",
+        "Customers Visited": "{:,.0f}",
+        "Products Sold": "{:,.0f}",
         **{c: "{:,.0f}" for c in bal_cols},
         "Score": "{:.1f}",
     }
@@ -1455,8 +1330,8 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
     newest_asof = "as of today" if is_current else f"as of {mo_end_full.strftime('%b %d')}"
     st.caption(
         f"**Score** (0–100, sorted lowest first): 45% Sales vs Target + 45% Collection vs Sales "
-        f"(both capped at 100%) + 5% Unique Products (3M) + 5% Unique Customers (3M) — the last two "
-        f"scored relative to the top salesman in this table — minus up to 20% in negative points, "
+        f"(both capped at 100%) + 5% Products Sold + 5% Customers Visited (both for {sel_label} only) "
+        f"— the last two scored relative to the top salesman in this table — minus up to 20% in negative points, "
         f"also peer-relative: 6 pts for Return vs Sales %, 12 pts for the combined "
         f"{oldest_label} + {mid_label} balance, 2 pts for the {newest_label} balance. "
         f"Rows highlighted red have no target set for {sel_label} — scored 0 on that 45% component. "
@@ -1471,6 +1346,145 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         mime="text/csv",
         key="dl_salesman_score",
     )
+
+
+# ── 3 Month Averages ──────────────────────────────────────────────────────────
+
+def _render_three_month_averages(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid):
+    """
+    Per-salesman 3-month averages for the last 3 calendar months INCLUDING the
+    current month (this month to-date + the 2 complete months before it):
+    Daily/Monthly Avg Sales, Unique Customers/Products + their daily averages,
+    and ZID-wide Unique Products for comparison.
+
+    Also hosts Moving Average Analysis underneath (folded in from the former
+    standalone "Moving Average" tab).
+    """
+    st.subheader("📊 3 Month Averages")
+    today = pd.Timestamp.today().normalize()
+    holidays = _get_holidays()
+
+    mo_start_cur = pd.Timestamp(today.year, today.month, 1)
+    mo_start_3mo = mo_start_cur - pd.DateOffset(months=2)
+    end_3mo      = today
+    wd_3mo       = _count_working_days(mo_start_3mo.date(), end_3mo.date(), holidays)
+
+    if "date" not in sales_df.columns or "final_sales" not in sales_df.columns:
+        st.warning("Required columns missing.")
+        return
+
+    df = sales_df.copy()
+    df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df["_d"]  = df["_dt"].dt.date
+
+    last3 = df[(df["_dt"] >= mo_start_3mo) & (df["_dt"] <= end_3mo)]
+
+    if last3.empty:
+        st.warning(
+            f"⚠️ No data found for the 3-month window "
+            f"({mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}). "
+            "Please load at least 3 months (incl. this one) in the sidebar filters."
+        )
+        return
+
+    zid_up = int(last3["itemcode"].nunique()) if "itemcode" in last3.columns else 0
+
+    sp_list = df[["spid", "spname"]].dropna().drop_duplicates().sort_values("spname")
+
+    rows = []
+    for _, sp_row in sp_list.iterrows():
+        spid   = str(sp_row["spid"])
+        spname = sp_row["spname"]
+        sp3 = last3[last3["spid"].astype(str) == spid]
+
+        total_3mo   = float(sp3["final_sales"].sum())
+        daily_avg   = round(total_3mo / wd_3mo, 0) if wd_3mo > 0 else 0.0
+        monthly_avg = round(total_3mo / 3, 0)
+
+        uc_3mo   = int(sp3["cusid"].nunique())    if "cusid"    in sp3.columns else 0
+        up_3mo   = int(sp3["itemcode"].nunique()) if "itemcode" in sp3.columns else 0
+        daily_uc = round(float(sp3.groupby("_d")["cusid"].nunique().mean()),    1) if not sp3.empty and "cusid"    in sp3.columns else 0.0
+        daily_up = round(float(sp3.groupby("_d")["itemcode"].nunique().mean()), 1) if not sp3.empty and "itemcode" in sp3.columns else 0.0
+
+        rows.append({
+            "Salesman ID":              spid,
+            "Salesman":                 spname,
+            "Daily Avg Sales (3M)":     daily_avg,
+            "Monthly Avg Sales (3M)":   monthly_avg,
+            "Unique Customers (3M)":    uc_3mo,
+            "Avg Daily Customers (3M)": daily_uc,
+            "Unique Products (3M)":     up_3mo,
+            "Avg Daily Products (3M)":  daily_up,
+            "ZID Unique Products (3M)": zid_up,
+        })
+
+    if not rows:
+        st.info("No salesmen found for this selection.")
+        return
+
+    t = pd.DataFrame(rows).sort_values("Monthly Avg Sales (3M)", ascending=False).reset_index(drop=True)
+
+    _3m_period = (f"{mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}"
+                  f" ({wd_3mo} working days)")
+    st.caption(f"3M window: {_3m_period}")
+
+    try:
+        styled = t.style.format({
+            "Daily Avg Sales (3M)":     "{:,.0f}",
+            "Monthly Avg Sales (3M)":   "{:,.0f}",
+            "Unique Customers (3M)":    "{:,.0f}",
+            "Avg Daily Customers (3M)": "{:.1f}",
+            "Unique Products (3M)":     "{:,.0f}",
+            "Avg Daily Products (3M)":  "{:.1f}",
+            "ZID Unique Products (3M)": "{:,.0f}",
+        }, na_rep="—")
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+    except Exception:
+        st.dataframe(t, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "⬇ Download 3 Month Averages CSV",
+        t.to_csv(index=False).encode("utf-8"),
+        file_name=f"three_month_averages_{zid}.csv",
+        mime="text/csv",
+        key="dl_3m_avg",
+    )
+
+    # ── Moving Average Analysis (folded in from the former standalone tab) ────
+    st.markdown("---")
+    st.subheader("📈 Moving Average Analysis")
+
+    from datetime import date as _date
+    ma_col1, ma_col2, ma_col3 = st.columns(3)
+    with ma_col1:
+        ma_entity = st.selectbox(
+            "Entity", ["Salesman", "Product", "Product Group"], key="tm_ma_entity"
+        )
+    with ma_col2:
+        ma_metric = st.selectbox(
+            "Metric", ["Net Sales", "Net Returns"], key="tm_ma_metric"
+        )
+    with ma_col3:
+        ma_end_date = st.date_input(
+            "End Date", value=_date.today(), key="tm_ma_end_date"
+        )
+
+    try:
+        ma_df = ds.compute_moving_avg_table(
+            sales_df=sales_df,
+            returns_df=returns_df,
+            entity=ma_entity,
+            metric=ma_metric,
+            end_date=ma_end_date,
+            collection_df=None,
+        )
+        if ma_df is not None and not ma_df.empty:
+            st.dataframe(ma_df, use_container_width=True)
+        else:
+            st.info("No moving average data available for the selected filters.")
+    except Exception as _ma_err:
+        st.warning("Unable to compute moving average.")
+        st.caption(f"Details: {_ma_err}")
 
 
 # ── Salesman daily breakdown (current month) ──────────────────────────────────
@@ -1563,16 +1577,35 @@ def _render_sp_daily_breakdown(
     )
 
 
-# ── Collection detail — vouchers behind the MTD Collection figure ─────────────
+# ── Collection Details tab — salesman + month picker, total shown outside ─────
 
-def _render_collection_detail(collection_df: pd.DataFrame, sel_spid: str, zid):
+def _render_collection_details_tab(sales_df: pd.DataFrame, zid, collection_df: pd.DataFrame):
     """
-    Voucher-level rows (RCT/SRCT/CRCT/BRCT/STJV/JV--) for this salesman, current
-    calendar month — the same spid/year/month filter as the "Collection (MTD)"
-    metric in _render_metric_cards, so this table's total ties to that figure.
+    Voucher-level collection rows (RCT/CRCT/BRCT/STJV/JV--/ADJV) for one
+    salesman and one month (current calendar month or one of the 2 before it,
+    same picker pattern as Salesman Score). Total is shown as a metric above
+    the table, separate from the row data.
     """
-    st.markdown("---")
-    st.subheader("🧾 Collection Detail — Current Month")
+    st.subheader("🧾 Collection Details")
+    today = pd.Timestamp.today().normalize()
+
+    month_opts = ssc.month_choices(today)
+    sel_label = st.selectbox(
+        "Month", [m[0] for m in month_opts], index=0, key="tm_coll_details_month"
+    )
+    sel_year, sel_month = next((y, m) for (lbl, y, m) in month_opts if lbl == sel_label)
+
+    sp_opts = _sp_opts(sales_df)
+    sel_sp_raw = st.selectbox(
+        "Salesman",
+        [None] + sp_opts,
+        format_func=lambda x: "— select a salesman —" if x is None else x,
+        key="tm_coll_details_sp",
+    )
+    if not sel_sp_raw:
+        st.info("👆 Select a salesman to view collection details.")
+        return
+    sel_spid = _codes([sel_sp_raw])[0]
 
     if collection_df is None or collection_df.empty:
         st.info("No collection data loaded.")
@@ -1583,18 +1616,20 @@ def _render_collection_detail(collection_df: pd.DataFrame, sel_spid: str, zid):
         st.info("Collection data is missing required columns for this breakdown.")
         return
 
-    today = pd.Timestamp.today().normalize()
     c = collection_df.copy()
     c["spid"]  = c["spid"].astype(str)
     c["year"]  = pd.to_numeric(c["year"],  errors="coerce")
     c["month"] = pd.to_numeric(c["month"], errors="coerce")
 
     detail = c[
-        (c["spid"] == str(sel_spid)) & (c["year"] == today.year) & (c["month"] == today.month)
+        (c["spid"] == str(sel_spid)) & (c["year"] == sel_year) & (c["month"] == sel_month)
     ].copy()
 
+    total = float(detail["value"].sum()) if not detail.empty else 0.0
+    st.metric(f"💰 Total Collection — {sel_label}", f"{total:,.0f}")
+
     if detail.empty:
-        st.info("No collection transactions for this salesman this month.")
+        st.info("No collection transactions for this salesman in this month.")
         return
 
     detail["date"] = pd.to_datetime(detail["date"], errors="coerce")
@@ -1614,7 +1649,7 @@ def _render_collection_detail(collection_df: pd.DataFrame, sel_spid: str, zid):
         .reset_index(drop=True)
     )
 
-    st.caption(f"{len(t):,} transaction(s) — total {t['Amount'].sum():,.0f} (matches Collection (MTD) above)")
+    st.caption(f"{len(t):,} transaction(s)")
     try:
         st.dataframe(
             t.style.format({"Date": "{:%Y-%m-%d}", "Amount": "{:,.0f}"}, na_rep="—"),
@@ -1627,9 +1662,9 @@ def _render_collection_detail(collection_df: pd.DataFrame, sel_spid: str, zid):
     st.download_button(
         "⬇ Download Collection Detail CSV",
         t.to_csv(index=False).encode("utf-8"),
-        file_name=f"collection_detail_{sel_spid}_{today.year}_{today.month:02d}.csv",
+        file_name=f"collection_detail_{sel_spid}_{sel_year}_{sel_month:02d}.csv",
         mime="text/csv",
-        key="dl_collection_detail",
+        key="dl_collection_details_tab",
     )
 
 
@@ -1646,9 +1681,6 @@ def _render_inventory_coverage(sp_sales: pd.DataFrame, zid: str):
     🔴 Red         — in inventory but never sold historically, not this month
     🔵 Blue        — sold this month but NOT in the inventory list
     """
-    st.markdown("---")
-    st.subheader("🗂️ Inventory Coverage — This Month vs Prior-Month Stock")
-
     today = pd.Timestamp.today()
     cur_year, cur_month = today.year, today.month
 
@@ -2161,7 +2193,8 @@ def display_target_management_page(current_page, zid, data_dict):
     _view_mode = st.radio(
         "View",
         ["👤 Individual Salesman", "📊 All Salesmen Overview", "🎯 Salesman Score",
-         "📈 Moving Average", "📦 Current Stock", "🔮 Next Month Target"],
+         "📊 3 Month Averages", "🧾 Collection Details",
+         "📦 Current Stock", "🔮 Next Month Target"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -2220,40 +2253,12 @@ def display_target_management_page(current_page, zid, data_dict):
                                 collection_df=data_dict.get("collection", pd.DataFrame()))
         return
 
-    if _view_mode == "📈 Moving Average":
-        from datetime import date as _date
-        st.subheader("📈 Moving Average Analysis")
+    if _view_mode == "📊 3 Month Averages":
+        _render_three_month_averages(sales_df, returns_df, zid)
+        return
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            ma_entity = st.selectbox(
-                "Entity", ["Salesman", "Product", "Product Group"], key="tm_ma_entity"
-            )
-        with col2:
-            ma_metric = st.selectbox(
-                "Metric", ["Net Sales", "Net Returns"], key="tm_ma_metric"
-            )
-        with col3:
-            ma_end_date = st.date_input(
-                "End Date", value=_date.today(), key="tm_ma_end_date"
-            )
-
-        try:
-            ma_df = ds.compute_moving_avg_table(
-                sales_df=sales_df,
-                returns_df=returns_df,
-                entity=ma_entity,
-                metric=ma_metric,
-                end_date=ma_end_date,
-                collection_df=None,
-            )
-            if ma_df is not None and not ma_df.empty:
-                st.dataframe(ma_df, use_container_width=True)
-            else:
-                st.info("No moving average data available for the selected filters.")
-        except Exception as _ma_err:
-            st.warning("Unable to compute moving average.")
-            st.caption(f"Details: {_ma_err}")
+    if _view_mode == "🧾 Collection Details":
+        _render_collection_details_tab(sales_df, zid, data_dict.get("collection", pd.DataFrame()))
         return
 
     if _view_mode == "📦 Current Stock":
@@ -2354,7 +2359,7 @@ def display_target_management_page(current_page, zid, data_dict):
     # ── Metric cards (uses full salesman data, not customer/area filtered) ─────
     collection_df_all = data_dict.get("collection", pd.DataFrame())
     _render_metric_cards(
-        f_sp, opmob_df, sel_spid, zid, all_sales=sales_df, sp_returns=f_sp_ret,
+        f_sp, opmob_df, sel_spid, zid, sp_returns=f_sp_ret,
         collection_df=collection_df_all,
     )
 
@@ -2566,8 +2571,13 @@ def display_target_management_page(current_page, zid, data_dict):
     #
     # _render_buying_pattern(bp_df, is_any_filter=bool(sel_spid))
 
-    # ── Inventory Coverage ────────────────────────────────────────────────────
-    _render_inventory_coverage(f_sp, str(zid))
-
-    # ── Collection Detail — voucher-level rows behind the MTD Collection figure ─
-    _render_collection_detail(collection_df_all, sel_spid, zid)
+    # ── Inventory Coverage (collapsed; loads only on demand — can be slow) ─────
+    st.markdown("---")
+    with st.expander("🗂️ Inventory Coverage — This Month vs Prior-Month Stock", expanded=False):
+        gen_key = f"tm_inv_cov_ready_{sel_spid}"
+        if st.button("▶ Generate Inventory Coverage", key=f"tm_gen_inv_cov_{sel_spid}"):
+            st.session_state[gen_key] = True
+        if st.session_state.get(gen_key):
+            _render_inventory_coverage(f_sp, str(zid))
+        else:
+            st.info("Click **Generate Inventory Coverage** above to load this section — it can take a while.")
