@@ -67,7 +67,6 @@ def setup_auth_tables():
             ('admin','Customer Data View'),
             ('admin','Daily Sales Analysis'),
             ('admin','Target Management'),
-            ('admin','Manufacturing Analysis'),
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
             ('sales', 'Daily Sales Analysis'),
