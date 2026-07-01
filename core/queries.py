@@ -678,8 +678,11 @@ def get_product_inventory_data(filters=None):
             SUM(imtrn.xval * imtrn.xsign) AS stockvalue
         FROM imtrn
         WHERE imtrn.zid = %s
-        GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper,
-                 imtrn.xdate, imtrn.xdocnum, imtrn.xproj, imtrn.ximtrnnum
+        -- Monthly aggregate only — xdate/xdocnum/xproj/ximtrnnum were previously
+        -- in GROUP BY but not in SELECT, so every ximtrnnum (unique PK) formed its
+        -- own "group" with SUM() = identity. This returned 2M rows instead of
+        -- ~tens-of-thousands of monthly totals and was 2x slower than necessary.
+        GROUP BY imtrn.zid, imtrn.xitem, imtrn.xwh, imtrn.xyear, imtrn.xper
     )
     SELECT
         stock.zid,
