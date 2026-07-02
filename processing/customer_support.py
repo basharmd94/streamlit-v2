@@ -67,6 +67,32 @@ def load_all_ar_ledgers() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
+def load_all_sales_7day() -> pd.DataFrame:
+    """Sales line items from the last 7 days across all ZIDs (from MV).
+
+    Used to build the DO-detail table in the Customer Support expander.
+    """
+    from core.analytics import Analytics
+
+    dfs: list[pd.DataFrame] = []
+    for zid in _ZID_PROJECT:
+        df = Analytics("sales_7day", zid=zid, filters={}).data
+        if df is None or df.empty:
+            continue
+        tmp = df.copy()
+        tmp["zid"] = str(zid)
+        dfs.append(tmp)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    out = pd.concat(dfs, ignore_index=True)
+    out["date"]  = pd.to_datetime(out["date"],  errors="coerce")
+    out["cusid"] = out["cusid"].astype(str)
+    return out
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
 def load_all_cacus() -> pd.DataFrame:
     """Customer directory (mobile + whatsapp) for all ZIDs."""
     from core.analytics import Analytics

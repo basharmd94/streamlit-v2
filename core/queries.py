@@ -131,6 +131,26 @@ def get_sales_data(filters=None):
 
     return query, tuple(params)
 
+
+def get_sales_7day(filters=None):
+    """Last 7 calendar days of sales line items from mv_sales_line_items.
+
+    Used by the Customer Support DO-detail table. Date filter is applied in SQL
+    so only a small slice of the MV is fetched per call.
+    """
+    filters = filters or {}
+    sql = """
+        SELECT
+            zid, voucher, date, year, month,
+            spid, spname, cusid, cusname,
+            itemcode, itemname, itemgroup,
+            quantity, altsales, proddiscount, totalsales, cost
+        FROM mv_sales_line_items
+        WHERE zid = %s
+          AND date >= CURRENT_DATE - 6
+    """
+    return sql, (filters["zid"][0],)
+
     # ── ORIGINAL base-table version (preserved for reference) ────────────────
     # filters = filters or {}
     # query = """
