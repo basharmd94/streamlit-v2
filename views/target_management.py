@@ -428,12 +428,26 @@ def _load_final_items(zid: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_opspprc(zid: str) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("opspprc", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
 # ── Opmob pending orders loader ───────────────────────────────────────────────
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def _load_opmob_pending(zid: str) -> pd.DataFrame:
     from core.analytics import Analytics
     df = Analytics("opmob_pending", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_opmob_all(zid: str) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("opmob_all", zid=zid, filters={}).data
     return df if df is not None else pd.DataFrame()
 
 
@@ -1579,14 +1593,18 @@ def _render_sp_daily_breakdown(
 
 # ── Collection Details tab — salesman + month picker, total shown outside ─────
 
-def _render_collection_details_tab(sales_df: pd.DataFrame, zid, collection_df: pd.DataFrame):
+def _render_collection_details_tab(
+    sales_df: pd.DataFrame,
+    zid,
+    collection_df: pd.DataFrame,
+    return_df: pd.DataFrame,
+):
     """
     Voucher-level collection rows (RCT/CRCT/BRCT/STJV/JV--/ADJV) for one
-    salesman and one month (current calendar month or one of the 2 before it,
-    same picker pattern as Salesman Score). Total is shown as a metric above
-    the table, separate from the row data.
+    salesman and one month, plus a unified day-book table beneath it showing
+    all transaction types (DOs, returns, collections) in separate amount columns.
     """
-    st.subheader("🧾 Collection Details")
+    st.subheader("🧾 SR Trn")
     today = pd.Timestamp.today().normalize()
 
     month_opts = ssc.month_choices(today)
@@ -1607,64 +1625,152 @@ def _render_collection_details_tab(sales_df: pd.DataFrame, zid, collection_df: p
         return
     sel_spid = _codes([sel_sp_raw])[0]
 
-    if collection_df is None or collection_df.empty:
+    # ── Helper: normalise a dataframe's spid/year/month columns ──────────────
+    def _prep(df):
+        df = df.copy()
+        df["spid"]  = df["spid"].astype(str)
+        df["year"]  = pd.to_numeric(df["year"],  errors="coerce")
+        df["month"] = pd.to_numeric(df["month"], errors="coerce")
+        return df
+
+    def _sp_month_filter(df):
+        return df[(df["spid"] == str(sel_spid)) & (df["year"] == sel_year) & (df["month"] == sel_month)]
+
+    # ── Collections ───────────────────────────────────────────────────────────
+    if collection_df is None or collection_df.empty or not {"spid","year","month","glvoucher","date","cusid","value"}.issubset(collection_df.columns):
         st.info("No collection data loaded.")
-        return
+        coll_detail = pd.DataFrame()
+    else:
+        c = _prep(collection_df)
+        coll_detail = _sp_month_filter(c).copy()
 
-    required = {"spid", "year", "month", "glvoucher", "date", "cusid", "value"}
-    if not required.issubset(collection_df.columns):
-        st.info("Collection data is missing required columns for this breakdown.")
-        return
-
-    c = collection_df.copy()
-    c["spid"]  = c["spid"].astype(str)
-    c["year"]  = pd.to_numeric(c["year"],  errors="coerce")
-    c["month"] = pd.to_numeric(c["month"], errors="coerce")
-
-    detail = c[
-        (c["spid"] == str(sel_spid)) & (c["year"] == sel_year) & (c["month"] == sel_month)
-    ].copy()
-
-    total = float(detail["value"].sum()) if not detail.empty else 0.0
+    total = float(coll_detail["value"].sum()) if not coll_detail.empty else 0.0
     st.metric(f"💰 Total Collection — {sel_label}", f"{total:,.0f}")
 
-    if detail.empty:
+    if not coll_detail.empty:
+        coll_detail["date"] = pd.to_datetime(coll_detail["date"], errors="coerce")
+        coll_cols = ["date", "glvoucher", "cusid"] + (["cusname"] if "cusname" in coll_detail.columns else []) + ["value"]
+        t = (
+            coll_detail[coll_cols]
+            .rename(columns={"date": "Date", "glvoucher": "Transaction Code",
+                              "cusid": "Customer Code", "cusname": "Customer", "value": "Amount"})
+            .sort_values("Date", ascending=False)
+            .reset_index(drop=True)
+        )
+        st.caption(f"{len(t):,} collection transaction(s)")
+        try:
+            st.dataframe(
+                t.style.format({"Date": "{:%Y-%m-%d}", "Amount": "{:,.0f}"}, na_rep="—"),
+                use_container_width=True, hide_index=True,
+            )
+        except Exception:
+            st.dataframe(t, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "⬇ Download Collection CSV",
+            t.to_csv(index=False).encode("utf-8"),
+            file_name=f"collection_detail_{sel_spid}_{sel_year}_{sel_month:02d}.csv",
+            mime="text/csv",
+            key="dl_collection_details_tab",
+        )
+    else:
         st.info("No collection transactions for this salesman in this month.")
+
+    # ── Unified day-book: Sales (DO) + Returns + Collections + Mobile Orders ──
+    st.markdown("---")
+    st.markdown("#### 📋 All Transactions")
+
+    rows = []
+
+    _COLS = ["Date","Voucher","Cust Code","Customer","Sales","Return","Collection","Mobile Order"]
+
+    # Sales (DOs) — one row per voucher per customer
+    if sales_df is not None and not sales_df.empty and {"spid","year","month","voucher","date","cusid","cusname","altsales"}.issubset(sales_df.columns):
+        s = _prep(sales_df)
+        s_filt = _sp_month_filter(s)
+        if not s_filt.empty:
+            s_grp = (
+                s_filt.groupby(["date","voucher","cusid","cusname"], as_index=False)
+                      .agg(Sales=("altsales","sum"))
+            )
+            s_grp["date"] = pd.to_datetime(s_grp["date"], errors="coerce")
+            s_grp = s_grp.rename(columns={"voucher":"Voucher","date":"Date","cusid":"Cust Code","cusname":"Customer"})
+            s_grp["Return"]       = None
+            s_grp["Collection"]   = None
+            s_grp["Mobile Order"] = None
+            rows.append(s_grp[_COLS])
+
+    # Returns — one row per return voucher per customer
+    if return_df is not None and not return_df.empty and {"spid","year","month","revoucher","date","cusid","cusname","treturnamt"}.issubset(return_df.columns):
+        r = _prep(return_df)
+        r_filt = _sp_month_filter(r)
+        if not r_filt.empty:
+            r_grp = (
+                r_filt.groupby(["date","revoucher","cusid","cusname"], as_index=False)
+                      .agg(Return=("treturnamt","sum"))
+            )
+            r_grp["date"] = pd.to_datetime(r_grp["date"], errors="coerce")
+            r_grp = r_grp.rename(columns={"revoucher":"Voucher","date":"Date","cusid":"Cust Code","cusname":"Customer"})
+            r_grp["Sales"]        = None
+            r_grp["Collection"]   = None
+            r_grp["Mobile Order"] = None
+            rows.append(r_grp[_COLS])
+
+    # Collections
+    if not coll_detail.empty:
+        has_cusname = "cusname" in coll_detail.columns
+        c_cols = ["date","glvoucher","cusid"] + (["cusname"] if has_cusname else [])
+        c_txn = coll_detail[c_cols + ["value"]].copy()
+        if not has_cusname:
+            c_txn["cusname"] = None
+        c_txn = c_txn.rename(columns={"date":"Date","glvoucher":"Voucher","cusid":"Cust Code","cusname":"Customer","value":"Collection"})
+        c_txn["Sales"]        = None
+        c_txn["Return"]       = None
+        c_txn["Mobile Order"] = None
+        rows.append(c_txn[_COLS])
+
+    # Mobile orders (opmob) — one row per order number per customer
+    mob_df = _load_opmob_all(str(zid))
+    if not mob_df.empty and {"spid","year","month","mob_voucher","date","cusid","cusname","mob_total"}.issubset(mob_df.columns):
+        m = _prep(mob_df)
+        m_filt = _sp_month_filter(m)
+        if not m_filt.empty:
+            m_filt = m_filt.copy()
+            m_filt["date"] = pd.to_datetime(m_filt["date"], errors="coerce")
+            m_filt = m_filt.rename(columns={"mob_voucher":"Voucher","date":"Date","cusid":"Cust Code","cusname":"Customer","mob_total":"Mobile Order"})
+            m_filt["Sales"]      = None
+            m_filt["Return"]     = None
+            m_filt["Collection"] = None
+            rows.append(m_filt[_COLS])
+
+    if not rows:
+        st.info("No transactions found for this salesman and month.")
         return
 
-    detail["date"] = pd.to_datetime(detail["date"], errors="coerce")
+    txn = pd.concat(rows, ignore_index=True)
+    txn["Date"] = pd.to_datetime(txn["Date"], errors="coerce")
+    txn = txn.sort_values(["Date","Voucher"]).reset_index(drop=True)
 
-    rename = {
-        "date":      "Date",
-        "glvoucher": "Transaction Code",
-        "cusid":     "Customer Code (xsub)",
-        "cusname":   "Customer",
-        "value":     "Amount",
-    }
-    cols = ["date", "glvoucher", "cusid"] + (["cusname"] if "cusname" in detail.columns else []) + ["value"]
-    t = (
-        detail[cols]
-        .rename(columns=rename)
-        .sort_values("Date", ascending=False)
-        .reset_index(drop=True)
-    )
-
-    st.caption(f"{len(t):,} transaction(s)")
+    st.caption(f"{len(txn):,} transaction row(s) — DOs, Returns, Collections, Mobile Orders")
     try:
         st.dataframe(
-            t.style.format({"Date": "{:%Y-%m-%d}", "Amount": "{:,.0f}"}, na_rep="—"),
+            txn.style.format(
+                {"Date": "{:%Y-%m-%d}", "Sales": "{:,.0f}", "Return": "{:,.0f}",
+                 "Collection": "{:,.0f}", "Mobile Order": "{:,.0f}"},
+                na_rep="—",
+            ),
             use_container_width=True,
             hide_index=True,
         )
     except Exception:
-        st.dataframe(t, use_container_width=True, hide_index=True)
+        st.dataframe(txn, use_container_width=True, hide_index=True)
 
     st.download_button(
-        "⬇ Download Collection Detail CSV",
-        t.to_csv(index=False).encode("utf-8"),
-        file_name=f"collection_detail_{sel_spid}_{sel_year}_{sel_month:02d}.csv",
+        "⬇ Download All Transactions CSV",
+        txn.to_csv(index=False).encode("utf-8"),
+        file_name=f"all_txn_{sel_spid}_{sel_year}_{sel_month:02d}.csv",
         mime="text/csv",
-        key="dl_collection_details_tab",
+        key="dl_all_txn_tab",
     )
 
 
@@ -2193,7 +2299,7 @@ def display_target_management_page(current_page, zid, data_dict):
     _view_mode = st.radio(
         "View",
         ["👤 Individual Salesman", "📊 All Salesmen Overview", "🎯 Salesman Score",
-         "📊 3 Month Averages", "🧾 Collection Details",
+         "📊 3 Month Averages", "🧾 SR Trn",
          "📦 Current Stock", "🔮 Next Month Target"],
         horizontal=True,
         key="tm_view_mode",
@@ -2257,24 +2363,38 @@ def display_target_management_page(current_page, zid, data_dict):
         _render_three_month_averages(sales_df, returns_df, zid)
         return
 
-    if _view_mode == "🧾 Collection Details":
-        _render_collection_details_tab(sales_df, zid, data_dict.get("collection", pd.DataFrame()))
+    if _view_mode == "🧾 SR Trn":
+        _render_collection_details_tab(
+            sales_df,
+            zid,
+            data_dict.get("collection", pd.DataFrame()),
+            returns_df if returns_df is not None else pd.DataFrame(),
+        )
         return
 
     if _view_mode == "📦 Current Stock":
         st.subheader("📦 Current Stock")
         with st.spinner("Loading stock data…"):
-            stock_df = _load_final_items(str(zid))
+            stock_df  = _load_final_items(str(zid))
+            wh_df     = _load_opspprc(str(zid))
 
         if stock_df.empty:
             st.warning("No stock data available from final_items_view for this entity.")
         else:
-            # Rename columns for display
+            # Merge wholesale price info if available
+            if not wh_df.empty:
+                wh_df = wh_df[["item_id", "wh_qty", "wh_price"]].copy()
+                wh_df["item_id"] = wh_df["item_id"].astype(str)
+                stock_df["item_id"] = stock_df["item_id"].astype(str)
+                stock_df = stock_df.merge(wh_df, on="item_id", how="left")
+
             _col_map = {
                 "item_id":    "Item ID",
                 "item_name":  "Item Name",
                 "item_group": "Item Group",
                 "stock":      "Stock",
+                "wh_qty":     "WH Qty",
+                "wh_price":   "WH Price",
             }
             disp = (
                 stock_df
@@ -2292,9 +2412,13 @@ def display_target_management_page(current_page, zid, data_dict):
                 )
                 disp = disp[_mask].reset_index(drop=True)
 
-            st.caption(f"{len(disp):,} items")
+            st.caption(f"{len(disp):,} items  —  WH Qty = minimum qty for wholesale price; WH Price = std price minus discount")
+            fmt = {"Stock": "{:,.0f}"}
+            if "WH Qty" in disp.columns:
+                fmt["WH Qty"]   = "{:,.0f}"
+                fmt["WH Price"] = "{:,.2f}"
             st.dataframe(
-                disp.style.format({"Stock": "{:,.0f}"}, na_rep="—"),
+                disp.style.format(fmt, na_rep="—"),
                 use_container_width=True,
                 hide_index=True,
             )

@@ -1,0 +1,369 @@
+-- =============================================================================
+-- Materialized Views — HMBR Business Analytics App
+-- PostgreSQL 9.4 compatible
+--
+-- Column names and aliases in each MV are derived directly from the active
+-- query functions in core/queries.py (the SELECT * + WHERE column-name filters
+-- that each function applies).  Do NOT rename columns without also updating
+-- the corresponding get_*() function.
+--
+-- Refresh strategy: run the REFRESH commands at the bottom after every nightly
+-- import or whenever source tables (opdor/opddt/imtrn/gldetail etc.) are updated.
+-- All 5 MVs are data-complete (no zid filter baked in) so a single refresh
+-- covers all entities.
+--
+-- MVs in this file:
+--   1. mv_sales_line_items       → get_sales_data()
+--   2. mv_collection_vouchers    → get_collection_data()
+--   3. mv_ar_vouchers            → get_ar_data()
+--   4. mv_stock_movement         → get_stock_movement_data()
+--   5. mv_ar_transactions        → get_ar_due_ledger()
+-- =============================================================================
+
+
+-- =============================================================================
+-- 1. mv_sales_line_items
+--    Source: opdor + opddt + imtrn (cost) + prmst + cacus + caitem
+--    Queried by: get_sales_data() — SELECT * WHERE zid = %s [+ optional filters]
+--    Runtime filters on: zid, year, month, spid/spname, cusid/cusname,
+--                        itemcode/itemname, area, itemgroup
+-- =============================================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_sales_line_items;
+
+CREATE MATERIALIZED VIEW mv_sales_line_items AS
+WITH s AS (
+    SELECT
+        opddt.zid,
+        opdor.xdornum                              AS voucher,
+        opdor.xdate                                AS date,
+        EXTRACT(YEAR  FROM opdor.xdate)::int       AS year,
+        EXTRACT(MONTH FROM opdor.xdate)::int       AS month,
+        opdor.xsp::text                            AS spid,
+        opdor.xcus::text                           AS cusid,
+        opddt.xitem                                AS itemcode,
+        opddt.xqty                                 AS quantity,
+        opddt.xdtwotax                             AS altsales,
+        opddt.xdtdisc                              AS proddiscount,
+        opddt.xlineamt                             AS totalsales,
+        imtrn.xval                                 AS cost
+    FROM opdor
+    LEFT JOIN opddt ON opdor.xdornum = opddt.xdornum
+                   AND opdor.zid     = opddt.zid
+    LEFT JOIN imtrn ON opdor.xdornum = imtrn.xdocnum
+                   AND opddt.xdornum = imtrn.xdocnum
+                   AND opddt.xitem   = imtrn.xitem
+                   AND opddt.zid     = imtrn.zid
+                   AND opdor.zid     = imtrn.zid
+                   AND opddt.xrow    = imtrn.xdocrow
+)
+SELECT
+    s.zid,
+    s.voucher,
+    s.date,
+    s.year,
+    s.month,
+    s.spid,
+    p.xname                AS spname,
+    s.cusid,
+    c.xshort               AS cusname,
+    c.xmobile              AS cusmobile,
+    c.xtaxnum              AS whatsapp,
+    c.xcity                AS area,
+    s.itemcode,
+    ci.xdesc               AS itemname,
+    ci.xabc                AS itemgroup,
+    s.quantity,
+    s.altsales,
+    s.proddiscount,
+    s.totalsales,
+    s.cost
+FROM s
+JOIN prmst  p  ON s.spid    = p.xemp::text  AND s.zid = p.zid
+JOIN cacus  c  ON s.cusid   = c.xcus::text  AND s.zid = c.zid
+JOIN caitem ci ON s.itemcode = ci.xitem     AND s.zid = ci.zid;
+
+-- Indexes for runtime WHERE filters
+CREATE INDEX ON mv_sales_line_items (zid);
+CREATE INDEX ON mv_sales_line_items (zid, year, month);
+CREATE INDEX ON mv_sales_line_items (zid, spid);
+CREATE INDEX ON mv_sales_line_items (zid, cusid);
+CREATE INDEX ON mv_sales_line_items (zid, itemcode);
+CREATE INDEX ON mv_sales_line_items (zid, area);
+CREATE INDEX ON mv_sales_line_items (zid, itemgroup);
+
+
+-- =============================================================================
+-- 2. mv_collection_vouchers
+--    Source: gldetail + glheader + glmst + cacus + opdor (for last-sale SP) + prmst
+--    Queried by: get_collection_data() — SELECT * WHERE zid = %s [+ optional filters]
+--    Runtime filters on: zid, year, month, cusid/cusname, area, spid/spname
+--
+--    SIGN NOTE: value = -SUM(xprime).  AR is credited (xprime negative) when a
+--    customer pays, so a real collection nets negative xprime.  Negating gives a
+--    positive "value" for genuine collections.  Do NOT change to ABS() — ABS()
+--    silently flips debit-correction vouchers (JV--/STJV/ADJV with net-positive
+--    xprime) into positive "collections", overstating totals.
+-- =============================================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_collection_vouchers;
+
+CREATE MATERIALIZED VIEW mv_collection_vouchers AS
+WITH rct_raw AS (
+    SELECT
+        gd.zid,
+        gd.xvoucher                                   AS glvoucher,
+        gd.xsub::text                                 AS cusid,
+        gh.xdate                                      AS date,
+        gh.xyear::int                                 AS year,
+        gh.xper::int                                  AS month,
+        -SUM(gd.xprime)                               AS value,
+        MAX(NULLIF(TRIM(gd.xsp::text), ''))           AS direct_sp_id
+    FROM gldetail gd
+    JOIN glheader gh ON gd.xvoucher = gh.xvoucher AND gd.zid = gh.zid
+    JOIN glmst    gm ON gd.xacc     = gm.xacc     AND gd.zid = gm.zid
+    WHERE gm.xaccusage = 'AR'
+      AND (
+            gd.xvoucher LIKE 'RCT-%'
+         OR gd.xvoucher LIKE 'CRCT%'
+         OR gd.xvoucher LIKE 'STJV%'
+         OR gd.xvoucher LIKE 'BRCT%'
+         OR gd.xvoucher LIKE 'JV--%'
+         OR gd.xvoucher LIKE 'ADJV%'
+      )
+    GROUP BY gd.zid, gd.xvoucher, gd.xsub, gh.xdate, gh.xyear, gh.xper
+),
+last_sale_sp AS (
+    SELECT DISTINCT ON (zid, xcus::text)
+        zid,
+        xcus::text  AS cusid,
+        xsp::text   AS sp_id
+    FROM opdor
+    WHERE xsp IS NOT NULL AND TRIM(xsp::text) != ''
+    ORDER BY zid, xcus::text, xdate DESC
+)
+SELECT
+    r.zid,
+    r.glvoucher,
+    r.cusid,
+    cc.xshort                              AS cusname,
+    cc.xcity                               AS area,
+    r.date,
+    r.year,
+    r.month,
+    r.value,
+    COALESCE(r.direct_sp_id, ls.sp_id)    AS spid,
+    e.xname                                AS spname
+FROM rct_raw r
+JOIN  cacus cc ON r.cusid = cc.xcus::text AND r.zid = cc.zid
+LEFT JOIN last_sale_sp ls ON r.cusid = ls.cusid AND r.zid = ls.zid
+LEFT JOIN prmst e
+       ON COALESCE(r.direct_sp_id, ls.sp_id) = e.xemp::text
+      AND e.zid = r.zid;
+
+-- Indexes for runtime WHERE filters
+CREATE INDEX ON mv_collection_vouchers (zid);
+CREATE INDEX ON mv_collection_vouchers (zid, year, month);
+CREATE INDEX ON mv_collection_vouchers (zid, cusid);
+CREATE INDEX ON mv_collection_vouchers (zid, area);
+CREATE INDEX ON mv_collection_vouchers (zid, spid);
+
+
+-- =============================================================================
+-- 3. mv_ar_vouchers
+--    Source: glmst + gldetail + glheader + cacus
+--    Queried by: get_ar_data() — SELECT * WHERE zid = %s [+ optional filters]
+--    Runtime filters on: zid, cusid/cusname, area, year, month
+-- =============================================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_ar_vouchers;
+
+CREATE MATERIALIZED VIEW mv_ar_vouchers AS
+SELECT
+    gm.zid,
+    gd.xproj                     AS project,
+    gd.xvoucher                  AS voucher,
+    gd.xsub::text                AS cusid,
+    cc.xshort                    AS cusname,
+    cc.xcity                     AS area,
+    gh.xdate                     AS date,
+    gh.xyear::int                AS year,
+    gh.xper::int                 AS month,
+    SUM(gd.xprime)               AS value
+FROM glmst gm
+JOIN gldetail gd ON gm.xacc      = gd.xacc      AND gm.zid = gd.zid
+JOIN glheader gh ON gd.xvoucher  = gh.xvoucher  AND gm.zid = gh.zid
+JOIN cacus    cc ON gd.xsub      = cc.xcus       AND gm.zid = cc.zid
+WHERE gm.xaccusage = 'AR'
+GROUP BY
+    gm.zid,
+    gd.xproj,
+    gd.xvoucher,
+    gd.xsub,
+    cc.xshort,
+    cc.xcity,
+    gh.xdate,
+    gh.xyear,
+    gh.xper;
+
+-- Indexes for runtime WHERE filters
+CREATE INDEX ON mv_ar_vouchers (zid);
+CREATE INDEX ON mv_ar_vouchers (zid, year, month);
+CREATE INDEX ON mv_ar_vouchers (zid, cusid);
+CREATE INDEX ON mv_ar_vouchers (zid, area);
+
+
+-- =============================================================================
+-- 4. mv_stock_movement
+--    Source: imtrn + caitem (for packcode resolution and item name/group)
+--    Queried by: get_stock_movement_data() — SELECT * WHERE zid = %s
+--    Runtime filters on: zid only
+--
+--    The GROUP BY intentionally includes imtrn.ximtrnnum (the PK) so each
+--    source row forms its own group — this is a per-transaction materialisation,
+--    not a monthly aggregate.  xdrawing/packcode CASE is applied here so all
+--    downstream code sees the resolved itemcode without re-joining caitem.
+-- =============================================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_stock_movement;
+
+CREATE MATERIALIZED VIEW mv_stock_movement AS
+WITH stock AS (
+    SELECT
+        imtrn.zid,
+        imtrn.xyear::int                           AS year,
+        imtrn.xper::int                            AS month,
+        imtrn.xdate::date                          AS date,
+        imtrn.xdocnum                              AS docnum,
+        imtrn.xproj                                AS project,
+        imtrn.xitem                                AS itemcode,
+        imtrn.xwh                                  AS warehouse,
+        SUM(imtrn.xqty * imtrn.xsign)             AS stockqty,
+        SUM(imtrn.xval * imtrn.xsign)             AS stockvalue
+    FROM imtrn
+    GROUP BY
+        imtrn.zid,
+        imtrn.xitem,
+        imtrn.xwh,
+        imtrn.xyear,
+        imtrn.xper,
+        imtrn.xdate,
+        imtrn.xdocnum,
+        imtrn.xproj,
+        imtrn.ximtrnnum
+)
+SELECT
+    s.zid,
+    s.year,
+    s.month,
+    s.date,
+    s.docnum,
+    s.project,
+    CASE
+        WHEN ci.xdrawing IS NOT NULL
+         AND ci.xdrawing <> ''
+         AND ci.xdrawing != 'NO'
+         AND LEFT(ci.xdrawing, 2) != 'KH' THEN ci.xdrawing
+        ELSE s.itemcode
+    END                                            AS itemcode,
+    ci.xdesc                                       AS itemname,
+    ci.xgitem                                      AS itemgroup,
+    s.warehouse,
+    s.stockqty,
+    s.stockvalue
+FROM stock s
+JOIN caitem ci ON s.itemcode = ci.xitem AND s.zid = ci.zid;
+
+-- Index for the single runtime filter
+CREATE INDEX ON mv_stock_movement (zid);
+CREATE INDEX ON mv_stock_movement (zid, year, month);
+CREATE INDEX ON mv_stock_movement (zid, itemcode);
+
+
+-- =============================================================================
+-- 5. mv_ar_transactions
+--    Source: gldetail + glheader + cacus + prmst
+--            + correlated subquery for INOP salesman fallback
+--    Queried by: get_ar_due_ledger() —
+--        SELECT zid, xvoucher, xdate, xrow, year, month, xsub, customer_name,
+--               xcity, xstate, xprime, xsp, salesman_name
+--        FROM mv_ar_transactions
+--        WHERE zid = %s AND xproj = %s AND (xvoucher LIKE 'INOP%' OR ...)
+--    Runtime filters on: zid, xproj, xvoucher pattern (LIKE clauses)
+--
+--    xproj is stored in the MV so the caller can filter to a specific project
+--    (e.g. 'GULSHAN TRADING') without re-joining gldetail.
+-- =============================================================================
+
+DROP MATERIALIZED VIEW IF EXISTS mv_ar_transactions;
+
+CREATE MATERIALIZED VIEW mv_ar_transactions AS
+WITH sp_source AS (
+    -- For INOP vouchers the salesman is posted on a non-AR row; grab it here.
+    SELECT DISTINCT ON (zid, xvoucher)
+        zid,
+        xvoucher,
+        xsp AS inop_sp
+    FROM gldetail
+    WHERE xaccusage != 'AR'
+      AND xvoucher LIKE 'INOP%'
+      AND xsp IS NOT NULL
+      AND xsp != ''
+    ORDER BY zid, xvoucher, xrow
+)
+SELECT
+    gd.zid,
+    gd.xvoucher,
+    gh.xdate,
+    gd.xrow,
+    EXTRACT(YEAR  FROM gh.xdate)::int              AS year,
+    EXTRACT(MONTH FROM gh.xdate)::int              AS month,
+    gd.xsub,
+    gd.xproj,
+    cc.xshort                                      AS customer_name,
+    cc.xcity,
+    cc.xstate,
+    gd.xprime,
+    COALESCE(gd.xsp, sp.inop_sp)                  AS xsp,
+    p.xname                                        AS salesman_name
+FROM gldetail gd
+JOIN glheader gh ON gd.zid = gh.zid AND gd.xvoucher = gh.xvoucher
+LEFT JOIN cacus cc
+       ON gd.zid  = cc.zid
+      AND gd.xsub = cc.xcus
+LEFT JOIN sp_source sp
+       ON gd.zid      = sp.zid
+      AND gd.xvoucher = sp.xvoucher
+LEFT JOIN prmst p
+       ON gd.zid = p.zid
+      AND COALESCE(gd.xsp, sp.inop_sp) = p.xemp
+WHERE gd.xaccusage = 'AR';
+
+-- Indexes for runtime WHERE filters
+CREATE INDEX ON mv_ar_transactions (zid);
+CREATE INDEX ON mv_ar_transactions (zid, xproj);
+CREATE INDEX ON mv_ar_transactions (zid, xvoucher);
+CREATE INDEX ON mv_ar_transactions (zid, xproj, xvoucher);
+
+
+-- =============================================================================
+-- REFRESH COMMANDS
+-- Run these after every nightly import (or on demand via a scheduled job).
+-- Order matters if any MV depended on another, but these 5 are independent.
+-- =============================================================================
+
+REFRESH MATERIALIZED VIEW mv_sales_line_items;
+REFRESH MATERIALIZED VIEW mv_collection_vouchers;
+REFRESH MATERIALIZED VIEW mv_ar_vouchers;
+REFRESH MATERIALIZED VIEW mv_stock_movement;
+REFRESH MATERIALIZED VIEW mv_ar_transactions;
+
+
+-- =============================================================================
+-- OPTIONAL: CONCURRENT refresh (requires a unique index on each MV so that
+-- readers are not blocked during refresh).  PG 9.4+ supports CONCURRENTLY.
+-- Add a unique index on (zid, <natural key>) for each MV, then swap the
+-- REFRESH commands above to:
+--   REFRESH MATERIALIZED VIEW CONCURRENTLY mv_sales_line_items;
+--   etc.
+-- =============================================================================
