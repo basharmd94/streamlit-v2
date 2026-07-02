@@ -172,18 +172,46 @@ def _render_7day_activity():
 
     # ── Customer DO detail + 6-month ledger (inside expander) ────────────────
     st.markdown("---")
-    with st.expander("📦 Customer DO Detail & Ledger", expanded=False):
-        cust_opts = (
-            feed[["zid", "xsub", "customer_name"]]
-            .drop_duplicates()
-            .sort_values(["zid", "customer_name"])
+    with st.expander("📦 Customer DO Detail & Ledger", expanded=True):
+        # ── Build grouped customer options ─────────────────────────────────
+        # 100001 and 100000 share the same field sales team and customer base
+        # so they are grouped together.  100005 (Zepto) is always separate.
+        feed_g = feed[["zid", "xsub", "customer_name"]].drop_duplicates().copy()
+        feed_g["zid"] = feed_g["zid"].astype(str)
+
+        paired_opts = (
+            feed_g[feed_g["zid"].isin(["100001", "100000"])]
+            .sort_values("customer_name")
+            .groupby("xsub", as_index=False)
+            .agg(customer_name=("customer_name", "first"))
             .assign(
+                group="100001+100000",
                 label=lambda d: (
-                    d["zid"] + " | " +
-                    d["xsub"].astype(str) + " — " +
+                    "100001+100000 | " +
+                    d["xsub"].astype(str) + " | " +
                     d["customer_name"].fillna("").astype(str)
-                )
+                ),
             )
+        )
+
+        zepto_opts = (
+            feed_g[feed_g["zid"] == "100005"]
+            .groupby("xsub", as_index=False)
+            .agg(customer_name=("customer_name", "first"))
+            .assign(
+                group="100005",
+                label=lambda d: (
+                    "100005 | " +
+                    d["xsub"].astype(str) + " | " +
+                    d["customer_name"].fillna("").astype(str)
+                ),
+            )
+        )
+
+        cust_opts = (
+            pd.concat([paired_opts, zepto_opts], ignore_index=True)
+            .sort_values("label")
+            .reset_index(drop=True)
         )
 
         sel_label = st.selectbox(
@@ -193,23 +221,35 @@ def _render_7day_activity():
         )
 
         if sel_label and sel_label != "— pick a customer —":
-            row = cust_opts[cust_opts["label"] == sel_label].iloc[0]
-            sel_zid   = str(row["zid"])
-            sel_cusid = str(row["xsub"])
+            sel_row   = cust_opts[cust_opts["label"] == sel_label].iloc[0]
+            sel_cusid = str(sel_row["xsub"])
+            sel_group = str(sel_row["group"])
 
-            # ── DO line items (all ZIDs, last 7 days) ────────────────────
+            # ── DO line items (all entities, last 7 days) ─────────────────
             st.markdown("##### Deliveries — Last 7 Days (All Entities)")
             _render_do_detail(feed, sel_cusid)
 
             st.markdown("---")
 
-            # ── 6-month AR ledger ─────────────────────────────────────────
-            st.markdown("##### 6-Month AR Ledger")
-            st.caption(
+            # ── 6-month AR ledger(s) ──────────────────────────────────────
+            _6M_CAPTION = (
                 "Balance is cumulative from all history; only the last 6 months "
                 "of transactions are displayed. Final balance matches Salesman Due."
             )
-            _render_ledger(ar_df, sel_zid, sel_cusid)
+            if sel_group == "100001+100000":
+                st.markdown("##### 6-Month AR Ledger — 100001 · GULSHAN TRADING")
+                st.caption(_6M_CAPTION)
+                _render_ledger(ar_df, "100001", sel_cusid, "_100001")
+
+                st.markdown("---")
+
+                st.markdown("##### 6-Month AR Ledger — 100000 · GI Corporation")
+                st.caption(_6M_CAPTION)
+                _render_ledger(ar_df, "100000", sel_cusid, "_100000")
+            else:
+                st.markdown("##### 6-Month AR Ledger — 100005 · Zepto Chemicals")
+                st.caption(_6M_CAPTION)
+                _render_ledger(ar_df, "100005", sel_cusid, "_100005")
 
 
 def _render_do_detail(feed: pd.DataFrame, cusid: str):
@@ -321,7 +361,7 @@ def _do_save(edited: pd.DataFrame, force: bool):
         st.warning(msg)
 
 
-def _render_ledger(ar_df: pd.DataFrame, zid: str, cusid: str):
+def _render_ledger(ar_df: pd.DataFrame, zid: str, cusid: str, key_suffix: str = ""):
     ledger = cs.build_customer_ledger(ar_df, zid, cusid)
     if ledger.empty:
         st.info("No ledger data found for this customer.")
@@ -368,7 +408,7 @@ def _render_ledger(ar_df: pd.DataFrame, zid: str, cusid: str):
         disp.to_csv(index=False).encode("utf-8"),
         file_name=f"ledger_{zid}_{cusid}.csv",
         mime="text/csv",
-        key="dl_cs_ledger",
+        key=f"dl_cs_ledger{key_suffix}",
     )
 
 
