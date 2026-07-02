@@ -353,15 +353,27 @@ class BaseApp:
             "Target Management":  ("sales", "return", "collection")
         }
 
+        # Lighter table set for sidebar dropdown options only (year/month/salesman/
+        # customer/area) on pages where the full table set is heavier than needed
+        # just to populate those dropdowns. "collection" is the heaviest table in
+        # Target Management's set and adds zero years/months beyond sales+return
+        # (verified directly against the DB) -- so it's dropped here to cut cold
+        # sidebar load time, while process_data() below still loads it for the
+        # actual page data (MTD Collection, Salesman Score, etc).
+        self.page_options_table_map = {
+            "Target Management": ("sales", "return"),
+        }
+
         if self.current_page in self.page_data_map and self.current_page != "Purchase Analysis":
             tables = self.page_data_map[self.current_page]
+            options_tables = self.page_options_table_map.get(self.current_page, tables)
 
             st.sidebar.title("Filters")
 
             # ── All other pages — two-pass sidebar ──────────────────────
             if True:
                 # Pass 1: year / month options (no entity pre-filter)
-                base_opts = load_filter_options(tables, st.session_state.zid, ['year', 'month'])
+                base_opts = load_filter_options(options_tables, st.session_state.zid, ['year', 'month'])
                 current_year = datetime.now().year
                 all_years = sorted(base_opts.get("year", []))
                 valid_years = [y for y in all_years if int(y) <= current_year]
@@ -380,7 +392,7 @@ class BaseApp:
                 else:
                     entity_cols = ['spname', 'cusname', 'itemname', 'area', 'itemgroup']
 
-                entity_opts = load_filter_options(tables, st.session_state.zid,
+                entity_opts = load_filter_options(options_tables, st.session_state.zid,
                                                   entity_cols, pre_filters_tuple)
 
                 selected_salesmen  = st.sidebar.multiselect("Select Salesman",       entity_opts.get("spname",    []))
