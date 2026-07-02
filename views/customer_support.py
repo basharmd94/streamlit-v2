@@ -81,6 +81,11 @@ def _cacus_data() -> pd.DataFrame:
     return cs.load_all_cacus()
 
 
+@st.cache_data(show_spinner="Loading recent deliveries…", ttl=1800)
+def _sales_7day_data() -> pd.DataFrame:
+    return cs.load_all_sales_7day()
+
+
 # ── Radio 1: 7-Day Activity ────────────────────────────────────────────────────
 
 def _render_7day_activity():
@@ -165,36 +170,108 @@ def _render_7day_activity():
     if save_clicked:
         _do_save(edited, force_save)
 
-    # ── Customer 6-month ledger ───────────────────────────────────────────────
+    # ── Customer DO detail + 6-month ledger (inside expander) ────────────────
     st.markdown("---")
-    st.markdown("#### 📒 Customer Ledger — Last 6 Months")
-    st.caption(
-        "Balance is cumulative from all history; only the last 6 months of "
-        "transactions are displayed. Final balance matches Salesman Due."
-    )
-
-    cust_opts = (
-        feed[["zid", "xsub", "customer_name"]]
-        .drop_duplicates()
-        .sort_values(["zid", "customer_name"])
-        .assign(
-            label=lambda d: (
-                d["zid"] + " | " +
-                d["xsub"].astype(str) + " — " +
-                d["customer_name"].fillna("").astype(str)
+    with st.expander("📦 Customer DO Detail & Ledger", expanded=False):
+        cust_opts = (
+            feed[["zid", "xsub", "customer_name"]]
+            .drop_duplicates()
+            .sort_values(["zid", "customer_name"])
+            .assign(
+                label=lambda d: (
+                    d["zid"] + " | " +
+                    d["xsub"].astype(str) + " — " +
+                    d["customer_name"].fillna("").astype(str)
+                )
             )
         )
+
+        sel_label = st.selectbox(
+            "Select customer",
+            ["— pick a customer —"] + cust_opts["label"].tolist(),
+            key="cs_ledger_sel",
+        )
+
+        if sel_label and sel_label != "— pick a customer —":
+            row = cust_opts[cust_opts["label"] == sel_label].iloc[0]
+            sel_zid   = str(row["zid"])
+            sel_cusid = str(row["xsub"])
+
+            # ── DO line items (all ZIDs, last 7 days) ────────────────────
+            st.markdown("##### Deliveries — Last 7 Days (All Entities)")
+            _render_do_detail(feed, sel_cusid)
+
+            st.markdown("---")
+
+            # ── 6-month AR ledger ─────────────────────────────────────────
+            st.markdown("##### 6-Month AR Ledger")
+            st.caption(
+                "Balance is cumulative from all history; only the last 6 months "
+                "of transactions are displayed. Final balance matches Salesman Due."
+            )
+            _render_ledger(ar_df, sel_zid, sel_cusid)
+
+
+def _render_do_detail(feed: pd.DataFrame, cusid: str):
+    """DO line items for `cusid` across all ZIDs in the last 7 days.
+
+    Attempts to cross-reference INOP vouchers from the 7-day AR feed using
+    (zid, date) as the link key, since each DO generates one INOP GL entry.
+    """
+    sales_df = _sales_7day_data()
+    if sales_df is None or sales_df.empty:
+        st.info("No delivery line items found in the last 7 days.")
+        return
+
+    cust_sales = sales_df[sales_df["cusid"] == cusid].copy()
+    if cust_sales.empty:
+        st.info("No DO line items for this customer in the last 7 days.")
+        return
+
+    # Build INOP voucher map: (zid, date) → comma-separated INOP vouchers
+    inop_rows = feed[
+        (feed["xsub"].astype(str) == cusid) &
+        (feed["txn_type"] == "Delivery")
+    ][["zid", "xdate", "xvoucher"]].copy()
+    inop_rows["_d"] = pd.to_datetime(inop_rows["xdate"], errors="coerce").dt.date
+    inop_map: dict = (
+        inop_rows.groupby(["zid", "_d"])["xvoucher"]
+        .apply(lambda s: ", ".join(s.astype(str).unique()))
+        .to_dict()
     )
 
-    sel_label = st.selectbox(
-        "Select customer for ledger",
-        ["— pick a customer —"] + cust_opts["label"].tolist(),
-        key="cs_ledger_sel",
+    cust_sales["_d"] = cust_sales["date"].dt.date
+    cust_sales["INOP Voucher"] = cust_sales.apply(
+        lambda r: inop_map.get((r["zid"], r["_d"]), "—"), axis=1
     )
 
-    if sel_label and sel_label != "— pick a customer —":
-        row = cust_opts[cust_opts["label"] == sel_label].iloc[0]
-        _render_ledger(ar_df, str(row["zid"]), str(row["xsub"]))
+    cust_sales = cust_sales.sort_values(
+        ["zid", "date", "voucher", "itemname"]
+    ).reset_index(drop=True)
+
+    disp = cust_sales[
+        ["zid", "date", "voucher", "INOP Voucher", "itemname", "quantity", "altsales"]
+    ].rename(columns={
+        "zid":      "ZID",
+        "date":     "Date",
+        "voucher":  "DO Number",
+        "itemname": "Product",
+        "quantity": "Qty",
+        "altsales": "Amount",
+    })
+
+    st.caption(f"{len(disp):,} line item(s) across all entities")
+    try:
+        st.dataframe(
+            disp.style.format(
+                {"Date": "{:%Y-%m-%d}", "Qty": "{:,.0f}", "Amount": "{:,.0f}"},
+                na_rep="—",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    except Exception:
+        st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
 def _do_save(edited: pd.DataFrame, force: bool):
