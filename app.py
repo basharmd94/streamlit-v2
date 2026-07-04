@@ -110,6 +110,35 @@ def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str],
 
     return filter_options
 
+@timed
+@st.cache_data(show_spinner=False, ttl=86400)
+def _load_coll_period_opts(zid: str) -> pd.DataFrame:
+    """Distinct year+month pairs for Collection Analysis sidebar pass-1.
+
+    Replaces the full _load_raw("collection", ...) call — tiny result
+    (~year×month pairs) instead of the full MV.
+    """
+    df = Analytics("collection_period_opts", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+@timed
+@st.cache_data(show_spinner=False, ttl=86400)
+def _load_coll_entity_opts(zid: str, years: tuple, months: tuple) -> pd.DataFrame:
+    """Distinct salesman/customer/area for Collection Analysis sidebar pass-2.
+
+    Cache key includes years+months so different year selections each get
+    their own (tiny) cache entry rather than reloading the full MV.
+    """
+    f: dict = {}
+    if years:
+        f["year"] = list(years)
+    if months:
+        f["month"] = list(months)
+    df = Analytics("collection_entity_opts", zid=zid, filters=f).data
+    return df if df is not None else pd.DataFrame()
+
+
 @st.cache_data(show_spinner=False, ttl=86400)
 def load_employee_options(zid: str) -> list[str]:
     """Load salesman options for the AR Analysis sidebar."""
@@ -371,65 +400,107 @@ class BaseApp:
 
             st.sidebar.title("Filters")
 
-            # ── All other pages — two-pass sidebar ──────────────────────
-            if True:
-                # Pass 1: year / month options (no entity pre-filter)
-                base_opts = load_filter_options(options_tables, st.session_state.zid, ['year', 'month'])
-                current_year = datetime.now().year
-                all_years = sorted(base_opts.get("year", []))
+            current_year = datetime.now().year
+
+            if self.current_page == "Collection Analysis":
+                # ── Progressive filter loading (fast path) ───────────────────────
+                # Pass 1: DISTINCT year+month — tiny query, no full-table scan
+                period_df = _load_coll_period_opts(st.session_state.zid)
+                if not period_df.empty:
+                    valid_years = sorted(
+                        y for y in {int(float(v)) for v in period_df["year"].dropna()}
+                        if y <= current_year
+                    )
+                    all_months = sorted(
+                        {int(float(v)) for v in period_df["month"].dropna()}
+                    )
+                else:
+                    valid_years, all_months = [], []
+
+                selected_years  = st.sidebar.multiselect(
+                    "Select Year",  valid_years,
+                    default=valid_years[-2:] if len(valid_years) >= 2 else valid_years,
+                )
+                selected_months = st.sidebar.multiselect("Select Month", all_months)
+
+                # Pass 2: DISTINCT entity options scoped to selected years+months
+                entity_df = _load_coll_entity_opts(
+                    st.session_state.zid,
+                    tuple(int(y) for y in selected_years),
+                    tuple(int(m) for m in selected_months),
+                )
+                if not entity_df.empty:
+                    ec = set(entity_df.columns)
+                    if {"spid", "spname"} <= ec:
+                        tmp = entity_df[["spid", "spname"]].dropna().drop_duplicates().sort_values(["spid", "spname"])
+                        sp_opts = (tmp["spid"].astype(str) + " - " + tmp["spname"].astype(str)).tolist()
+                    else:
+                        sp_opts = []
+                    if {"cusid", "cusname"} <= ec:
+                        tmp = entity_df[["cusid", "cusname"]].dropna().drop_duplicates().sort_values(["cusid", "cusname"])
+                        cus_opts = (tmp["cusid"].astype(str) + " - " + tmp["cusname"].astype(str)).tolist()
+                    else:
+                        cus_opts = []
+                    area_opts = sorted(entity_df["area"].dropna().unique().tolist()) if "area" in ec else []
+                else:
+                    sp_opts, cus_opts, area_opts = [], [], []
+
+                selected_salesmen  = st.sidebar.multiselect("Select Salesman",  sp_opts)
+                selected_customers = st.sidebar.multiselect("Select Customer",   cus_opts)
+                selected_areas     = st.sidebar.multiselect("Select Area",       area_opts)
+                selected_filters   = {
+                    "year":    [int(x) for x in selected_years],
+                    "month":   [int(x) for x in selected_months],
+                    "spname":  selected_salesmen,
+                    "cusname": selected_customers,
+                    "area":    selected_areas,
+                }
+
+            else:
+                # ── Standard two-pass sidebar (full-table cache) ─────────────────
+                base_opts = load_filter_options(
+                    options_tables, st.session_state.zid, ['year', 'month']
+                )
+                all_years   = sorted(base_opts.get("year", []))
                 valid_years = [y for y in all_years if int(y) <= current_year]
-                selected_years  = st.sidebar.multiselect("Select Year",  valid_years,
-                                      default=valid_years[-2:] if len(valid_years) >= 2 else valid_years)
+                selected_years  = st.sidebar.multiselect(
+                    "Select Year",  valid_years,
+                    default=valid_years[-2:] if len(valid_years) >= 2 else valid_years,
+                )
                 selected_months = st.sidebar.multiselect("Select Month", base_opts.get("month", []))
 
-                # Pass 2: entity options scoped to the selected years/months
                 pre_filters_tuple = tuple(
                     (k, tuple(int(v) for v in vals))
                     for k, vals in [("year", selected_years), ("month", selected_months)]
                     if vals
                 )
-                if self.current_page == "Collection Analysis":
-                    entity_cols = ['spname', 'cusname', 'area']
-                else:
-                    entity_cols = ['spname', 'cusname', 'itemname', 'area', 'itemgroup']
-
-                entity_opts = load_filter_options(options_tables, st.session_state.zid,
-                                                  entity_cols, pre_filters_tuple)
-
+                entity_opts = load_filter_options(
+                    options_tables, st.session_state.zid,
+                    ['spname', 'cusname', 'itemname', 'area', 'itemgroup'],
+                    pre_filters_tuple,
+                )
                 selected_salesmen  = st.sidebar.multiselect("Select Salesman",       entity_opts.get("spname",    []))
                 selected_customers = st.sidebar.multiselect("Select Customer",        entity_opts.get("cusname",   []))
                 selected_areas     = st.sidebar.multiselect("Select Area",            entity_opts.get("area",      []))
+                selected_products  = st.sidebar.multiselect("Select Product",         entity_opts.get("itemname",  []))
+                selected_groups    = st.sidebar.multiselect("Select Product Group",   entity_opts.get("itemgroup", []))
+                selected_filters   = {
+                    "year":      [int(x) for x in selected_years],
+                    "month":     [int(x) for x in selected_months],
+                    "spname":    selected_salesmen,
+                    "cusname":   selected_customers,
+                    "itemname":  selected_products,
+                    "area":      selected_areas,
+                    "itemgroup": selected_groups,
+                }
 
-                if self.current_page == "Collection Analysis":
-                    selected_products = []
-                    selected_groups   = []
-                    selected_filters  = {
-                        "year":    [int(x) for x in selected_years],
-                        "month":   [int(x) for x in selected_months],
-                        "spname":  selected_salesmen,
-                        "cusname": selected_customers,
-                        "area":    selected_areas,
-                    }
-                else:
-                    selected_products = st.sidebar.multiselect("Select Product",       entity_opts.get("itemname",  []))
-                    selected_groups   = st.sidebar.multiselect("Select Product Group", entity_opts.get("itemgroup", []))
-                    selected_filters  = {
-                        "year":      [int(x) for x in selected_years],
-                        "month":     [int(x) for x in selected_months],
-                        "spname":    selected_salesmen,
-                        "cusname":   selected_customers,
-                        "itemname":  selected_products,
-                        "area":      selected_areas,
-                        "itemgroup": selected_groups,
-                    }
-
-                if st.sidebar.button("🔄 Load Data"):
-                    st.session_state.ready_to_load      = True
-                    st.session_state.ready_to_load_page = self.current_page
-                    st.session_state.last_filters       = selected_filters
-                    st.session_state.last_data_dict     = process_data(
-                        zid=st.session_state.zid, filters=selected_filters, tables=tables
-                    )
+            if st.sidebar.button("🔄 Load Data"):
+                st.session_state.ready_to_load      = True
+                st.session_state.ready_to_load_page = self.current_page
+                st.session_state.last_filters       = selected_filters
+                st.session_state.last_data_dict     = process_data(
+                    zid=st.session_state.zid, filters=selected_filters, tables=tables
+                )
             
         elif self.current_page == "Purchase Analysis":
             selected_filters = {}
