@@ -139,6 +139,62 @@ def _load_coll_entity_opts(zid: str, years: tuple, months: tuple) -> pd.DataFram
     return df if df is not None else pd.DataFrame()
 
 
+@timed
+@st.cache_data(show_spinner=False, ttl=86400)
+def _load_sales_period_opts(zid: str) -> pd.DataFrame:
+    """Distinct year+month pairs for sales-based page sidebar pass-1.
+
+    Replaces the full _load_raw call — tiny result (~year×month pairs)
+    instead of loading the full mv_sales_line_items.
+    """
+    df = Analytics("sales_period_opts", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+@timed
+@st.cache_data(show_spinner=False, ttl=86400)
+def _load_sales_entity_opts(zid: str, years: tuple, months: tuple) -> pd.DataFrame:
+    """Distinct salesman/customer/item/area/group for sales-based sidebar pass-2.
+
+    Cache key includes years+months so different year selections each get
+    their own (tiny) cache entry.
+    """
+    f: dict = {}
+    if years:
+        f["year"] = list(years)
+    if months:
+        f["month"] = list(months)
+    df = Analytics("sales_entity_opts", zid=zid, filters=f).data
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _load_mv_refresh_times() -> pd.DataFrame:
+    """Last analyze time for each MV from pg_stat_user_tables.
+
+    REFRESH MATERIALIZED VIEW in PG 9.4 triggers auto-analyze, which updates
+    last_autoanalyze. GREATEST(last_analyze, last_autoanalyze) gives the
+    most recent of the two.
+    """
+    from core.db import get_dataframe
+    sql = """
+        SELECT
+            relname                                        AS mv_name,
+            GREATEST(last_analyze, last_autoanalyze)       AS last_refresh
+        FROM pg_stat_user_tables
+        WHERE relname IN (
+            'mv_sales_line_items',
+            'mv_collection_vouchers',
+            'mv_ar_vouchers',
+            'mv_stock_movement',
+            'mv_ar_transactions'
+        )
+        ORDER BY relname
+    """
+    df = get_dataframe(sql, ())
+    return df if df is not None else pd.DataFrame()
+
+
 @st.cache_data(show_spinner=False, ttl=86400)
 def load_employee_options(zid: str) -> list[str]:
     """Load salesman options for the AR Analysis sidebar."""
@@ -286,6 +342,27 @@ class BaseApp:
             self.navigation()
             # Add logout button in sidebar
             st.sidebar.markdown("---")
+            _MV_SHORT_NAMES = {
+                "mv_sales_line_items":    "Sales",
+                "mv_collection_vouchers": "Collection",
+                "mv_ar_vouchers":         "AR",
+                "mv_stock_movement":      "Stock",
+                "mv_ar_transactions":     "AR Trn",
+            }
+            try:
+                _mv_times = _load_mv_refresh_times()
+                if _mv_times is not None and not _mv_times.empty:
+                    with st.sidebar.expander("🗄️ Data Freshness", expanded=False):
+                        for _, _row in _mv_times.iterrows():
+                            _label = _MV_SHORT_NAMES.get(_row["mv_name"], _row["mv_name"])
+                            _ts    = _row["last_refresh"]
+                            _ts_str = (
+                                pd.to_datetime(_ts).strftime("%d %b %H:%M")
+                                if pd.notna(_ts) else "Never"
+                            )
+                            st.caption(f"**{_label}**: {_ts_str}")
+            except Exception:
+                pass
             if st.sidebar.button("🔄 Refresh All Data", key="refresh_all_data", help="Clear all cached data and reload from the database"):
                 st.cache_data.clear()
                 st.rerun()
@@ -458,33 +535,62 @@ class BaseApp:
                 }
 
             else:
-                # ── Standard two-pass sidebar (full-table cache) ─────────────────
-                base_opts = load_filter_options(
-                    options_tables, st.session_state.zid, ['year', 'month']
-                )
-                all_years   = sorted(base_opts.get("year", []))
-                valid_years = [y for y in all_years if int(y) <= current_year]
-                selected_years  = st.sidebar.multiselect(
-                    "Select Year",  valid_years,
-                    default=valid_years[-2:] if len(valid_years) >= 2 else valid_years,
-                )
-                selected_months = st.sidebar.multiselect("Select Month", base_opts.get("month", []))
+                # ── Progressive filter loading (fast path for sales-based pages) ─
+                # Pass 1: DISTINCT year+month — tiny query, avoids full-MV scan
+                period_df = _load_sales_period_opts(st.session_state.zid)
+                if not period_df.empty:
+                    valid_years = sorted(
+                        y for y in {int(float(v)) for v in period_df["year"].dropna()}
+                        if y <= current_year
+                    )
+                    all_months = sorted(
+                        {int(float(v)) for v in period_df["month"].dropna()}
+                    )
+                else:
+                    valid_years, all_months = [], []
 
-                pre_filters_tuple = tuple(
-                    (k, tuple(int(v) for v in vals))
-                    for k, vals in [("year", selected_years), ("month", selected_months)]
-                    if vals
+                selected_years  = st.sidebar.multiselect(
+                    "Select Year", valid_years,
+                    default=valid_years[-2:] if len(valid_years) >= 2 else valid_years,
+                    key="sidebar_sales_year",
                 )
-                entity_opts = load_filter_options(
-                    options_tables, st.session_state.zid,
-                    ['spname', 'cusname', 'itemname', 'area', 'itemgroup'],
-                    pre_filters_tuple,
+                selected_months = st.sidebar.multiselect(
+                    "Select Month", all_months, key="sidebar_sales_month"
                 )
-                selected_salesmen  = st.sidebar.multiselect("Select Salesman",       entity_opts.get("spname",    []))
-                selected_customers = st.sidebar.multiselect("Select Customer",        entity_opts.get("cusname",   []))
-                selected_areas     = st.sidebar.multiselect("Select Area",            entity_opts.get("area",      []))
-                selected_products  = st.sidebar.multiselect("Select Product",         entity_opts.get("itemname",  []))
-                selected_groups    = st.sidebar.multiselect("Select Product Group",   entity_opts.get("itemgroup", []))
+
+                # Pass 2: DISTINCT entity options scoped to selected years+months
+                entity_df = _load_sales_entity_opts(
+                    st.session_state.zid,
+                    tuple(int(y) for y in selected_years),
+                    tuple(int(m) for m in selected_months),
+                )
+                if not entity_df.empty:
+                    ec = set(entity_df.columns)
+                    if {"spid", "spname"} <= ec:
+                        tmp = entity_df[["spid", "spname"]].dropna().drop_duplicates().sort_values(["spid", "spname"])
+                        sp_opts = (tmp["spid"].astype(str) + " - " + tmp["spname"].astype(str)).tolist()
+                    else:
+                        sp_opts = []
+                    if {"cusid", "cusname"} <= ec:
+                        tmp = entity_df[["cusid", "cusname"]].dropna().drop_duplicates().sort_values(["cusid", "cusname"])
+                        cus_opts = (tmp["cusid"].astype(str) + " - " + tmp["cusname"].astype(str)).tolist()
+                    else:
+                        cus_opts = []
+                    if {"itemcode", "itemname"} <= ec:
+                        tmp = entity_df[["itemcode", "itemname"]].dropna().drop_duplicates().sort_values(["itemcode", "itemname"])
+                        item_opts = (tmp["itemcode"].astype(str) + " - " + tmp["itemname"].astype(str)).tolist()
+                    else:
+                        item_opts = []
+                    area_opts   = sorted(entity_df["area"].dropna().unique().tolist())   if "area"      in ec else []
+                    igroup_opts = sorted(entity_df["itemgroup"].dropna().unique().tolist()) if "itemgroup" in ec else []
+                else:
+                    sp_opts = cus_opts = item_opts = area_opts = igroup_opts = []
+
+                selected_salesmen  = st.sidebar.multiselect("Select Salesman",     sp_opts,     key="sidebar_sales_salesman")
+                selected_customers = st.sidebar.multiselect("Select Customer",     cus_opts,    key="sidebar_sales_customer")
+                selected_areas     = st.sidebar.multiselect("Select Area",         area_opts,   key="sidebar_sales_area")
+                selected_products  = st.sidebar.multiselect("Select Product",      item_opts,   key="sidebar_sales_product")
+                selected_groups    = st.sidebar.multiselect("Select Product Group", igroup_opts, key="sidebar_sales_group")
                 selected_filters   = {
                     "year":      [int(x) for x in selected_years],
                     "month":     [int(x) for x in selected_months],

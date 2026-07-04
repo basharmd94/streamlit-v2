@@ -59,6 +59,8 @@ class Analytics:
             "collection":             queries.get_collection_data,
             "collection_period_opts": queries.get_collection_period_opts,
             "collection_entity_opts": queries.get_collection_entity_opts,
+            "sales_period_opts":      queries.get_sales_period_opts,
+            "sales_entity_opts":      queries.get_sales_entity_opts,
             "ar":               queries.get_ar_data,
             "payments":         queries.get_payment_data,
             "cacus_simple":     queries.get_cacus_simple,
