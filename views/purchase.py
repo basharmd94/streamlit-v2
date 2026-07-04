@@ -167,7 +167,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 purchase_df=data_dict["purchase_batches"],
                 stock_movement_df=data_dict["stock_movement"],
                 sales_df=data_dict["sales_daily_item"],
-                returns_df=data_dict["return"],
+                returns_df=data_dict["returns_daily_item"],
                 shipmentname=selected_shipment,
                 project=st.session_state.proj,
                 zid_deplete="100001",
@@ -316,7 +316,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             result_df = purchase.run_batch_profitability_engine(
                 purchase_df=data_dict["purchase_batches"],
                 sales_df=data_dict["sales_daily_item"],
-                returns_df=data_dict["return"],
+                returns_df=data_dict["returns_daily_item"],
                 stock_movement_df=data_dict["stock_movement"],
                 hierarchy_path="data/hierarchy.json",
                 shipmentname=selected_shipment,
