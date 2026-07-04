@@ -420,8 +420,9 @@ class BaseApp:
                 selected_years  = st.sidebar.multiselect(
                     "Select Year",  valid_years,
                     default=valid_years[-2:] if len(valid_years) >= 2 else valid_years,
+                    key="sidebar_coll_year",
                 )
-                selected_months = st.sidebar.multiselect("Select Month", all_months)
+                selected_months = st.sidebar.multiselect("Select Month", all_months, key="sidebar_coll_month")
 
                 # Pass 2: DISTINCT entity options scoped to selected years+months
                 entity_df = _load_coll_entity_opts(
@@ -445,9 +446,9 @@ class BaseApp:
                 else:
                     sp_opts, cus_opts, area_opts = [], [], []
 
-                selected_salesmen  = st.sidebar.multiselect("Select Salesman",  sp_opts)
-                selected_customers = st.sidebar.multiselect("Select Customer",   cus_opts)
-                selected_areas     = st.sidebar.multiselect("Select Area",       area_opts)
+                selected_salesmen  = st.sidebar.multiselect("Select Salesman",  sp_opts,  key="sidebar_coll_salesman")
+                selected_customers = st.sidebar.multiselect("Select Customer",   cus_opts, key="sidebar_coll_customer")
+                selected_areas     = st.sidebar.multiselect("Select Area",       area_opts, key="sidebar_coll_area")
                 selected_filters   = {
                     "year":    [int(x) for x in selected_years],
                     "month":   [int(x) for x in selected_months],

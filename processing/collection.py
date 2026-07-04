@@ -40,15 +40,15 @@ def filtered_options_for_collection(sales_data, returns_data, collections_data):
     # Year Filter
     year_options = common.update_single_options(sales_data, 'year')
     current_year = max(set([int(value) for value in year_options]))
-    selected_year = st.multiselect("Select Year", year_options, default=current_year)
-    
+    selected_year = st.multiselect("Select Year", year_options, default=current_year, key="cp_year_sel")
+
     # Month Filter
     month_options = common.update_single_options(sales_data, 'month')
-    selected_month = st.multiselect("Select Month", month_options)
-    
+    selected_month = st.multiselect("Select Month", month_options, key="cp_month_sel")
+
     # Customer Filter
     customer_options = common.update_pair_options(sales_data, 'cusid', 'cusname')
-    selected_customers = st.multiselect("Select Customer", customer_options)
+    selected_customers = st.multiselect("Select Customer", customer_options, key="cp_customer_sel")
     selected_cusnames = [x.split(" - ")[1] for x in selected_customers]
     selected_cusids = [x.split(" - ")[0] for x in selected_customers]
 
@@ -65,7 +65,7 @@ def filtered_options_for_collection(sales_data, returns_data, collections_data):
 
     # Salesman Filter 
     salesman_options = common.update_pair_options(sales_data, 'spid', 'spname')
-    selected_salesman = st.multiselect("Select Salesman", salesman_options)
+    selected_salesman = st.multiselect("Select Salesman", salesman_options, key="cp_salesman_sel")
     selected_spnames = [x.split(" - ")[1] for x in selected_salesman]
     selected_spids = [x.split(" - ")[0] for x in selected_salesman]
 
