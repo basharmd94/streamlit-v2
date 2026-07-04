@@ -187,7 +187,10 @@ def _load_mv_refresh_times() -> pd.DataFrame:
             'mv_collection_vouchers',
             'mv_ar_vouchers',
             'mv_stock_movement',
-            'mv_ar_transactions'
+            'mv_ar_transactions',
+            'mv_purchase_batches',
+            'mv_gl_overhead_daily',
+            'mv_sales_daily_item'
         )
         ORDER BY relname
     """
@@ -242,9 +245,9 @@ def load_purchase_data(zid: str, project: str) -> dict:
     data anyway (the overhead/profitability pools are always sourced from trading),
     so fetching them here for a different zid would just be discarded unused.
     """
-    purchase_tables = ["sales", "return", "purchase", "stock", "stock_movement"]
+    purchase_tables = ["sales_daily_item", "return", "purchase_batches", "stock_movement"]
     if str(zid) == "100001":
-        purchase_tables += ["glheader_simple", "gldetail_simple", "glmst_simple"]
+        purchase_tables += ["gl_overhead_daily", "glmst_simple"]
 
     data_dict = {}
     for table in purchase_tables:
@@ -348,6 +351,9 @@ class BaseApp:
                 "mv_ar_vouchers":         "AR",
                 "mv_stock_movement":      "Stock",
                 "mv_ar_transactions":     "AR Trn",
+                "mv_purchase_batches":    "Purchase",
+                "mv_gl_overhead_daily":   "GL Overhead",
+                "mv_sales_daily_item":    "Sales Daily",
             }
             try:
                 _mv_times = _load_mv_refresh_times()
@@ -675,13 +681,11 @@ class BaseApp:
 
         # --- Force GL tables for overhead explorer to always come from trading (100001) ---
         if str(st.session_state.zid) != "100001":
-            gl_100001 = Analytics("glheader_simple", zid="100001", filters={}).data
-            gd_100001 = Analytics("gldetail_simple", zid="100001", filters={}).data
-            gm_100001 = Analytics("glmst_simple",   zid="100001", filters={}).data
+            glo_100001 = Analytics("gl_overhead_daily", zid="100001", project="GULSHAN TRADING", filters={}).data
+            gm_100001  = Analytics("glmst_simple",      zid="100001", filters={}).data
 
-            data_dict["glheader_simple"] = gl_100001 if gl_100001 is not None else pd.DataFrame()
-            data_dict["gldetail_simple"] = gd_100001 if gd_100001 is not None else pd.DataFrame()
-            data_dict["glmst_simple"]    = gm_100001 if gm_100001 is not None else pd.DataFrame()
+            data_dict["gl_overhead_daily"] = glo_100001 if glo_100001 is not None else pd.DataFrame()
+            data_dict["glmst_simple"]      = gm_100001  if gm_100001  is not None else pd.DataFrame()
 
         # --- Ensure stock_movement exists (load base zid if missing/empty) ---
         zid_str = str(st.session_state.zid)

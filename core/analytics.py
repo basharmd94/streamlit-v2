@@ -35,7 +35,7 @@ class Analytics:
             else [str(zid)]
         )
 
-        if table_name in ("purchase", "stock_movement"):
+        if table_name in ("purchase", "stock_movement", "purchase_batches"):
             if len(zid_list) == 1 and zid_list[0] == "100001":
                 zid_list.append("100009")
 
@@ -61,6 +61,9 @@ class Analytics:
             "collection_entity_opts": queries.get_collection_entity_opts,
             "sales_period_opts":      queries.get_sales_period_opts,
             "sales_entity_opts":      queries.get_sales_entity_opts,
+            "purchase_batches":       queries.get_purchase_batches,
+            "gl_overhead_daily":      queries.get_gl_overhead_daily,
+            "sales_daily_item":       queries.get_sales_daily_item,
             "ar":               queries.get_ar_data,
             "payments":         queries.get_payment_data,
             "cacus_simple":     queries.get_cacus_simple,
