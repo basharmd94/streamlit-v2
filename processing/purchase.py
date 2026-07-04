@@ -250,6 +250,13 @@ def main_purchase_product_cohort_process(sales_df, purchase_df):
     # file — causing workers to crash silently and return empty results (all 0s).
     data_rows = process_chunk(purchase_df, sales_df)
 
+    if not data_rows:
+        return pd.DataFrame(columns=[
+            'itemcode', 'itemname', 'povoucher', 'shipmentname',
+            'combinedate', 'quantity', 'cost', 'average sales price',
+            '1', '2', '3', '4',
+        ])
+
     final_df = pd.DataFrame(data_rows)
     final_df = final_df.sort_values(by=['itemcode', 'combinedate'])
     final_df['days_since_last_purchase'] = final_df.groupby('itemcode')['combinedate'].diff().fillna(pd.Timedelta(seconds=0)).dt.days

@@ -306,14 +306,26 @@ def find_stats(grouped_data,metric):
 
 def time_filtered_data_purchase(sales_data, purchase_data, selected_time):
     days = selected_time * 365
+    sales_data = sales_data.copy()
+    purchase_data = purchase_data.copy()
+
     sales_data['date'] = pd.to_datetime(sales_data['date'], errors='coerce')
-    year_ago = sales_data['date'].max() - pd.Timedelta(days=days)
-    
+    max_date = sales_data['date'].max()
+
+    if days == 0 or pd.isna(max_date):
+        year_ago = max_date if not pd.isna(max_date) else pd.Timestamp.min
+    else:
+        year_ago = max_date - pd.Timedelta(days=days)
+
     sales_data = sales_data[sales_data['date'].notna() & (sales_data['date'] > year_ago)]
-    
+
     purchase_data['combinedate'] = pd.to_datetime(purchase_data['combinedate'], errors='coerce')
-    purchase_data = purchase_data[purchase_data['grnvoucher'].notna() & purchase_data['combinedate'].notna() & (purchase_data['combinedate'] > year_ago)]
-    
+    purchase_data = purchase_data[
+        purchase_data['grnvoucher'].notna()
+        & purchase_data['combinedate'].notna()
+        & (purchase_data['combinedate'] > year_ago)
+    ]
+
     return sales_data, purchase_data, year_ago
 
 @timed
