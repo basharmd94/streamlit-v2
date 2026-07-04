@@ -768,7 +768,9 @@ def get_purchase_data(filters=None):
         purchase.povoucher,
         purchase.grnvoucher,
         CASE
-            WHEN ci.xdrawing IS NOT NULL AND ci.xdrawing <> '' AND ci.xdrawing != 'NO' THEN ci.xdrawing
+            WHEN ci.xdrawing IS NOT NULL AND ci.xdrawing <> ''
+             AND ci.xdrawing != 'NO' AND LEFT(ci.xdrawing, 2) != 'KH'
+            THEN ci.xdrawing
             ELSE purchase.itemcode
         END AS itemcode,
         ci.xdesc AS itemname,
