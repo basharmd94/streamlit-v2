@@ -64,6 +64,13 @@ def generate_cohort(purchase_data,year_ago,inventory_data,sales_df,cohort_df):
 
     inventory_df = pd.merge(inventory_df, caitem, on="itemcode", how="left")
     
+    # Derive year/month from date if the daily-item MV is being used (no year/month columns)
+    if "year" not in sales_df.columns or "month" not in sales_df.columns:
+        _d = pd.to_datetime(sales_df["date"], errors="coerce")
+        sales_df = sales_df.copy()
+        sales_df["year"]  = _d.dt.year
+        sales_df["month"] = _d.dt.month
+
     # Group by 'itemcode', 'itemname', and month to compute the total sales for each product in each month
     sales_df = sales_df.groupby(['itemcode', 'year', 'month']).agg({'quantity': 'sum'}).reset_index()
     # Compute monthly average for each product
