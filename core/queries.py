@@ -554,6 +554,52 @@ def get_collection_data(filters=None):
     # return query, all_params
 
 
+def get_collection_period_opts(filters=None):
+    """Distinct year+month pairs from mv_collection_vouchers.
+
+    Used for Collection Analysis sidebar pass-1. Returns ~100 rows instead of
+    the full MV, so the cold-start cost of populating the Year/Month dropdowns
+    is near-zero.
+    """
+    filters = filters or {}
+    sql = """
+        SELECT DISTINCT year, month
+        FROM mv_collection_vouchers
+        WHERE zid = %s
+        ORDER BY year, month
+    """
+    return sql, (filters["zid"][0],)
+
+
+def get_collection_entity_opts(filters=None):
+    """Distinct spid/spname/cusid/cusname/area from mv_collection_vouchers.
+
+    Used for Collection Analysis sidebar pass-2, scoped to whatever years+months
+    the user picked in pass-1.  Returns a tiny DISTINCT projection rather than
+    the full MV.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT DISTINCT spid, spname, cusid, cusname, area
+        FROM mv_collection_vouchers
+        WHERE zid = %s
+    """
+    params: list = [zid]
+
+    if filters.get("year"):
+        ph = ",".join(["%s"] * len(filters["year"]))
+        sql += f" AND year IN ({ph})"
+        params.extend(filters["year"])
+
+    if filters.get("month"):
+        ph = ",".join(["%s"] * len(filters["month"]))
+        sql += f" AND month IN ({ph})"
+        params.extend(filters["month"])
+
+    return sql, tuple(params)
+
+
 def get_ar_data(filters=None):
     """Queries mv_ar_vouchers (materialized view).
 
