@@ -600,6 +600,53 @@ def get_collection_entity_opts(filters=None):
     return sql, tuple(params)
 
 
+def get_sales_period_opts(filters=None):
+    """Distinct year+month pairs from mv_sales_line_items.
+
+    Used for all sales-based page sidebar pass-1 (Overall Sales, Margin,
+    Customer Data, Basket, Target Management).  Returns a tiny DISTINCT
+    projection so the cold-start cost of populating Year/Month dropdowns
+    is near-zero instead of loading the full MV.
+    """
+    filters = filters or {}
+    sql = """
+        SELECT DISTINCT year, month
+        FROM mv_sales_line_items
+        WHERE zid = %s
+        ORDER BY year, month
+    """
+    return sql, (filters["zid"][0],)
+
+
+def get_sales_entity_opts(filters=None):
+    """Distinct salesman/customer/item/area/group from mv_sales_line_items.
+
+    Used for sales-based page sidebar pass-2, scoped to selected years+months.
+    Returns a tiny DISTINCT projection instead of the full MV.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT DISTINCT spid, spname, cusid, cusname,
+                        itemcode, itemname, itemgroup, area
+        FROM mv_sales_line_items
+        WHERE zid = %s
+    """
+    params: list = [zid]
+
+    if filters.get("year"):
+        ph = ",".join(["%s"] * len(filters["year"]))
+        sql += f" AND year IN ({ph})"
+        params.extend(filters["year"])
+
+    if filters.get("month"):
+        ph = ",".join(["%s"] * len(filters["month"]))
+        sql += f" AND month IN ({ph})"
+        params.extend(filters["month"])
+
+    return sql, tuple(params)
+
+
 def get_ar_data(filters=None):
     """Queries mv_ar_vouchers (materialized view).
 
