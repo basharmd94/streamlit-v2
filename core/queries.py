@@ -687,6 +687,23 @@ def get_gl_overhead_daily(filters=None):
     return sql, (zid, project)
 
 
+def get_returns_daily_item(filters=None):
+    """Queries mv_returns_daily_item — daily return quantities per (zid, itemcode, date).
+
+    Replaces the full returns query (opcrn/opcdt + imtemptdt/imtemptrn + imtrn joins)
+    for Purchase Analysis. Only provides zid, itemcode, date, returnqty — the only
+    columns needed by _build_daily_events and _window_qty in the FIFO engine.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT zid, itemcode, date, returnqty
+        FROM mv_returns_daily_item
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
 def get_sales_daily_item(filters=None):
     """Queries mv_sales_daily_item — daily (itemcode, date) aggregates.
 

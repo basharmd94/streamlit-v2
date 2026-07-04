@@ -64,6 +64,7 @@ class Analytics:
             "purchase_batches":       queries.get_purchase_batches,
             "gl_overhead_daily":      queries.get_gl_overhead_daily,
             "sales_daily_item":       queries.get_sales_daily_item,
+            "returns_daily_item":     queries.get_returns_daily_item,
             "ar":               queries.get_ar_data,
             "payments":         queries.get_payment_data,
             "cacus_simple":     queries.get_cacus_simple,

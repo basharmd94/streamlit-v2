@@ -190,7 +190,8 @@ def _load_mv_refresh_times() -> pd.DataFrame:
             'mv_ar_transactions',
             'mv_purchase_batches',
             'mv_gl_overhead_daily',
-            'mv_sales_daily_item'
+            'mv_sales_daily_item',
+            'mv_returns_daily_item'
         )
         ORDER BY relname
     """
@@ -245,7 +246,7 @@ def load_purchase_data(zid: str, project: str) -> dict:
     data anyway (the overhead/profitability pools are always sourced from trading),
     so fetching them here for a different zid would just be discarded unused.
     """
-    purchase_tables = ["sales_daily_item", "return", "purchase_batches", "stock_movement"]
+    purchase_tables = ["sales_daily_item", "returns_daily_item", "purchase_batches", "stock_movement"]
     if str(zid) == "100001":
         purchase_tables += ["gl_overhead_daily", "glmst_simple"]
 
@@ -354,6 +355,7 @@ class BaseApp:
                 "mv_purchase_batches":    "Purchase",
                 "mv_gl_overhead_daily":   "GL Overhead",
                 "mv_sales_daily_item":    "Sales Daily",
+                "mv_returns_daily_item":  "Returns Daily",
             }
             try:
                 _mv_times = _load_mv_refresh_times()
