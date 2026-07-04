@@ -25,7 +25,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
         selected_time = st.selectbox("Select Time Frame", options, index=default_index)
 
         sales_df, purchase_df, year_ago = common.time_filtered_data_purchase(
-            data_dict['sales'], data_dict['purchase'], selected_time
+            data_dict['sales_daily_item'], data_dict['purchase_batches'], selected_time
         )
         cohort_df = purchase.main_purchase_product_cohort_process(sales_df, purchase_df)
 
@@ -41,7 +41,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
         if st.button("Generate Purchase Requirement"):
             result_df = purchase.generate_cohort(
-                data_dict['purchase'],
+                data_dict['purchase_batches'],
                 year_ago,
                 data_dict['stock_movement'],
                 sales_df,
@@ -59,7 +59,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
         # -----------------------------
         st.subheader("Batch Profitability & Capital Engine")
 
-        purchase_df = data_dict.get("purchase", pd.DataFrame())
+        purchase_df = data_dict.get("purchase_batches", pd.DataFrame())
         if purchase_df is None or purchase_df.empty:
             st.warning("No purchase data loaded.")
             return
@@ -164,9 +164,9 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
         if engine_section == "Inventory Check":
 
             tables = purchase.build_shipment_inventory_tables(
-                purchase_df=data_dict["purchase"],
+                purchase_df=data_dict["purchase_batches"],
                 stock_movement_df=data_dict["stock_movement"],
-                sales_df=data_dict["sales"],
+                sales_df=data_dict["sales_daily_item"],
                 returns_df=data_dict["return"],
                 shipmentname=selected_shipment,
                 project=st.session_state.proj,
@@ -241,19 +241,18 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             show_details = st.checkbox("Show daily ratio diagnostics")
 
             overhead_out = purchase.build_accounts_overhead_summary(
-                purchase_df=data_dict["purchase"],
+                purchase_df=data_dict["purchase_batches"],
                 stock_movement_df=data_dict["stock_movement"],
-                glheader_df=data_dict["glheader_simple"],
-                gldetail_df=data_dict["gldetail_simple"],
+                gl_overhead_df=data_dict.get("gl_overhead_daily", pd.DataFrame()),
                 glmst_df=data_dict["glmst_simple"],
                 hierarchy_path="data/hierarchy.json",
                 shipmentname=selected_shipment,
                 level=level,
-                selections=selections,
+                selections=tuple(selections),
                 include_details=show_details,
                 zids_inventory=["100001", "100009"],
-                warehouse_filters=override_wh,                 # NEW
-                warehouse_json_path="data/warehouse_filters.json",  # NEW
+                warehouse_filters=override_wh,
+                warehouse_json_path="data/warehouse_filters.json",
             )
 
             db_overhead = float(overhead_out["totals"].get("overhead_for_shipment_sum", 0.0))
@@ -315,21 +314,18 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             manual_overhead_value = float(st.session_state.get("manual_overhead_value", 0.0))
 
             result_df = purchase.run_batch_profitability_engine(
-            purchase_df=data_dict["purchase"],
-            sales_df=data_dict["sales"],
-            returns_df=data_dict["return"],
-            stock_movement_df=data_dict["stock_movement"],
-            glheader_df=data_dict["glheader_simple"],
-            gldetail_df=data_dict["gldetail_simple"],
-            glmst_df=data_dict["glmst_simple"],
-            hierarchy_path="data/hierarchy.json",
-            shipmentname=selected_shipment,
-            discount_pct=0.0,
-            zid_deplete="100001",
-            shipment_overhead_total=shipment_overhead_total,
-            vat_pct=vat_pct,
-            manual_overhead_value=manual_overhead_value,
-            inventory_tables=st.session_state.get("invcheck_tables"),   # add this
+                purchase_df=data_dict["purchase_batches"],
+                sales_df=data_dict["sales_daily_item"],
+                returns_df=data_dict["return"],
+                stock_movement_df=data_dict["stock_movement"],
+                hierarchy_path="data/hierarchy.json",
+                shipmentname=selected_shipment,
+                discount_pct=0.0,
+                zid_deplete="100001",
+                shipment_overhead_total=shipment_overhead_total,
+                vat_pct=vat_pct,
+                manual_overhead_value=manual_overhead_value,
+                inventory_tables=st.session_state.get("invcheck_tables"),
             )
 
             st.session_state["last_batch_df"] = result_df.copy()

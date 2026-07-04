@@ -505,6 +505,7 @@ def _sales_revenue_for_period(sales_df: pd.DataFrame, itemcode: str, start: pd.T
 
     return float(s["totalsales"].sum()), float(s["quantity"].sum())
 
+@st.cache_data(show_spinner=False, ttl=86400)
 def build_shipment_inventory_tables(
     purchase_df: pd.DataFrame,
     stock_movement_df: pd.DataFrame,
@@ -861,9 +862,6 @@ def run_batch_profitability_engine(
     sales_df: pd.DataFrame,
     returns_df: pd.DataFrame,
     stock_movement_df: pd.DataFrame,
-    glheader_df: pd.DataFrame,
-    gldetail_df: pd.DataFrame,
-    glmst_df: pd.DataFrame,
     hierarchy_path: str,
     shipmentname: str,
     discount_pct: float = 0.0,
@@ -1816,19 +1814,19 @@ def _shipment_daily_value_series(
     v = v[v["date"] <= end_eff].copy()
     return v, end_eff, is_closed
 
+@st.cache_data(show_spinner=False, ttl=86400)
 def build_accounts_overhead_summary(
     purchase_df: pd.DataFrame,
     stock_movement_df: pd.DataFrame,
-    glheader_df: pd.DataFrame,
-    gldetail_df: pd.DataFrame,
+    gl_overhead_df: pd.DataFrame,
     glmst_df: pd.DataFrame,
     hierarchy_path: str,
     shipmentname: str,
     level: int,
-    selections: List[str],
+    selections: tuple,
     include_details: bool = False,
     zids_inventory: Optional[List[str]] = None,
-    warehouse_filters: Optional[Dict[str, List[str]]] = None,   # NEW
+    warehouse_filters: Optional[Dict[str, List[str]]] = None,
     warehouse_json_path: str = "data/warehouse_filters.json",) -> Dict[str, Any]:
     """
     Shipment-level overhead allocation over shipment age:
@@ -1916,7 +1914,21 @@ def build_accounts_overhead_summary(
     # rename to match your downstream variable names
     inv = inv_daily.rename(columns={"total_inventory_value": "total_inventory_value_cost"}).copy()
 
-    gl = _prep_gl_join(glheader_df, gldetail_df)
+    if gl_overhead_df is None or (isinstance(gl_overhead_df, pd.DataFrame) and gl_overhead_df.empty):
+        return {
+            "summary_df": pd.DataFrame(),
+            "totals": {"overhead_total_sum": 0.0, "overhead_for_shipment_sum": 0.0, "avg_daily_overhead_for_shipment": 0.0},
+            "details_df": pd.DataFrame(),
+            "end_eff": end_eff,
+            "is_closed": bool(is_closed),
+        }
+
+    _gl_raw = gl_overhead_df.copy()
+    _gl_raw["date"]    = pd.to_datetime(_gl_raw["date"], errors="coerce").dt.floor("D")
+    _gl_raw["ac_code"] = _gl_raw["ac_code"].astype(str).str.strip()
+    _gl_raw["value"]   = pd.to_numeric(_gl_raw["value"], errors="coerce").fillna(0.0)
+    gl = _gl_raw[_gl_raw["date"].notna()][["date", "ac_code", "value"]].copy()
+
     if gl.empty:
         return {
             "summary_df": pd.DataFrame(),
@@ -1928,8 +1940,9 @@ def build_accounts_overhead_summary(
 
     gl = gl[(gl["date"] >= start_date) & (gl["date"] <= end_eff)].copy()
 
-    # multi-select filter
-    m = _selection_masks(gl, level=level, selections=selections, hierarchy_path=hierarchy_path)
+    # multi-select filter (selections may arrive as tuple for cache-key stability)
+    selections_list = list(selections) if selections else []
+    m = _selection_masks(gl, level=level, selections=selections_list, hierarchy_path=hierarchy_path)
     gl_sel = gl[m].copy()
 
     # daily overhead totals
@@ -1983,7 +1996,7 @@ def build_accounts_overhead_summary(
         return prefix_labels.get(pfx[:2], pfx[:2])
 
     # If selections empty => treat as one aggregated row
-    sel_list = selections[:] if selections else ["(ALL SELECTED)"]
+    sel_list = list(selections) if selections else ["(ALL SELECTED)"]
 
     rows = []
     for sel in sel_list:
@@ -2030,7 +2043,7 @@ def build_accounts_overhead_summary(
         "is_closed": bool(is_closed),
     }
 
-def build_accounts_overhead_table(purchase_df: pd.DataFrame,stock_movement_df: pd.DataFrame,glheader_df: pd.DataFrame,gldetail_df: pd.DataFrame,
+def build_accounts_overhead_table(purchase_df: pd.DataFrame,stock_movement_df: pd.DataFrame,gl_overhead_df: pd.DataFrame,
     glmst_df: pd.DataFrame,  # not required for matching, but used for Level 0 list + names
     hierarchy_path: str,
     shipmentname: str,
@@ -2072,9 +2085,15 @@ def build_accounts_overhead_table(purchase_df: pd.DataFrame,stock_movement_df: p
     if shipment_cost <= 0:
         shipment_cost = 1.0
 
-    # GL join
-    gl = _prep_gl_join(glheader_df, gldetail_df)
- 
+    # GL join (use pre-joined MV data directly)
+    if gl_overhead_df is None or (isinstance(gl_overhead_df, pd.DataFrame) and gl_overhead_df.empty):
+        return pd.DataFrame()
+    _gl_r = gl_overhead_df.copy()
+    _gl_r["date"] = pd.to_datetime(_gl_r["date"], errors="coerce").dt.floor("D")
+    _gl_r["ac_code"] = _gl_r["ac_code"].astype(str).str.strip()
+    _gl_r["value"] = pd.to_numeric(_gl_r["value"], errors="coerce").fillna(0.0)
+    gl = _gl_r[_gl_r["date"].notna()][["date", "ac_code", "value"]].copy()
+
     if gl.empty:
         return pd.DataFrame()
 
@@ -2273,6 +2292,7 @@ def _load_special_level2_groups(hierarchy_path: str) -> Dict[str, List[str]]:
     out["06B"] = sorted(list(set(out["06B"])))
     return out
 
+@st.cache_data(show_spinner=False, ttl=86400)
 def build_warehouse_total_value_table(
     stock_movement_df: pd.DataFrame,
     as_of_date: pd.Timestamp,
@@ -2599,6 +2619,7 @@ def total_inventory_value_timeseries(
 # Warehouse Options Helper
 # ============================================================
 
+@st.cache_data(show_spinner=False, ttl=86400)
 def get_all_warehouse_options(stock_movement_df: pd.DataFrame) -> Dict[str, List[str]]:
     """
     Returns distinct warehouse names per zid from stock_movement_df.

@@ -647,6 +647,65 @@ def get_sales_entity_opts(filters=None):
     return sql, tuple(params)
 
 
+def get_purchase_batches(filters=None):
+    """Queries mv_purchase_batches — pre-grouped purchase data by shipment×item.
+
+    itemcodes are pre-resolved via xdrawing (with KH guard), so 100009
+    purchase codes map to the same sell codes used in sales and stock_movement.
+    Returns both ZIDs (100001 + 100009) for FIFO batch matching.
+    Columns aliased: initial_qty→quantity, unit_cost→cost for downstream compat.
+    """
+    filters = filters or {}
+    zids = list(filters["zid"])
+    ph = ",".join(["%s"] * len(zids))
+    sql = f"""
+        SELECT zid, shipmentname, itemcode, itemname, combinedate,
+               povoucher, grnvoucher,
+               initial_qty AS quantity,
+               unit_cost   AS cost,
+               status
+        FROM mv_purchase_batches
+        WHERE zid IN ({ph})
+    """
+    return sql, tuple(zids)
+
+
+def get_gl_overhead_daily(filters=None):
+    """Queries mv_gl_overhead_daily — pre-joined GL overhead by (project, date, ac_code).
+
+    Replaces the two-table glheader_simple + gldetail_simple load + Python join.
+    Filtered to expense families 05/06/07 and grouped to daily totals.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    project = filters.get("project")
+    sql = """
+        SELECT zid, project, date, ac_code, value
+        FROM mv_gl_overhead_daily
+        WHERE zid = %s AND project = %s
+    """
+    return sql, (zid, project)
+
+
+def get_sales_daily_item(filters=None):
+    """Queries mv_sales_daily_item — daily (itemcode, date) aggregates.
+
+    Pre-aggregates mv_sales_line_items to one row per (zid, itemcode, date).
+    Columns aliased: sales_qty→quantity, sales_rev→totalsales for downstream compat.
+    Used by Purchase Analysis FIFO engine and cohort in place of full sales MV.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT zid, itemcode, date,
+               sales_qty AS quantity,
+               sales_rev AS totalsales
+        FROM mv_sales_daily_item
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
 def get_ar_data(filters=None):
     """Queries mv_ar_vouchers (materialized view).
 
