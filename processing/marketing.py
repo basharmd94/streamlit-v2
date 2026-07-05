@@ -15,42 +15,57 @@ def _ensure_date(df: pd.DataFrame, col: str) -> pd.DataFrame:
 
 
 def _yoy_growth(by_year: pd.DataFrame, years: list, metric: str) -> pd.DataFrame:
-    """Return a per-cusid YoY growth column.
+    """Return per-cusid YoY growth column.
 
-    - 1 year  → empty (no growth possible)
-    - 2 years → single % column  (year[1] vs year[0])
-    - 3+ years → avg of successive YoY % changes
+    Returns np.inf for customers with zero base-year sales but positive
+    current-year sales (new/returning customers); NaN otherwise when base=0.
+    - 1 year  → empty (growth impossible)
+    - 2 years → single % column
+    - 3+ years → avg of successive YoY % changes (inf transitions excluded
+                 from avg; customer fully new across all transitions → inf)
     """
     col_name = f"yoy_{metric}_growth_pct"
     years_sorted = sorted(y for y in years if y in by_year.columns)
     if len(years_sorted) < 2:
         return pd.DataFrame(columns=["cusid"])
 
+    def _pct_series(b0: pd.Series, b1: pd.Series) -> pd.Series:
+        base = b0.replace(0, np.nan)
+        pct = (b1 - b0) / base * 100
+        pct[((b0 == 0) & (b1 > 0))] = np.inf   # new customer
+        return pct
+
     if len(years_sorted) == 2:
         y0, y1 = years_sorted
-        diff = by_year[y1] - by_year[y0]
-        base = by_year[y0].replace(0, np.nan)
-        growth = (diff / base * 100).round(1)
+        growth = _pct_series(by_year[y0], by_year[y1]).round(1)
         growth.name = col_name
         return growth.reset_index()
 
-    # 3+ years: average YoY
+    # 3+ years: average of finite transitions; fully-new → inf
     pcts = []
     for i in range(1, len(years_sorted)):
         y0, y1 = years_sorted[i - 1], years_sorted[i]
-        base = by_year[y0].replace(0, np.nan)
-        pcts.append((by_year[y1] - by_year[y0]) / base * 100)
-    avg = pd.concat(pcts, axis=1).mean(axis=1).round(1)
+        pcts.append(_pct_series(by_year[y0], by_year[y1]))
+
+    combined = pd.concat(pcts, axis=1)
+    finite = combined.replace([np.inf, -np.inf], np.nan)
+    avg = finite.mean(axis=1).round(1)
+    # Mark customers who had no valid base in any transition as "new"
+    fully_new = finite.isna().all(axis=1) & combined.apply(
+        lambda r: np.isinf(r).any(), axis=1
+    )
+    avg[fully_new] = np.inf
     avg.name = col_name
     return avg.reset_index()
 
 
 def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
-    """Compute per-customer sales aggregates, YoY, order interval, activity rate."""
+    """Per-customer sales aggregates, YoY, order interval, activity rate."""
     if sales_df is None or sales_df.empty:
         return pd.DataFrame(columns=[
             "cusid", "cusname", "area", "spname",
-            "total_sales", "avg_order_interval_days", "monthly_activity_rate",
+            "total_sales", "order_count",
+            "avg_order_interval_days", "monthly_activity_rate",
         ])
 
     s = _ensure_date(sales_df, "date")
@@ -88,8 +103,8 @@ def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
     )
     yoy = _yoy_growth(by_year, years, "sales")
 
-    # ── avg order interval ──────────────────────────────────────────────────
-    # Use distinct order-dates per customer (not line-item rows)
+    # ── avg order interval + order count ─────────────────────────────────────
+    # Distinct order-dates per customer (not line-item rows)
     order_dates = (
         s[["cusid", "date"]]
         .dropna(subset=["date"])
@@ -97,6 +112,13 @@ def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
         .sort_values(["cusid", "date"])
     )
     order_dates["interval"] = order_dates.groupby("cusid")["date"].diff().dt.days
+
+    order_count = (
+        order_dates.groupby("cusid")["date"]
+        .count()
+        .reset_index()
+        .rename(columns={"date": "order_count"})
+    )
     interval = (
         order_dates.groupby("cusid")["interval"]
         .mean()
@@ -106,7 +128,6 @@ def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
     )
 
     # ── monthly activity rate ────────────────────────────────────────────────
-    # Months active / total possible months in the selected window
     total_months = len(years) * 12 if years else 0
     if total_months > 0:
         s["ym"] = (
@@ -128,7 +149,7 @@ def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
         activity = pd.DataFrame(columns=["cusid", "monthly_activity_rate"])
 
     # ── merge ────────────────────────────────────────────────────────────────
-    result = totals
+    result = totals.merge(order_count, on="cusid", how="left")
     if "cusid" in yoy.columns and len(yoy.columns) > 1:
         result = result.merge(yoy, on="cusid", how="left")
     result = result.merge(interval, on="cusid", how="left")
@@ -142,11 +163,11 @@ def _collection_metrics(
     collection_df: pd.DataFrame,
     years: list,
 ) -> pd.DataFrame:
-    """Compute per-customer collection totals, avg days to collection, avg days between."""
+    """Per-customer collection totals, YoY, avg days between, avg days to."""
     if collection_df is None or collection_df.empty:
         return pd.DataFrame(
-            columns=["cusid", "total_collection", "avg_days_to_collection",
-                     "avg_days_between_collections"]
+            columns=["cusid", "total_collection", "coll_event_count",
+                     "avg_days_to_collection", "avg_days_between_collections"]
         )
 
     c = _ensure_date(collection_df, "date")
@@ -164,6 +185,15 @@ def _collection_metrics(
         .sum()
         .reset_index()
         .rename(columns={"value": "total_collection"})
+    )
+
+    # ── collection event count ───────────────────────────────────────────────
+    coll_event_count = (
+        c[c["date"].notna()]
+        .groupby("cusid")["date"]
+        .count()
+        .reset_index()
+        .rename(columns={"date": "coll_event_count"})
     )
 
     # ── YoY growth for collection ────────────────────────────────────────────
@@ -189,12 +219,10 @@ def _collection_metrics(
     )
 
     # ── avg_days_to_collection ───────────────────────────────────────────────
-    # For each collection event find days elapsed since most recent sale for
-    # that customer, then average across all such events.
     avg_days_to = _compute_avg_days_to_collection(sales_df, c, years)
 
     # ── merge ────────────────────────────────────────────────────────────────
-    result = total_coll
+    result = total_coll.merge(coll_event_count, on="cusid", how="left")
     if "cusid" in yoy_c.columns and len(yoy_c.columns) > 1:
         result = result.merge(yoy_c, on="cusid", how="left")
     result = result.merge(avg_between, on="cusid", how="left")
@@ -208,7 +236,7 @@ def _compute_avg_days_to_collection(
     collection_df: pd.DataFrame,
     years: list,
 ) -> pd.DataFrame:
-    """Lightweight re-implementation of the CP logic — sales_df only (no returns)."""
+    """Lightweight reimplementation of the CP logic — no returns data needed."""
     if sales_df is None or sales_df.empty:
         return pd.DataFrame(columns=["cusid", "avg_days_to_collection"])
 
@@ -221,7 +249,6 @@ def _compute_avg_days_to_collection(
     if s.empty:
         return pd.DataFrame(columns=["cusid", "avg_days_to_collection"])
 
-    # Combine sales + collection events, sorted per customer by date
     sales_events = s[["cusid", "date", "altsales"]].copy()
     sales_events["type"] = "sale"
     coll_events = collection_df[["cusid", "date"]].copy()
@@ -255,16 +282,12 @@ def _compute_avg_days_to_collection(
 
 
 def _ar_balance(ar_df: pd.DataFrame) -> pd.DataFrame:
-    """Sum xprime per customer (debit-positive = customer owes).
-    No year filter — we want the running outstanding balance from inception.
-    """
+    """Sum xprime per customer — debit-positive = customer owes money."""
     if ar_df is None or ar_df.empty:
         return pd.DataFrame(columns=["cusid", "current_balance"])
 
     a = ar_df.copy()
     a["xprime"] = pd.to_numeric(a["xprime"], errors="coerce").fillna(0.0)
-
-    # xsub is cusid in mv_ar_transactions
     a = a.rename(columns={"xsub": "cusid"})
 
     balance = (
@@ -288,7 +311,7 @@ def build_customer_marketing_table(
     ar_df: pd.DataFrame,
     selected_years: tuple,
 ) -> pd.DataFrame:
-    """Assemble the full per-customer marketing metrics table."""
+    """Assemble full per-customer marketing metrics table."""
     years = list(selected_years) if selected_years else []
 
     sales_part = _sales_metrics(sales_df, years)
@@ -298,7 +321,7 @@ def build_customer_marketing_table(
     result = sales_part.merge(coll_part, on="cusid", how="outer")
     result = result.merge(bal_part, on="cusid", how="left")
 
-    # Fill missing name/area from collection data
+    # Fill missing name/area from collection side
     if "cusname" not in result.columns:
         result["cusname"] = np.nan
     if not result["cusname"].notna().all() and collection_df is not None and not collection_df.empty:
@@ -311,7 +334,7 @@ def build_customer_marketing_table(
         mask = result["cusname"].isna()
         result.loc[mask, "cusname"] = result.loc[mask, "cusid"].map(cus_names)
 
-    # Friendly column order
+    # Friendly column order (helper count cols kept for view-level formatting)
     ordered = [
         "cusid", "cusname", "area", "spname",
         "total_sales", "total_collection",
@@ -319,6 +342,8 @@ def build_customer_marketing_table(
         "avg_days_to_collection", "avg_days_between_collections",
         "avg_order_interval_days", "monthly_activity_rate",
         "current_balance",
+        # helper columns (used for display context, not shown to user)
+        "order_count", "coll_event_count",
     ]
     present = [c for c in ordered if c in result.columns]
     extra = [c for c in result.columns if c not in ordered]

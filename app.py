@@ -797,6 +797,7 @@ class BaseApp:
         selected_years = st.session_state.get("last_filters", {}).get("year", [])
         marketing.display_marketing_analysis(
             zid=st.session_state.zid,
+            proj=st.session_state.proj,
             data_dict=data_dict,
             selected_years=selected_years,
         )
