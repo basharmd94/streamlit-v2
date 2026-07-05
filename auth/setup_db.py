@@ -96,7 +96,10 @@ def setup_auth_tables():
             ('finance', 'AR Analysis'),
             ('admin', 'Customer Support'),
             ('crm', 'Customer Support'),
-            ('sales', 'Customer Support')
+            ('sales', 'Customer Support'),
+            ('admin', 'Marketing Analysis'),
+            ('sales', 'Marketing Analysis'),
+            ('crm', 'Marketing Analysis')
         """)
         
         # Create default users with their roles

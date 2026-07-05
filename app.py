@@ -1,6 +1,6 @@
 import streamlit as st
 from core.analytics import Analytics
-from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, target_management as target_mgmt_view, manufacturing, customer_support
+from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, target_management as target_mgmt_view, manufacturing, customer_support, marketing
 from views.home import display_home_page
 import pandas as pd
 from io import BytesIO
@@ -411,6 +411,7 @@ class BaseApp:
             "Accounting Analysis",
             "Inventory Analysis",
             "Manufacturing Analysis",
+            "Marketing Analysis",
             "Customer Support",
         ]
 
@@ -465,7 +466,8 @@ class BaseApp:
             "Basket Analysis": ("sales", "return", "purchase", "cacus_simple"),
             "Purchase Analysis": ("sales", "purchase", "stock"),
             "Customer Data View": ("sales", "return"),
-            "Target Management":  ("sales", "return", "collection")
+            "Target Management":  ("sales", "return", "collection"),
+            "Marketing Analysis": ("sales", "collection"),
         }
 
         # Lighter table set for sidebar dropdown options only (year/month/salesman/
@@ -540,6 +542,47 @@ class BaseApp:
                     "spname":  selected_salesmen,
                     "cusname": selected_customers,
                     "area":    selected_areas,
+                }
+
+            elif self.current_page == "Marketing Analysis":
+                # ── Marketing Analysis sidebar: Year + Salesman + Area only ───────
+                period_df = _load_sales_period_opts(st.session_state.zid)
+                if not period_df.empty:
+                    valid_years = sorted(
+                        y for y in {int(float(v)) for v in period_df["year"].dropna()}
+                        if y <= current_year
+                    )
+                else:
+                    valid_years = []
+
+                selected_years = st.sidebar.multiselect(
+                    "Select Year", valid_years,
+                    default=valid_years[-2:] if len(valid_years) >= 2 else valid_years,
+                    key="sidebar_mkt_year",
+                )
+
+                entity_df = _load_sales_entity_opts(
+                    st.session_state.zid,
+                    tuple(int(y) for y in selected_years),
+                    (),
+                )
+                if not entity_df.empty:
+                    ec = set(entity_df.columns)
+                    if {"spid", "spname"} <= ec:
+                        tmp = entity_df[["spid", "spname"]].dropna().drop_duplicates().sort_values(["spid", "spname"])
+                        sp_opts = (tmp["spid"].astype(str) + " - " + tmp["spname"].astype(str)).tolist()
+                    else:
+                        sp_opts = []
+                    area_opts = sorted(entity_df["area"].dropna().unique().tolist()) if "area" in ec else []
+                else:
+                    sp_opts, area_opts = [], []
+
+                selected_salesmen = st.sidebar.multiselect("Select Salesman", sp_opts, key="sidebar_mkt_salesman")
+                selected_areas    = st.sidebar.multiselect("Select Area",     area_opts, key="sidebar_mkt_area")
+                selected_filters  = {
+                    "year":   [int(x) for x in selected_years],
+                    "spname": selected_salesmen,
+                    "area":   selected_areas,
                 }
 
             else:
@@ -661,6 +704,8 @@ class BaseApp:
             self.inventory_analysis()
         elif self.current_page == "Manufacturing Analysis":
             self.manufacturing_analysis()
+        elif self.current_page == "Marketing Analysis":
+            self.call_if_data_loaded(self.marketing_analysis)
         elif self.current_page == "Target Management":
             self.call_if_data_loaded(self.target_management_analysis)
         elif self.current_page == "Customer Support":
@@ -746,6 +791,15 @@ class BaseApp:
     @timed
     def target_management_analysis(self, data_dict):
         target_mgmt_view.display_target_management_page(self.current_page, st.session_state.zid, data_dict)
+
+    @timed
+    def marketing_analysis(self, data_dict):
+        selected_years = st.session_state.get("last_filters", {}).get("year", [])
+        marketing.display_marketing_analysis(
+            zid=st.session_state.zid,
+            data_dict=data_dict,
+            selected_years=selected_years,
+        )
 
     @timed
     def customer_support(self):
