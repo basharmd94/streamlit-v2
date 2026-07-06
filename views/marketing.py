@@ -43,8 +43,8 @@ _NOTES = """
 |---|---|---|
 | **Total Sales** | `SUM(altsales)` from `mv_sales_line_items` for selected year(s) + filters | Gross sales before discount; consistent with IS Revenue |
 | **Total Collection** | `SUM(value)` from `mv_collection_vouchers` for selected year(s) + filters | Includes RCT, CRCT, BRCT, JV, STJV, ADJV voucher types |
-| **Sales YoY Growth %** | *(Year₂ − Year₁) / Year₁ × 100*. For 3+ years: average of successive annual growth rates | **"New ↑"** = customer had zero sales in the base year but non-zero in the current year. N/A when only 1 year is selected |
-| **Collection YoY Growth %** | Same formula applied to Total Collection by year | Same "New ↑" logic applies |
+| **Sales YoY Growth %** | **Same-month comparison**: for each calendar month present in the current year, compute *(current\_month − prior\_month) / prior\_month × 100*, then average across all such months where the prior year had sales. Avoids partial-year bias (e.g. comparing 6 months of 2025 to all 12 of 2024). For 3+ years: same logic per consecutive pair, then averaged. | **"New ↑"** = customer had no sales in any comparable prior-year month. Months where prior year = 0 but current > 0 are excluded from the average (new activity in that month). N/A when only 1 year is selected |
+| **Collection YoY Growth %** | Same same-month logic applied to collection amounts | Same "New ↑" logic applies |
 | **Avg Days to Collection** | For each collection event: days elapsed since that customer's most recent invoice date. Averaged across all events in the selected period | Customers with no collection events are excluded |
 | **Avg Days Between Collections** | Mean gap in days between consecutive collection vouchers per customer | Requires ≥ 2 collection events. Shows **"1 collection"** when only 1 event exists in the period |
 | **Avg Order Interval (days)** | Mean gap in days between consecutive distinct order dates per customer | Requires ≥ 2 distinct order dates. Shows **"1 order"** when only 1 date exists in the period |

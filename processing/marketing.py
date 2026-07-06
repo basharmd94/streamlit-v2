@@ -14,49 +14,90 @@ def _ensure_date(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df
 
 
-def _yoy_growth(by_year: pd.DataFrame, years: list, metric: str) -> pd.DataFrame:
-    """Return per-cusid YoY growth column.
+def _yoy_growth_same_month(
+    df: pd.DataFrame, value_col: str, years: list, metric: str
+) -> pd.DataFrame:
+    """Same-month YoY growth — eliminates partial-year bias.
 
-    Returns np.inf for customers with zero base-year sales but positive
-    current-year sales (new/returning customers); NaN otherwise when base=0.
-    - 1 year  → empty (growth impossible)
-    - 2 years → single % column
-    - 3+ years → avg of successive YoY % changes (inf transitions excluded
-                 from avg; customer fully new across all transitions → inf)
+    Instead of comparing annual totals (which makes a partial current year look
+    like shrinkage), we compare each calendar month individually against the
+    same month in the prior year, then average those per-month growth rates.
+
+    - Only months where the PRIOR year had sales (base > 0) count toward the avg.
+    - Months where prior year = 0 but current year > 0 are skipped (new activity
+      in that month — including them as inf would inflate the average unfairly).
+    - A customer with NO valid base months at all (entirely new) → "New ↑" (inf).
+    - 3+ years: same logic applied to each consecutive year pair, then averaged.
     """
     col_name = f"yoy_{metric}_growth_pct"
-    years_sorted = sorted(y for y in years if y in by_year.columns)
+
+    # Ensure numeric year/month
+    df = df.copy()
+    df["year"]  = pd.to_numeric(df["year"],  errors="coerce")
+    df["month"] = pd.to_numeric(df["month"], errors="coerce")
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce").fillna(0.0)
+
+    years_sorted = sorted(
+        y for y in years
+        if pd.notna(y) and y in df["year"].dropna().unique()
+    )
     if len(years_sorted) < 2:
         return pd.DataFrame(columns=["cusid"])
 
-    def _pct_series(b0: pd.Series, b1: pd.Series) -> pd.Series:
-        base = b0.replace(0, np.nan)
-        pct = (b1 - b0) / base * 100
-        pct[((b0 == 0) & (b1 > 0))] = np.inf   # new customer
-        return pct
+    # Monthly totals per customer
+    monthly = (
+        df.groupby(["cusid", "year", "month"])[value_col]
+        .sum()
+        .reset_index()
+    )
 
-    if len(years_sorted) == 2:
-        y0, y1 = years_sorted
-        growth = _pct_series(by_year[y0], by_year[y1]).round(1)
-        growth.name = col_name
-        return growth.reset_index()
+    pair_avgs = []   # one Series (cusid → mean growth %) per consecutive year pair
 
-    # 3+ years: average of finite transitions; fully-new → inf
-    pcts = []
     for i in range(1, len(years_sorted)):
         y0, y1 = years_sorted[i - 1], years_sorted[i]
-        pcts.append(_pct_series(by_year[y0], by_year[y1]))
 
-    combined = pd.concat(pcts, axis=1)
-    finite = combined.replace([np.inf, -np.inf], np.nan)
-    avg = finite.mean(axis=1).round(1)
-    # Mark customers who had no valid base in any transition as "new"
-    fully_new = finite.isna().all(axis=1) & combined.apply(
-        lambda r: np.isinf(r).any(), axis=1
-    )
-    avg[fully_new] = np.inf
+        y0_m = (monthly[monthly["year"] == y0][["cusid", "month", value_col]]
+                .rename(columns={value_col: "v0"}))
+        y1_m = (monthly[monthly["year"] == y1][["cusid", "month", value_col]]
+                .rename(columns={value_col: "v1"}))
+
+        # Left-join current year onto prior year on cusid+month
+        joined = y1_m.merge(y0_m, on=["cusid", "month"], how="left")
+        joined["v0"] = joined["v0"].fillna(0.0)
+
+        # Only months where the base (prior year) had sales
+        valid = joined[joined["v0"] > 0].copy()
+        if valid.empty:
+            continue
+
+        valid["pct"] = (valid["v1"] - valid["v0"]) / valid["v0"] * 100
+        pair_avg = valid.groupby("cusid")["pct"].mean()
+        pair_avgs.append(pair_avg)
+
+    if not pair_avgs:
+        # No customer had a valid base month across any transition
+        new_cus = monthly[monthly["year"] == years_sorted[-1]]["cusid"].unique()
+        if len(new_cus):
+            return pd.DataFrame({"cusid": new_cus, col_name: np.inf})
+        return pd.DataFrame(columns=["cusid", col_name])
+
+    # Average across all year-pair transitions
+    combined = pd.concat(pair_avgs, axis=1)
+    avg = combined.mean(axis=1).round(1)
     avg.name = col_name
-    return avg.reset_index()
+    result = avg.reset_index()
+
+    # Customers in the latest year but not captured above → fully new → inf
+    all_in_result = set(result["cusid"])
+    last_year_cus = set(monthly[monthly["year"] == years_sorted[-1]]["cusid"])
+    new_cus = last_year_cus - all_in_result
+    if new_cus:
+        result = pd.concat(
+            [result, pd.DataFrame({"cusid": list(new_cus), col_name: np.inf})],
+            ignore_index=True,
+        )
+
+    return result
 
 
 def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
@@ -94,14 +135,8 @@ def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
         .reset_index()
     )
 
-    # ── YoY growth ──────────────────────────────────────────────────────────
-    by_year = (
-        s.groupby(["cusid", "year"])["altsales"]
-        .sum()
-        .unstack(fill_value=0)
-        .rename_axis(None, axis=1)
-    )
-    yoy = _yoy_growth(by_year, years, "sales")
+    # ── YoY growth (same-month comparison to avoid partial-year bias) ────────
+    yoy = _yoy_growth_same_month(s, "altsales", years, "sales")
 
     # ── avg order interval + order count ─────────────────────────────────────
     # Distinct order-dates per customer (not line-item rows)
@@ -196,14 +231,8 @@ def _collection_metrics(
         .rename(columns={"date": "coll_event_count"})
     )
 
-    # ── YoY growth for collection ────────────────────────────────────────────
-    by_year_c = (
-        c.groupby(["cusid", "year"])["value"]
-        .sum()
-        .unstack(fill_value=0)
-        .rename_axis(None, axis=1)
-    )
-    yoy_c = _yoy_growth(by_year_c, years, "collection")
+    # ── YoY growth (same-month comparison to avoid partial-year bias) ────────
+    yoy_c = _yoy_growth_same_month(c, "value", years, "collection")
 
     # ── avg_days_between_collections ────────────────────────────────────────
     c_sorted = c[c["date"].notna()].sort_values(["cusid", "date"])
