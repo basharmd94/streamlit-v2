@@ -14,88 +14,92 @@ def _ensure_date(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df
 
 
-def _yoy_growth_same_month(
+def _qtr_sort_key(label: str) -> tuple:
+    """Sort key for '2024-Q3' style labels."""
+    year, q = label.split("-Q")
+    return (int(year), int(q))
+
+
+def _qoq_growth_sequential(
     df: pd.DataFrame, value_col: str, years: list, metric: str
 ) -> pd.DataFrame:
-    """Same-month YoY growth — eliminates partial-year bias.
+    """Sequential QoQ growth across the full selection window.
 
-    Instead of comparing annual totals (which makes a partial current year look
-    like shrinkage), we compare each calendar month individually against the
-    same month in the prior year, then average those per-month growth rates.
+    Treats the entire period as one continuous time series of quarters.
+    For each consecutive quarter pair (Qn-1 → Qn):
+      - base > 0 → % change included in average (including -100% for going silent)
+      - base = 0 → skipped (can't compute % from zero; a full silent→active
+        recovery isn't penalised but also can't be expressed as a %)
 
-    - Only months where the PRIOR year had sales (base > 0) count toward the avg.
-    - Months where prior year = 0 but current year > 0 are skipped (new activity
-      in that month — including them as inf would inflate the average unfairly).
-    - A customer with NO valid base months at all (entirely new) → "New ↑" (inf).
-    - 3+ years: same logic applied to each consecutive year pair, then averaged.
+    Zero-value quarters ARE included in the grid, so going from active → 0
+    produces a real -100% that is counted in the average.
+
+    Customers who never had a non-zero base quarter (fully new in the window)
+    → "New ↑" (np.inf).
     """
     col_name = f"yoy_{metric}_growth_pct"
 
-    # Ensure numeric year/month
     df = df.copy()
-    df["year"]  = pd.to_numeric(df["year"],  errors="coerce")
-    df["month"] = pd.to_numeric(df["month"], errors="coerce")
+    df["year"]    = pd.to_numeric(df["year"],    errors="coerce")
+    df["month"]   = pd.to_numeric(df["month"],   errors="coerce")
     df[value_col] = pd.to_numeric(df[value_col], errors="coerce").fillna(0.0)
 
-    years_sorted = sorted(
-        y for y in years
-        if pd.notna(y) and y in df["year"].dropna().unique()
-    )
-    if len(years_sorted) < 2:
-        return pd.DataFrame(columns=["cusid"])
+    if years:
+        df = df[df["year"].isin(years)]
 
-    # Monthly totals per customer
-    monthly = (
-        df.groupby(["cusid", "year", "month"])[value_col]
+    if df.empty:
+        return pd.DataFrame(columns=["cusid", col_name])
+
+    # ── quarterly labels ─────────────────────────────────────────────────────
+    df["qtr_label"] = (
+        df["year"].astype(int).astype(str)
+        + "-Q"
+        + (((df["month"] - 1) // 3) + 1).astype(int).astype(str)
+    )
+
+    # All quarters present in the dataset (sorted chronologically)
+    all_qtrs = sorted(df["qtr_label"].dropna().unique(), key=_qtr_sort_key)
+    if len(all_qtrs) < 2:
+        return pd.DataFrame(columns=["cusid", col_name])
+
+    # Customer-quarter totals
+    quarterly = (
+        df.groupby(["cusid", "qtr_label"])[value_col]
         .sum()
         .reset_index()
     )
 
-    pair_avgs = []   # one Series (cusid → mean growth %) per consecutive year pair
+    # Pivot to wide; fill 0 for quarters a customer was absent
+    pivot = (
+        quarterly.pivot(index="cusid", columns="qtr_label", values=value_col)
+        .reindex(columns=all_qtrs, fill_value=0.0)
+        .fillna(0.0)
+    )
 
-    for i in range(1, len(years_sorted)):
-        y0, y1 = years_sorted[i - 1], years_sorted[i]
+    # ── per-quarter-pair % change ─────────────────────────────────────────────
+    pct_cols = []
+    for i in range(1, len(all_qtrs)):
+        q0, q1 = all_qtrs[i - 1], all_qtrs[i]
+        b0 = pivot[q0]
+        b1 = pivot[q1]
+        pct = pd.Series(np.nan, index=pivot.index)
+        has_base = b0 > 0
+        pct[has_base] = ((b1[has_base] - b0[has_base]) / b0[has_base] * 100).round(1)
+        pct_cols.append(pct)
 
-        y0_m = (monthly[monthly["year"] == y0][["cusid", "month", value_col]]
-                .rename(columns={value_col: "v0"}))
-        y1_m = (monthly[monthly["year"] == y1][["cusid", "month", value_col]]
-                .rename(columns={value_col: "v1"}))
+    combined = pd.concat(pct_cols, axis=1)  # shape: customers × (n_qtrs - 1)
 
-        # Left-join current year onto prior year on cusid+month
-        joined = y1_m.merge(y0_m, on=["cusid", "month"], how="left")
-        joined["v0"] = joined["v0"].fillna(0.0)
-
-        # Only months where the base (prior year) had sales
-        valid = joined[joined["v0"] > 0].copy()
-        if valid.empty:
-            continue
-
-        valid["pct"] = (valid["v1"] - valid["v0"]) / valid["v0"] * 100
-        pair_avg = valid.groupby("cusid")["pct"].mean()
-        pair_avgs.append(pair_avg)
-
-    if not pair_avgs:
-        # No customer had a valid base month across any transition
-        new_cus = monthly[monthly["year"] == years_sorted[-1]]["cusid"].unique()
-        if len(new_cus):
-            return pd.DataFrame({"cusid": new_cus, col_name: np.inf})
-        return pd.DataFrame(columns=["cusid", col_name])
-
-    # Average across all year-pair transitions
-    combined = pd.concat(pair_avgs, axis=1)
+    # Average across all transitions where base was non-zero (NaN excluded by mean)
     avg = combined.mean(axis=1).round(1)
     avg.name = col_name
+
     result = avg.reset_index()
 
-    # Customers in the latest year but not captured above → fully new → inf
-    all_in_result = set(result["cusid"])
-    last_year_cus = set(monthly[monthly["year"] == years_sorted[-1]]["cusid"])
-    new_cus = last_year_cus - all_in_result
-    if new_cus:
-        result = pd.concat(
-            [result, pd.DataFrame({"cusid": list(new_cus), col_name: np.inf})],
-            ignore_index=True,
-        )
+    # Customers with no valid base quarter at all → entirely new → "New ↑"
+    had_valid_base = combined.notna().any(axis=1)
+    has_any_sales  = (pivot > 0).any(axis=1)
+    fully_new = (~had_valid_base) & has_any_sales
+    result.loc[result["cusid"].isin(pivot.index[fully_new]), col_name] = np.inf
 
     return result
 
@@ -135,8 +139,8 @@ def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
         .reset_index()
     )
 
-    # ── YoY growth (same-month comparison to avoid partial-year bias) ────────
-    yoy = _yoy_growth_same_month(s, "altsales", years, "sales")
+    # ── QoQ growth (sequential quarters across the full period) ─────────────
+    yoy = _qoq_growth_sequential(s, "altsales", years, "sales")
 
     # ── avg order interval + order count ─────────────────────────────────────
     # Distinct order-dates per customer (not line-item rows)
@@ -231,8 +235,8 @@ def _collection_metrics(
         .rename(columns={"date": "coll_event_count"})
     )
 
-    # ── YoY growth (same-month comparison to avoid partial-year bias) ────────
-    yoy_c = _yoy_growth_same_month(c, "value", years, "collection")
+    # ── QoQ growth (sequential quarters across the full period) ─────────────
+    yoy_c = _qoq_growth_sequential(c, "value", years, "collection")
 
     # ── avg_days_between_collections ────────────────────────────────────────
     c_sorted = c[c["date"].notna()].sort_values(["cusid", "date"])
