@@ -1844,6 +1844,32 @@ def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
     return sql, (int(zid), int(zid))
 
 
+def get_location_track_monthly(username: str, year: int, month: int) -> Tuple[str, tuple]:
+    """All valid GPS pings for one salesman in a calendar month, ordered by time.
+
+    Returns one row per ping with track_date so the caller can group by day.
+    Coordinates pre-filtered to Bangladesh bounding box.
+    """
+    sql = """
+        SELECT
+            username,
+            latitude,
+            longitude,
+            DATE(COALESCE(timestamp, created_at))   AS track_date,
+            COALESCE(timestamp, created_at)          AS ts,
+            is_check_in,
+            is_mock_location
+        FROM location_records
+        WHERE username = %s
+          AND EXTRACT(YEAR  FROM COALESCE(timestamp, created_at)) = %s
+          AND EXTRACT(MONTH FROM COALESCE(timestamp, created_at)) = %s
+          AND latitude  BETWEEN 20.34 AND 26.63
+          AND longitude BETWEEN 88.01 AND 92.67
+        ORDER BY ts
+    """
+    return sql, (username, int(year), int(month))
+
+
 def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
     """All GPS pings for one salesman on one date, ordered by time.
 

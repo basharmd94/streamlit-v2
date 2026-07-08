@@ -2388,6 +2388,17 @@ def _in_bangladesh(lat: float, lon: float) -> bool:
     return _BD_LAT[0] <= lat <= _BD_LAT[1] and _BD_LON[0] <= lon <= _BD_LON[1]
 
 
+def _day_color(day_index: int, total_days: int) -> list:
+    """Blue (day 1) → green (mid month) → red (last day) gradient."""
+    t = day_index / max(total_days - 1, 1)
+    if t <= 0.5:
+        s = t / 0.5
+        return [int(0 + s * 46), int(116 + s * 88), int(217 - s * 153)]
+    else:
+        s = (t - 0.5) / 0.5
+        return [int(46 + s * 209), int(204 - s * 139), int(64 - s * 10)]
+
+
 @st.cache_data(show_spinner=False, ttl=600)
 def _load_tracking_salesmen(zid: str) -> pd.DataFrame:
     from core.db import get_dataframe
@@ -2397,6 +2408,125 @@ def _load_tracking_salesmen(zid: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+def _render_field_tracking_monthly(zid, sp_df, pdk):
+    import calendar as _cal
+    from core.db import get_dataframe
+    from core import queries
+
+    sp_labels = (sp_df["username"] + " — " + sp_df["display_name"]).tolist()
+    sp_map    = dict(zip(sp_labels, sp_df["username"].tolist()))
+    name_map  = dict(zip(sp_df["username"], sp_df["display_name"]))
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        sel_label = st.selectbox("Salesman", sp_labels, key="ft_mo_sp")
+    with col2:
+        today = pd.Timestamp.today()
+        sel_mo = st.date_input(
+            "Month", value=today.replace(day=1).date(), key="ft_mo_month",
+            help="Pick any day — only the year and month are used",
+        )
+
+    username = sp_map[sel_label]
+    sp_name  = name_map.get(username, username)
+    year, month = sel_mo.year, sel_mo.month
+
+    sql, params = queries.get_location_track_monthly(username, year, month)
+    df = get_dataframe(sql, params)
+
+    if df is None or df.empty:
+        st.info(f"No location data for {sp_name} in {sel_mo.strftime('%B %Y')}.")
+        return
+
+    df["track_date"] = pd.to_datetime(df["track_date"]).dt.date
+    dates   = sorted(df["track_date"].unique())
+    n_days  = len(dates)
+
+    # Working days in month with no GPS (exclude Fridays, future dates)
+    month_range = pd.date_range(
+        start=pd.Timestamp(year=year, month=month, day=1),
+        end=pd.Timestamp(year=year, month=month, day=_cal.monthrange(year, month)[1]),
+        freq="D",
+    )
+    days_set     = {d for d in dates}
+    no_data_days = [
+        d.strftime("%d %b")
+        for d in month_range
+        if d.weekday() != 4
+        and d.date() not in days_set
+        and d.date() <= pd.Timestamp.today().date()
+    ]
+    if no_data_days:
+        st.caption("⚠ No GPS data (working days): " + ", ".join(no_data_days))
+
+    # Build one path + points per day
+    path_data  = []
+    point_data = []
+    all_coords = []
+
+    for i, day in enumerate(dates):
+        color  = _day_color(i, n_days)
+        day_df = df[df["track_date"] == day]
+        coords = [
+            (float(r["longitude"]), float(r["latitude"]))
+            for _, r in day_df.iterrows()
+        ]
+        if len(coords) < 2:
+            continue
+        all_coords.extend(coords)
+        path_data.append({"path": coords, "color": color, "date_label": day.strftime("%d %b")})
+        for (lon, lat), (_, row) in zip(coords, day_df.iterrows()):
+            ts_str = pd.to_datetime(row["ts"]).strftime("%H:%M") if pd.notna(row.get("ts")) else ""
+            point_data.append({
+                "coordinates": [lon, lat],
+                "color": color,
+                "radius": 12,
+                "tooltip": f"{day.strftime('%d %b')}  {ts_str}",
+            })
+
+    if not all_coords:
+        st.info(f"No valid location data for {sp_name} in {sel_mo.strftime('%B %Y')}.")
+        return
+
+    lons = [c[0] for c in all_coords]
+    lats = [c[1] for c in all_coords]
+    span = max(max(lats) - min(lats), max(lons) - min(lons))
+    zoom = 13 if span < 0.02 else (11 if span < 0.1 else (10 if span < 0.3 else 8))
+
+    layers = [
+        pdk.Layer("PathLayer", data=path_data, get_path="path", get_color="color",
+                  width_min_pixels=2, width_max_pixels=4, pickable=True),
+        pdk.Layer("ScatterplotLayer", data=point_data, get_position="coordinates",
+                  get_fill_color="color", get_radius="radius",
+                  pickable=True, auto_highlight=True, opacity=0.75),
+    ]
+    st.pydeck_chart(pdk.Deck(
+        layers=layers,
+        initial_view_state=pdk.ViewState(
+            latitude=(min(lats) + max(lats)) / 2,
+            longitude=(min(lons) + max(lons)) / 2,
+            zoom=zoom, pitch=0,
+        ),
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        tooltip={"text": "{tooltip}"},
+    ), use_container_width=True)
+
+    # Compact gradient legend — show only up to 10 anchor dates
+    step      = max(1, n_days // 10)
+    anchors   = list(range(0, n_days, step)) + [n_days - 1]
+    anchors   = sorted(set(anchors))
+    leg_parts = []
+    for idx in anchors:
+        c   = _day_color(idx, n_days)
+        hex_c = "#{:02x}{:02x}{:02x}".format(*c)
+        leg_parts.append(f"<span style='color:{hex_c}'>●</span> {dates[idx].strftime('%d %b')}")
+    st.markdown("&nbsp; → &nbsp;".join(leg_parts), unsafe_allow_html=True)
+    st.caption(
+        f"{sp_name} · {sel_mo.strftime('%B %Y')} · "
+        f"{n_days} days with GPS · {len(point_data)} total pings"
+    )
+
+
 def _render_field_tracking(zid):
     try:
         import pydeck as pdk
@@ -2404,11 +2534,22 @@ def _render_field_tracking(zid):
         st.error("pydeck is not installed. Run: pip install pydeck")
         return
 
-    st.subheader("🗺️ Field Tracking")
+    _hcol, _rcol = st.columns([2, 2])
+    with _hcol:
+        st.subheader("🗺️ Field Tracking")
+    with _rcol:
+        _ft_mode = st.radio(
+            "", ["📅 Daily", "📆 Monthly"], horizontal=True,
+            key="ft_mode", label_visibility="collapsed",
+        )
 
     sp_df = _load_tracking_salesmen(str(zid))
     if sp_df.empty:
         st.info("No salesmen with location records found for this entity.")
+        return
+
+    if _ft_mode == "📆 Monthly":
+        _render_field_tracking_monthly(zid, sp_df, pdk)
         return
 
     sp_labels = (sp_df["username"] + " — " + sp_df["display_name"]).tolist()
