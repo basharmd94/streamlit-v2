@@ -226,8 +226,9 @@ def save_crm_log(
     loaded_at: datetime,
     logged_by: str,
     force: bool = False,
+    delete_keys: "set | None" = None,
 ) -> tuple[bool, str]:
-    """Merge new_entries into the JSON.
+    """Merge new_entries into the JSON and remove delete_keys.
 
     Returns (success, message).  If the file was modified after loaded_at by
     another session, returns (False, warning_message) unless force=True.
@@ -256,10 +257,22 @@ def save_crm_log(
         entry["logged_at"] = now_str
         existing[key] = entry
 
+    if delete_keys:
+        for k in delete_keys:
+            existing.pop(k, None)
+
     current["entries"] = existing
     current["last_modified"] = now_str
     _CRM_PATH.write_text(
         json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    n = len(new_entries)
-    return True, f"✅ Saved {n} CRM entr{'y' if n == 1 else 'ies'}."
+    n  = len(new_entries)
+    nd = len(delete_keys) if delete_keys else 0
+    if n and nd:
+        return True, f"✅ Saved {n} CRM entr{'y' if n == 1 else 'ies'}, removed {nd}."
+    elif n:
+        return True, f"✅ Saved {n} CRM entr{'y' if n == 1 else 'ies'}."
+    elif nd:
+        return True, f"✅ Removed {nd} cleared CRM entr{'y' if nd == 1 else 'ies'}."
+    else:
+        return True, "✅ Changes saved."

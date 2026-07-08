@@ -45,6 +45,12 @@ def _load_returns_window(zid: str, years: tuple) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
+def _load_opspprc(zid: str) -> pd.DataFrame:
+    df = Analytics("opspprc", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def _load_stock_raw(zid: str) -> pd.DataFrame:
     """Raw imtrn-based 'stock' table (year/month movement buckets) — summed
     with no cutoff in compute_current_stock_from_imtrn() to get the current
@@ -80,7 +86,7 @@ def _fmt(df: pd.DataFrame, fmt: dict, na_rep="—"):
 
 # ── FG Costing ───────────────────────────────────────────────────────────────────
 
-def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, admin_expense: pd.DataFrame):
+def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, admin_expense: pd.DataFrame, opspprc_df: pd.DataFrame = None):
     st.subheader("🏭 Finished Good Costing")
     st.caption("📝 Methodology — see Note [1] at the bottom of the page.")
 
@@ -130,6 +136,19 @@ def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, 
     m1.metric("Material Cost/Unit (window avg)", f"{fg_row['avg_cost_per_unit']:,.2f}")
     m2.metric("Admin (06) Cost/Unit (allocated)", f"{alloc_avg_admin:,.2f}")
     m3.metric("Total Cost/Unit", f"{total_cost_per_unit:,.2f}")
+
+    if opspprc_df is not None and not opspprc_df.empty and "item_id" in opspprc_df.columns:
+        price_row = opspprc_df[opspprc_df["item_id"].astype(str) == str(sel_fg)]
+        if not price_row.empty:
+            r = price_row.iloc[0]
+            std_price = float(r.get("xstdprice", 0) or 0)
+            wh_price  = float(r.get("wh_price",  0) or 0)
+            st.markdown("**💰 Selling Price Reference**")
+            p1, p2, p3 = st.columns(3)
+            p1.metric("Standard Price (caitem)", f"{std_price:,.2f}")
+            p2.metric("Wholesale Price (opspprc)", f"{wh_price:,.2f}")
+            margin = std_price - total_cost_per_unit if std_price > 0 else None
+            p3.metric("Margin vs Total Cost", f"{margin:,.2f}" if margin is not None else "—")
 
     st.markdown("**Cost driver breakdown (raw materials, by share of material cost)**")
     if drivers.empty:
@@ -400,6 +419,109 @@ def _render_bom_variance(zid: str, mo_lines: pd.DataFrame):
     )
 
 
+# ── MO Detail ────────────────────────────────────────────────────────────────────
+
+def _render_mo_detail(zid: str, mo_header: pd.DataFrame, mo_lines: pd.DataFrame):
+    st.subheader("🔍 MO Detail")
+    st.caption("Pick a finished good to see all MOs for it in the last 4 months, then drill into one MO's raw-material lines.")
+
+    today = pd.Timestamp.today()
+    month_start = pd.Timestamp(today.year, today.month, 1)
+    window_start = month_start - pd.DateOffset(months=3)
+    st.caption(f"Window: {window_start.strftime('%b %Y')} – {today.strftime('%b %Y')}")
+
+    mh = mo_header.copy()
+    mh["date"] = pd.to_datetime(mh["date"], errors="coerce")
+    mh_window = mh[(mh["date"] >= window_start) & (mh["date"] <= today)].copy()
+
+    if mh_window.empty:
+        st.info("No completed MOs in the last 4 months.")
+        return
+
+    # Product picker
+    sel_fg = _item_picker("Select Finished Good", mh_window, "itemcode", "itemname", "mfg_mo_detail_prod")
+    if not sel_fg:
+        return
+
+    # MO picker for this product
+    prod_mos = mh_window[mh_window["itemcode"] == sel_fg].sort_values("date", ascending=False)
+    if prod_mos.empty:
+        st.info("No MOs found for this product in the window.")
+        return
+
+    mo_labels = []
+    mo_code_by_label = {}
+    for _, r in prod_mos.iterrows():
+        date_str = r["date"].strftime("%Y-%m-%d") if pd.notna(r["date"]) else "?"
+        qty_str  = f"{float(r.get('qtyprd', 0)):,.0f}"
+        lbl = f"{r['monumber']}  —  {date_str}  —  Qty: {qty_str}"
+        mo_labels.append(lbl)
+        mo_code_by_label[lbl] = str(r["monumber"])
+
+    sel_mo_label = st.selectbox("Select Manufacturing Order", mo_labels, key="mfg_mo_detail_mo")
+    sel_mo = mo_code_by_label.get(sel_mo_label)
+    if not sel_mo:
+        return
+
+    mo_row = prod_mos[prod_mos["monumber"] == sel_mo].iloc[0]
+    qty_produced = float(mo_row.get("qtyprd", 0) or 0)
+    mo_date      = mo_row["date"]
+    unit_fg      = str(mo_row.get("unit", "") or "")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("MO Number", sel_mo)
+    c2.metric("Date", mo_date.strftime("%Y-%m-%d") if pd.notna(mo_date) else "—")
+    c3.metric("Qty Produced", f"{qty_produced:,.0f} {unit_fg}".strip())
+
+    # RM lines for this MO (from mo_lines which already has line_cost)
+    mo_lines_sel = mo_lines[mo_lines["monumber"] == sel_mo].copy()
+    if mo_lines_sel.empty:
+        st.info("No raw material lines found for this MO.")
+        return
+
+    mo_lines_sel["qty"]       = pd.to_numeric(mo_lines_sel["qty"],       errors="coerce").fillna(0.0)
+    mo_lines_sel["qtyord"]    = pd.to_numeric(mo_lines_sel.get("qtyord"), errors="coerce").fillna(0.0)
+    mo_lines_sel["rate"]      = pd.to_numeric(mo_lines_sel["rate"],       errors="coerce").fillna(0.0)
+    mo_lines_sel["line_cost"] = pd.to_numeric(mo_lines_sel["line_cost"],  errors="coerce").fillna(0.0)
+
+    total_material_cost = float(mo_lines_sel["line_cost"].sum())
+    unit_cost = total_material_cost / qty_produced if qty_produced > 0 else 0.0
+
+    cm1, cm2 = st.columns(2)
+    cm1.metric("Total Material Cost", f"{total_material_cost:,.0f}")
+    cm2.metric("Material Cost / Unit", f"{unit_cost:,.2f}")
+
+    col_map = {
+        "itemcode_rm": "RM Code",
+        "itemname_rm": "RM Name",
+        "unit_rm":     "Unit",
+        "qty":         "Qty Issued",
+        "qtyord":      "Standard Qty",
+        "rate":        "Rate",
+        "line_cost":   "Line Cost",
+    }
+    disp_cols = [c for c in col_map if c in mo_lines_sel.columns]
+    disp = mo_lines_sel[disp_cols].rename(columns=col_map).reset_index(drop=True)
+    st.dataframe(
+        _fmt(disp, {
+            "Qty Issued":   "{:,.3f}",
+            "Standard Qty": "{:,.3f}",
+            "Rate":         "{:,.2f}",
+            "Line Cost":    "{:,.0f}",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.download_button(
+        "⬇ Download MO Detail CSV",
+        mo_lines_sel.to_csv(index=False).encode("utf-8"),
+        file_name=f"mo_detail_{sel_mo}_{zid}.csv",
+        mime="text/csv",
+        key="dl_mfg_mo_detail",
+    )
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────────
 
 @timed
@@ -426,16 +548,17 @@ def display_manufacturing_analysis_page(current_page, zid: str):
 
     mo_lines = mfg.merge_mo_lines(mo_header, mo_detail)
     mo_cost = mfg.compute_mo_cost(mo_lines)
+    opspprc_df = _load_opspprc(str(zid))
 
     view_mode = st.radio(
         "View",
         ["🏭 FG Costing", "📈 FG Cost History", "📉 RM Rate Trend", "📦 RM Requirement",
-         "⚠️ RM Stock Coverage", "🔍 BOM Variance / Wastage"],
+         "⚠️ RM Stock Coverage", "🔍 BOM Variance / Wastage", "📋 MO Detail"],
         horizontal=True, key="mfg_view_mode",
     )
 
     if view_mode == "🏭 FG Costing":
-        _render_fg_costing(zid, mo_cost, mo_lines, admin_expense)
+        _render_fg_costing(zid, mo_cost, mo_lines, admin_expense, opspprc_df)
     elif view_mode == "📈 FG Cost History":
         _render_fg_cost_history(zid, mo_cost, mo_header)
     elif view_mode == "📉 RM Rate Trend":
@@ -446,6 +569,8 @@ def display_manufacturing_analysis_page(current_page, zid: str):
         _render_rm_stock_coverage(zid, mo_header, mo_lines, stock_raw)
     elif view_mode == "🔍 BOM Variance / Wastage":
         _render_bom_variance(zid, mo_lines)
+    elif view_mode == "📋 MO Detail":
+        _render_mo_detail(zid, mo_header, mo_lines)
 
     st.markdown("---")
     st.subheader("📝 Notes")

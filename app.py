@@ -112,7 +112,7 @@ def load_filter_options(tables: tuple[str], zid: str, filter_columns: list[str],
 
 @timed
 @st.cache_data(show_spinner=False, ttl=86400)
-def _load_coll_period_opts(zid: str) -> pd.DataFrame:
+def _load_coll_period_opts(zid: str, mv_version: str = "") -> pd.DataFrame:
     """Distinct year+month pairs for Collection Analysis sidebar pass-1.
 
     Replaces the full _load_raw("collection", ...) call — tiny result
@@ -124,7 +124,7 @@ def _load_coll_period_opts(zid: str) -> pd.DataFrame:
 
 @timed
 @st.cache_data(show_spinner=False, ttl=86400)
-def _load_coll_entity_opts(zid: str, years: tuple, months: tuple) -> pd.DataFrame:
+def _load_coll_entity_opts(zid: str, years: tuple, months: tuple, mv_version: str = "") -> pd.DataFrame:
     """Distinct salesman/customer/area for Collection Analysis sidebar pass-2.
 
     Cache key includes years+months so different year selections each get
@@ -141,7 +141,7 @@ def _load_coll_entity_opts(zid: str, years: tuple, months: tuple) -> pd.DataFram
 
 @timed
 @st.cache_data(show_spinner=False, ttl=86400)
-def _load_sales_period_opts(zid: str) -> pd.DataFrame:
+def _load_sales_period_opts(zid: str, mv_version: str = "") -> pd.DataFrame:
     """Distinct year+month pairs for sales-based page sidebar pass-1.
 
     Replaces the full _load_raw call — tiny result (~year×month pairs)
@@ -153,7 +153,7 @@ def _load_sales_period_opts(zid: str) -> pd.DataFrame:
 
 @timed
 @st.cache_data(show_spinner=False, ttl=86400)
-def _load_sales_entity_opts(zid: str, years: tuple, months: tuple) -> pd.DataFrame:
+def _load_sales_entity_opts(zid: str, years: tuple, months: tuple, mv_version: str = "") -> pd.DataFrame:
     """Distinct salesman/customer/item/area/group for sales-based sidebar pass-2.
 
     Cache key includes years+months so different year selections each get
@@ -168,21 +168,25 @@ def _load_sales_entity_opts(zid: str, years: tuple, months: tuple) -> pd.DataFra
     return df if df is not None else pd.DataFrame()
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=120)
 def _load_mv_refresh_times() -> pd.DataFrame:
-    """Last analyze time for each MV from pg_stat_user_tables.
+    """MV state from pg_class (reltuples/relpages) + last-analyze from pg_stat_user_tables.
 
-    REFRESH MATERIALIZED VIEW in PG 9.4 triggers auto-analyze, which updates
-    last_autoanalyze. GREATEST(last_analyze, last_autoanalyze) gives the
-    most recent of the two.
+    pg_class.reltuples and relpages update immediately after REFRESH MATERIALIZED VIEW.
+    pg_stat_user_tables.last_analyze only updates after an explicit ANALYZE or autovacuum,
+    so it may show stale times — add ANALYZE mv_xxx after each REFRESH in db_sync scripts
+    to keep the timestamp accurate.
     """
     from core.db import get_dataframe
     sql = """
         SELECT
-            relname                                        AS mv_name,
-            GREATEST(last_analyze, last_autoanalyze)       AS last_refresh
-        FROM pg_stat_user_tables
-        WHERE relname IN (
+            c.relname                                       AS mv_name,
+            c.reltuples::bigint                             AS approx_rows,
+            c.relpages::bigint                              AS pages,
+            GREATEST(s.last_analyze, s.last_autoanalyze)   AS last_refresh
+        FROM pg_class c
+        LEFT JOIN pg_stat_user_tables s ON s.relname = c.relname
+        WHERE c.relname IN (
             'mv_sales_line_items',
             'mv_collection_vouchers',
             'mv_ar_vouchers',
@@ -193,10 +197,28 @@ def _load_mv_refresh_times() -> pd.DataFrame:
             'mv_sales_daily_item',
             'mv_returns_daily_item'
         )
-        ORDER BY relname
+        ORDER BY c.relname
     """
     df = get_dataframe(sql, ())
     return df if df is not None else pd.DataFrame()
+
+
+def _mv_version_key() -> str:
+    """Return a string that changes whenever any tracked MV is refreshed.
+
+    Derived from pg_class.reltuples + relpages (polled every 120 s via
+    _load_mv_refresh_times).  Passed as mv_version to all 24 h-cached
+    data loaders so they invalidate automatically after a refresh.
+    """
+    df = _load_mv_refresh_times()
+    if df is None or df.empty:
+        return ""
+    parts = (
+        df["approx_rows"].fillna(0).astype(str)
+        + ":"
+        + df["pages"].fillna(0).astype(str)
+    ).tolist()
+    return "|".join(parts)
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
@@ -226,7 +248,7 @@ def _load_zid_dict() -> dict:
 
 @timed
 @st.cache_data(show_spinner=False, ttl=86400)
-def process_data(zid: str,filters: dict, tables: tuple[str], page: str = None) -> dict:
+def process_data(zid: str, filters: dict, tables: tuple[str], page: str = None, mv_version: str = "") -> dict:
     data_dict = {}
     for table in tables:
         df = Analytics(table, zid=zid, filters=filters).data
@@ -237,7 +259,7 @@ def process_data(zid: str,filters: dict, tables: tuple[str], page: str = None) -
 
 @timed
 @st.cache_data(show_spinner=False, ttl=86400)
-def load_purchase_data(zid: str, project: str) -> dict:
+def load_purchase_data(zid: str, project: str, mv_version: str = "") -> dict:
     """Cached loader for Purchase Analysis (same caching pattern as process_data —
     previously this loop had no caching at all, re-pulling everything on every click).
 
@@ -362,13 +384,14 @@ class BaseApp:
                 if _mv_times is not None and not _mv_times.empty:
                     with st.sidebar.expander("🗄️ Data Freshness", expanded=False):
                         for _, _row in _mv_times.iterrows():
-                            _label = _MV_SHORT_NAMES.get(_row["mv_name"], _row["mv_name"])
-                            _ts    = _row["last_refresh"]
-                            _ts_str = (
+                            _label    = _MV_SHORT_NAMES.get(_row["mv_name"], _row["mv_name"])
+                            _ts       = _row.get("last_refresh")
+                            _ts_str   = (
                                 pd.to_datetime(_ts).strftime("%d %b %H:%M")
-                                if pd.notna(_ts) else "Never"
+                                if pd.notna(_ts) else "—"
                             )
-                            st.caption(f"**{_label}**: {_ts_str}")
+                            _rows_str = f"{int(_row.get('approx_rows', 0) or 0):,}"
+                            st.caption(f"**{_label}**: {_ts_str} · {_rows_str} rows")
             except Exception:
                 pass
             if st.sidebar.button("🔄 Refresh All Data", key="refresh_all_data", help="Clear all cached data and reload from the database"):
@@ -492,7 +515,8 @@ class BaseApp:
             if self.current_page == "Collection Analysis":
                 # ── Progressive filter loading (fast path) ───────────────────────
                 # Pass 1: DISTINCT year+month — tiny query, no full-table scan
-                period_df = _load_coll_period_opts(st.session_state.zid)
+                _mv_ver = _mv_version_key()
+                period_df = _load_coll_period_opts(st.session_state.zid, mv_version=_mv_ver)
                 if not period_df.empty:
                     valid_years = sorted(
                         y for y in {int(float(v)) for v in period_df["year"].dropna()}
@@ -516,6 +540,7 @@ class BaseApp:
                     st.session_state.zid,
                     tuple(int(y) for y in selected_years),
                     tuple(int(m) for m in selected_months),
+                    mv_version=_mv_ver,
                 )
                 if not entity_df.empty:
                     ec = set(entity_df.columns)
@@ -546,7 +571,8 @@ class BaseApp:
 
             elif self.current_page == "Marketing Analysis":
                 # ── Marketing Analysis sidebar: Year + Salesman + Area only ───────
-                period_df = _load_sales_period_opts(st.session_state.zid)
+                _mv_ver = _mv_version_key()
+                period_df = _load_sales_period_opts(st.session_state.zid, mv_version=_mv_ver)
                 if not period_df.empty:
                     valid_years = sorted(
                         y for y in {int(float(v)) for v in period_df["year"].dropna()}
@@ -565,6 +591,7 @@ class BaseApp:
                     st.session_state.zid,
                     tuple(int(y) for y in selected_years),
                     (),
+                    mv_version=_mv_ver,
                 )
                 if not entity_df.empty:
                     ec = set(entity_df.columns)
@@ -588,7 +615,8 @@ class BaseApp:
             else:
                 # ── Progressive filter loading (fast path for sales-based pages) ─
                 # Pass 1: DISTINCT year+month — tiny query, avoids full-MV scan
-                period_df = _load_sales_period_opts(st.session_state.zid)
+                _mv_ver = _mv_version_key()
+                period_df = _load_sales_period_opts(st.session_state.zid, mv_version=_mv_ver)
                 if not period_df.empty:
                     valid_years = sorted(
                         y for y in {int(float(v)) for v in period_df["year"].dropna()}
@@ -614,6 +642,7 @@ class BaseApp:
                     st.session_state.zid,
                     tuple(int(y) for y in selected_years),
                     tuple(int(m) for m in selected_months),
+                    mv_version=_mv_ver,
                 )
                 if not entity_df.empty:
                     ec = set(entity_df.columns)
@@ -657,7 +686,8 @@ class BaseApp:
                 st.session_state.ready_to_load_page = self.current_page
                 st.session_state.last_filters       = selected_filters
                 st.session_state.last_data_dict     = process_data(
-                    zid=st.session_state.zid, filters=selected_filters, tables=tables
+                    zid=st.session_state.zid, filters=selected_filters, tables=tables,
+                    mv_version=_mv_version_key(),
                 )
             
         elif self.current_page == "Purchase Analysis":
@@ -669,7 +699,8 @@ class BaseApp:
             if st.sidebar.button("🔄 Load Purchase Data"):
                 # We need returns + GL tables for batch profitability + overhead pools
                 st.session_state.purchase_data_dict = load_purchase_data(
-                    str(st.session_state.zid), st.session_state.proj
+                    str(st.session_state.zid), st.session_state.proj,
+                    mv_version=_mv_version_key(),
                 )
                 st.session_state.purchase_ready = True
 

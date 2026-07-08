@@ -101,6 +101,15 @@ def _render_7day_activity():
         st.info("No customer transactions in the last 7 days.")
         return
 
+    # ── Date filter ───────────────────────────────────────────────────────────
+    today_d = pd.Timestamp.today().date()
+    sel_date = st.date_input("Show activity for date", value=today_d, key="cs_activity_date")
+    feed["_xdate"] = pd.to_datetime(feed["xdate"], errors="coerce").dt.date
+    feed = feed[feed["_xdate"] == sel_date].drop(columns=["_xdate"])
+    if feed.empty:
+        st.info(f"No vouchers on {pd.Timestamp(sel_date).strftime('%d %b %Y')}.")
+        return
+
     # ── CRM log: load once per session and track when ─────────────────────────
     if "cs_loaded_at" not in st.session_state:
         crm_entries, loaded_at = cs.load_crm_log()
@@ -321,6 +330,9 @@ def _do_save(edited: pd.DataFrame, force: bool):
         return
 
     new_entries: dict = {}
+    delete_keys: set  = set()
+    existing_crm = st.session_state.get("cs_crm_entries", {})
+
     for i in range(len(edited)):
         snap_row  = snapshot.iloc[i]
         edit_row  = edited.iloc[i]
@@ -329,28 +341,29 @@ def _do_save(edited: pd.DataFrame, force: bool):
         confirmed = bool(edit_row.get("✓", False))
         remarks   = str(edit_row.get("Remarks", "") or "").strip()
 
-        # Only write rows where something was entered or already existed
-        existing = st.session_state.get("cs_crm_entries", {})
-        if not confirmed and not remarks and key not in existing:
+        if not confirmed and not remarks:
+            # Row cleared — remove from log if it previously existed
+            if key in existing_crm:
+                delete_keys.add(key)
             continue
 
         new_entries[key] = {
-            "zid":      str(snap_row["zid"]),
-            "cusid":    str(snap_row["xsub"]),
-            "voucher":  str(snap_row["xvoucher"]),
-            "txn_type": str(snap_row.get("txn_type", "")),
+            "zid":       str(snap_row["zid"]),
+            "cusid":     str(snap_row["xsub"]),
+            "voucher":   str(snap_row["xvoucher"]),
+            "txn_type":  str(snap_row.get("txn_type", "")),
             "confirmed": confirmed,
             "remarks":   remarks,
         }
 
-    if not new_entries:
+    if not new_entries and not delete_keys:
         st.info("Nothing to save — tick ✓ or add remarks first.")
         return
 
     loaded_at = st.session_state.get("cs_loaded_at", datetime.min.replace(tzinfo=timezone.utc))
     username  = st.session_state.get("username", "unknown")
 
-    success, msg = cs.save_crm_log(new_entries, loaded_at, username, force=force)
+    success, msg = cs.save_crm_log(new_entries, loaded_at, username, force=force, delete_keys=delete_keys)
     if success:
         st.success(msg)
         # Refresh session cache so the next Save sees the new timestamp
