@@ -1816,3 +1816,82 @@ def get_admin_expense_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
         GROUP BY glheader.zid, glheader.xyear, glheader.xper
     """
     return sql, (zid,)
+
+
+# ── Field Tracking (location_records + opmob GPS) ─────────────────────────────
+
+def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
+    """Distinct salesmen who appear in location_records AND have opmob orders
+    for the given ZID.  Uses INNER JOIN instead of EXISTS for reliability.
+    location_records is a company-wide table (no ZID column) so it is joined
+    only on username."""
+    sql = """
+        SELECT DISTINCT
+            lr.username,
+            COALESCE(p.xname, lr.username) AS display_name
+        FROM location_records lr
+        INNER JOIN (
+            SELECT DISTINCT username, MIN(xemp) AS xemp
+            FROM opmob
+            WHERE zid = %s
+              AND username IS NOT NULL AND username <> ''
+            GROUP BY username
+        ) om ON om.username = lr.username
+        LEFT JOIN prmst p ON p.xemp = om.xemp AND p.zid = %s
+        WHERE lr.username IS NOT NULL AND lr.username <> ''
+        ORDER BY display_name
+    """
+    return sql, (int(zid), int(zid))
+
+
+def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
+    """All GPS pings for one salesman on one date, ordered by time.
+
+    Coordinates are validated against Bangladesh's bounding box so mock or
+    erroneous GPS readings never reach the map layer.
+    """
+    sql = """
+        SELECT
+            id,
+            username,
+            latitude,
+            longitude,
+            accuracy,
+            formatted_address,
+            COALESCE(timestamp, created_at)  AS ts,
+            is_check_in,
+            is_mock_location,
+            notes
+        FROM location_records
+        WHERE username = %s
+          AND DATE(COALESCE(timestamp, created_at)) = %s
+          AND latitude  BETWEEN 20.34 AND 26.63
+          AND longitude BETWEEN 88.01 AND 92.67
+        ORDER BY COALESCE(timestamp, created_at)
+    """
+    return sql, (username, track_date)
+
+
+def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple[str, tuple]:
+    """One row per opmob order placed by a salesman on a date that has a
+    GPS coordinate within Bangladesh recorded at time of order entry."""
+    sql = """
+        SELECT
+            xordernum                             AS order_num,
+            MIN(xlat)                             AS lat,
+            MIN(xlong)                            AS lon,
+            xcus                                  AS cusid,
+            COALESCE(MAX(xcusname), xcus)         AS cusname,
+            xstatusord                            AS status,
+            SUM(xlinetotal)                       AS total,
+            xdate
+        FROM opmob
+        WHERE zid = %s
+          AND username = %s
+          AND xdate = %s
+          AND xlat  BETWEEN 20.34 AND 26.63
+          AND xlong BETWEEN 88.01 AND 92.67
+        GROUP BY xordernum, xcus, xstatusord, xdate
+        ORDER BY xordernum
+    """
+    return sql, (int(zid), username, order_date)
