@@ -1314,7 +1314,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
             _r2_mo = _r2[(_r2["_dt"] >= mo_start) & (_r2["_dt"] <= mo_end)]
             if "spid" in _r2_mo.columns:
                 for sp, v in _r2_mo.groupby(_r2_mo["spid"].astype(str))["treturnamt"].sum().items():
-                    ret_by_sp[sp] = ret_by_sp.get(sp, 0.0) + v
+                    ret_by_sp[sp] = ret_by_sp.get(sp, 0.0) + float(v)
 
         if not _o_coll.empty and "value" in _o_coll.columns:
             _c2 = _o_coll.copy()
@@ -1323,7 +1323,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
             _c2["month"] = pd.to_numeric(_c2["month"], errors="coerce")
             for sp, v in (_c2[(_c2["year"] == sel_year) & (_c2["month"] == sel_month)]
                            .groupby("spid")["value"].sum().items()):
-                coll_by_sp[sp] = coll_by_sp.get(sp, 0.0) + v
+                coll_by_sp[sp] = coll_by_sp.get(sp, 0.0) + float(v)
 
         if not _o_ar.empty:
             ar_clean = pd.concat([ar_clean, _o_ar], ignore_index=True)
