@@ -226,7 +226,7 @@ def load_employee_options(zid: str) -> list[str]:
     """Load salesman options for the AR Analysis sidebar."""
     from core.db import get_dataframe
     df = get_dataframe(
-        "SELECT spid::text AS spid, spname FROM employee WHERE zid = %s ORDER BY spname",
+        "SELECT xemp::text AS spid, xname AS spname FROM prmst WHERE zid = %s ORDER BY xname",
         (zid,)
     )
     if df is not None and not df.empty:

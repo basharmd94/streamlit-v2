@@ -1826,9 +1826,9 @@ def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
     sql = """
         SELECT DISTINCT
             om.username,
-            COALESCE(e.spname, om.username) AS display_name
+            COALESCE(p.xname, om.username) AS display_name
         FROM opmob om
-        LEFT JOIN employee e ON om.xemp = e.spid AND e.zid = om.zid
+        LEFT JOIN prmst p ON om.xemp = p.xemp AND p.zid = om.zid
         WHERE om.zid = %s
           AND om.username IS NOT NULL AND om.username <> ''
           AND EXISTS (
