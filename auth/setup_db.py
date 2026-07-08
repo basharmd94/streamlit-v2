@@ -1,19 +1,87 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
+import os
 import psycopg2
 import bcrypt
 from config.settings import get_db_params
 
 
 def hash_password(password):
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    if password is None:
+        raise ValueError("Password is missing (None). Ensure *_PASSWORD is set (for example via the project .env file).")
+    if isinstance(password, bytes):
+        password_bytes = password
+    else:
+        password_bytes = str(password).encode("utf-8")
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt())
+
+def _load_dotenv_file(dotenv_path: Path) -> bool:
+    if not dotenv_path.exists():
+        return False
+
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if not key:
+            continue
+
+        if key not in os.environ:
+            os.environ[key] = value
+
+    return True
+
+def _build_default_users():
+    users_config = [
+        ("ADMIN_USERNAME", "ADMIN_PASSWORD", "admin"),
+        ("SALES_USERNAME", "SALES_PASSWORD", "sales"),
+        ("FINANCE_USERNAME", "FINANCE_PASSWORD", "finance"),
+        ("PURCHASE_USERNAME", "PURCHASE_PASSWORD", "purchase"),
+        ("CRM_USERNAME", "CRM_PASSWORD", "crm"),
+        ("SOP_USERNAME", "SOP_PASSWORD", "SOP"),
+        ("HR_USERNAME", "HR_PASSWORD", "HR"),
+    ]
+
+    default_users = []
+    missing = []
+
+    for user_env, pass_env, role in users_config:
+        username = os.getenv(user_env)
+        password = os.getenv(pass_env)
+        if username is None or username == "":
+            missing.append(user_env)
+        if password is None or password == "":
+            missing.append(pass_env)
+
+        default_users.append((username, password, role))
+
+    if missing:
+        missing_sorted = ", ".join(sorted(set(missing)))
+        raise ValueError(
+            "Missing required environment variables for user setup: "
+            f"{missing_sorted}. Ensure they exist in the project .env file or your environment."
+        )
+
+    return default_users
 
 def setup_auth_tables():
     conn = None
     cur = None
     try:
+        project_root = Path(__file__).resolve().parent.parent
+        dotenv_path = project_root / ".env"
+        if _load_dotenv_file(dotenv_path):
+            print(f"Loaded environment variables from: {dotenv_path}")
+        else:
+            print(f"Note: .env file not found at: {dotenv_path} (using process environment variables only)")
+
         db_params = get_db_params()
         # Connect to database
         print("Connecting to database...")
@@ -23,7 +91,7 @@ def setup_auth_tables():
 
         conn = psycopg2.connect(**db_params)
         cur = conn.cursor()
-        
+
         # Create users table
         print("Creating users table...")
         cur.execute("""
@@ -33,7 +101,7 @@ def setup_auth_tables():
             role VARCHAR(20) NOT NULL
         )
         """)
-        
+
         # Create page_permissions table
         print("Creating page_permissions table...")
         cur.execute("""
@@ -43,11 +111,11 @@ def setup_auth_tables():
             PRIMARY KEY (role, page_name)
         )
         """)
-        
+
         # Clear existing permissions to avoid duplicates
         print("Clearing existing permissions...")
         cur.execute("DELETE FROM page_permissions")
-        
+
         # Insert default permissions
         print("Setting up default permissions...")
         cur.execute("""
@@ -101,21 +169,13 @@ def setup_auth_tables():
             ('sales', 'Marketing Analysis'),
             ('crm', 'Marketing Analysis')
         """)
-        
-        # Create default users with their roles
-        default_users = [
-            ('admin_user', 'admin123', 'admin'),
-            ('sales_user', 'sales123', 'sales'),
-            ('finance_user', 'finance123', 'finance'),
-            ('purchase_user', 'purchase123', 'purchase'),
-            ('crm_user', 'crm3210', 'crm'),
-            ('SOP_user', 'sop123', 'SOP')
-        ]
-        
+
+        default_users = _build_default_users()
+
         # Clear existing users to avoid duplicates
         print("Clearing existing users...")
         cur.execute("DELETE FROM users")
-        
+
         # Insert users with hashed passwords
         print("Creating default users...")
         for username, password, role in default_users:
@@ -124,34 +184,12 @@ def setup_auth_tables():
             INSERT INTO users (username, password, role)
             VALUES (%s, %s, %s)
             """, (username, hashed_password, role))
-        
+
         conn.commit()
         print("\nDatabase setup completed successfully!")
         print("\nDefault Users Created:")
-        print("1. Admin User:")
-        print("   - Username: admin_user")
-        print("   - Password: admin123")
-        print("   - Access: All pages")
-        print("\n2. Sales User:")
-        print("   - Username: sales_user")
-        print("   - Password: sales123")
-        print("   - Access: Home, Overall Sales Analysis, YOY Analysis, Basket Analysis")
-        print("\n3. Finance User:")
-        print("   - Username: finance_user")
-        print("   - Password: finance123")
-        print("   - Access: Home, Overall Margin Analysis, Financial Statements, Collection Analysis")
-        print("\n4. Purchase User:")
-        print("   - Username: purchase_user")
-        print("   - Password: purchase123")
-        print("   - Access: Home, Purchase Analysis, YOY Analysis, Distribution & Histograms")
-        print("\n5. CRM User:")
-        print("   - Username: crm_user")
-        print("   - Password: crm3210")
-        print("   - Access: Home, Collection Analysis, Overall Sales Analysis")
-        print("\n6. SOP User:")
-        print("   - Username: SOP_user")
-        print("   - Password: sop123")
-        print("   - Access: Home, Customer Data View")
+        for username, _, role in default_users:
+            print(f" - {role}: {username}")
     except (Exception, psycopg2.DatabaseError) as error:
         print(f"Error: {error}")
         if conn:
