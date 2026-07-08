@@ -2488,6 +2488,30 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
         st.info(f"No valid location data for {sp_name} in {sel_mo.strftime('%B %Y')}.")
         return
 
+    # ── Order locations for the month ─────────────────────────────────────────
+    order_data = []
+    sql2, params2 = queries.get_opmob_order_locations_monthly(int(zid), username, year, month)
+    ord_df = get_dataframe(sql2, params2)
+    if ord_df is not None and not ord_df.empty:
+        for _, row in ord_df.iterrows():
+            lat = float(row["lat"] or 0)
+            lon = float(row["lon"] or 0)
+            if not _in_bangladesh(lat, lon):
+                continue
+            all_coords.append((lon, lat))
+            order_data.append({
+                "coordinates": [lon, lat],
+                "color": _ORDER_COLOR,
+                "radius": 40,
+                "tooltip": (
+                    f"Order: {row['order_num']}\n"
+                    f"Date: {pd.to_datetime(row['xdate']).strftime('%d %b')}\n"
+                    f"Customer: {row['cusname']}\n"
+                    f"Status: {row['status']}\n"
+                    f"Total: {int(row['total'] or 0):,}"
+                ),
+            })
+
     lons = [c[0] for c in all_coords]
     lats = [c[1] for c in all_coords]
     span = max(max(lats) - min(lats), max(lons) - min(lons))
@@ -2500,6 +2524,13 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
                   get_fill_color="color", get_radius="radius",
                   pickable=True, auto_highlight=True, opacity=0.75),
     ]
+    if order_data:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=order_data, get_position="coordinates",
+            get_fill_color="color", get_radius="radius",
+            pickable=True, auto_highlight=True, opacity=0.9,
+        ))
+
     st.pydeck_chart(pdk.Deck(
         layers=layers,
         initial_view_state=pdk.ViewState(
@@ -2511,19 +2542,19 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
         tooltip={"text": "{tooltip}"},
     ), use_container_width=True)
 
-    # Compact gradient legend — show only up to 10 anchor dates
-    step      = max(1, n_days // 10)
-    anchors   = list(range(0, n_days, step)) + [n_days - 1]
-    anchors   = sorted(set(anchors))
+    # Compact gradient legend — up to 10 anchor dates + order marker
+    step    = max(1, n_days // 10)
+    anchors = sorted(set(list(range(0, n_days, step)) + [n_days - 1]))
     leg_parts = []
     for idx in anchors:
-        c   = _day_color(idx, n_days)
+        c     = _day_color(idx, n_days)
         hex_c = "#{:02x}{:02x}{:02x}".format(*c)
         leg_parts.append(f"<span style='color:{hex_c}'>●</span> {dates[idx].strftime('%d %b')}")
+    leg_parts.append("<span style='color:#ffa500'>●</span> Order")
     st.markdown("&nbsp; → &nbsp;".join(leg_parts), unsafe_allow_html=True)
     st.caption(
         f"{sp_name} · {sel_mo.strftime('%B %Y')} · "
-        f"{n_days} days with GPS · {len(point_data)} total pings"
+        f"{n_days} days with GPS · {len(point_data)} pings · {len(order_data)} orders"
     )
 
 

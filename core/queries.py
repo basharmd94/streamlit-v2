@@ -1898,6 +1898,31 @@ def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
     return sql, (username, track_date)
 
 
+def get_opmob_order_locations_monthly(zid: int, username: str, year: int, month: int) -> Tuple[str, tuple]:
+    """One row per opmob order in a calendar month with valid Bangladesh GPS."""
+    sql = """
+        SELECT
+            xordernum                             AS order_num,
+            MIN(xlat)                             AS lat,
+            MIN(xlong)                            AS lon,
+            xcus                                  AS cusid,
+            COALESCE(MAX(xcusname), xcus)         AS cusname,
+            xstatusord                            AS status,
+            SUM(xlinetotal)                       AS total,
+            xdate
+        FROM opmob
+        WHERE zid = %s
+          AND username = %s
+          AND EXTRACT(YEAR  FROM xdate) = %s
+          AND EXTRACT(MONTH FROM xdate) = %s
+          AND xlat  BETWEEN 20.34 AND 26.63
+          AND xlong BETWEEN 88.01 AND 92.67
+        GROUP BY xordernum, xcus, xstatusord, xdate
+        ORDER BY xdate, xordernum
+    """
+    return sql, (int(zid), username, int(year), int(month))
+
+
 def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple[str, tuple]:
     """One row per opmob order placed by a salesman on a date that has a
     GPS coordinate within Bangladesh recorded at time of order entry."""
