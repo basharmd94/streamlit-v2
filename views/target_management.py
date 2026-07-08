@@ -2379,6 +2379,14 @@ _TRACK_COLORS = [
 _ORDER_COLOR   = [255, 165,   0]
 _CHECKIN_COLOR = [  0, 200, 100]
 
+# Bangladesh bounding box — coords outside this are invalid/mock
+_BD_LAT = (20.34, 26.63)
+_BD_LON = (88.01, 92.67)
+
+
+def _in_bangladesh(lat: float, lon: float) -> bool:
+    return _BD_LAT[0] <= lat <= _BD_LAT[1] and _BD_LON[0] <= lon <= _BD_LON[1]
+
 
 @st.cache_data(show_spinner=False, ttl=600)
 def _load_tracking_salesmen(zid: str) -> pd.DataFrame:
@@ -2436,17 +2444,16 @@ def _render_field_tracking(zid):
         track_df    = get_dataframe(sql, params)
 
         n_pings = 0
+        n_dropped_track = 0
         if track_df is not None and not track_df.empty:
-            coords = list(zip(
-                track_df["longitude"].astype(float),
-                track_df["latitude"].astype(float),
-            ))
-            all_coords.extend(coords)
-            n_pings = len(coords)
-
-            path_data.append({"path": coords, "color": color})
-
+            valid_coords = []
             for _, row in track_df.iterrows():
+                lat = float(row["latitude"])
+                lon = float(row["longitude"])
+                if not _in_bangladesh(lat, lon):
+                    n_dropped_track += 1
+                    continue
+                valid_coords.append((lon, lat))
                 ts_val  = row.get("ts")
                 ts_str  = pd.to_datetime(ts_val).strftime("%H:%M") if pd.notna(ts_val) else ""
                 addr    = str(row.get("formatted_address") or "").strip()
@@ -2460,22 +2467,29 @@ def _render_field_tracking(zid):
                 if addr:
                     tip += f"\n{addr}"
                 point_data.append({
-                    "coordinates": [float(row["longitude"]), float(row["latitude"])],
+                    "coordinates": [lon, lat],
                     "color":  _CHECKIN_COLOR if is_ci else color,
                     "radius": 35 if is_ci else 18,
                     "tooltip": tip,
                 })
+
+            if valid_coords:
+                all_coords.extend(valid_coords)
+                path_data.append({"path": valid_coords, "color": color})
+            n_pings = len(valid_coords)
 
         # ── Order locations ───────────────────────────────────────────────────
         sql2, params2 = queries.get_opmob_order_locations(int(zid), username, date_str)
         ord_df        = get_dataframe(sql2, params2)
 
         n_orders = 0
+        n_dropped_orders = 0
         if ord_df is not None and not ord_df.empty:
             for _, row in ord_df.iterrows():
                 lat = float(row["lat"] or 0)
                 lon = float(row["lon"] or 0)
-                if lat == 0 and lon == 0:
+                if not _in_bangladesh(lat, lon):
+                    n_dropped_orders += 1
                     continue
                 all_coords.append((lon, lat))
                 n_orders += 1
@@ -2491,7 +2505,11 @@ def _render_field_tracking(zid):
                     ),
                 })
 
-        stats.append(f"**{sp_name}**: {n_pings} pings · {n_orders} orders")
+        stat_line = f"**{sp_name}**: {n_pings} pings · {n_orders} orders"
+        dropped = n_dropped_track + n_dropped_orders
+        if dropped:
+            stat_line += f" · ⚠ {dropped} invalid coord(s) outside Bangladesh filtered"
+        stats.append(stat_line)
 
     if not all_coords:
         st.info(f"No location data for {sel_date.strftime('%d %b %Y')}.")

@@ -1847,8 +1847,8 @@ def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
 def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
     """All GPS pings for one salesman on one date, ordered by time.
 
-    Uses COALESCE(timestamp, created_at) — some records populate one or
-    the other depending on the mobile client version.
+    Coordinates are validated against Bangladesh's bounding box so mock or
+    erroneous GPS readings never reach the map layer.
     """
     sql = """
         SELECT
@@ -1865,8 +1865,8 @@ def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
         FROM location_records
         WHERE username = %s
           AND DATE(COALESCE(timestamp, created_at)) = %s
-          AND latitude  IS NOT NULL
-          AND longitude IS NOT NULL
+          AND latitude  BETWEEN 20.34 AND 26.63
+          AND longitude BETWEEN 88.01 AND 92.67
         ORDER BY COALESCE(timestamp, created_at)
     """
     return sql, (username, track_date)
@@ -1874,7 +1874,7 @@ def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
 
 def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple[str, tuple]:
     """One row per opmob order placed by a salesman on a date that has a
-    non-zero GPS coordinate recorded at time of order entry."""
+    GPS coordinate within Bangladesh recorded at time of order entry."""
     sql = """
         SELECT
             xordernum                             AS order_num,
@@ -1889,8 +1889,8 @@ def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple
         WHERE zid = %s
           AND username = %s
           AND xdate = %s
-          AND xlat  IS NOT NULL AND xlat  <> 0
-          AND xlong IS NOT NULL AND xlong <> 0
+          AND xlat  BETWEEN 20.34 AND 26.63
+          AND xlong BETWEEN 88.01 AND 92.67
         GROUP BY xordernum, xcus, xstatusord, xdate
         ORDER BY xordernum
     """
