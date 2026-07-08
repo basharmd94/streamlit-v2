@@ -1191,7 +1191,8 @@ def _load_score_sales(zid: str, year: int) -> pd.DataFrame:
     df = Analytics("sales", zid=zid, filters={"year": [year]}).data
     if df is None or df.empty:
         return pd.DataFrame()
-    return common.data_copy_add_columns(df.copy())
+    result = common.data_copy_add_columns(df.copy())
+    return result[0] if result else pd.DataFrame()
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
@@ -1200,7 +1201,8 @@ def _load_score_returns(zid: str, year: int) -> pd.DataFrame:
     df = Analytics("return", zid=zid, filters={"year": [year]}).data
     if df is None or df.empty:
         return pd.DataFrame()
-    return common.data_copy_add_columns(df.copy())
+    result = common.data_copy_add_columns(df.copy())
+    return result[0] if result else pd.DataFrame()
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
