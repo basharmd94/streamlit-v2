@@ -1821,23 +1821,27 @@ def get_admin_expense_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
 # ── Field Tracking (location_records + opmob GPS) ─────────────────────────────
 
 def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
-    """Distinct salesmen (username + display_name) who have opmob orders for
-    the given ZID AND have at least one row in location_records."""
+    """Distinct salesmen who appear in location_records AND have opmob orders
+    for the given ZID.  Uses INNER JOIN instead of EXISTS for reliability.
+    location_records is a company-wide table (no ZID column) so it is joined
+    only on username."""
     sql = """
         SELECT DISTINCT
-            om.username,
-            COALESCE(p.xname, om.username) AS display_name
-        FROM opmob om
-        LEFT JOIN prmst p ON om.xemp = p.xemp AND p.zid = om.zid
-        WHERE om.zid = %s
-          AND om.username IS NOT NULL AND om.username <> ''
-          AND EXISTS (
-              SELECT 1 FROM location_records lr
-              WHERE lr.username = om.username
-          )
+            lr.username,
+            COALESCE(p.xname, lr.username) AS display_name
+        FROM location_records lr
+        INNER JOIN (
+            SELECT DISTINCT username, MIN(xemp) AS xemp
+            FROM opmob
+            WHERE zid = %s
+              AND username IS NOT NULL AND username <> ''
+            GROUP BY username
+        ) om ON om.username = lr.username
+        LEFT JOIN prmst p ON p.xemp = om.xemp AND p.zid = %s
+        WHERE lr.username IS NOT NULL AND lr.username <> ''
         ORDER BY display_name
     """
-    return sql, (int(zid),)
+    return sql, (int(zid), int(zid))
 
 
 def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
