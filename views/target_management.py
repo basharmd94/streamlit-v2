@@ -2367,6 +2367,202 @@ def _render_next_month_target(zid):
     st.markdown(f"**[3] Salesman × Area Performance** — {note2}")
 
 
+# ── Field Tracking ────────────────────────────────────────────────────────────
+
+_TRACK_COLORS = [
+    [0,   116, 217],
+    [185,  66, 252],
+    [255,  65,  54],
+    [46,  204,  64],
+    [1,   255, 112],
+]
+_ORDER_COLOR   = [255, 165,   0]
+_CHECKIN_COLOR = [  0, 200, 100]
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _load_tracking_salesmen(zid: str) -> pd.DataFrame:
+    from core.db import get_dataframe
+    from core import queries
+    sql, params = queries.get_field_tracking_salesmen(int(zid))
+    df = get_dataframe(sql, params)
+    return df if df is not None else pd.DataFrame()
+
+
+def _render_field_tracking(zid):
+    try:
+        import pydeck as pdk
+    except ImportError:
+        st.error("pydeck is not installed. Run: pip install pydeck")
+        return
+
+    st.subheader("🗺️ Field Tracking")
+
+    sp_df = _load_tracking_salesmen(str(zid))
+    if sp_df.empty:
+        st.info("No salesmen with location records found for this entity.")
+        return
+
+    sp_labels = (sp_df["username"] + " — " + sp_df["display_name"]).tolist()
+    sp_map    = dict(zip(sp_labels, sp_df["username"].tolist()))
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        sel_labels = st.multiselect("Salesman", sp_labels, default=sp_labels[:1], key="ft_sp")
+    with col2:
+        sel_date = st.date_input("Date", value=pd.Timestamp.today().date(), key="ft_date")
+
+    if not sel_labels:
+        st.info("Select at least one salesman.")
+        return
+
+    from core.db import get_dataframe
+    from core import queries
+
+    date_str   = str(sel_date)
+    path_data  = []
+    point_data = []
+    order_data = []
+    all_coords = []
+    stats      = []
+
+    for i, label in enumerate(sel_labels):
+        username  = sp_map[label]
+        sp_name   = label.split(" — ", 1)[-1]
+        color     = _TRACK_COLORS[i % len(_TRACK_COLORS)]
+
+        # ── GPS track ─────────────────────────────────────────────────────────
+        sql, params = queries.get_location_track(username, date_str)
+        track_df    = get_dataframe(sql, params)
+
+        n_pings = 0
+        if track_df is not None and not track_df.empty:
+            coords = list(zip(
+                track_df["longitude"].astype(float),
+                track_df["latitude"].astype(float),
+            ))
+            all_coords.extend(coords)
+            n_pings = len(coords)
+
+            path_data.append({"path": coords, "color": color})
+
+            for _, row in track_df.iterrows():
+                ts_val  = row.get("ts")
+                ts_str  = pd.to_datetime(ts_val).strftime("%H:%M") if pd.notna(ts_val) else ""
+                addr    = str(row.get("formatted_address") or "").strip()
+                is_ci   = bool(row.get("is_check_in"))
+                is_mock = bool(row.get("is_mock_location"))
+                tip     = f"{sp_name}  {ts_str}"
+                if is_ci:
+                    tip += "  [CHECK-IN]"
+                if is_mock:
+                    tip += "  ⚠ MOCK"
+                if addr:
+                    tip += f"\n{addr}"
+                point_data.append({
+                    "coordinates": [float(row["longitude"]), float(row["latitude"])],
+                    "color":  _CHECKIN_COLOR if is_ci else color,
+                    "radius": 35 if is_ci else 18,
+                    "tooltip": tip,
+                })
+
+        # ── Order locations ───────────────────────────────────────────────────
+        sql2, params2 = queries.get_opmob_order_locations(int(zid), username, date_str)
+        ord_df        = get_dataframe(sql2, params2)
+
+        n_orders = 0
+        if ord_df is not None and not ord_df.empty:
+            for _, row in ord_df.iterrows():
+                lat = float(row["lat"] or 0)
+                lon = float(row["lon"] or 0)
+                if lat == 0 and lon == 0:
+                    continue
+                all_coords.append((lon, lat))
+                n_orders += 1
+                order_data.append({
+                    "coordinates": [lon, lat],
+                    "color":  _ORDER_COLOR,
+                    "radius": 45,
+                    "tooltip": (
+                        f"Order: {row['order_num']}\n"
+                        f"Customer: {row['cusname']}\n"
+                        f"Status: {row['status']}\n"
+                        f"Total: {int(row['total'] or 0):,}"
+                    ),
+                })
+
+        stats.append(f"**{sp_name}**: {n_pings} pings · {n_orders} orders")
+
+    if not all_coords:
+        st.info(f"No location data for {sel_date.strftime('%d %b %Y')}.")
+        return
+
+    # ── Auto-center + zoom ────────────────────────────────────────────────────
+    lons = [c[0] for c in all_coords]
+    lats = [c[1] for c in all_coords]
+    span = max(max(lats) - min(lats), max(lons) - min(lons))
+    zoom = 14 if span < 0.01 else (12 if span < 0.05 else (10 if span < 0.2 else 8))
+
+    # ── pydeck layers ─────────────────────────────────────────────────────────
+    layers = []
+    if path_data:
+        layers.append(pdk.Layer(
+            "PathLayer",
+            data=path_data,
+            get_path="path",
+            get_color="color",
+            width_min_pixels=3,
+            width_max_pixels=5,
+            pickable=False,
+        ))
+    if point_data:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=point_data,
+            get_position="coordinates",
+            get_fill_color="color",
+            get_radius="radius",
+            pickable=True,
+            auto_highlight=True,
+            opacity=0.85,
+        ))
+    if order_data:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=order_data,
+            get_position="coordinates",
+            get_fill_color="color",
+            get_radius="radius",
+            pickable=True,
+            auto_highlight=True,
+            opacity=0.9,
+        ))
+
+    deck = pdk.Deck(
+        layers=layers,
+        initial_view_state=pdk.ViewState(
+            latitude=(min(lats) + max(lats)) / 2,
+            longitude=(min(lons) + max(lons)) / 2,
+            zoom=zoom,
+            pitch=0,
+        ),
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        tooltip={"text": "{tooltip}"},
+    )
+    st.pydeck_chart(deck, use_container_width=True)
+
+    # ── Legend ────────────────────────────────────────────────────────────────
+    legend_items = []
+    for i, label in enumerate(sel_labels):
+        c = _TRACK_COLORS[i % len(_TRACK_COLORS)]
+        hex_c = "#{:02x}{:02x}{:02x}".format(*c)
+        legend_items.append(f"<span style='color:{hex_c}'>●</span> {label.split(' — ',1)[-1]}")
+    legend_items.append("<span style='color:#ffa500'>●</span> Order location")
+    legend_items.append("<span style='color:#00c864'>●</span> Check-in")
+    st.markdown("  &nbsp;·&nbsp;  ".join(legend_items), unsafe_allow_html=True)
+    st.caption("  ·  ".join(stats))
+
+
 # ── Main view ─────────────────────────────────────────────────────────────────
 
 @timed
@@ -2408,7 +2604,7 @@ def display_target_management_page(current_page, zid, data_dict):
         "View",
         ["👤 Individual Salesman", "📊 All Salesmen Overview", "🎯 Salesman Score",
          "📊 3 Month Averages", "🧾 SR Trn",
-         "📦 Current Stock", "🔮 Next Month Target"],
+         "📦 Current Stock", "🔮 Next Month Target", "🗺️ Field Tracking"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -2541,6 +2737,10 @@ def display_target_management_page(current_page, zid, data_dict):
 
     if _view_mode == "🔮 Next Month Target":
         _render_next_month_target(zid)
+        return
+
+    if _view_mode == "🗺️ Field Tracking":
+        _render_field_tracking(zid)
         return
 
     # ── Filters: salesman (single), customer, area (cascading) ────────────────

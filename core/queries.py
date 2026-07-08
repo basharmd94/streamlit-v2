@@ -1816,3 +1816,78 @@ def get_admin_expense_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
         GROUP BY glheader.zid, glheader.xyear, glheader.xper
     """
     return sql, (zid,)
+
+
+# ── Field Tracking (location_records + opmob GPS) ─────────────────────────────
+
+def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
+    """Distinct salesmen (username + display_name) who have opmob orders for
+    the given ZID AND have at least one row in location_records."""
+    sql = """
+        SELECT DISTINCT
+            om.username,
+            COALESCE(e.spname, om.username) AS display_name
+        FROM opmob om
+        LEFT JOIN employee e ON om.xemp = e.spid AND e.zid = om.zid
+        WHERE om.zid = %s
+          AND om.username IS NOT NULL AND om.username <> ''
+          AND EXISTS (
+              SELECT 1 FROM location_records lr
+              WHERE lr.username = om.username
+          )
+        ORDER BY display_name
+    """
+    return sql, (int(zid),)
+
+
+def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
+    """All GPS pings for one salesman on one date, ordered by time.
+
+    Uses COALESCE(timestamp, created_at) — some records populate one or
+    the other depending on the mobile client version.
+    """
+    sql = """
+        SELECT
+            id,
+            username,
+            latitude,
+            longitude,
+            accuracy,
+            formatted_address,
+            COALESCE(timestamp, created_at)  AS ts,
+            is_check_in,
+            is_mock_location,
+            notes
+        FROM location_records
+        WHERE username = %s
+          AND DATE(COALESCE(timestamp, created_at)) = %s
+          AND latitude  IS NOT NULL
+          AND longitude IS NOT NULL
+        ORDER BY COALESCE(timestamp, created_at)
+    """
+    return sql, (username, track_date)
+
+
+def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple[str, tuple]:
+    """One row per opmob order placed by a salesman on a date that has a
+    non-zero GPS coordinate recorded at time of order entry."""
+    sql = """
+        SELECT
+            xordernum                             AS order_num,
+            MIN(xlat)                             AS lat,
+            MIN(xlong)                            AS lon,
+            xcus                                  AS cusid,
+            COALESCE(MAX(xcusname), xcus)         AS cusname,
+            xstatusord                            AS status,
+            SUM(xlinetotal)                       AS total,
+            xdate
+        FROM opmob
+        WHERE zid = %s
+          AND username = %s
+          AND xdate = %s
+          AND xlat  IS NOT NULL AND xlat  <> 0
+          AND xlong IS NOT NULL AND xlong <> 0
+        GROUP BY xordernum, xcus, xstatusord, xdate
+        ORDER BY xordernum
+    """
+    return sql, (int(zid), username, order_date)
