@@ -1102,7 +1102,8 @@ def get_opspprc_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
             o.zid,
             o.xpricecat                         AS item_id,
             o.xqty                              AS wh_qty,
-            GREATEST(ci.xstdprice - o.xdisc, 0) AS wh_price
+            GREATEST(ci.xstdprice - o.xdisc, 0) AS wh_price,
+            ci.xstdprice
         FROM opspprc o
         JOIN caitem ci ON o.zid = ci.zid AND o.xpricecat = ci.xitem
         WHERE o.zid = %s

@@ -820,7 +820,9 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
     month_end    = pd.Timestamp(cur_year, cur_month,
                                 calendar.monthrange(cur_year, cur_month)[1])
 
-    remaining_wd = _count_working_days(today.date(), month_end.date(), holidays)
+    remaining_wd   = _count_working_days(today.date(), month_end.date(), holidays)
+    wd_elapsed     = max(1, _count_working_days(mo_start_cur.date(), today.date(), holidays))
+    total_wd_month = _count_working_days(mo_start_cur.date(), month_end.date(), holidays)
 
     if "date" not in sales_df.columns or "final_sales" not in sales_df.columns:
         st.warning("Required columns missing.")
@@ -919,6 +921,10 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
             "Days Left":                remaining_wd,
             "Daily Required":           daily_req,
             "Monthly Avg (3M)":         monthly_avg,
+            "Daily Avg (MTD)":          round(mtd_sales / wd_elapsed, 0),
+            "Predicted Total":          round((mtd_sales / wd_elapsed) * total_wd_month, 0),
+            "Predicted vs Target":      round((mtd_sales / wd_elapsed) * total_wd_month - target, 0) if target > 0 else None,
+            "Collection Gap":           round(target * 1.02 - mtd_coll, 0) if target > 0 else None,
         })
 
     if rows1:
@@ -938,6 +944,10 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
                 "Days Left":                "{:,.0f}",
                 "Daily Required":           "{:,.0f}",
                 "Monthly Avg (3M)":         "{:,.0f}",
+                "Daily Avg (MTD)":          "{:,.0f}",
+                "Predicted Total":          "{:,.0f}",
+                "Predicted vs Target":      lambda v: f"{v:+,.0f}" if v is not None else "—",
+                "Collection Gap":           lambda v: f"{v:,.0f}" if v is not None else "—",
             }, na_rep="—")
 
             def _col_pct(col):
@@ -1168,6 +1178,38 @@ def _render_prior_month_section(
 
 # ── Salesman Score ──────────────────────────────────────────────────────────────
 
+# ZID peer map for consolidated scoring (100001 ↔ 100000 share the same field sales team)
+_PEER_ZID_PROJ = {
+    "100001": ("100000", "GI Corporation"),
+    "100000": ("100001", "GULSHAN TRADING"),
+}
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def _load_score_sales(zid: str, year: int) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("sales", zid=zid, filters={"year": [year]}).data
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return common.data_copy_add_columns(df.copy())
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def _load_score_returns(zid: str, year: int) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("return", zid=zid, filters={"year": [year]}).data
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return common.data_copy_add_columns(df.copy())
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def _load_score_collection(zid: str, year: int) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("collection", zid=zid, filters={"year": [year]}).data
+    return df if df is not None else pd.DataFrame()
+
+
 def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid, collection_df: pd.DataFrame = None):
     """
     Composite 0-100 performance score per salesman for one selected month —
@@ -1194,6 +1236,19 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
     sel_label = st.selectbox("Month", [m[0] for m in month_opts], index=0, key="tm_score_month")
     sel_year, sel_month = next((y, m) for (lbl, y, m) in month_opts if lbl == sel_label)
     is_current = ssc.is_real_current_month(sel_year, sel_month, today)
+
+    # ── Consolidation toggle (100001 ↔ 100000 only) ───────────────────────────
+    peer_config = _PEER_ZID_PROJ.get(str(zid))
+    if peer_config:
+        scope_mode = st.radio(
+            "Scope",
+            [f"ZID {zid} only", "Consolidated (100001 + 100000)"],
+            horizontal=True,
+            key="tm_score_scope",
+        )
+        is_consolidated = scope_mode.startswith("Consolidated")
+    else:
+        is_consolidated = False
 
     if "date" not in sales_df.columns or "final_sales" not in sales_df.columns:
         st.warning("Required columns missing.")
@@ -1236,6 +1291,52 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
     with st.spinner("Loading AR ledger…"):
         ar_clean = _load_ar_ledger_clean(str(zid), proj)
 
+    # ── Consolidation data loading ────────────────────────────────────────────
+    if is_consolidated and peer_config:
+        other_zid, other_proj = peer_config
+        with st.spinner(f"Loading ZID {other_zid} data for consolidation…"):
+            _o_sales = _load_score_sales(other_zid, sel_year)
+            _o_ret   = _load_score_returns(other_zid, sel_year)
+            _o_coll  = _load_score_collection(other_zid, sel_year)
+            _o_ar    = _load_ar_ledger_clean(other_zid, other_proj)
+
+        if not _o_sales.empty and "date" in _o_sales.columns:
+            _os = _o_sales.copy()
+            _os["_dt"] = pd.to_datetime(_os["date"], errors="coerce")
+            other_mo = _os[(_os["_dt"] >= mo_start) & (_os["_dt"] <= mo_end)]
+            mo_data = pd.concat([mo_data, other_mo], ignore_index=True)
+
+        if not _o_ret.empty and "treturnamt" in _o_ret.columns and "date" in _o_ret.columns:
+            _r2 = _o_ret.copy()
+            _r2["_dt"] = pd.to_datetime(_r2["date"], errors="coerce")
+            _r2_mo = _r2[(_r2["_dt"] >= mo_start) & (_r2["_dt"] <= mo_end)]
+            if "spid" in _r2_mo.columns:
+                for sp, v in _r2_mo.groupby(_r2_mo["spid"].astype(str))["treturnamt"].sum().items():
+                    ret_by_sp[sp] = ret_by_sp.get(sp, 0.0) + v
+
+        if not _o_coll.empty and "value" in _o_coll.columns:
+            _c2 = _o_coll.copy()
+            _c2["spid"]  = _c2["spid"].astype(str)
+            _c2["year"]  = pd.to_numeric(_c2["year"],  errors="coerce")
+            _c2["month"] = pd.to_numeric(_c2["month"], errors="coerce")
+            for sp, v in (_c2[(_c2["year"] == sel_year) & (_c2["month"] == sel_month)]
+                           .groupby("spid")["value"].sum().items()):
+                coll_by_sp[sp] = coll_by_sp.get(sp, 0.0) + v
+
+        if not _o_ar.empty:
+            ar_clean = pd.concat([ar_clean, _o_ar], ignore_index=True)
+
+        if not _o_sales.empty and "spid" in _o_sales.columns:
+            sp_extra = _o_sales[["spid", "spname"]].dropna().drop_duplicates()
+            sp_list = pd.concat(
+                [df[["spid", "spname"]].dropna().drop_duplicates(), sp_extra],
+                ignore_index=True,
+            ).drop_duplicates("spid").sort_values("spname").reset_index(drop=True)
+        else:
+            sp_list = df[["spid", "spname"]].dropna().drop_duplicates().sort_values("spname")
+    else:
+        sp_list = df[["spid", "spname"]].dropna().drop_duplicates().sort_values("spname")
+
     cur = pd.Timestamp(sel_year, sel_month, 1)
     bal_months = [
         ((cur - pd.DateOffset(months=i)).strftime("%b %Y"),
@@ -1255,7 +1356,6 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
     bal_by_month = {label: (y, m) for label, y, m in bal_months}
 
     # ── Build per-salesman rows ────────────────────────────────────────────────
-    sp_list = df[["spid", "spname"]].dropna().drop_duplicates().sort_values("spname")
 
     rows = []
     for _, sp_row in sp_list.iterrows():
@@ -1268,7 +1368,13 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         ret = round(ret_by_sp.get(spid, 0.0), 0)
         net_sales = round(sales - ret, 0)
 
-        target = float(_get_target(zid, spid, sel_year, sel_month) or 0.0)
+        if is_consolidated:
+            target = (
+                float(_get_target("100001", spid, sel_year, sel_month) or 0.0)
+                + float(_get_target("100000", spid, sel_year, sel_month) or 0.0)
+            )
+        else:
+            target = float(_get_target(zid, spid, sel_year, sel_month) or 0.0)
         pct_tgt = round(net_sales / target * 100, 1) if target > 0 else None
 
         coll = round(float(coll_by_sp.get(spid, 0.0)), 0)
@@ -1356,7 +1462,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
     st.download_button(
         "⬇ Download Salesman Score CSV",
         t.to_csv(index=False).encode("utf-8"),
-        file_name=f"salesman_score_{zid}_{sel_year}_{sel_month:02d}.csv",
+        file_name=f"salesman_score_{'consolidated' if is_consolidated else zid}_{sel_year}_{sel_month:02d}.csv",
         mime="text/csv",
         key="dl_salesman_score",
     )
