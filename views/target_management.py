@@ -2428,6 +2428,27 @@ def _render_field_tracking(zid):
     from core import queries
 
     date_str   = str(sel_date)
+
+    # ── No-data warning note ──────────────────────────────────────────────────
+    # Check which known salesmen have zero valid BD-coordinate rows on this date
+    _cov_sql = """
+        SELECT DISTINCT username FROM location_records
+        WHERE DATE(COALESCE(timestamp, created_at)) = %s
+          AND latitude  BETWEEN 20.34 AND 26.63
+          AND longitude BETWEEN 88.01 AND 92.67
+    """
+    _cov_df = get_dataframe(_cov_sql, (date_str,))
+    _active = set(_cov_df["username"].tolist()) if _cov_df is not None and not _cov_df.empty else set()
+    _no_data = [
+        row["display_name"]
+        for _, row in sp_df.iterrows()
+        if row["username"] not in _active
+    ]
+    if _no_data:
+        st.caption(
+            "⚠ No GPS data on this date for: "
+            + ", ".join(_no_data)
+        )
     path_data  = []
     point_data = []
     order_data = []
