@@ -475,6 +475,16 @@ def _render_latest_sales_collection():
         st.session_state["cs_loaded_at"]   = loaded_at
     crm_entries = st.session_state.get("cs_crm_entries", {})
 
+    # Reuse the same cached AR ledger + cacus already loaded for the 14-day feed.
+    # build_latest_sc_for_zid uses the exact same prep_ar_ledger +
+    # build_latest_sale_collection_report pipeline as Salesman Due, so balances match.
+    ar_df    = _ar_data()
+    cacus_df = _cacus_data()
+
+    if ar_df is None or ar_df.empty:
+        st.warning("AR ledger data unavailable.")
+        return
+
     # ── Shared filters for 100001 + 100000 ───────────────────────────────────
     st.markdown("#### HMBR Tools (100001) & GI Corporation (100000)")
     fc1, fc2 = st.columns(2)
@@ -491,10 +501,8 @@ def _render_latest_sales_collection():
         key="cs_sc_cust_ab",
     ).strip() or None
 
-    with st.spinner("Loading 100001 data…"):
-        df_100001 = cs.load_latest_sales_collection("100001", _ZID_PROJECT["100001"])
-    with st.spinner("Loading 100000 data…"):
-        df_100000 = cs.load_latest_sales_collection("100000", _ZID_PROJECT["100000"])
+    df_100001 = cs.build_latest_sc_for_zid(ar_df, "100001", cacus_df)
+    df_100000 = cs.build_latest_sc_for_zid(ar_df, "100000", cacus_df)
 
     st.markdown(f"##### {_ZID_LABEL['100001']}")
     _render_sc_table(
@@ -529,8 +537,7 @@ def _render_latest_sales_collection():
         key="cs_sc_cust_z",
     ).strip() or None
 
-    with st.spinner("Loading 100005 data…"):
-        df_100005 = cs.load_latest_sales_collection("100005", _ZID_PROJECT["100005"])
+    df_100005 = cs.build_latest_sc_for_zid(ar_df, "100005", cacus_df)
 
     _render_sc_table(
         df_100005, "100005", crm_entries,
