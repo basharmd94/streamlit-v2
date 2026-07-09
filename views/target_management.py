@@ -851,7 +851,7 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
         _r_mtd = _r[(_r["_dt"] >= mo_start_cur) & (_r["_dt"] <= today)]
         if "spid" in _r_mtd.columns:
-            mtd_ret_by_sp = _r_mtd.groupby(_r_mtd["spid"].astype(str))["treturnamt"].sum().to_dict()
+            mtd_ret_by_sp = _r_mtd.groupby(_r_mtd["spid"].astype(str))["treturnamt"].sum().astype(float).to_dict()
 
     # ── Collection per salesman × year × month ────────────────────────────────
     coll_by_sp: dict = {}  # (spid, year, month) -> collection value
@@ -860,7 +860,7 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         _c["spid"]  = _c["spid"].astype(str)
         _c["year"]  = pd.to_numeric(_c["year"],  errors="coerce")
         _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
-        coll_by_sp = _c.groupby(["spid", "year", "month"])["value"].sum().to_dict()
+        coll_by_sp = _c.groupby(["spid", "year", "month"])["value"].sum().astype(float).to_dict()
 
     # ── opmob pending per salesman × area ────────────────────────────────────
     pend_sp_area: dict = {}   # (spid, area) -> total pending
@@ -1056,7 +1056,7 @@ def _render_prior_month_section(
         _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
         _r_mo = _r[(_r["_dt"] >= mo_start) & (_r["_dt"] <= mo_end)]
         if "spid" in _r_mo.columns:
-            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().to_dict()
+            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().astype(float).to_dict()
 
     # ── Collection per salesman for this month ────────────────────────────────
     prior_coll_by_sp: dict = {}
@@ -1066,7 +1066,7 @@ def _render_prior_month_section(
         _c["year"]  = pd.to_numeric(_c["year"],  errors="coerce")
         _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
         _mo_c = _c[(_c["year"] == year) & (_c["month"] == month)]
-        prior_coll_by_sp = _mo_c.groupby("spid")["value"].sum().to_dict()
+        prior_coll_by_sp = _mo_c.groupby("spid")["value"].sum().astype(float).to_dict()
 
     sp_list = (
         df[["spid", "spname"]].dropna().drop_duplicates()
@@ -1272,7 +1272,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
         _r_mo = _r[(_r["_dt"] >= mo_start) & (_r["_dt"] <= mo_end)]
         if "spid" in _r_mo.columns:
-            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().to_dict()
+            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().astype(float).to_dict()
 
     # ── Collection for the selected month, per salesman ───────────────────────
     coll_by_sp: dict = {}
@@ -1283,7 +1283,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
         coll_by_sp = (
             _c[(_c["year"] == sel_year) & (_c["month"] == sel_month)]
-            .groupby("spid")["value"].sum().to_dict()
+            .groupby("spid")["value"].sum().astype(float).to_dict()
         )
 
     # ── AR balances: selected month + the 2 before it, from the same FIFO ─────
@@ -2383,9 +2383,30 @@ _CHECKIN_COLOR = [  0, 200, 100]
 _BD_LAT = (20.34, 26.63)
 _BD_LON = (88.01, 92.67)
 
+# Pin-shaped icon for order markers (white SVG with mask=True so get_color controls the tint)
+import base64 as _b64
+_PIN_ICON_URL = "data:image/svg+xml;base64," + _b64.b64encode(
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="64" height="64">'
+    b'<path fill="white" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13'
+    b'c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5'
+    b' 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>'
+).decode()
+_PIN_ICON = {"url": _PIN_ICON_URL, "width": 64, "height": 64, "anchorY": 64, "mask": True}
+
 
 def _in_bangladesh(lat: float, lon: float) -> bool:
     return _BD_LAT[0] <= lat <= _BD_LAT[1] and _BD_LON[0] <= lon <= _BD_LON[1]
+
+
+def _day_color(day_index: int, total_days: int) -> list:
+    """Blue (day 1) → green (mid month) → red (last day) gradient."""
+    t = day_index / max(total_days - 1, 1)
+    if t <= 0.5:
+        s = t / 0.5
+        return [int(0 + s * 46), int(116 + s * 88), int(217 - s * 153)]
+    else:
+        s = (t - 0.5) / 0.5
+        return [int(46 + s * 209), int(204 - s * 139), int(64 - s * 10)]
 
 
 @st.cache_data(show_spinner=False, ttl=600)
@@ -2397,6 +2418,239 @@ def _load_tracking_salesmen(zid: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+def _render_field_tracking_monthly(zid, sp_df, pdk):
+    import calendar as _cal
+    from core.db import get_dataframe
+    from core import queries
+
+    sp_labels = (sp_df["username"] + " — " + sp_df["display_name"]).tolist()
+    sp_map    = dict(zip(sp_labels, sp_df["username"].tolist()))
+    name_map  = dict(zip(sp_df["username"], sp_df["display_name"]))
+
+    # ── Controls ──────────────────────────────────────────────────────────────
+    col1, col2, col3 = st.columns([3, 1, 2])
+    with col1:
+        sel_label = st.selectbox("Salesman", sp_labels, key="ft_mo_sp")
+    with col2:
+        today = pd.Timestamp.today()
+        sel_mo = st.date_input(
+            "Month", value=today.replace(day=1).date(), key="ft_mo_month",
+            help="Pick any day — only year and month are used",
+        )
+    with col3:
+        show_layers = st.multiselect(
+            "Show layers",
+            ["Movement lines", "Order locations"],
+            default=["Movement lines", "Order locations"],
+            key="ft_mo_layers",
+        )
+    show_lines  = "Movement lines"   in show_layers
+    show_orders = "Order locations"  in show_layers
+
+    username = sp_map[sel_label]
+    sp_name  = name_map.get(username, username)
+    year, month = sel_mo.year, sel_mo.month
+
+    # ── Fetch data ────────────────────────────────────────────────────────────
+    sql, params = queries.get_location_track_monthly(username, year, month)
+    df = get_dataframe(sql, params)
+    if df is not None and not df.empty:
+        df["track_date"] = pd.to_datetime(df["track_date"]).dt.date
+
+    sql2, params2 = queries.get_opmob_order_locations_monthly(int(zid), username, year, month)
+    ord_df = get_dataframe(sql2, params2)
+    if ord_df is not None and not ord_df.empty:
+        ord_df["order_date"] = pd.to_datetime(ord_df["xdate"]).dt.date
+
+    track_empty = df is None or df.empty
+    order_empty = ord_df is None or ord_df.empty
+
+    if track_empty and order_empty:
+        st.info(f"No data for {sp_name} in {sel_mo.strftime('%B %Y')}.")
+        return
+
+    # ── Unified date list for gradient colour mapping ─────────────────────────
+    track_dates = set(df["track_date"].unique())       if not track_empty else set()
+    order_dates = set(ord_df["order_date"].unique())   if not order_empty else set()
+    all_dates   = sorted(track_dates | order_dates)
+    n_days      = len(all_dates)
+    date_to_idx = {d: i for i, d in enumerate(all_dates)}
+
+    # ── No-data working-day warning ───────────────────────────────────────────
+    month_range = pd.date_range(
+        start=pd.Timestamp(year=year, month=month, day=1),
+        end=pd.Timestamp(year=year, month=month, day=_cal.monthrange(year, month)[1]),
+        freq="D",
+    )
+    no_data_days = [
+        d.strftime("%d %b")
+        for d in month_range
+        if d.weekday() != 4
+        and d.date() not in track_dates
+        and d.date() <= pd.Timestamp.today().date()
+    ]
+    if no_data_days:
+        st.caption("⚠ No GPS data (working days): " + ", ".join(no_data_days))
+
+    # ── Build movement layers ─────────────────────────────────────────────────
+    path_data  = []
+    point_data = []
+    all_coords = []
+
+    if not track_empty:
+        for day in sorted(track_dates):
+            idx    = date_to_idx[day]
+            color  = _day_color(idx, n_days)
+            day_df = df[df["track_date"] == day]
+            coords = [
+                (float(r["longitude"]), float(r["latitude"]))
+                for _, r in day_df.iterrows()
+            ]
+            if not coords:
+                continue
+            all_coords.extend(coords)
+            if len(coords) >= 2:
+                path_data.append({"path": coords, "color": color})
+            for (lon, lat), (_, row) in zip(coords, day_df.iterrows()):
+                ts_str = pd.to_datetime(row["ts"]).strftime("%H:%M") if pd.notna(row.get("ts")) else ""
+                point_data.append({
+                    "coordinates": [lon, lat],
+                    "color": color,
+                    "radius": 12,
+                    "tooltip": f"{day.strftime('%d %b')}  {ts_str}",
+                })
+
+    # ── Build order layer ─────────────────────────────────────────────────────
+    order_data = []
+    if not order_empty:
+        for _, row in ord_df.iterrows():
+            lat = float(row["lat"] or 0)
+            lon = float(row["lon"] or 0)
+            if not _in_bangladesh(lat, lon):
+                continue
+            odate = row["order_date"]
+            idx   = date_to_idx.get(odate, 0)
+            color = _day_color(idx, n_days)
+            all_coords.append((lon, lat))
+            order_data.append({
+                "coordinates": [lon, lat],
+                "color": color,
+                "icon": _PIN_ICON,
+                "tooltip": (
+                    f"Order: {row['order_num']}\n"
+                    f"Date: {odate.strftime('%d %b')}\n"
+                    f"Customer: {row['cusname']}\n"
+                    f"Status: {row['status']}\n"
+                    f"Total: {int(row['total'] or 0):,}"
+                ),
+            })
+
+    if not all_coords:
+        st.info(f"No valid GPS data for {sp_name} in {sel_mo.strftime('%B %Y')}.")
+        return
+
+    # ── Map ───────────────────────────────────────────────────────────────────
+    lons = [c[0] for c in all_coords]
+    lats = [c[1] for c in all_coords]
+    span = max(max(lats) - min(lats), max(lons) - min(lons))
+    zoom = 13 if span < 0.02 else (11 if span < 0.1 else (10 if span < 0.3 else 8))
+
+    layers = []
+    if show_lines and path_data:
+        layers.append(pdk.Layer("PathLayer", data=path_data, get_path="path",
+                                get_color="color", width_min_pixels=2,
+                                width_max_pixels=4, pickable=True))
+    if show_lines and point_data:
+        layers.append(pdk.Layer("ScatterplotLayer", data=point_data,
+                                get_position="coordinates", get_fill_color="color",
+                                get_radius="radius", pickable=True,
+                                auto_highlight=True, opacity=0.75))
+    if show_orders and order_data:
+        layers.append(pdk.Layer(
+            "IconLayer", data=order_data,
+            get_icon="icon", get_position="coordinates", get_color="color",
+            get_size=40, size_min_pixels=24, size_max_pixels=60,
+            pickable=True, auto_highlight=True,
+        ))
+
+    if not layers:
+        st.info("Select at least one layer to display.")
+        return
+
+    st.pydeck_chart(pdk.Deck(
+        layers=layers,
+        initial_view_state=pdk.ViewState(
+            latitude=(min(lats) + max(lats)) / 2,
+            longitude=(min(lons) + max(lons)) / 2,
+            zoom=zoom, pitch=0,
+        ),
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        tooltip={"text": "{tooltip}"},
+    ), use_container_width=True)
+
+    # ── Gradient legend (up to 10 anchors) ───────────────────────────────────
+    step    = max(1, n_days // 10)
+    anchors = sorted(set(list(range(0, n_days, step)) + [n_days - 1]))
+    leg_parts = []
+    for idx in anchors:
+        c     = _day_color(idx, n_days)
+        hex_c = "#{:02x}{:02x}{:02x}".format(*c)
+        leg_parts.append(f"<span style='color:{hex_c}'>●</span> {all_dates[idx].strftime('%d %b')}")
+    st.markdown(
+        "<small>" + "&nbsp;→&nbsp;".join(leg_parts)
+        + "&nbsp;&nbsp;<b>·</b>&nbsp;&nbsp;"
+        + "◯ line ping &nbsp; ● order (same gradient)</small>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"{sp_name} · {sel_mo.strftime('%B %Y')} · "
+        f"{len(track_dates)} days with GPS · {len(point_data)} pings · {len(order_data)} orders"
+    )
+
+    # ── Day-by-day breakdown table ────────────────────────────────────────────
+    with st.expander("📋 Day-by-day breakdown", expanded=False):
+        rows = []
+        for day in all_dates:
+            # Movement stats
+            if not track_empty and day in track_dates:
+                day_df  = df[df["track_date"] == day]
+                n_pings = len(day_df)
+                ts_vals = pd.to_datetime(day_df["ts"], errors="coerce").dropna()
+                first_s = ts_vals.min().strftime("%H:%M") if len(ts_vals) else "—"
+                last_s  = ts_vals.max().strftime("%H:%M") if len(ts_vals) else "—"
+                checkins = int(day_df["is_check_in"].sum()) if "is_check_in" in day_df.columns else 0
+            else:
+                n_pings, first_s, last_s, checkins = 0, "—", "—", 0
+
+            # Order stats
+            if not order_empty and day in order_dates:
+                day_ord   = ord_df[ord_df["order_date"] == day]
+                n_orders  = len(day_ord)
+                ord_total = int(day_ord["total"].sum())
+                n_cust    = int(day_ord["cusid"].nunique())
+            else:
+                n_orders, ord_total, n_cust = 0, 0, 0
+
+            rows.append({
+                "Date":            day.strftime("%d %b %Y"),
+                "Day":             day.strftime("%A"),
+                "GPS Pings":       n_pings,
+                "First Seen":      first_s,
+                "Last Seen":       last_s,
+                "Check-ins":       checkins,
+                "Orders":          n_orders,
+                "Unique Customers": n_cust,
+                "Order Total":     ord_total,
+            })
+
+        tbl = pd.DataFrame(rows)
+        st.dataframe(
+            tbl.style.format({"Order Total": "{:,.0f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def _render_field_tracking(zid):
     try:
         import pydeck as pdk
@@ -2404,11 +2658,22 @@ def _render_field_tracking(zid):
         st.error("pydeck is not installed. Run: pip install pydeck")
         return
 
-    st.subheader("🗺️ Field Tracking")
+    _hcol, _rcol = st.columns([2, 2])
+    with _hcol:
+        st.subheader("🗺️ Field Tracking")
+    with _rcol:
+        _ft_mode = st.radio(
+            "", ["📅 Daily", "📆 Monthly"], horizontal=True,
+            key="ft_mode", label_visibility="collapsed",
+        )
 
     sp_df = _load_tracking_salesmen(str(zid))
     if sp_df.empty:
         st.info("No salesmen with location records found for this entity.")
+        return
+
+    if _ft_mode == "📆 Monthly":
+        _render_field_tracking_monthly(zid, sp_df, pdk)
         return
 
     sp_labels = (sp_df["username"] + " — " + sp_df["display_name"]).tolist()
@@ -2517,7 +2782,7 @@ def _render_field_tracking(zid):
                 order_data.append({
                     "coordinates": [lon, lat],
                     "color":  _ORDER_COLOR,
-                    "radius": 45,
+                    "icon":   _PIN_ICON,
                     "tooltip": (
                         f"Order: {row['order_num']}\n"
                         f"Customer: {row['cusname']}\n"
@@ -2567,14 +2832,16 @@ def _render_field_tracking(zid):
         ))
     if order_data:
         layers.append(pdk.Layer(
-            "ScatterplotLayer",
+            "IconLayer",
             data=order_data,
+            get_icon="icon",
             get_position="coordinates",
-            get_fill_color="color",
-            get_radius="radius",
+            get_color="color",
+            get_size=40,
+            size_min_pixels=24,
+            size_max_pixels=60,
             pickable=True,
             auto_highlight=True,
-            opacity=0.9,
         ))
 
     deck = pdk.Deck(

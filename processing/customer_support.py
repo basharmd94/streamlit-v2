@@ -124,7 +124,7 @@ def build_7day_feed(
         return pd.DataFrame()
 
     today = pd.Timestamp.today().normalize()
-    cutoff = today - pd.Timedelta(days=6)  # inclusive last 7 days
+    cutoff = today - pd.Timedelta(days=13)  # inclusive last 14 days
 
     ar = ar_df.copy()
     ar["xdate"] = pd.to_datetime(ar["xdate"], errors="coerce")
@@ -198,6 +198,78 @@ def build_customer_ledger(
     df["txn_type"] = df["xvoucher"].apply(classify_txn_type)
     df = df.sort_values(["xdate", "xrow", "xvoucher"]).reset_index(drop=True)
     return df
+
+
+# ─── Latest Sales & Collection (same pipeline as Salesman Due) ───────────────
+
+def build_latest_sc_for_zid(
+    ar_df_cleaned: pd.DataFrame,
+    zid: str,
+    cacus_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build Latest Sales & Collection for one ZID using the identical pipeline
+    as Collection Analysis → Salesman Due → Latest sale & collection tab.
+
+    ar_df_cleaned must already be the output of load_all_ar_ledgers() (i.e.
+    prep_ar_ledger has been applied per ZID and running_balance is present).
+    This guarantees balances, latest sale, and latest collection all match
+    the Salesman Due report exactly.
+    """
+    from processing.salesman_due import build_latest_sale_collection_report
+
+    zid_df = ar_df_cleaned[ar_df_cleaned["zid"].astype(str) == str(zid)].copy()
+    if zid_df.empty:
+        return pd.DataFrame()
+
+    report = build_latest_sale_collection_report(zid_df)
+    if report.empty:
+        return pd.DataFrame()
+
+    # Salesman name from the MV-joined AR ledger (mv_ar_transactions already joins prmst)
+    sp_lookup = (
+        zid_df.dropna(subset=["xsp", "salesman_name"])
+        [["xsp", "salesman_name"]]
+        .drop_duplicates("xsp", keep="last")
+        .set_index("xsp")["salesman_name"]
+        .to_dict()
+    )
+    report["salesman_name"] = report["Salesman Code"].map(sp_lookup).fillna("")
+
+    # Customer name + mobile from cacus
+    zid_cacus = (
+        cacus_df[cacus_df["zid"].astype(str) == str(zid)]
+        [["cusid", "cusname", "cusmobile"]]
+        .copy()
+        .assign(cusid=lambda d: d["cusid"].astype(str))
+        .rename(columns={"cusid": "Customer Code", "cusname": "customer_name"})
+    )
+    report["Customer Code"] = report["Customer Code"].astype(str)
+    report = report.merge(zid_cacus, on="Customer Code", how="left")
+
+    # Days since sale / collection
+    today = pd.Timestamp.today().normalize()
+    report["last_sale_date"] = pd.to_datetime(report["Sales Date"], errors="coerce")
+    report["last_coll_date"] = pd.to_datetime(report["Latest Collection Date"], errors="coerce")
+    report["days_since_sale"] = (today - report["last_sale_date"]).dt.days
+    report["days_since_coll"] = (today - report["last_coll_date"]).dt.days
+
+    out = report.rename(columns={
+        "Customer Code":            "cusid",
+        "Salesman Code":            "spid",
+        "City":                     "city",
+        "Sale Amount":              "last_sale_amount",
+        "Latest Collection Amount": "last_coll_amount",
+        "Current Balance":          "current_balance",
+    })
+
+    keep = [
+        "cusid", "customer_name", "cusmobile",
+        "spid", "salesman_name", "city",
+        "last_sale_date", "last_sale_amount", "days_since_sale",
+        "last_coll_date", "last_coll_amount", "days_since_coll",
+        "current_balance",
+    ]
+    return out[[c for c in keep if c in out.columns]].reset_index(drop=True)
 
 
 # ─── CRM JSON I/O ─────────────────────────────────────────────────────────────
