@@ -1820,12 +1820,13 @@ def get_admin_expense_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
 
 # ── Field Tracking (location_records + opmob GPS) ─────────────────────────────
 
-def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
+def get_field_tracking_salesmen(zids: "list[int]") -> Tuple[str, tuple]:
     """Distinct salesmen who appear in location_records AND have opmob orders
-    for the given ZID.  Uses INNER JOIN instead of EXISTS for reliability.
-    location_records is a company-wide table (no ZID column) so it is joined
-    only on username."""
-    sql = """
+    for any of the given ZIDs.  Accepts a list so that entities sharing a
+    sales team (100001 + 100000) can be queried together.
+    location_records has no ZID column so it is joined only on username."""
+    placeholders, zid_params = _build_in_clause(zids)
+    sql = f"""
         SELECT DISTINCT
             lr.username,
             COALESCE(p.xname, lr.username) AS display_name
@@ -1833,7 +1834,7 @@ def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
         INNER JOIN (
             SELECT DISTINCT username, MIN(xemp) AS xemp
             FROM opmob
-            WHERE zid = %s
+            WHERE zid IN ({placeholders})
               AND username IS NOT NULL AND username <> ''
             GROUP BY username
         ) om ON om.username = lr.username
@@ -1841,7 +1842,7 @@ def get_field_tracking_salesmen(zid: int) -> Tuple[str, tuple]:
         WHERE lr.username IS NOT NULL AND lr.username <> ''
         ORDER BY display_name
     """
-    return sql, (int(zid), int(zid))
+    return sql, zid_params + (zids[0],)
 
 
 def get_location_track_monthly(username: str, year: int, month: int) -> Tuple[str, tuple]:
@@ -1898,13 +1899,15 @@ def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
     return sql, (username, track_date)
 
 
-def get_opmob_order_locations_monthly(zid: int, username: str, year: int, month: int) -> Tuple[str, tuple]:
-    """All opmob orders for one salesman in a calendar month.
+def get_opmob_order_locations_monthly(zids: "list[int]", username: str, year: int, month: int) -> Tuple[str, tuple]:
+    """All opmob orders for one salesman in a calendar month across the given ZIDs.
 
-    GPS coordinates are returned as-is; Python layer decides whether to place
-    the pin on the map (valid Bangladesh coords) or show in a no-GPS table.
+    Accepts a list so that entities sharing a sales team (100001 + 100000)
+    can be queried together.  GPS coordinates are returned as-is; Python
+    layer decides whether to place the pin on the map or show in a no-GPS table.
     """
-    sql = """
+    placeholders, zid_params = _build_in_clause(zids)
+    sql = f"""
         SELECT
             xordernum                             AS order_num,
             MIN(xlat)                             AS lat,
@@ -1915,23 +1918,25 @@ def get_opmob_order_locations_monthly(zid: int, username: str, year: int, month:
             SUM(xlinetotal)                       AS total,
             xdate
         FROM opmob
-        WHERE zid = %s
+        WHERE zid IN ({placeholders})
           AND username = %s
           AND EXTRACT(YEAR  FROM xdate) = %s
           AND EXTRACT(MONTH FROM xdate) = %s
         GROUP BY xordernum, xcus, xstatusord, xdate
         ORDER BY xdate, xordernum
     """
-    return sql, (int(zid), username, int(year), int(month))
+    return sql, zid_params + (username, int(year), int(month))
 
 
-def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple[str, tuple]:
-    """All opmob orders for one salesman on one date.
+def get_opmob_order_locations(zids: "list[int]", username: str, order_date: str) -> Tuple[str, tuple]:
+    """All opmob orders for one salesman on one date across the given ZIDs.
 
-    GPS coordinates are returned as-is; Python layer decides whether to place
-    the pin on the map (valid Bangladesh coords) or show in a no-GPS table.
+    Accepts a list so that entities sharing a sales team (100001 + 100000)
+    can be queried together.  GPS coordinates are returned as-is; Python
+    layer decides whether to place the pin on the map or show in a no-GPS table.
     """
-    sql = """
+    placeholders, zid_params = _build_in_clause(zids)
+    sql = f"""
         SELECT
             xordernum                             AS order_num,
             MIN(xlat)                             AS lat,
@@ -1942,13 +1947,13 @@ def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple
             SUM(xlinetotal)                       AS total,
             xdate
         FROM opmob
-        WHERE zid = %s
+        WHERE zid IN ({placeholders})
           AND username = %s
           AND xdate = %s
         GROUP BY xordernum, xcus, xstatusord, xdate
         ORDER BY xordernum
     """
-    return sql, (int(zid), username, order_date)
+    return sql, zid_params + (username, order_date)
 
 
 def get_latest_sales_collection(filters: Dict[str, Any]) -> Tuple[str, tuple]:
