@@ -1899,7 +1899,11 @@ def get_location_track(username: str, track_date: str) -> Tuple[str, tuple]:
 
 
 def get_opmob_order_locations_monthly(zid: int, username: str, year: int, month: int) -> Tuple[str, tuple]:
-    """One row per opmob order in a calendar month with valid Bangladesh GPS."""
+    """All opmob orders for one salesman in a calendar month.
+
+    GPS coordinates are returned as-is; Python layer decides whether to place
+    the pin on the map (valid Bangladesh coords) or show in a no-GPS table.
+    """
     sql = """
         SELECT
             xordernum                             AS order_num,
@@ -1915,8 +1919,6 @@ def get_opmob_order_locations_monthly(zid: int, username: str, year: int, month:
           AND username = %s
           AND EXTRACT(YEAR  FROM xdate) = %s
           AND EXTRACT(MONTH FROM xdate) = %s
-          AND xlat  BETWEEN 20.34 AND 26.63
-          AND xlong BETWEEN 88.01 AND 92.67
         GROUP BY xordernum, xcus, xstatusord, xdate
         ORDER BY xdate, xordernum
     """
@@ -1924,8 +1926,11 @@ def get_opmob_order_locations_monthly(zid: int, username: str, year: int, month:
 
 
 def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple[str, tuple]:
-    """One row per opmob order placed by a salesman on a date that has a
-    GPS coordinate within Bangladesh recorded at time of order entry."""
+    """All opmob orders for one salesman on one date.
+
+    GPS coordinates are returned as-is; Python layer decides whether to place
+    the pin on the map (valid Bangladesh coords) or show in a no-GPS table.
+    """
     sql = """
         SELECT
             xordernum                             AS order_num,
@@ -1940,8 +1945,6 @@ def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple
         WHERE zid = %s
           AND username = %s
           AND xdate = %s
-          AND xlat  BETWEEN 20.34 AND 26.63
-          AND xlong BETWEEN 88.01 AND 92.67
         GROUP BY xordernum, xcus, xstatusord, xdate
         ORDER BY xordernum
     """
