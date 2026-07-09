@@ -2521,14 +2521,16 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
                 })
 
     # ── Build order layer ─────────────────────────────────────────────────────
-    order_data = []
+    order_data   = []
+    no_gps_orders_mo = []   # orders with missing/invalid GPS for the breakdown table
     if not order_empty:
         for _, row in ord_df.iterrows():
             lat = float(row["lat"] or 0)
             lon = float(row["lon"] or 0)
-            if not _in_bangladesh(lat, lon):
-                continue
             odate = row["order_date"]
+            if not _in_bangladesh(lat, lon):
+                no_gps_orders_mo.append(row)
+                continue
             idx   = date_to_idx.get(odate, 0)
             color = _day_color(idx, n_days)
             all_coords.append((lon, lat))
@@ -2602,10 +2604,14 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
         + "◯ line ping &nbsp; ● order (same gradient)</small>",
         unsafe_allow_html=True,
     )
-    st.caption(
+    _no_gps_count = len(no_gps_orders_mo)
+    _caption = (
         f"{sp_name} · {sel_mo.strftime('%B %Y')} · "
-        f"{len(track_dates)} days with GPS · {len(point_data)} pings · {len(order_data)} orders"
+        f"{len(track_dates)} days with GPS · {len(point_data)} pings · {len(order_data)} orders on map"
     )
+    if _no_gps_count:
+        _caption += f" · {_no_gps_count} order(s) without GPS"
+    st.caption(_caption)
 
     # ── Day-by-day breakdown table ────────────────────────────────────────────
     with st.expander("📋 Day-by-day breakdown", expanded=False):
@@ -2649,6 +2655,17 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
             use_container_width=True,
             hide_index=True,
         )
+
+        if no_gps_orders_mo:
+            st.markdown(f"**{len(no_gps_orders_mo)} order(s) without GPS coordinates (not shown on map):**")
+            no_gps_tbl = pd.DataFrame([{
+                "Date":     r["order_date"].strftime("%d %b %Y"),
+                "Order":    r["order_num"],
+                "Customer": r["cusname"],
+                "Status":   r["status"],
+                "Total":    int(r["total"] or 0),
+            } for r in no_gps_orders_mo])
+            st.dataframe(no_gps_tbl, use_container_width=True, hide_index=True)
 
 
 def _render_field_tracking(zid):
@@ -2714,11 +2731,12 @@ def _render_field_tracking(zid):
             "⚠ No GPS data on this date for: "
             + ", ".join(_no_data)
         )
-    path_data  = []
-    point_data = []
-    order_data = []
-    all_coords = []
-    stats      = []
+    path_data    = []
+    point_data   = []
+    order_data   = []
+    no_gps_rows  = []   # orders with missing/invalid GPS — shown in table below map
+    all_coords   = []
+    stats        = []
 
     for i, label in enumerate(sel_labels):
         username  = sp_map[label]
@@ -2769,13 +2787,20 @@ def _render_field_tracking(zid):
         ord_df        = get_dataframe(sql2, params2)
 
         n_orders = 0
-        n_dropped_orders = 0
+        n_no_gps = 0
         if ord_df is not None and not ord_df.empty:
             for _, row in ord_df.iterrows():
                 lat = float(row["lat"] or 0)
                 lon = float(row["lon"] or 0)
                 if not _in_bangladesh(lat, lon):
-                    n_dropped_orders += 1
+                    n_no_gps += 1
+                    no_gps_rows.append({
+                        "Salesman":   sp_name,
+                        "Order":      row["order_num"],
+                        "Customer":   row["cusname"],
+                        "Status":     row["status"],
+                        "Total":      int(row["total"] or 0),
+                    })
                     continue
                 all_coords.append((lon, lat))
                 n_orders += 1
@@ -2791,10 +2816,11 @@ def _render_field_tracking(zid):
                     ),
                 })
 
-        stat_line = f"**{sp_name}**: {n_pings} pings · {n_orders} orders"
-        dropped = n_dropped_track + n_dropped_orders
-        if dropped:
-            stat_line += f" · ⚠ {dropped} invalid coord(s) outside Bangladesh filtered"
+        stat_line = f"**{sp_name}**: {n_pings} pings · {n_orders} orders on map"
+        if n_no_gps:
+            stat_line += f" · {n_no_gps} order(s) without GPS"
+        if n_dropped_track:
+            stat_line += f" · ⚠ {n_dropped_track} invalid track coord(s)"
         stats.append(stat_line)
 
     if not all_coords:
@@ -2867,6 +2893,15 @@ def _render_field_tracking(zid):
     legend_items.append("<span style='color:#00c864'>●</span> Check-in")
     st.markdown("  &nbsp;·&nbsp;  ".join(legend_items), unsafe_allow_html=True)
     st.caption("  ·  ".join(stats))
+
+    # ── Orders without GPS ────────────────────────────────────────────────────
+    if no_gps_rows:
+        with st.expander(f"📋 {len(no_gps_rows)} order(s) without GPS — not shown on map", expanded=False):
+            st.dataframe(
+                pd.DataFrame(no_gps_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # ── Main view ─────────────────────────────────────────────────────────────────
