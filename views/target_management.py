@@ -2393,6 +2393,17 @@ _PIN_ICON_URL = "data:image/svg+xml;base64," + _b64.b64encode(
 ).decode()
 _PIN_ICON = {"url": _PIN_ICON_URL, "width": 64, "height": 64, "anchorY": 64, "mask": True}
 
+# 100001 and 100000 share the same field sales team — always query both together.
+_FT_SHARED = frozenset({100001, 100000})
+
+
+def _ft_zids(zid) -> list:
+    """Return the ZID(s) to query for field tracking.
+    When the active entity is one of the shared sales-team ZIDs, always
+    return both so orders from either entity appear together."""
+    z = int(zid)
+    return sorted(_FT_SHARED) if z in _FT_SHARED else [z]
+
 
 def _in_bangladesh(lat: float, lon: float) -> bool:
     return _BD_LAT[0] <= lat <= _BD_LAT[1] and _BD_LON[0] <= lon <= _BD_LON[1]
@@ -2410,15 +2421,17 @@ def _day_color(day_index: int, total_days: int) -> list:
 
 
 @st.cache_data(show_spinner=False, ttl=600)
-def _load_tracking_salesmen(zid: str) -> pd.DataFrame:
+def _load_tracking_salesmen(zids: tuple) -> pd.DataFrame:
+    """Load distinct salesmen who have location records and opmob orders for
+    any of the given ZIDs.  Pass a tuple (hashable) for cache compatibility."""
     from core.db import get_dataframe
     from core import queries
-    sql, params = queries.get_field_tracking_salesmen(int(zid))
+    sql, params = queries.get_field_tracking_salesmen(list(zids))
     df = get_dataframe(sql, params)
     return df if df is not None else pd.DataFrame()
 
 
-def _render_field_tracking_monthly(zid, sp_df, pdk):
+def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
     import calendar as _cal
     from core.db import get_dataframe
     from core import queries
@@ -2457,7 +2470,7 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
     if df is not None and not df.empty:
         df["track_date"] = pd.to_datetime(df["track_date"]).dt.date
 
-    sql2, params2 = queries.get_opmob_order_locations_monthly(int(zid), username, year, month)
+    sql2, params2 = queries.get_opmob_order_locations_monthly(list(ft_zids), username, year, month)
     ord_df = get_dataframe(sql2, params2)
     if ord_df is not None and not ord_df.empty:
         ord_df["order_date"] = pd.to_datetime(ord_df["xdate"]).dt.date
@@ -2684,13 +2697,14 @@ def _render_field_tracking(zid):
             key="ft_mode", label_visibility="collapsed",
         )
 
-    sp_df = _load_tracking_salesmen(str(zid))
+    ft_zids = tuple(_ft_zids(zid))
+    sp_df = _load_tracking_salesmen(ft_zids)
     if sp_df.empty:
         st.info("No salesmen with location records found for this entity.")
         return
 
     if _ft_mode == "📆 Monthly":
-        _render_field_tracking_monthly(zid, sp_df, pdk)
+        _render_field_tracking_monthly(ft_zids, sp_df, pdk)
         return
 
     sp_labels = (sp_df["username"] + " — " + sp_df["display_name"]).tolist()
@@ -2783,7 +2797,7 @@ def _render_field_tracking(zid):
             n_pings = len(valid_coords)
 
         # ── Order locations ───────────────────────────────────────────────────
-        sql2, params2 = queries.get_opmob_order_locations(int(zid), username, date_str)
+        sql2, params2 = queries.get_opmob_order_locations(list(ft_zids), username, date_str)
         ord_df        = get_dataframe(sql2, params2)
 
         n_orders = 0
