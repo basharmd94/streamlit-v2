@@ -124,7 +124,7 @@ def build_7day_feed(
         return pd.DataFrame()
 
     today = pd.Timestamp.today().normalize()
-    cutoff = today - pd.Timedelta(days=6)  # inclusive last 7 days
+    cutoff = today - pd.Timedelta(days=13)  # inclusive last 14 days
 
     ar = ar_df.copy()
     ar["xdate"] = pd.to_datetime(ar["xdate"], errors="coerce")
@@ -198,6 +198,30 @@ def build_customer_ledger(
     df["txn_type"] = df["xvoucher"].apply(classify_txn_type)
     df = df.sort_values(["xdate", "xrow", "xvoucher"]).reset_index(drop=True)
     return df
+
+
+# ─── Latest Sales & Collection loader ────────────────────────────────────────
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def load_latest_sales_collection(zid: str, project: str) -> pd.DataFrame:
+    """Latest sale + latest collection + AR balance per customer (positive balance only).
+
+    Uses mv_ar_transactions and mv_sales_line_items via the Analytics class.
+    """
+    from core.analytics import Analytics
+
+    df = Analytics("latest_sales_collection", zid=zid, project=project, filters={}).data
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    out["cusid"]    = out["cusid"].astype(str)
+    for col in ("days_since_sale", "days_since_coll"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    for col in ("last_sale_amount", "last_coll_amount", "current_balance"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0).astype(float)
+    return out
 
 
 # ─── CRM JSON I/O ─────────────────────────────────────────────────────────────

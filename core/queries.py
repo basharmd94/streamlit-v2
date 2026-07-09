@@ -133,7 +133,7 @@ def get_sales_data(filters=None):
 
 
 def get_sales_7day(filters=None):
-    """Last 7 calendar days of sales line items from mv_sales_line_items.
+    """Last 14 calendar days of sales line items from mv_sales_line_items.
 
     Used by the Customer Support DO-detail table. Date filter is applied in SQL
     so only a small slice of the MV is fetched per call.
@@ -147,7 +147,7 @@ def get_sales_7day(filters=None):
             quantity, altsales, proddiscount, totalsales, cost
         FROM mv_sales_line_items
         WHERE zid = %s
-          AND date >= CURRENT_DATE - 6
+          AND date >= CURRENT_DATE - 13
     """
     return sql, (filters["zid"][0],)
 
@@ -1946,3 +1946,114 @@ def get_opmob_order_locations(zid: int, username: str, order_date: str) -> Tuple
         ORDER BY xordernum
     """
     return sql, (int(zid), username, order_date)
+
+
+def get_latest_sales_collection(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Per-customer latest-sale + latest-collection + AR balance summary.
+
+    All customers that carry a positive AR balance are returned, joined with
+    their most-recent sale date/amount from mv_sales_line_items and their
+    most-recent collection date/amount from mv_ar_transactions.
+
+    Used by Customer Support → Latest Sales & Collection view.
+    """
+    zid     = filters["zid"][0]
+    project = filters.get("project")
+    sql = """
+    WITH
+    ar_bal AS (
+        SELECT
+            zid,
+            xsub                    AS cusid,
+            MAX(customer_name)      AS customer_name,
+            MAX(xcity)              AS city,
+            SUM(xprime)             AS current_balance
+        FROM mv_ar_transactions
+        WHERE zid = %s AND xproj = %s
+        GROUP BY zid, xsub
+        HAVING SUM(xprime) > 0.01
+    ),
+    sale_latest AS (
+        SELECT DISTINCT ON (zid, cusid)
+            zid,
+            cusid,
+            spid::text  AS spid,
+            spname,
+            date::date  AS last_sale_date
+        FROM mv_sales_line_items
+        WHERE zid = %s
+        ORDER BY zid, cusid, date DESC
+    ),
+    sale_amt AS (
+        SELECT
+            zid,
+            cusid,
+            date::date       AS sale_date,
+            SUM(altsales)    AS last_sale_amount
+        FROM mv_sales_line_items
+        WHERE zid = %s
+        GROUP BY zid, cusid, date::date
+    ),
+    coll_latest AS (
+        SELECT DISTINCT ON (zid, xsub)
+            zid,
+            xsub             AS cusid,
+            xdate::date      AS last_coll_date
+        FROM mv_ar_transactions
+        WHERE zid = %s AND xproj = %s
+          AND (
+               xvoucher LIKE 'RCT%%'  OR xvoucher LIKE 'BRCT%%'
+            OR xvoucher LIKE 'CRCT%%' OR xvoucher LIKE 'CPAY%%'
+            OR xvoucher LIKE 'PAY%%'  OR xvoucher LIKE 'CHQ%%'
+            OR xvoucher LIKE 'BPAY%%' OR xvoucher LIKE 'BTJV%%'
+          )
+        ORDER BY zid, xsub, xdate DESC
+    ),
+    coll_amt AS (
+        SELECT
+            zid,
+            xsub             AS cusid,
+            xdate::date      AS coll_date,
+            ABS(SUM(xprime)) AS last_coll_amount
+        FROM mv_ar_transactions
+        WHERE zid = %s AND xproj = %s
+          AND (
+               xvoucher LIKE 'RCT%%'  OR xvoucher LIKE 'BRCT%%'
+            OR xvoucher LIKE 'CRCT%%' OR xvoucher LIKE 'CPAY%%'
+            OR xvoucher LIKE 'PAY%%'  OR xvoucher LIKE 'CHQ%%'
+            OR xvoucher LIKE 'BPAY%%' OR xvoucher LIKE 'BTJV%%'
+          )
+        GROUP BY zid, xsub, xdate::date
+    )
+    SELECT
+        ab.cusid,
+        ab.customer_name,
+        COALESCE(c.xmobile, '')     AS cusmobile,
+        COALESCE(sl.spid,   '')     AS spid,
+        COALESCE(sl.spname, '')     AS salesman_name,
+        COALESCE(ab.city,   '')     AS city,
+        sl.last_sale_date,
+        COALESCE(sa.last_sale_amount, 0) AS last_sale_amount,
+        CASE WHEN sl.last_sale_date IS NOT NULL
+             THEN CURRENT_DATE - sl.last_sale_date
+             ELSE NULL END          AS days_since_sale,
+        cl.last_coll_date,
+        ca.last_coll_amount,
+        CASE WHEN cl.last_coll_date IS NOT NULL
+             THEN CURRENT_DATE - cl.last_coll_date
+             ELSE NULL END          AS days_since_coll,
+        ab.current_balance
+    FROM ar_bal ab
+    LEFT JOIN sale_latest sl ON ab.zid = sl.zid AND ab.cusid = sl.cusid
+    LEFT JOIN sale_amt    sa ON ab.zid = sa.zid  AND ab.cusid = sa.cusid
+                            AND sl.last_sale_date = sa.sale_date
+    LEFT JOIN coll_latest cl ON ab.zid = cl.zid  AND ab.cusid = cl.cusid
+    LEFT JOIN coll_amt    ca ON ab.zid = ca.zid  AND ab.cusid = ca.cusid
+                            AND cl.last_coll_date = ca.coll_date
+    LEFT JOIN cacus        c ON c.zid = ab.zid::integer
+                            AND c.xcus = ab.cusid::integer
+    ORDER BY COALESCE(sl.last_sale_date, '1900-01-01'::date) ASC
+    """
+    # param order: ar_bal(zid,proj), sale_latest(zid), sale_amt(zid),
+    #              coll_latest(zid,proj), coll_amt(zid,proj)
+    return sql, (zid, project, zid, zid, zid, project, zid, project)

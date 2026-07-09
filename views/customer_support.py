@@ -1,6 +1,6 @@
 # views/customer_support.py
-# Customer Support (CRM) view — 7-day activity feed + per-customer AR ledger
-# + persistent CRM log (confirmed / remarks) saved to data/crm_log.json.
+# Customer Support (CRM) view — 14-day activity feed + Latest Sales & Collection
+# + per-customer AR ledger + persistent CRM log (confirmed / remarks) in data/crm_log.json.
 
 from __future__ import annotations
 
@@ -50,6 +50,38 @@ _LEDGER_RENAME = {
     "running_balance": "Balance",
 }
 
+# Columns to show in the Latest Sales & Collection colored table
+_SC_DISPLAY_COLS = [
+    "cusid", "customer_name", "cusmobile",
+    "spid", "salesman_name", "city",
+    "days_since_sale", "last_sale_amount",
+    "days_since_coll", "last_coll_amount",
+    "current_balance",
+]
+_SC_RENAME = {
+    "cusid":            "Cust Code",
+    "customer_name":    "Customer",
+    "cusmobile":        "Mobile",
+    "spid":             "SP Code",
+    "salesman_name":    "Salesman",
+    "city":             "City",
+    "days_since_sale":  "Days Since Sale",
+    "last_sale_amount": "Sale Amt",
+    "days_since_coll":  "Days Since Coll",
+    "last_coll_amount": "Last Coll Amt",
+    "current_balance":  "Balance",
+}
+
+_ZID_LABEL = {
+    "100001": "100001 · HMBR Tools",
+    "100000": "100000 · GI Corporation",
+    "100005": "100005 · Zepto Chemicals",
+}
+_ZID_PROJECT = {
+    "100001": "GULSHAN TRADING",
+    "100000": "GI Corporation",
+    "100005": "Zepto Chemicals",
+}
 
 # ── Public entry point ─────────────────────────────────────────────────────────
 
@@ -58,18 +90,20 @@ def display_customer_support(zid, project):
 
     radio = st.radio(
         "View",
-        ["📋 7-Day Activity", "📁 CRM Log"],
+        ["📋 14-Day Activity", "📊 Latest Sales & Collection", "📁 CRM Log"],
         horizontal=True,
         key="cs_radio",
     )
 
-    if radio == "📋 7-Day Activity":
-        _render_7day_activity()
+    if radio == "📋 14-Day Activity":
+        _render_14day_activity()
+    elif radio == "📊 Latest Sales & Collection":
+        _render_latest_sales_collection()
     else:
         _render_crm_log()
 
 
-# ── Cached loaders (module-level so they survive rerenders) ───────────────────
+# ── Cached loaders ─────────────────────────────────────────────────────────────
 
 @st.cache_data(show_spinner="Loading AR ledgers…", ttl=1800)
 def _ar_data() -> pd.DataFrame:
@@ -81,15 +115,15 @@ def _cacus_data() -> pd.DataFrame:
     return cs.load_all_cacus()
 
 
-@st.cache_data(show_spinner="Loading recent deliveries…", ttl=1800)
-def _sales_7day_data() -> pd.DataFrame:
+@st.cache_data(show_spinner="Loading recent activity…", ttl=1800)
+def _sales_14day_data() -> pd.DataFrame:
     return cs.load_all_sales_7day()
 
 
-# ── Radio 1: 7-Day Activity ────────────────────────────────────────────────────
+# ── Radio 1: 14-Day Activity ───────────────────────────────────────────────────
 
-def _render_7day_activity():
-    ar_df   = _ar_data()
+def _render_14day_activity():
+    ar_df    = _ar_data()
     cacus_df = _cacus_data()
 
     if ar_df is None or ar_df.empty:
@@ -98,19 +132,30 @@ def _render_7day_activity():
 
     feed = cs.build_7day_feed(ar_df, cacus_df)
     if feed.empty:
-        st.info("No customer transactions in the last 7 days.")
+        st.info("No customer transactions in the last 14 days.")
         return
 
-    # ── Date filter ───────────────────────────────────────────────────────────
+    # ── Filters: date + type ──────────────────────────────────────────────────
     today_d = pd.Timestamp.today().date()
-    sel_date = st.date_input("Show activity for date", value=today_d, key="cs_activity_date")
+    fc1, fc2 = st.columns([2, 2])
+    sel_date = fc1.date_input(
+        "Show activity for date", value=today_d, key="cs_activity_date"
+    )
+    type_opts = ["All Types", "Delivery", "Collection", "Return", "Adjustment", "Other"]
+    sel_type = fc2.selectbox("Type", type_opts, key="cs_type_filter")
+
     feed["_xdate"] = pd.to_datetime(feed["xdate"], errors="coerce").dt.date
     feed = feed[feed["_xdate"] == sel_date].drop(columns=["_xdate"])
+    if sel_type != "All Types" and "txn_type" in feed.columns:
+        feed = feed[feed["txn_type"] == sel_type]
     if feed.empty:
-        st.info(f"No vouchers on {pd.Timestamp(sel_date).strftime('%d %b %Y')}.")
+        st.info(
+            f"No vouchers on {pd.Timestamp(sel_date).strftime('%d %b %Y')}"
+            + (f" of type '{sel_type}'" if sel_type != "All Types" else "") + "."
+        )
         return
 
-    # ── CRM log: load once per session and track when ─────────────────────────
+    # ── CRM log ───────────────────────────────────────────────────────────────
     if "cs_loaded_at" not in st.session_state:
         crm_entries, loaded_at = cs.load_crm_log()
         st.session_state["cs_crm_entries"] = crm_entries
@@ -118,14 +163,11 @@ def _render_7day_activity():
     else:
         crm_entries = st.session_state["cs_crm_entries"]
 
-    # Build per-row CRM key: zid_cusid_voucher
     feed["_key"] = (
         feed["zid"].astype(str) + "_" +
         feed["xsub"].astype(str) + "_" +
         feed["xvoucher"].astype(str)
     )
-
-    # Pre-populate editable columns from saved CRM entries
     feed["confirmed"] = feed["_key"].map(
         lambda k: crm_entries.get(k, {}).get("confirmed", False)
     )
@@ -133,10 +175,8 @@ def _render_7day_activity():
         lambda k: crm_entries.get(k, {}).get("remarks", "")
     )
 
-    # Snapshot the feed (keys + original values) so save handler can align rows
     st.session_state["_cs_feed"] = feed.reset_index(drop=True)
 
-    # ── Build display dataframe ───────────────────────────────────────────────
     disp_cols = [c for c in _FEED_COLS if c in feed.columns]
     disp = feed[disp_cols].copy().rename(columns=_FEED_RENAME)
 
@@ -154,7 +194,7 @@ def _render_7day_activity():
     }
 
     st.caption(
-        f"Last 7 days — **{len(feed):,}** vouchers across all entities. "
+        f"Last 14 days — **{len(feed):,}** vouchers across all entities. "
         "Tick ✓ and add remarks, then press Save."
     )
 
@@ -164,11 +204,10 @@ def _render_7day_activity():
         disabled=disabled,
         use_container_width=True,
         hide_index=True,
-        key="cs_7day_editor",
+        key="cs_14day_editor",
         num_rows="fixed",
     )
 
-    # ── Save controls ─────────────────────────────────────────────────────────
     col1, col2 = st.columns([1, 4])
     force_save = col2.checkbox(
         "Force save (overwrite if another user saved since your page loaded)",
@@ -179,12 +218,9 @@ def _render_7day_activity():
     if save_clicked:
         _do_save(edited, force_save)
 
-    # ── Customer DO detail + 6-month ledger (inside expander) ────────────────
+    # ── Customer DO detail + 6-month ledger ───────────────────────────────────
     st.markdown("---")
     with st.expander("📦 Customer DO Detail & Ledger", expanded=True):
-        # ── Build grouped customer options ─────────────────────────────────
-        # 100001 and 100000 share the same field sales team and customer base
-        # so they are grouped together.  100005 (Zepto) is always separate.
         feed_g = feed[["zid", "xsub", "customer_name"]].drop_duplicates().copy()
         feed_g["zid"] = feed_g["zid"].astype(str)
 
@@ -234,13 +270,11 @@ def _render_7day_activity():
             sel_cusid = str(sel_row["xsub"])
             sel_group = str(sel_row["group"])
 
-            # ── DO line items (all entities, last 7 days) ─────────────────
-            st.markdown("##### Deliveries — Last 7 Days (All Entities)")
+            st.markdown("##### Deliveries — Last 14 Days (All Entities)")
             _render_do_detail(feed, sel_cusid)
 
             st.markdown("---")
 
-            # ── 6-month AR ledger(s) ──────────────────────────────────────
             _6M_CAPTION = (
                 "Balance is cumulative from all history; only the last 6 months "
                 "of transactions are displayed. Final balance matches Salesman Due."
@@ -262,22 +296,16 @@ def _render_7day_activity():
 
 
 def _render_do_detail(feed: pd.DataFrame, cusid: str):
-    """DO line items for `cusid` across all ZIDs in the last 7 days.
-
-    Attempts to cross-reference INOP vouchers from the 7-day AR feed using
-    (zid, date) as the link key, since each DO generates one INOP GL entry.
-    """
-    sales_df = _sales_7day_data()
+    sales_df = _sales_14day_data()
     if sales_df is None or sales_df.empty:
-        st.info("No delivery line items found in the last 7 days.")
+        st.info("No delivery line items found in the last 14 days.")
         return
 
     cust_sales = sales_df[sales_df["cusid"] == cusid].copy()
     if cust_sales.empty:
-        st.info("No DO line items for this customer in the last 7 days.")
+        st.info("No DO line items for this customer in the last 14 days.")
         return
 
-    # Build INOP voucher map: (zid, date) → comma-separated INOP vouchers
     inop_rows = feed[
         (feed["xsub"].astype(str) == cusid) &
         (feed["txn_type"] == "Delivery")
@@ -323,7 +351,193 @@ def _render_do_detail(feed: pd.DataFrame, cusid: str):
         st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
+# ── Radio 2: Latest Sales & Collection ────────────────────────────────────────
+
+def _sc_row_style(row: pd.Series) -> list[str]:
+    days = row.get("Days Since Sale")
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return [""] * len(row)
+    if days > 30:
+        s = "background-color: #8B0000; color: black; font-weight: bold"
+    elif days >= 24:
+        s = "background-color: #FF4444; color: black; font-weight: bold"
+    else:
+        s = ""
+    return [s] * len(row)
+
+
+def _render_sc_table(
+    df: pd.DataFrame,
+    zid: str,
+    crm_entries: dict,
+    days_min: int | None,
+    cust_filter: str | None,
+    editor_key: str,
+    snap_key: str,
+):
+    """Render one ZID block: colored table + edit section + save button."""
+    if df.empty:
+        st.info(f"No customers with an outstanding balance for {_ZID_LABEL.get(zid, zid)}.")
+        return
+
+    # Apply filters
+    if days_min is not None and days_min > 0 and "days_since_sale" in df.columns:
+        df = df[df["days_since_sale"].fillna(0) >= days_min]
+    if cust_filter and "customer_name" in df.columns:
+        df = df[
+            df["customer_name"].str.contains(cust_filter, case=False, na=False) |
+            df["cusid"].astype(str).str.contains(cust_filter, case=False, na=False)
+        ]
+
+    if df.empty:
+        st.info("No customers match the current filters.")
+        return
+
+    st.caption(f"**{len(df):,}** customers with outstanding balance")
+
+    # ── Pre-populate confirmed / remarks from crm_log ─────────────────────────
+    df = df.copy()
+    df["_sc_key"] = "sc_" + zid + "_" + df["cusid"].astype(str)
+    df["confirmed"] = df["_sc_key"].map(
+        lambda k: crm_entries.get(k, {}).get("confirmed", False)
+    )
+    df["remarks"] = df["_sc_key"].map(
+        lambda k: crm_entries.get(k, {}).get("remarks", "")
+    )
+
+    # ── Colored display table ─────────────────────────────────────────────────
+    disp_cols = [c for c in _SC_DISPLAY_COLS if c in df.columns]
+    disp = df[disp_cols].copy().rename(columns=_SC_RENAME)
+
+    fmt = {
+        "Sale Amt":       "{:,.0f}",
+        "Last Coll Amt":  "{:,.0f}",
+        "Balance":        "{:,.0f}",
+        "Days Since Sale": "{:.0f}",
+        "Days Since Coll": "{:.0f}",
+    }
+    fmt = {k: v for k, v in fmt.items() if k in disp.columns}
+
+    try:
+        styled = disp.style.apply(_sc_row_style, axis=1).format(fmt, na_rep="—")
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+    except Exception:
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── Edit section: ✓ + Remarks ─────────────────────────────────────────────
+    st.session_state[snap_key] = df.reset_index(drop=True)
+
+    with st.expander("✏️ Mark & Remark", expanded=False):
+        edit_df = df[["cusid", "customer_name", "confirmed", "remarks"]].copy()
+        edit_df = edit_df.rename(columns={
+            "cusid":         "Cust Code",
+            "customer_name": "Customer",
+            "confirmed":     "✓",
+            "remarks":       "Remarks",
+        })
+
+        edited = st.data_editor(
+            edit_df,
+            column_config={
+                "✓": st.column_config.CheckboxColumn("✓ Confirmed", default=False),
+                "Remarks": st.column_config.TextColumn("Remarks", width="large"),
+                "Cust Code": st.column_config.TextColumn("Cust Code", disabled=True),
+                "Customer":  st.column_config.TextColumn("Customer",  disabled=True),
+            },
+            disabled=["Cust Code", "Customer"],
+            use_container_width=True,
+            hide_index=True,
+            key=editor_key,
+            num_rows="fixed",
+        )
+
+        col1, col2 = st.columns([1, 4])
+        force_save = col2.checkbox(
+            "Force save", key=f"cs_sc_force_{editor_key}"
+        )
+        if col1.button("💾 Save", type="primary", key=f"cs_sc_save_{editor_key}"):
+            _do_save_sc(edited, snap_key, zid, force_save)
+
+
+def _render_latest_sales_collection():
+    # Load CRM log once
+    if "cs_loaded_at" not in st.session_state:
+        crm_entries, loaded_at = cs.load_crm_log()
+        st.session_state["cs_crm_entries"] = crm_entries
+        st.session_state["cs_loaded_at"]   = loaded_at
+    crm_entries = st.session_state.get("cs_crm_entries", {})
+
+    # ── Shared filters for 100001 + 100000 ───────────────────────────────────
+    st.markdown("#### HMBR Tools (100001) & GI Corporation (100000)")
+    fc1, fc2 = st.columns(2)
+    days_opts = {"All Days": None, "7+ days": 7, "14+ days": 14, "24+ days": 24, "30+ days": 30}
+    sel_days_ab = days_opts[fc1.selectbox(
+        "Days since sale (100001+100000)",
+        list(days_opts.keys()),
+        index=0,
+        key="cs_sc_days_ab",
+    )]
+    sel_cust_ab = fc2.text_input(
+        "Customer filter (100001+100000)",
+        placeholder="name or code…",
+        key="cs_sc_cust_ab",
+    ).strip() or None
+
+    with st.spinner("Loading 100001 data…"):
+        df_100001 = cs.load_latest_sales_collection("100001", _ZID_PROJECT["100001"])
+    with st.spinner("Loading 100000 data…"):
+        df_100000 = cs.load_latest_sales_collection("100000", _ZID_PROJECT["100000"])
+
+    st.markdown(f"##### {_ZID_LABEL['100001']}")
+    _render_sc_table(
+        df_100001, "100001", crm_entries,
+        sel_days_ab, sel_cust_ab,
+        editor_key="sc_edit_100001",
+        snap_key="_sc_snap_100001",
+    )
+
+    st.markdown("---")
+    st.markdown(f"##### {_ZID_LABEL['100000']}")
+    _render_sc_table(
+        df_100000, "100000", crm_entries,
+        sel_days_ab, sel_cust_ab,
+        editor_key="sc_edit_100000",
+        snap_key="_sc_snap_100000",
+    )
+
+    # ── Separate filters for 100005 ───────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### Zepto Chemicals (100005)")
+    fz1, fz2 = st.columns(2)
+    sel_days_z = days_opts[fz1.selectbox(
+        "Days since sale (100005)",
+        list(days_opts.keys()),
+        index=0,
+        key="cs_sc_days_z",
+    )]
+    sel_cust_z = fz2.text_input(
+        "Customer filter (100005)",
+        placeholder="name or code…",
+        key="cs_sc_cust_z",
+    ).strip() or None
+
+    with st.spinner("Loading 100005 data…"):
+        df_100005 = cs.load_latest_sales_collection("100005", _ZID_PROJECT["100005"])
+
+    _render_sc_table(
+        df_100005, "100005", crm_entries,
+        sel_days_z, sel_cust_z,
+        editor_key="sc_edit_100005",
+        snap_key="_sc_snap_100005",
+    )
+
+
+# ── Save helpers ───────────────────────────────────────────────────────────────
+
 def _do_save(edited: pd.DataFrame, force: bool):
+    """Save handler for the 14-day activity feed editor."""
     snapshot: pd.DataFrame = st.session_state.get("_cs_feed", pd.DataFrame())
     if snapshot.empty:
         st.error("Session snapshot missing — please reload the page.")
@@ -342,7 +556,6 @@ def _do_save(edited: pd.DataFrame, force: bool):
         remarks   = str(edit_row.get("Remarks", "") or "").strip()
 
         if not confirmed and not remarks:
-            # Row cleared — remove from log if it previously existed
             if key in existing_crm:
                 delete_keys.add(key)
             continue
@@ -366,7 +579,56 @@ def _do_save(edited: pd.DataFrame, force: bool):
     success, msg = cs.save_crm_log(new_entries, loaded_at, username, force=force, delete_keys=delete_keys)
     if success:
         st.success(msg)
-        # Refresh session cache so the next Save sees the new timestamp
+        crm_entries, new_loaded_at = cs.load_crm_log()
+        st.session_state["cs_crm_entries"] = crm_entries
+        st.session_state["cs_loaded_at"]   = new_loaded_at
+    else:
+        st.warning(msg)
+
+
+def _do_save_sc(edited: pd.DataFrame, snap_key: str, zid: str, force: bool):
+    """Save handler for the Latest Sales & Collection editor."""
+    snapshot: pd.DataFrame = st.session_state.get(snap_key, pd.DataFrame())
+    if snapshot.empty:
+        st.error("Session snapshot missing — please reload the page.")
+        return
+
+    new_entries: dict = {}
+    delete_keys: set  = set()
+    existing_crm = st.session_state.get("cs_crm_entries", {})
+
+    for i in range(len(edited)):
+        snap_row = snapshot.iloc[i]
+        edit_row = edited.iloc[i]
+        key      = str(snap_row["_sc_key"])
+
+        confirmed = bool(edit_row.get("✓", False))
+        remarks   = str(edit_row.get("Remarks", "") or "").strip()
+
+        if not confirmed and not remarks:
+            if key in existing_crm:
+                delete_keys.add(key)
+            continue
+
+        new_entries[key] = {
+            "zid":      zid,
+            "cusid":    str(snap_row["cusid"]),
+            "voucher":  key,
+            "txn_type": "AR Balance",
+            "confirmed": confirmed,
+            "remarks":   remarks,
+        }
+
+    if not new_entries and not delete_keys:
+        st.info("Nothing to save — tick ✓ or add remarks first.")
+        return
+
+    loaded_at = st.session_state.get("cs_loaded_at", datetime.min.replace(tzinfo=timezone.utc))
+    username  = st.session_state.get("username", "unknown")
+
+    success, msg = cs.save_crm_log(new_entries, loaded_at, username, force=force, delete_keys=delete_keys)
+    if success:
+        st.success(msg)
         crm_entries, new_loaded_at = cs.load_crm_log()
         st.session_state["cs_crm_entries"] = crm_entries
         st.session_state["cs_loaded_at"]   = new_loaded_at
@@ -380,7 +642,6 @@ def _render_ledger(ar_df: pd.DataFrame, zid: str, cusid: str, key_suffix: str = 
         st.info("No ledger data found for this customer.")
         return
 
-    # Current balance = last running_balance in full history
     current_bal = (
         float(ledger["running_balance"].iloc[-1])
         if "running_balance" in ledger.columns
@@ -394,7 +655,6 @@ def _render_ledger(ar_df: pd.DataFrame, zid: str, cusid: str, key_suffix: str = 
     if current_bal is not None:
         col3.metric("Current AR Balance", f"{current_bal:,.0f}")
 
-    # Display last 6 months only
     cutoff = pd.Timestamp.today() - pd.Timedelta(days=_6M_DAYS)
     disp = ledger[ledger["xdate"] >= cutoff].copy()
 
@@ -425,7 +685,7 @@ def _render_ledger(ar_df: pd.DataFrame, zid: str, cusid: str, key_suffix: str = 
     )
 
 
-# ── Radio 2: CRM Log ──────────────────────────────────────────────────────────
+# ── Radio 3: CRM Log ──────────────────────────────────────────────────────────
 
 def _render_crm_log():
     crm_entries, _ = cs.load_crm_log()
@@ -439,7 +699,6 @@ def _render_crm_log():
         st.info("CRM log is empty.")
         return
 
-    # Enrich with customer names
     cacus_df = _cacus_data()
     if not cacus_df.empty and "cusid" in log_df.columns:
         cn = (
@@ -450,7 +709,6 @@ def _render_crm_log():
         log_df["cusid"] = log_df["cusid"].astype(str)
         log_df = log_df.merge(cn, on=["zid", "cusid"], how="left")
 
-    # Customer filter
     cust_opts = (
         log_df[["zid", "cusid"] + (["cusname"] if "cusname" in log_df.columns else [])]
         .drop_duplicates()
