@@ -353,19 +353,16 @@ def _render_do_detail(feed: pd.DataFrame, cusid: str):
 
 # ── Radio 2: Latest Sales & Collection ────────────────────────────────────────
 
-def _sc_row_style(row: pd.Series) -> list[str]:
-    days = row.get("Days Since Sale")
+def _sc_status(days) -> str:
     try:
-        days = int(days)
+        d = int(days)
     except (TypeError, ValueError):
-        return [""] * len(row)
-    if days > 30:
-        s = "background-color: #8B0000; color: black; font-weight: bold"
-    elif days >= 24:
-        s = "background-color: #FF4444; color: black; font-weight: bold"
-    else:
-        s = ""
-    return [s] * len(row)
+        return ""
+    if d > 30:
+        return "🔴 >30d"
+    if d >= 24:
+        return "⚠️ 24-30d"
+    return ""
 
 
 def _render_sc_table(
@@ -377,7 +374,7 @@ def _render_sc_table(
     editor_key: str,
     snap_key: str,
 ):
-    """Render one ZID block: colored table + edit section + save button."""
+    """Single data_editor with all columns + ✓ / Remarks / Last Call editable."""
     if df.empty:
         st.info(f"No customers with an outstanding balance for {_ZID_LABEL.get(zid, zid)}.")
         return
@@ -395,9 +392,7 @@ def _render_sc_table(
         st.info("No customers match the current filters.")
         return
 
-    st.caption(f"**{len(df):,}** customers with outstanding balance")
-
-    # ── Pre-populate confirmed / remarks / last_call_date from crm_log ──────────
+    # Pre-populate editable columns from crm_log
     df = df.copy()
     df["_sc_key"] = "sc_" + zid + "_" + df["cusid"].astype(str)
     df["confirmed"] = df["_sc_key"].map(
@@ -411,60 +406,66 @@ def _render_sc_table(
         errors="coerce",
     ).dt.date
 
-    # ── Colored display table ─────────────────────────────────────────────────
-    disp_cols = [c for c in _SC_DISPLAY_COLS if c in df.columns]
-    disp = df[disp_cols].copy().rename(columns=_SC_RENAME)
+    # Status indicator column (replaces background colour in data_editor)
+    df["_status"] = df["days_since_sale"].apply(_sc_status)
 
-    fmt = {
-        "Sale Amt":       "{:,.0f}",
-        "Last Coll Amt":  "{:,.0f}",
-        "Balance":        "{:,.0f}",
-        "Days Since Sale": "{:.0f}",
-        "Days Since Coll": "{:.0f}",
-    }
-    fmt = {k: v for k, v in fmt.items() if k in disp.columns}
-
-    try:
-        styled = disp.style.apply(_sc_row_style, axis=1).format(fmt, na_rep="—")
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-    except Exception:
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
-    # ── Edit section: ✓ + Remarks ─────────────────────────────────────────────
     st.session_state[snap_key] = df.reset_index(drop=True)
+    st.caption(f"**{len(df):,}** customers with outstanding balance  ·  ⚠️ = 24-30 days  ·  🔴 = >30 days")
 
-    with st.expander("✏️ Mark & Remark", expanded=False):
-        edit_df = df[["cusid", "customer_name", "last_call_date", "confirmed", "remarks"]].copy()
-        edit_df = edit_df.rename(columns={
-            "cusid":          "Cust Code",
-            "customer_name":  "Customer",
-            "last_call_date": "Last Call",
-            "confirmed":      "✓",
-            "remarks":        "Remarks",
-        })
+    col_order = [
+        "_status", "cusid", "customer_name", "cusmobile",
+        "spid", "salesman_name", "city",
+        "days_since_sale", "last_sale_amount",
+        "days_since_coll", "last_coll_amount",
+        "current_balance",
+        "last_call_date", "confirmed", "remarks",
+    ]
+    disp_cols = [c for c in col_order if c in df.columns]
+    disp = df[disp_cols].copy().rename(columns={
+        "_status":         "⚠",
+        "cusid":           "Cust Code",
+        "customer_name":   "Customer",
+        "cusmobile":       "Mobile",
+        "spid":            "SP Code",
+        "salesman_name":   "Salesman",
+        "city":            "City",
+        "days_since_sale": "Days Sale",
+        "last_sale_amount":"Sale Amt",
+        "days_since_coll": "Days Coll",
+        "last_coll_amount":"Last Coll",
+        "current_balance": "Balance",
+        "last_call_date":  "Last Call",
+        "confirmed":       "✓",
+        "remarks":         "Remarks",
+    })
 
-        edited = st.data_editor(
-            edit_df,
-            column_config={
-                "✓": st.column_config.CheckboxColumn("✓ Confirmed", default=False),
-                "Remarks":   st.column_config.TextColumn("Remarks", width="large"),
-                "Last Call": st.column_config.DateColumn("Last Call", format="YYYY-MM-DD"),
-                "Cust Code": st.column_config.TextColumn("Cust Code", disabled=True),
-                "Customer":  st.column_config.TextColumn("Customer",  disabled=True),
-            },
-            disabled=["Cust Code", "Customer"],
-            use_container_width=True,
-            hide_index=True,
-            key=editor_key,
-            num_rows="fixed",
-        )
+    editable = {"✓", "Remarks", "Last Call"}
+    disabled = [c for c in disp.columns if c not in editable]
 
-        col1, col2 = st.columns([1, 4])
-        force_save = col2.checkbox(
-            "Force save", key=f"cs_sc_force_{editor_key}"
-        )
-        if col1.button("💾 Save", type="primary", key=f"cs_sc_save_{editor_key}"):
-            _do_save_sc(edited, snap_key, zid, force_save)
+    edited = st.data_editor(
+        disp,
+        column_config={
+            "⚠":        st.column_config.TextColumn("⚠", width="small"),
+            "✓":        st.column_config.CheckboxColumn("✓", default=False),
+            "Remarks":  st.column_config.TextColumn("Remarks", width="medium"),
+            "Last Call":st.column_config.DateColumn("Last Call", format="YYYY-MM-DD"),
+            "Sale Amt": st.column_config.NumberColumn("Sale Amt",  format="%.0f"),
+            "Last Coll":st.column_config.NumberColumn("Last Coll", format="%.0f"),
+            "Balance":  st.column_config.NumberColumn("Balance",   format="%.0f"),
+            "Days Sale":st.column_config.NumberColumn("Days Sale", format="%d"),
+            "Days Coll":st.column_config.NumberColumn("Days Coll", format="%d"),
+        },
+        disabled=disabled,
+        use_container_width=True,
+        hide_index=True,
+        key=editor_key,
+        num_rows="fixed",
+    )
+
+    col1, col2 = st.columns([1, 4])
+    force_save = col2.checkbox("Force save", key=f"cs_sc_force_{editor_key}")
+    if col1.button("💾 Save", type="primary", key=f"cs_sc_save_{editor_key}"):
+        _do_save_sc(edited, snap_key, zid, force_save)
 
 
 def _render_latest_sales_collection():
@@ -475,9 +476,6 @@ def _render_latest_sales_collection():
         st.session_state["cs_loaded_at"]   = loaded_at
     crm_entries = st.session_state.get("cs_crm_entries", {})
 
-    # Reuse the same cached AR ledger + cacus already loaded for the 14-day feed.
-    # build_latest_sc_for_zid uses the exact same prep_ar_ledger +
-    # build_latest_sale_collection_report pipeline as Salesman Due, so balances match.
     ar_df    = _ar_data()
     cacus_df = _cacus_data()
 
@@ -485,66 +483,56 @@ def _render_latest_sales_collection():
         st.warning("AR ledger data unavailable.")
         return
 
+    # Cache built DataFrames in session_state keyed by object id of ar_df.
+    # id() changes only when @st.cache_data creates a new object (TTL expiry /
+    # server restart), so reruns triggered by widget edits reuse the stored DFs
+    # instantly — no recomputation on every checkbox click.
+    _ar_id = id(ar_df)
+    if st.session_state.get("_sc_ar_id") != _ar_id:
+        with st.spinner("Building Latest Sales & Collection…"):
+            st.session_state["_sc_ar_id"]  = _ar_id
+            st.session_state["_sc_100001"] = cs.build_latest_sc_for_zid(ar_df, "100001", cacus_df)
+            st.session_state["_sc_100000"] = cs.build_latest_sc_for_zid(ar_df, "100000", cacus_df)
+            st.session_state["_sc_100005"] = cs.build_latest_sc_for_zid(ar_df, "100005", cacus_df)
+
+    df_100001 = st.session_state["_sc_100001"]
+    df_100000 = st.session_state["_sc_100000"]
+    df_100005 = st.session_state["_sc_100005"]
+
+    days_opts = {"All Days": None, "7+ days": 7, "14+ days": 14, "24+ days": 24, "30+ days": 30}
+
     # ── Shared filters for 100001 + 100000 ───────────────────────────────────
     st.markdown("#### HMBR Tools (100001) & GI Corporation (100000)")
     fc1, fc2 = st.columns(2)
-    days_opts = {"All Days": None, "7+ days": 7, "14+ days": 14, "24+ days": 24, "30+ days": 30}
     sel_days_ab = days_opts[fc1.selectbox(
-        "Days since sale (100001+100000)",
-        list(days_opts.keys()),
-        index=0,
-        key="cs_sc_days_ab",
+        "Days since sale (100001+100000)", list(days_opts.keys()), index=0, key="cs_sc_days_ab",
     )]
     sel_cust_ab = fc2.text_input(
-        "Customer filter (100001+100000)",
-        placeholder="name or code…",
-        key="cs_sc_cust_ab",
+        "Customer filter (100001+100000)", placeholder="name or code…", key="cs_sc_cust_ab",
     ).strip() or None
 
-    df_100001 = cs.build_latest_sc_for_zid(ar_df, "100001", cacus_df)
-    df_100000 = cs.build_latest_sc_for_zid(ar_df, "100000", cacus_df)
-
     st.markdown(f"##### {_ZID_LABEL['100001']}")
-    _render_sc_table(
-        df_100001, "100001", crm_entries,
-        sel_days_ab, sel_cust_ab,
-        editor_key="sc_edit_100001",
-        snap_key="_sc_snap_100001",
-    )
+    _render_sc_table(df_100001, "100001", crm_entries, sel_days_ab, sel_cust_ab,
+                     editor_key="sc_edit_100001", snap_key="_sc_snap_100001")
 
     st.markdown("---")
     st.markdown(f"##### {_ZID_LABEL['100000']}")
-    _render_sc_table(
-        df_100000, "100000", crm_entries,
-        sel_days_ab, sel_cust_ab,
-        editor_key="sc_edit_100000",
-        snap_key="_sc_snap_100000",
-    )
+    _render_sc_table(df_100000, "100000", crm_entries, sel_days_ab, sel_cust_ab,
+                     editor_key="sc_edit_100000", snap_key="_sc_snap_100000")
 
     # ── Separate filters for 100005 ───────────────────────────────────────────
     st.markdown("---")
     st.markdown("#### Zepto Chemicals (100005)")
     fz1, fz2 = st.columns(2)
     sel_days_z = days_opts[fz1.selectbox(
-        "Days since sale (100005)",
-        list(days_opts.keys()),
-        index=0,
-        key="cs_sc_days_z",
+        "Days since sale (100005)", list(days_opts.keys()), index=0, key="cs_sc_days_z",
     )]
     sel_cust_z = fz2.text_input(
-        "Customer filter (100005)",
-        placeholder="name or code…",
-        key="cs_sc_cust_z",
+        "Customer filter (100005)", placeholder="name or code…", key="cs_sc_cust_z",
     ).strip() or None
 
-    df_100005 = cs.build_latest_sc_for_zid(ar_df, "100005", cacus_df)
-
-    _render_sc_table(
-        df_100005, "100005", crm_entries,
-        sel_days_z, sel_cust_z,
-        editor_key="sc_edit_100005",
-        snap_key="_sc_snap_100005",
-    )
+    _render_sc_table(df_100005, "100005", crm_entries, sel_days_z, sel_cust_z,
+                     editor_key="sc_edit_100005", snap_key="_sc_snap_100005")
 
 
 # ── Save helpers ───────────────────────────────────────────────────────────────
@@ -619,7 +607,8 @@ def _do_save_sc(edited: pd.DataFrame, snap_key: str, zid: str, force: bool):
         remarks        = str(edit_row.get("Remarks", "") or "").strip()
         raw_call_date  = edit_row.get("Last Call", None)
         last_call_date = (
-            str(raw_call_date) if raw_call_date is not None and str(raw_call_date) != "NaT"
+            str(raw_call_date)
+            if raw_call_date is not None and str(raw_call_date) not in ("NaT", "None", "nan")
             else None
         )
 
