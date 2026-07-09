@@ -397,7 +397,7 @@ def _render_sc_table(
 
     st.caption(f"**{len(df):,}** customers with outstanding balance")
 
-    # ── Pre-populate confirmed / remarks from crm_log ─────────────────────────
+    # ── Pre-populate confirmed / remarks / last_call_date from crm_log ──────────
     df = df.copy()
     df["_sc_key"] = "sc_" + zid + "_" + df["cusid"].astype(str)
     df["confirmed"] = df["_sc_key"].map(
@@ -406,6 +406,10 @@ def _render_sc_table(
     df["remarks"] = df["_sc_key"].map(
         lambda k: crm_entries.get(k, {}).get("remarks", "")
     )
+    df["last_call_date"] = pd.to_datetime(
+        df["_sc_key"].map(lambda k: crm_entries.get(k, {}).get("last_call_date", None)),
+        errors="coerce",
+    ).dt.date
 
     # ── Colored display table ─────────────────────────────────────────────────
     disp_cols = [c for c in _SC_DISPLAY_COLS if c in df.columns]
@@ -430,19 +434,21 @@ def _render_sc_table(
     st.session_state[snap_key] = df.reset_index(drop=True)
 
     with st.expander("✏️ Mark & Remark", expanded=False):
-        edit_df = df[["cusid", "customer_name", "confirmed", "remarks"]].copy()
+        edit_df = df[["cusid", "customer_name", "last_call_date", "confirmed", "remarks"]].copy()
         edit_df = edit_df.rename(columns={
-            "cusid":         "Cust Code",
-            "customer_name": "Customer",
-            "confirmed":     "✓",
-            "remarks":       "Remarks",
+            "cusid":          "Cust Code",
+            "customer_name":  "Customer",
+            "last_call_date": "Last Call",
+            "confirmed":      "✓",
+            "remarks":        "Remarks",
         })
 
         edited = st.data_editor(
             edit_df,
             column_config={
                 "✓": st.column_config.CheckboxColumn("✓ Confirmed", default=False),
-                "Remarks": st.column_config.TextColumn("Remarks", width="large"),
+                "Remarks":   st.column_config.TextColumn("Remarks", width="large"),
+                "Last Call": st.column_config.DateColumn("Last Call", format="YYYY-MM-DD"),
                 "Cust Code": st.column_config.TextColumn("Cust Code", disabled=True),
                 "Customer":  st.column_config.TextColumn("Customer",  disabled=True),
             },
@@ -602,21 +608,27 @@ def _do_save_sc(edited: pd.DataFrame, snap_key: str, zid: str, force: bool):
         edit_row = edited.iloc[i]
         key      = str(snap_row["_sc_key"])
 
-        confirmed = bool(edit_row.get("✓", False))
-        remarks   = str(edit_row.get("Remarks", "") or "").strip()
+        confirmed      = bool(edit_row.get("✓", False))
+        remarks        = str(edit_row.get("Remarks", "") or "").strip()
+        raw_call_date  = edit_row.get("Last Call", None)
+        last_call_date = (
+            str(raw_call_date) if raw_call_date is not None and str(raw_call_date) != "NaT"
+            else None
+        )
 
-        if not confirmed and not remarks:
+        if not confirmed and not remarks and not last_call_date:
             if key in existing_crm:
                 delete_keys.add(key)
             continue
 
         new_entries[key] = {
-            "zid":      zid,
-            "cusid":    str(snap_row["cusid"]),
-            "voucher":  key,
-            "txn_type": "AR Balance",
-            "confirmed": confirmed,
-            "remarks":   remarks,
+            "zid":            zid,
+            "cusid":          str(snap_row["cusid"]),
+            "voucher":        key,
+            "txn_type":       "AR Balance",
+            "confirmed":      confirmed,
+            "remarks":        remarks,
+            "last_call_date": last_call_date,
         }
 
     if not new_entries and not delete_keys:
