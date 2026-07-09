@@ -851,7 +851,7 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
         _r_mtd = _r[(_r["_dt"] >= mo_start_cur) & (_r["_dt"] <= today)]
         if "spid" in _r_mtd.columns:
-            mtd_ret_by_sp = _r_mtd.groupby(_r_mtd["spid"].astype(str))["treturnamt"].sum().to_dict()
+            mtd_ret_by_sp = _r_mtd.groupby(_r_mtd["spid"].astype(str))["treturnamt"].sum().astype(float).to_dict()
 
     # ── Collection per salesman × year × month ────────────────────────────────
     coll_by_sp: dict = {}  # (spid, year, month) -> collection value
@@ -860,7 +860,7 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
         _c["spid"]  = _c["spid"].astype(str)
         _c["year"]  = pd.to_numeric(_c["year"],  errors="coerce")
         _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
-        coll_by_sp = _c.groupby(["spid", "year", "month"])["value"].sum().to_dict()
+        coll_by_sp = _c.groupby(["spid", "year", "month"])["value"].sum().astype(float).to_dict()
 
     # ── opmob pending per salesman × area ────────────────────────────────────
     pend_sp_area: dict = {}   # (spid, area) -> total pending
@@ -1056,7 +1056,7 @@ def _render_prior_month_section(
         _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
         _r_mo = _r[(_r["_dt"] >= mo_start) & (_r["_dt"] <= mo_end)]
         if "spid" in _r_mo.columns:
-            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().to_dict()
+            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().astype(float).to_dict()
 
     # ── Collection per salesman for this month ────────────────────────────────
     prior_coll_by_sp: dict = {}
@@ -1066,7 +1066,7 @@ def _render_prior_month_section(
         _c["year"]  = pd.to_numeric(_c["year"],  errors="coerce")
         _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
         _mo_c = _c[(_c["year"] == year) & (_c["month"] == month)]
-        prior_coll_by_sp = _mo_c.groupby("spid")["value"].sum().to_dict()
+        prior_coll_by_sp = _mo_c.groupby("spid")["value"].sum().astype(float).to_dict()
 
     sp_list = (
         df[["spid", "spname"]].dropna().drop_duplicates()
@@ -1272,7 +1272,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         _r["_dt"] = pd.to_datetime(_r["date"], errors="coerce")
         _r_mo = _r[(_r["_dt"] >= mo_start) & (_r["_dt"] <= mo_end)]
         if "spid" in _r_mo.columns:
-            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().to_dict()
+            ret_by_sp = _r_mo.groupby(_r_mo["spid"].astype(str))["treturnamt"].sum().astype(float).to_dict()
 
     # ── Collection for the selected month, per salesman ───────────────────────
     coll_by_sp: dict = {}
@@ -1283,7 +1283,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         _c["month"] = pd.to_numeric(_c["month"], errors="coerce")
         coll_by_sp = (
             _c[(_c["year"] == sel_year) & (_c["month"] == sel_month)]
-            .groupby("spid")["value"].sum().to_dict()
+            .groupby("spid")["value"].sum().astype(float).to_dict()
         )
 
     # ── AR balances: selected month + the 2 before it, from the same FIFO ─────
@@ -2383,6 +2383,16 @@ _CHECKIN_COLOR = [  0, 200, 100]
 _BD_LAT = (20.34, 26.63)
 _BD_LON = (88.01, 92.67)
 
+# Pin-shaped icon for order markers (white SVG with mask=True so get_color controls the tint)
+import base64 as _b64
+_PIN_ICON_URL = "data:image/svg+xml;base64," + _b64.b64encode(
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="64" height="64">'
+    b'<path fill="white" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13'
+    b'c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5'
+    b' 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>'
+).decode()
+_PIN_ICON = {"url": _PIN_ICON_URL, "width": 64, "height": 64, "anchorY": 64, "mask": True}
+
 
 def _in_bangladesh(lat: float, lon: float) -> bool:
     return _BD_LAT[0] <= lat <= _BD_LAT[1] and _BD_LON[0] <= lon <= _BD_LON[1]
@@ -2525,7 +2535,7 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
             order_data.append({
                 "coordinates": [lon, lat],
                 "color": color,
-                "radius": 42,
+                "icon": _PIN_ICON,
                 "tooltip": (
                     f"Order: {row['order_num']}\n"
                     f"Date: {odate.strftime('%d %b')}\n"
@@ -2556,10 +2566,12 @@ def _render_field_tracking_monthly(zid, sp_df, pdk):
                                 get_radius="radius", pickable=True,
                                 auto_highlight=True, opacity=0.75))
     if show_orders and order_data:
-        layers.append(pdk.Layer("ScatterplotLayer", data=order_data,
-                                get_position="coordinates", get_fill_color="color",
-                                get_radius="radius", pickable=True,
-                                auto_highlight=True, opacity=0.92))
+        layers.append(pdk.Layer(
+            "IconLayer", data=order_data,
+            get_icon="icon", get_position="coordinates", get_color="color",
+            get_size=40, size_min_pixels=24, size_max_pixels=60,
+            pickable=True, auto_highlight=True,
+        ))
 
     if not layers:
         st.info("Select at least one layer to display.")
@@ -2770,7 +2782,7 @@ def _render_field_tracking(zid):
                 order_data.append({
                     "coordinates": [lon, lat],
                     "color":  _ORDER_COLOR,
-                    "radius": 45,
+                    "icon":   _PIN_ICON,
                     "tooltip": (
                         f"Order: {row['order_num']}\n"
                         f"Customer: {row['cusname']}\n"
@@ -2820,14 +2832,16 @@ def _render_field_tracking(zid):
         ))
     if order_data:
         layers.append(pdk.Layer(
-            "ScatterplotLayer",
+            "IconLayer",
             data=order_data,
+            get_icon="icon",
             get_position="coordinates",
-            get_fill_color="color",
-            get_radius="radius",
+            get_color="color",
+            get_size=40,
+            size_min_pixels=24,
+            size_max_pixels=60,
             pickable=True,
             auto_highlight=True,
-            opacity=0.9,
         ))
 
     deck = pdk.Deck(
