@@ -2050,8 +2050,8 @@ def get_latest_sales_collection(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     LEFT JOIN coll_latest cl ON ab.zid = cl.zid  AND ab.cusid = cl.cusid
     LEFT JOIN coll_amt    ca ON ab.zid = ca.zid  AND ab.cusid = ca.cusid
                             AND cl.last_coll_date = ca.coll_date
-    LEFT JOIN cacus        c ON c.zid::text = ab.zid
-                            AND c.xcus::text = ab.cusid
+    LEFT JOIN cacus        c ON c.zid::text = ab.zid::text
+                            AND c.xcus::text = ab.cusid::text
     ORDER BY COALESCE(sl.last_sale_date, '1900-01-01'::date) ASC
     """
     # param order: ar_bal(zid,proj), sale_latest(zid), sale_amt(zid),
