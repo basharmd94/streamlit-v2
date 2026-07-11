@@ -374,7 +374,9 @@ def _render_sc_table(
     editor_key: str,
     snap_key: str,
 ):
-    """Single data_editor with all columns + ✓ / Remarks / Last Call editable."""
+    """Single data_editor with all columns + ✓ / Remarks editable.
+    Last Call is read-only — auto-stamped with save datetime when ✓ is set,
+    cleared automatically when ✓ is removed."""
     if df.empty:
         st.info(f"No customers with an outstanding balance for {_ZID_LABEL.get(zid, zid)}.")
         return
@@ -392,6 +394,12 @@ def _render_sc_table(
         st.info("No customers match the current filters.")
         return
 
+    # Embed filter state in keys so changing a filter never applies stale edits
+    # to a different row set (different filter → fresh editor widget).
+    _fslug = f"{days_min or 0}_{(cust_filter or '').replace(' ', '_')[:20]}"
+    _editor_key = f"{editor_key}_{_fslug}"
+    _snap_key   = f"{snap_key}_{_fslug}"
+
     # Pre-populate editable columns from crm_log
     df = df.copy()
     df["_sc_key"] = "sc_" + zid + "_" + df["cusid"].astype(str)
@@ -401,15 +409,15 @@ def _render_sc_table(
     df["remarks"] = df["_sc_key"].map(
         lambda k: crm_entries.get(k, {}).get("remarks", "")
     )
-    df["last_call_date"] = pd.to_datetime(
-        df["_sc_key"].map(lambda k: crm_entries.get(k, {}).get("last_call_date", None)),
-        errors="coerce",
-    ).dt.date
+    # last_call_date is read-only: stored as a datetime string, shown as text
+    df["last_call_date"] = df["_sc_key"].map(
+        lambda k: crm_entries.get(k, {}).get("last_call_date") or ""
+    )
 
     # Status indicator column (replaces background colour in data_editor)
     df["_status"] = df["days_since_sale"].apply(_sc_status)
 
-    st.session_state[snap_key] = df.reset_index(drop=True)
+    st.session_state[_snap_key] = df.reset_index(drop=True)
     st.caption(f"**{len(df):,}** customers with outstanding balance  ·  ⚠️ = 24-30 days  ·  🔴 = >30 days")
 
     col_order = [
@@ -439,7 +447,8 @@ def _render_sc_table(
         "remarks":         "Remarks",
     })
 
-    editable = {"✓", "Remarks", "Last Call"}
+    # Only ✓ and Remarks are user-editable; Last Call is auto-managed
+    editable = {"✓", "Remarks"}
     disabled = [c for c in disp.columns if c not in editable]
 
     edited = st.data_editor(
@@ -448,7 +457,7 @@ def _render_sc_table(
             "⚠":        st.column_config.TextColumn("⚠", width="small"),
             "✓":        st.column_config.CheckboxColumn("✓", default=False),
             "Remarks":  st.column_config.TextColumn("Remarks", width="medium"),
-            "Last Call":st.column_config.DateColumn("Last Call", format="YYYY-MM-DD"),
+            "Last Call":st.column_config.TextColumn("Last Call", width="medium"),
             "Sale Amt": st.column_config.NumberColumn("Sale Amt",  format="%.0f"),
             "Last Coll":st.column_config.NumberColumn("Last Coll", format="%.0f"),
             "Balance":  st.column_config.NumberColumn("Balance",   format="%.0f"),
@@ -458,14 +467,14 @@ def _render_sc_table(
         disabled=disabled,
         use_container_width=True,
         hide_index=True,
-        key=editor_key,
+        key=_editor_key,
         num_rows="fixed",
     )
 
     col1, col2 = st.columns([1, 4])
-    force_save = col2.checkbox("Force save", key=f"cs_sc_force_{editor_key}")
-    if col1.button("💾 Save", type="primary", key=f"cs_sc_save_{editor_key}"):
-        _do_save_sc(edited, snap_key, zid, force_save)
+    force_save = col2.checkbox("Force save", key=f"cs_sc_force_{_editor_key}")
+    if col1.button("💾 Save", type="primary", key=f"cs_sc_save_{_editor_key}"):
+        _do_save_sc(edited, _snap_key, zid, force_save)
 
 
 def _render_latest_sales_collection():
@@ -588,7 +597,12 @@ def _do_save(edited: pd.DataFrame, force: bool):
 
 
 def _do_save_sc(edited: pd.DataFrame, snap_key: str, zid: str, force: bool):
-    """Save handler for the Latest Sales & Collection editor."""
+    """Save handler for the Latest Sales & Collection editor.
+
+    last_call_date is auto-managed:
+      - ✓ ticked   → stamp with current datetime (keep existing stamp if already set)
+      - ✓ unticked → clear last_call_date regardless of previous value
+    """
     snapshot: pd.DataFrame = st.session_state.get(snap_key, pd.DataFrame())
     if snapshot.empty:
         st.error("Session snapshot missing — please reload the page.")
@@ -597,22 +611,24 @@ def _do_save_sc(edited: pd.DataFrame, snap_key: str, zid: str, force: bool):
     new_entries: dict = {}
     delete_keys: set  = set()
     existing_crm = st.session_state.get("cs_crm_entries", {})
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
     for i in range(len(edited)):
         snap_row = snapshot.iloc[i]
         edit_row = edited.iloc[i]
         key      = str(snap_row["_sc_key"])
 
-        confirmed      = bool(edit_row.get("✓", False))
-        remarks        = str(edit_row.get("Remarks", "") or "").strip()
-        raw_call_date  = edit_row.get("Last Call", None)
-        last_call_date = (
-            str(raw_call_date)
-            if raw_call_date is not None and str(raw_call_date) not in ("NaT", "None", "nan")
-            else None
-        )
+        confirmed = bool(edit_row.get("✓", False))
+        remarks   = str(edit_row.get("Remarks", "") or "").strip()
 
-        if not confirmed and not remarks and not last_call_date:
+        # Auto-manage last_call_date from confirmed state
+        if confirmed:
+            # Keep the existing stamp if already set; stamp now if first tick
+            last_call_date = existing_crm.get(key, {}).get("last_call_date") or now_str
+        else:
+            last_call_date = None  # always clear when unticked
+
+        if not confirmed and not remarks:
             if key in existing_crm:
                 delete_keys.add(key)
             continue
