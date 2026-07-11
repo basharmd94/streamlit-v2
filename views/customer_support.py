@@ -175,7 +175,13 @@ def _render_14day_activity():
         lambda k: crm_entries.get(k, {}).get("remarks", "")
     )
 
-    st.session_state["_cs_feed"] = feed.reset_index(drop=True)
+    # Embed filter state in keys so changing date/type never applies stale
+    # edits to a different row set.
+    _type_slug      = sel_type.replace(" ", "_")
+    _14d_snap_key   = f"_cs_feed_{sel_date}_{_type_slug}"
+    _14d_editor_key = f"cs_14day_editor_{sel_date}_{_type_slug}"
+
+    st.session_state[_14d_snap_key] = feed.reset_index(drop=True)
 
     disp_cols = [c for c in _FEED_COLS if c in feed.columns]
     disp = feed[disp_cols].copy().rename(columns=_FEED_RENAME)
@@ -204,19 +210,20 @@ def _render_14day_activity():
         disabled=disabled,
         use_container_width=True,
         hide_index=True,
-        key="cs_14day_editor",
+        key=_14d_editor_key,
         num_rows="fixed",
     )
 
     col1, col2 = st.columns([1, 4])
     force_save = col2.checkbox(
         "Force save (overwrite if another user saved since your page loaded)",
-        key="cs_force_save",
+        key=f"cs_force_save_{_14d_editor_key}",
     )
-    save_clicked = col1.button("💾 Save CRM Updates", type="primary")
+    save_clicked = col1.button("💾 Save CRM Updates", type="primary",
+                               key=f"cs_save_btn_{_14d_editor_key}")
 
     if save_clicked:
-        _do_save(edited, force_save)
+        _do_save(edited, _14d_snap_key, force_save)
 
     # ── Customer DO detail + 6-month ledger ───────────────────────────────────
     st.markdown("---")
@@ -546,11 +553,18 @@ def _render_latest_sales_collection():
 
 # ── Save helpers ───────────────────────────────────────────────────────────────
 
-def _do_save(edited: pd.DataFrame, force: bool):
+def _do_save(edited: pd.DataFrame, snap_key: str, force: bool):
     """Save handler for the 14-day activity feed editor."""
-    snapshot: pd.DataFrame = st.session_state.get("_cs_feed", pd.DataFrame())
+    snapshot: pd.DataFrame = st.session_state.get(snap_key, pd.DataFrame())
     if snapshot.empty:
         st.error("Session snapshot missing — please reload the page.")
+        return
+
+    if len(edited) != len(snapshot):
+        st.error(
+            f"Row count mismatch (editor={len(edited)}, snapshot={len(snapshot)}). "
+            "Please reload the page — the filter may have changed before saving."
+        )
         return
 
     new_entries: dict = {}
@@ -606,6 +620,13 @@ def _do_save_sc(edited: pd.DataFrame, snap_key: str, zid: str, force: bool):
     snapshot: pd.DataFrame = st.session_state.get(snap_key, pd.DataFrame())
     if snapshot.empty:
         st.error("Session snapshot missing — please reload the page.")
+        return
+
+    if len(edited) != len(snapshot):
+        st.error(
+            f"Row count mismatch (editor={len(edited)}, snapshot={len(snapshot)}). "
+            "Please reload the page — the filter may have changed before saving."
+        )
         return
 
     new_entries: dict = {}
