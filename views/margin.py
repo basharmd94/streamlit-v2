@@ -10,7 +10,7 @@ from utils.utils import timed
 def display_margin_analysis_page(current_page, zid, data_dict):
     st.sidebar.title("Overall Margin Analysis")
     filtered_data,filtered_data_r = common.data_copy_add_columns(data_dict['sales'], data_dict['return'])
-    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison"],horizontal=True)
+    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","📈 Order Analytics"],horizontal=True)
 
     if analysis_mode == "Overview":
         st.subheader("📈 Select Plot Type")
@@ -246,3 +246,54 @@ def display_margin_analysis_page(current_page, zid, data_dict):
             selected_years=selected_years,
             selected_month_names=selected_months
         )
+
+    elif analysis_mode == "📈 Order Analytics":
+        st.subheader("📈 Order Analytics")
+        st.caption("Filters below apply across all sub-sections. Empty = no filter applied.")
+
+        with st.expander("🔍 Entity Filters", expanded=True):
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                sel_areas = st.multiselect("Area",
+                    sorted(filtered_data["area"].dropna().unique().tolist()), key="moa_areas")
+            with col2:
+                sel_salesmen = st.multiselect("Salesman",
+                    sorted(filtered_data["spname"].dropna().unique().tolist()), key="moa_salesmen")
+            with col3:
+                sel_product_groups = st.multiselect("Product Group",
+                    sorted(filtered_data["itemgroup"].dropna().unique().tolist()), key="moa_product_groups")
+            with col4:
+                sel_customers = st.multiselect("Customer",
+                    sorted(filtered_data["cusname"].dropna().unique().tolist()), key="moa_customers")
+            with col5:
+                sel_products = st.multiselect("Product",
+                    sorted(filtered_data["itemname"].dropna().unique().tolist()), key="moa_products")
+
+        sub_mode = st.radio(
+            "Sub-section",
+            ["Margin vs Order Scatter", "Rolling Average"],
+            horizontal=True, key="moa_sub",
+        )
+
+        if sub_mode == "Margin vs Order Scatter":
+            color_by = st.selectbox(
+                "Color By", ["(None)", "Salesman", "Area", "Product Group", "Customer"],
+                key="moa_color_by",
+            )
+            overall_margin.plot_margin_order_scatter(
+                filtered_data,
+                sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
+                color_by,
+            )
+
+        elif sub_mode == "Rolling Average":
+            ra_windows = st.multiselect("Rolling Windows (days)", [5, 10, 30, 60],
+                                        default=[10, 30], key="moa_ra_windows")
+            if ra_windows:
+                overall_margin.plot_rolling_margin_average(
+                    filtered_data,
+                    sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
+                    ra_windows,
+                )
+            else:
+                st.info("Select at least one rolling window.")

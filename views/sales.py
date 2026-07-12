@@ -9,7 +9,7 @@ from utils.utils import timed
 def display_overall_sales_analysis_page(current_page, zid, data_dict):
     st.title("Overall Sales Analysis")
     filtered_data, filtered_data_r = common.data_copy_add_columns(data_dict['sales'], data_dict['return'])
-    analysis_mode = st.radio("Choose Analysis Mode:",["Overview", "Comparison", "Distributions", "Descriptive Stats"],horizontal=True)
+    analysis_mode = st.radio("Choose Analysis Mode:",["Overview", "Comparison", "Distributions", "Descriptive Stats", "📈 Order Analytics"],horizontal=True)
 
     if analysis_mode == "Overview":
         st.subheader("📈 Select Plot Type")
@@ -241,6 +241,66 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
             stats_df = overall_sales.generate_descriptive_statistics(filtered_data_d, filtered_data_r_d, group_by)
             st.markdown("### 📋 Summary Table")
             st.dataframe(stats_df, use_container_width=True)
+
+    elif analysis_mode == "📈 Order Analytics":
+        st.subheader("📈 Order Analytics")
+        st.caption("Filters below apply across all sub-sections. Empty = no filter applied.")
+
+        with st.expander("🔍 Entity Filters", expanded=True):
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                sel_areas = st.multiselect("Area",
+                    sorted(filtered_data["area"].dropna().unique().tolist()), key="oa_areas")
+            with col2:
+                sel_salesmen = st.multiselect("Salesman",
+                    sorted(filtered_data["spname"].dropna().unique().tolist()), key="oa_salesmen")
+            with col3:
+                sel_product_groups = st.multiselect("Product Group",
+                    sorted(filtered_data["itemgroup"].dropna().unique().tolist()), key="oa_product_groups")
+            with col4:
+                sel_customers = st.multiselect("Customer",
+                    sorted(filtered_data["cusname"].dropna().unique().tolist()), key="oa_customers")
+            with col5:
+                sel_products = st.multiselect("Product",
+                    sorted(filtered_data["itemname"].dropna().unique().tolist()), key="oa_products")
+
+        sub_mode = st.radio(
+            "Sub-section",
+            ["Order Size Distribution", "Return Size Distribution", "Rolling Average"],
+            horizontal=True, key="oa_sub",
+        )
+
+        if sub_mode in ("Order Size Distribution", "Return Size Distribution"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                value_min = st.number_input("Min Value (optional)", value=None, placeholder="e.g. 1000", key="oa_min")
+            with col2:
+                value_max = st.number_input("Max Value (optional)", value=None, placeholder="e.g. 100000", key="oa_max")
+            with col3:
+                nbins = st.number_input("Number of Bins", min_value=5, max_value=500, value=50, key="oa_bins")
+
+            overall_sales.plot_order_size_distribution(
+                filtered_data, filtered_data_r,
+                sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
+                value_min, value_max, nbins,
+                "Order Size" if sub_mode == "Order Size Distribution" else "Return Size",
+            )
+
+        elif sub_mode == "Rolling Average":
+            col1, col2 = st.columns(2)
+            with col1:
+                ra_metric = st.selectbox("Metric", ["Sales", "Net Sales", "Returns"], key="oa_ra_metric")
+            with col2:
+                ra_windows = st.multiselect("Rolling Windows (days)", [5, 10, 30, 60],
+                                            default=[10, 30], key="oa_ra_windows")
+            if ra_windows:
+                overall_sales.plot_rolling_average_sales(
+                    filtered_data, filtered_data_r,
+                    sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
+                    ra_windows, ra_metric,
+                )
+            else:
+                st.info("Select at least one rolling window.")
 
 
 @st.cache_data(show_spinner=False, ttl=86400)

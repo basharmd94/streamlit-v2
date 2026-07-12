@@ -1748,6 +1748,106 @@ def generate_descriptive_statistics(filtered_data, filtered_data_r, filtered_dat
     return df_stats.round(2).reset_index().rename(columns={"index": "Metric"})
 
 
+# ─── Order Analytics ──────────────────────────────────────────────────────────
+
+def _apply_entity_filters_collection(df_c, areas=None, salesmen=None, customers=None):
+    d = df_c
+    if areas:
+        d = d[d["area"].isin(areas)]
+    if salesmen:
+        d = d[d["spname"].isin(salesmen)]
+    if customers:
+        d = d[d["cusname"].isin(customers)]
+    return d
+
+
+def _smart_buckets_collection(series):
+    breakpoints = [0, 1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000]
+    max_val = float(series.max())
+    bins = [b for b in breakpoints if b < max_val]
+    bins.append(max_val + 1)
+    rows = []
+    for i in range(len(bins) - 1):
+        lo, hi = bins[i], bins[i + 1]
+        mask = (series >= lo) & (series < hi)
+        cnt = int(mask.sum())
+        if cnt == 0:
+            continue
+        label = f"{lo:,.0f} – {hi - 1:,.0f}" if i < len(bins) - 2 else f"{lo:,.0f}+"
+        rows.append({"Range": label, "Count": cnt,
+                     "% of Total": f"{100 * cnt / len(series):.1f}%",
+                     "Sum": f"{series[mask].sum():,.0f}"})
+    return pd.DataFrame(rows)
+
+
+def plot_collection_size_distribution(filtered_data_c, areas, salesmen, customers,
+                                       value_min, value_max, nbins):
+    """Histogram of per-voucher collection amounts with entity filters."""
+    import plotly.express as px
+
+    df_f = _apply_entity_filters_collection(filtered_data_c, areas, salesmen, customers)
+    if df_f.empty:
+        st.warning("No collection data after applying filters.")
+        return
+
+    vouchers = df_f.groupby("glvoucher")["value"].sum()
+    series = vouchers[vouchers > 0].reset_index(drop=True)
+
+    if value_min is not None:
+        series = series[series >= value_min]
+    if value_max is not None:
+        series = series[series <= value_max]
+    if series.empty:
+        st.warning("No data in the specified value range.")
+        return
+
+    fig = px.histogram(series, nbins=int(nbins), title="Collection Size Distribution",
+                       labels={"value": "Collection Amount"})
+    fig.update_layout(xaxis_title="Collection Amount", yaxis_title="Number of Vouchers",
+                      bargap=0.05, showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Count", f"{len(series):,}")
+    c2.metric("Median", f"{series.median():,.0f}")
+    c3.metric("Mean", f"{series.mean():,.0f}")
+    c4.metric("Min", f"{series.min():,.0f}")
+    c5.metric("Max", f"{series.max():,.0f}")
+
+    st.markdown("#### Bucket Breakdown")
+    st.dataframe(_smart_buckets_collection(series), use_container_width=True, hide_index=True)
+
+
+def plot_rolling_collection_average(filtered_data_c, areas, salesmen, customers, windows):
+    """Daily bar + rolling average lines for collection amounts."""
+    import plotly.graph_objects as go
+
+    df_f = _apply_entity_filters_collection(filtered_data_c, areas, salesmen, customers)
+    if df_f.empty:
+        st.warning("No collection data after applying filters.")
+        return
+
+    daily = df_f.groupby("date")["value"].sum().rename("value")
+    daily.index = pd.to_datetime(daily.index)
+    daily = daily.sort_index().reindex(
+        pd.date_range(daily.index.min(), daily.index.max(), freq="D"), fill_value=0
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=daily.index, y=daily.values, name="Daily",
+                         marker_color="lightgray", opacity=0.5))
+    colors = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"]
+    for i, w in enumerate(sorted(windows)):
+        rolled = daily.rolling(window=w, min_periods=1).mean()
+        fig.add_trace(go.Scatter(x=daily.index, y=rolled.values, mode="lines",
+                                  name=f"{w}-day avg",
+                                  line=dict(color=colors[i % len(colors)], width=2)))
+    fig.update_layout(title="Rolling Average — Collection",
+                      xaxis_title="Date", yaxis_title="Collection Amount",
+                      hovermode="x unified")
+    st.plotly_chart(fig, use_container_width=True)
+
+
     # The way this works is: first we find the invoices (sales) and then we find the balance before this 
     # invoice hit our ledger, then we check every payments made after to find out when the balance hits this 
     # prior balance mark. This days to payment is calculated for each invoice for each customer.

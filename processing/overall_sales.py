@@ -1128,6 +1128,141 @@ def generate_descriptive_statistics(filtered_data, filtered_data_r, group_by):
     df_stats = pd.DataFrame(stats)
     return df_stats.round(2).reset_index().rename(columns={"index": "Metric"})
 
+# ─── Order Analytics ──────────────────────────────────────────────────────────
+
+def _apply_entity_filters_sales(df, areas=None, salesmen=None, product_groups=None,
+                                  customers=None, products=None):
+    d = df
+    if areas:
+        d = d[d["area"].isin(areas)]
+    if salesmen:
+        d = d[d["spname"].isin(salesmen)]
+    if product_groups:
+        d = d[d["itemgroup"].isin(product_groups)]
+    if customers:
+        d = d[d["cusname"].isin(customers)]
+    if products:
+        d = d[d["itemname"].isin(products)]
+    return d
+
+
+def _smart_buckets(series):
+    breakpoints = [0, 1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000]
+    max_val = float(series.max())
+    bins = [b for b in breakpoints if b < max_val]
+    bins.append(max_val + 1)
+    rows = []
+    for i in range(len(bins) - 1):
+        lo, hi = bins[i], bins[i + 1]
+        mask = (series >= lo) & (series < hi)
+        cnt = int(mask.sum())
+        if cnt == 0:
+            continue
+        label = f"{lo:,.0f} – {hi - 1:,.0f}" if i < len(bins) - 2 else f"{lo:,.0f}+"
+        rows.append({"Range": label, "Count": cnt,
+                     "% of Total": f"{100 * cnt / len(series):.1f}%",
+                     "Sum": f"{series[mask].sum():,.0f}"})
+    return pd.DataFrame(rows)
+
+
+def plot_order_size_distribution(filtered_data, filtered_data_r,
+                                  areas, salesmen, product_groups, customers, products,
+                                  value_min, value_max, nbins, sub_section):
+    """Histogram of per-voucher order or return totals with entity filters."""
+    if sub_section == "Order Size":
+        df_f = _apply_entity_filters_sales(filtered_data, areas, salesmen, product_groups, customers, products)
+        if df_f.empty:
+            st.warning("No data after applying filters.")
+            return
+        orders = df_f.groupby("voucher", as_index=False).agg(
+            order_total=("altsales", "sum"),
+            date=("date", "first"),
+            cusname=("cusname", "first"),
+            spname=("spname", "first"),
+            area=("area", "first"),
+        )
+        x_label, title = "Order Amount", "Order Size Distribution"
+    else:
+        df_f = _apply_entity_filters_sales(filtered_data_r, areas, salesmen, product_groups, customers, products)
+        if df_f.empty:
+            st.warning("No return data after applying filters.")
+            return
+        orders = df_f.groupby("revoucher", as_index=False).agg(
+            order_total=("treturnamt", "sum"),
+            date=("date", "first"),
+            cusname=("cusname", "first"),
+            spname=("spname", "first"),
+            area=("area", "first"),
+        )
+        x_label, title = "Return Amount", "Return Size Distribution"
+
+    series = orders["order_total"].dropna()
+    series = series[series > 0]
+    if value_min is not None:
+        series = series[series >= value_min]
+    if value_max is not None:
+        series = series[series <= value_max]
+    if series.empty:
+        st.warning("No data in the specified value range.")
+        return
+
+    fig = px.histogram(series, nbins=int(nbins), title=title, labels={"value": x_label})
+    fig.update_layout(xaxis_title=x_label, yaxis_title="Number of Orders", bargap=0.05, showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Count", f"{len(series):,}")
+    c2.metric("Median", f"{series.median():,.0f}")
+    c3.metric("Mean", f"{series.mean():,.0f}")
+    c4.metric("Min", f"{series.min():,.0f}")
+    c5.metric("Max", f"{series.max():,.0f}")
+
+    st.markdown("#### Bucket Breakdown")
+    st.dataframe(_smart_buckets(series), use_container_width=True, hide_index=True)
+
+
+def plot_rolling_average_sales(filtered_data, filtered_data_r,
+                                areas, salesmen, product_groups, customers, products,
+                                windows, metric):
+    """Daily bar + rolling average lines for Sales / Returns / Net Sales."""
+    import plotly.graph_objects as go
+
+    df_f   = _apply_entity_filters_sales(filtered_data,   areas, salesmen, product_groups, customers, products)
+    df_r_f = _apply_entity_filters_sales(filtered_data_r, areas, salesmen, product_groups, customers, products)
+
+    if metric == "Sales":
+        daily = df_f.groupby("date")["altsales"].sum().rename("value")
+    elif metric == "Returns":
+        daily = df_r_f.groupby("date")["treturnamt"].sum().rename("value")
+    else:
+        s = df_f.groupby("date")["altsales"].sum()
+        r = df_r_f.groupby("date")["treturnamt"].sum()
+        daily = s.subtract(r, fill_value=0).rename("value")
+
+    if daily.empty:
+        st.warning("No data for rolling average.")
+        return
+
+    daily.index = pd.to_datetime(daily.index)
+    daily = daily.sort_index().reindex(
+        pd.date_range(daily.index.min(), daily.index.max(), freq="D"), fill_value=0
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=daily.index, y=daily.values, name="Daily",
+                         marker_color="lightgray", opacity=0.5))
+    colors = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"]
+    for i, w in enumerate(sorted(windows)):
+        rolled = daily.rolling(window=w, min_periods=1).mean()
+        fig.add_trace(go.Scatter(x=daily.index, y=rolled.values, mode="lines",
+                                  name=f"{w}-day avg",
+                                  line=dict(color=colors[i % len(colors)], width=2)))
+    fig.update_layout(title=f"Rolling Average — {metric}",
+                      xaxis_title="Date", yaxis_title="Amount",
+                      hovermode="x unified", bargap=0.1)
+    st.plotly_chart(fig, use_container_width=True)
+
+
 @timed
 def convert_month_to_number(month):
     """

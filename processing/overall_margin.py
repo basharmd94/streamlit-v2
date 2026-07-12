@@ -928,3 +928,123 @@ def generate_descriptive_statistics(filtered_data, filtered_data_r, group_by):
 
     df_stats = pd.DataFrame(stats)
     return df_stats.round(2).reset_index().rename(columns={"index": "Metric"})
+
+
+# ─── Order Analytics ──────────────────────────────────────────────────────────
+
+def _apply_entity_filters_margin(df, areas=None, salesmen=None, product_groups=None,
+                                   customers=None, products=None):
+    d = df
+    if areas:
+        d = d[d["area"].isin(areas)]
+    if salesmen:
+        d = d[d["spname"].isin(salesmen)]
+    if product_groups:
+        d = d[d["itemgroup"].isin(product_groups)]
+    if customers:
+        d = d[d["cusname"].isin(customers)]
+    if products:
+        d = d[d["itemname"].isin(products)]
+    return d
+
+
+def plot_margin_order_scatter(filtered_data, areas, salesmen, product_groups, customers, products, color_by):
+    """Scatter of per-order total vs margin %, with numpy trendline when uncoloured."""
+    import plotly.graph_objects as go
+    import numpy as np
+
+    df_f = _apply_entity_filters_margin(filtered_data, areas, salesmen, product_groups, customers, products)
+    if df_f.empty:
+        st.warning("No data after applying filters.")
+        return
+
+    orders = df_f.groupby("voucher", as_index=False).agg(
+        order_total=("altsales", "sum"),
+        gross_margin=("gross_margin", "sum"),
+        date=("date", "first"),
+        cusname=("cusname", "first"),
+        spname=("spname", "first"),
+        area=("area", "first"),
+        itemgroup=("itemgroup", "first"),
+    )
+    orders = orders[orders["order_total"] > 0].copy()
+    orders["margin_pct"] = orders["gross_margin"] / orders["order_total"] * 100
+    orders = orders.dropna(subset=["margin_pct"])
+
+    if orders.empty:
+        st.warning("No valid order data for scatter.")
+        return
+
+    color_col_map = {
+        "Salesman": "spname", "Area": "area",
+        "Product Group": "itemgroup", "Customer": "cusname", "(None)": None,
+    }
+    color_col = color_col_map.get(color_by)
+
+    fig = go.Figure()
+    if color_col:
+        for grp_val, grp in orders.groupby(color_col):
+            fig.add_trace(go.Scatter(
+                x=grp["order_total"], y=grp["margin_pct"], mode="markers",
+                name=str(grp_val),
+                text=grp["cusname"] + " | " + grp["date"].astype(str),
+                hoverinfo="text+x+y",
+                marker=dict(opacity=0.6, size=7),
+            ))
+    else:
+        fig.add_trace(go.Scatter(
+            x=orders["order_total"], y=orders["margin_pct"], mode="markers",
+            name="Orders",
+            text=orders["cusname"] + " | " + orders["date"].astype(str),
+            hoverinfo="text+x+y",
+            marker=dict(color="#1f77b4", opacity=0.5, size=7),
+        ))
+        x_vals = orders["order_total"].values.astype(float)
+        y_vals = orders["margin_pct"].values.astype(float)
+        valid = np.isfinite(x_vals) & np.isfinite(y_vals)
+        if valid.sum() >= 2:
+            coefs = np.polyfit(x_vals[valid], y_vals[valid], 1)
+            x_fit = np.linspace(x_vals[valid].min(), x_vals[valid].max(), 200)
+            fig.add_trace(go.Scatter(
+                x=x_fit, y=np.polyval(coefs, x_fit), mode="lines",
+                name=f"Trend (slope {coefs[0]:.2e})",
+                line=dict(color="red", width=2, dash="dash"),
+            ))
+
+    fig.update_layout(title="Order Amount vs Margin %",
+                      xaxis_title="Order Total", yaxis_title="Margin %",
+                      hovermode="closest")
+    st.plotly_chart(fig, use_container_width=True)
+
+    corr = orders["order_total"].corr(orders["margin_pct"])
+    st.info(f"Correlation (order size vs margin %): **{corr:.3f}**")
+
+
+def plot_rolling_margin_average(filtered_data, areas, salesmen, product_groups, customers, products, windows):
+    """Daily bar + rolling average lines for gross margin."""
+    import plotly.graph_objects as go
+
+    df_f = _apply_entity_filters_margin(filtered_data, areas, salesmen, product_groups, customers, products)
+    if df_f.empty:
+        st.warning("No data after applying filters.")
+        return
+
+    daily = df_f.groupby("date")["gross_margin"].sum().rename("value")
+    daily.index = pd.to_datetime(daily.index)
+    daily = daily.sort_index().reindex(
+        pd.date_range(daily.index.min(), daily.index.max(), freq="D"), fill_value=0
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=daily.index, y=daily.values, name="Daily",
+                         marker_color="lightgray", opacity=0.5))
+    colors = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"]
+    for i, w in enumerate(sorted(windows)):
+        rolled = daily.rolling(window=w, min_periods=1).mean()
+        fig.add_trace(go.Scatter(x=daily.index, y=rolled.values, mode="lines",
+                                  name=f"{w}-day avg",
+                                  line=dict(color=colors[i % len(colors)], width=2)))
+    fig.update_layout(title="Rolling Average — Gross Margin",
+                      xaxis_title="Date", yaxis_title="Gross Margin",
+                      hovermode="x unified")
+    st.plotly_chart(fig, use_container_width=True)

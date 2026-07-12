@@ -33,7 +33,7 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
     #collection using sales, returns and collection separately
     filtered_data_c, filtered_data_s,filtered_data_r = common.data_copy_add_columns(data_dict['collection'],data_dict['sales'], data_dict['return'])
     filtered_data_c = common.enrich_collection_with_sales_info(filtered_data_c, filtered_data_s)
-    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP","CPA","Customer Ledger","Salesman Due"],horizontal=True)
+    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP","CPA","Customer Ledger","Salesman Due","📈 Order Analytics"],horizontal=True)
 
     #collection using glheader and details.
     filtered_data_ar = data_dict['ar']
@@ -601,3 +601,52 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                 mime="text/csv",
                 key=f"salesman_due_download_{report_key}",
             )
+
+    elif analysis_mode == "📈 Order Analytics":
+        st.subheader("📈 Order Analytics")
+        st.caption("Filters below apply across all sub-sections. Empty = no filter applied.")
+
+        with st.expander("🔍 Entity Filters", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                sel_areas = st.multiselect("Area",
+                    sorted(filtered_data_c["area"].dropna().unique().tolist()), key="coa_areas")
+            with col2:
+                sel_salesmen = st.multiselect("Salesman",
+                    sorted(filtered_data_c["spname"].dropna().unique().tolist()), key="coa_salesmen")
+            with col3:
+                sel_customers = st.multiselect("Customer",
+                    sorted(filtered_data_c["cusname"].dropna().unique().tolist()), key="coa_customers")
+
+        sub_mode = st.radio(
+            "Sub-section",
+            ["Collection Size Distribution", "Rolling Average"],
+            horizontal=True, key="coa_sub",
+        )
+
+        if sub_mode == "Collection Size Distribution":
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                value_min = st.number_input("Min Value (optional)", value=None, placeholder="e.g. 1000", key="coa_min")
+            with col2:
+                value_max = st.number_input("Max Value (optional)", value=None, placeholder="e.g. 100000", key="coa_max")
+            with col3:
+                nbins = st.number_input("Number of Bins", min_value=5, max_value=500, value=50, key="coa_bins")
+
+            collection.plot_collection_size_distribution(
+                filtered_data_c,
+                sel_areas, sel_salesmen, sel_customers,
+                value_min, value_max, nbins,
+            )
+
+        elif sub_mode == "Rolling Average":
+            ra_windows = st.multiselect("Rolling Windows (days)", [5, 10, 30, 60],
+                                        default=[10, 30], key="coa_ra_windows")
+            if ra_windows:
+                collection.plot_rolling_collection_average(
+                    filtered_data_c,
+                    sel_areas, sel_salesmen, sel_customers,
+                    ra_windows,
+                )
+            else:
+                st.info("Select at least one rolling window.")
