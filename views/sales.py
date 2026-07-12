@@ -176,7 +176,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 "Number of Orders", "Number of Returns", "Number of Customers", "Number of Products"
             ])
         with col2:
-            selected_group = st.selectbox("Group By", ["Customer", "Product", "Salesman", "Area", "Product Group","Day of Month", "Day of Week"])
+            selected_group = st.selectbox("Group By", ["Customer", "Product", "Salesman", "Area", "Product Group"])
         with col3:
             min_date = filtered_data["date"].min()
             max_date = filtered_data["date"].max()
@@ -224,7 +224,6 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
 
         group_by = st.selectbox("Group By", [
             "Customer", "Product", "Salesman", "Area", "Product Group",
-            "Month", "Year", "Day of Month", "Day of Week"
         ])
 
         if st.button("Generate Summary Statistics"):

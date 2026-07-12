@@ -1619,8 +1619,6 @@ def plot_distribution_analysis(filtered_data_s, filtered_data_r, filtered_data_c
         "Salesman": "spname",
         "Area": "area",
         "Product Group": "itemgroup",
-        "Day of Month": "DOM",
-        "Day of Week": "DOW"
     }
 
     if group_by not in valid_columns:
@@ -1700,10 +1698,6 @@ def generate_descriptive_statistics(filtered_data, filtered_data_r, filtered_dat
         "Salesman": "spname",
         "Area": "area",
         "Product Group": "itemgroup",
-        "Month": "month",
-        "Year": "year",
-        "Day of Month": "DOM",
-        "Day of Week": "DOW"
     }
 
     if group_by not in valid_columns:

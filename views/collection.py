@@ -251,9 +251,9 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         with col2:
             # Dynamically adjust group options
             if selected_metric == "Collection":
-                group_options = ["Salesman", "Customer", "Area", "Day of Month", "Day of Week"]
+                group_options = ["Salesman", "Customer", "Area"]
             else:
-                group_options = ["Customer", "Product", "Salesman", "Area", "Product Group", "Day of Month", "Day of Week"]
+                group_options = ["Customer", "Product", "Salesman", "Area", "Product Group"]
 
             selected_group = st.selectbox("Group By", group_options, key="dist_group")
 
@@ -310,7 +310,6 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 
         group_by = st.selectbox("Group By", [
             "Customer", "Product", "Salesman", "Area", "Product Group",
-            "Month", "Year", "Day of Month", "Day of Week"
         ])
 
         if st.button("Generate Summary Statistics"):
