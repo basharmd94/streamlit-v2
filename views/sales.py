@@ -714,7 +714,7 @@ def _render_customer_cycles(df_sales):
         fig_range.add_trace(go.Scatter(
             x=areas, y=mid_vals, mode="markers+text",
             name="Mid projection", text=[str(v) for v in mid_vals],
-            textposition="outside",
+            textposition="top center",
             marker=dict(color="steelblue", size=10, symbol="diamond"),
         ))
         fig_range.add_trace(go.Scatter(
@@ -745,7 +745,7 @@ def _render_customer_cycles(df_sales):
             x=areas, y=s_mid, mode="markers+text",
             name="Mid Sales Proj.",
             text=[f"{v/1000:.0f}K" if v >= 1000 else str(int(v)) for v in s_mid],
-            textposition="outside",
+            textposition="top center",
             marker=dict(color="green", size=10, symbol="diamond"),
         ))
         fig_sales.update_layout(
