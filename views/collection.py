@@ -33,7 +33,7 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
     #collection using sales, returns and collection separately
     filtered_data_c, filtered_data_s,filtered_data_r = common.data_copy_add_columns(data_dict['collection'],data_dict['sales'], data_dict['return'])
     filtered_data_c = common.enrich_collection_with_sales_info(filtered_data_c, filtered_data_s)
-    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP","CPA","Customer Ledger","Salesman Due"],horizontal=True)
+    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP","CPA","Customer Ledger","Salesman Due","📈 Order Analytics"],horizontal=True)
 
     #collection using glheader and details.
     filtered_data_ar = data_dict['ar']
@@ -251,9 +251,9 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         with col2:
             # Dynamically adjust group options
             if selected_metric == "Collection":
-                group_options = ["Salesman", "Customer", "Area", "Day of Month", "Day of Week"]
+                group_options = ["Salesman", "Customer", "Area"]
             else:
-                group_options = ["Customer", "Product", "Salesman", "Area", "Product Group", "Day of Month", "Day of Week"]
+                group_options = ["Customer", "Product", "Salesman", "Area", "Product Group"]
 
             selected_group = st.selectbox("Group By", group_options, key="dist_group")
 
@@ -310,7 +310,6 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 
         group_by = st.selectbox("Group By", [
             "Customer", "Product", "Salesman", "Area", "Product Group",
-            "Month", "Year", "Day of Month", "Day of Week"
         ])
 
         if st.button("Generate Summary Statistics"):
@@ -602,3 +601,74 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                 mime="text/csv",
                 key=f"salesman_due_download_{report_key}",
             )
+
+    elif analysis_mode == "📈 Order Analytics":
+        st.subheader("📈 Order Analytics")
+        st.caption("Filters below apply across all sub-sections. Empty = no filter applied.")
+
+        with st.expander("🔍 Entity Filters", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                sel_areas = st.multiselect("Area",
+                    sorted(filtered_data_c["area"].dropna().unique().tolist()), key="coa_areas")
+            with col2:
+                sel_salesmen = st.multiselect("Salesman",
+                    sorted(filtered_data_c["spname"].dropna().unique().tolist()), key="coa_salesmen")
+            with col3:
+                sel_customers = st.multiselect("Customer",
+                    sorted(filtered_data_c["cusname"].dropna().unique().tolist()), key="coa_customers")
+
+        sub_mode = st.radio(
+            "Sub-section",
+            ["Collection Size Distribution", "Rolling Average"],
+            horizontal=True, key="coa_sub",
+        )
+
+        if sub_mode == "Collection Size Distribution":
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                value_min = st.number_input("Min Value (optional)", value=None, placeholder="e.g. 1000", key="coa_min")
+            with col2:
+                value_max = st.number_input("Max Value (optional)", value=None, placeholder="e.g. 100000", key="coa_max")
+            with col3:
+                nbins = st.number_input("Number of Bins", min_value=5, max_value=500, value=50, key="coa_bins")
+
+            collection.plot_collection_size_distribution(
+                filtered_data_c,
+                sel_areas, sel_salesmen, sel_customers,
+                value_min, value_max, nbins,
+            )
+            with st.expander("📖 How to read this chart"):
+                st.markdown("""
+**What you are looking at:** Each bar represents how many collection vouchers fall within a given payment value range. Only positive-value vouchers (actual payments received) are included; adjustments and reversals are excluded.
+
+**What to look for:**
+- **Where the bulk sits** — if most vouchers are in the 1K–10K range, customers are making many small payments rather than settling large dues at once. This increases collection visits but reduces credit risk concentration.
+- **Large-value tail** — a few very large collection vouchers may represent bulk settlements after long overdue periods, or simply large accounts paying their monthly statement. Check whether these correlate with large outstanding dues in the AR analysis.
+- **Comparing collection size to order size** — if your typical collection voucher is significantly smaller than your typical order, customers are consistently paying in instalments. This is a working-capital signal: the gap between invoicing and full recovery is wider than it appears.
+- **Filtering by salesman** — collection is often the salesman's responsibility. A salesman whose collection distribution skews smaller than peers may be collecting partial payments or avoiding difficult conversations about overdue balances.
+- **Filtering by area** — areas with very small average collection sizes relative to their sales volume may have a cultural or logistics barrier to cash collection that needs a different approach (e.g. mobile banking, more frequent visits).
+                """)
+
+        elif sub_mode == "Rolling Average":
+            ra_windows = st.multiselect("Rolling Windows (days)", [5, 10, 30, 60],
+                                        default=[10, 30], key="coa_ra_windows")
+            if ra_windows:
+                collection.plot_rolling_collection_average(
+                    filtered_data_c,
+                    sel_areas, sel_salesmen, sel_customers,
+                    ra_windows,
+                )
+                with st.expander("📖 How to read this chart"):
+                    st.markdown("""
+**What you are looking at:** The grey bars are daily total collection (sum of all payment vouchers received that day). The coloured lines are rolling averages over your selected windows.
+
+**What to look for:**
+- **Collection rhythm** — unlike sales, which spike at order creation, collection often has a predictable rhythm tied to your credit terms (e.g. 30-day, 45-day). A rolling average that lags the sales rolling average by approximately your credit term is healthy and expected.
+- **Collection dropping faster than sales** — if the collection rolling average falls while the sales average holds steady, receivables are building up. This is a cash-flow warning sign even if the P&L looks fine.
+- **End-of-month spikes in daily bars** — many businesses see collection concentrate in the last week of the month as customers settle before month-end. If this is absent, it may mean customers are not being asked to pay on a schedule.
+- **Short-window vs. long-window divergence** — a 10-day rolling average running consistently below the 30-day average means recent collection is slower than the period average. This often reflects a backlog building or a key collector being absent.
+- **Comparing collection to sales rolling average** — hold both charts side by side (or apply the same filters). A growing gap between sales and collection trends is the clearest operational signal that credit control needs attention.
+                    """)
+            else:
+                st.info("Select at least one rolling window.")

@@ -1000,8 +1000,6 @@ def plot_distribution_analysis(filtered_data, filtered_data_r, metric, group_by,
         "Salesman": "spname",
         "Area": "area",
         "Product Group": "itemgroup",
-        "Day of Month": "DOM",
-        "Day of Week": "DOW"
     }
 
     if group_by not in valid_columns:
@@ -1073,10 +1071,6 @@ def generate_descriptive_statistics(filtered_data, filtered_data_r, group_by):
         "Salesman": "spname",
         "Area": "area",
         "Product Group": "itemgroup",
-        "Month": "month",
-        "Year": "year",
-        "Day of Month": "DOM",
-        "Day of Week": "DOW"
     }
 
     if group_by not in valid_columns:
@@ -1133,6 +1127,141 @@ def generate_descriptive_statistics(filtered_data, filtered_data_r, group_by):
 
     df_stats = pd.DataFrame(stats)
     return df_stats.round(2).reset_index().rename(columns={"index": "Metric"})
+
+# ─── Order Analytics ──────────────────────────────────────────────────────────
+
+def _apply_entity_filters_sales(df, areas=None, salesmen=None, product_groups=None,
+                                  customers=None, products=None):
+    d = df
+    if areas:
+        d = d[d["area"].isin(areas)]
+    if salesmen:
+        d = d[d["spname"].isin(salesmen)]
+    if product_groups:
+        d = d[d["itemgroup"].isin(product_groups)]
+    if customers:
+        d = d[d["cusname"].isin(customers)]
+    if products:
+        d = d[d["itemname"].isin(products)]
+    return d
+
+
+def _smart_buckets(series):
+    breakpoints = [0, 1_000, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000]
+    max_val = float(series.max())
+    bins = [b for b in breakpoints if b < max_val]
+    bins.append(max_val + 1)
+    rows = []
+    for i in range(len(bins) - 1):
+        lo, hi = bins[i], bins[i + 1]
+        mask = (series >= lo) & (series < hi)
+        cnt = int(mask.sum())
+        if cnt == 0:
+            continue
+        label = f"{lo:,.0f} – {hi - 1:,.0f}" if i < len(bins) - 2 else f"{lo:,.0f}+"
+        rows.append({"Range": label, "Count": cnt,
+                     "% of Total": f"{100 * cnt / len(series):.1f}%",
+                     "Sum": f"{series[mask].sum():,.0f}"})
+    return pd.DataFrame(rows)
+
+
+def plot_order_size_distribution(filtered_data, filtered_data_r,
+                                  areas, salesmen, product_groups, customers, products,
+                                  value_min, value_max, nbins, sub_section):
+    """Histogram of per-voucher order or return totals with entity filters."""
+    if sub_section == "Order Size":
+        df_f = _apply_entity_filters_sales(filtered_data, areas, salesmen, product_groups, customers, products)
+        if df_f.empty:
+            st.warning("No data after applying filters.")
+            return
+        orders = df_f.groupby("voucher", as_index=False).agg(
+            order_total=("altsales", "sum"),
+            date=("date", "first"),
+            cusname=("cusname", "first"),
+            spname=("spname", "first"),
+            area=("area", "first"),
+        )
+        x_label, title = "Order Amount", "Order Size Distribution"
+    else:
+        df_f = _apply_entity_filters_sales(filtered_data_r, areas, salesmen, product_groups, customers, products)
+        if df_f.empty:
+            st.warning("No return data after applying filters.")
+            return
+        orders = df_f.groupby("revoucher", as_index=False).agg(
+            order_total=("treturnamt", "sum"),
+            date=("date", "first"),
+            cusname=("cusname", "first"),
+            spname=("spname", "first"),
+            area=("area", "first"),
+        )
+        x_label, title = "Return Amount", "Return Size Distribution"
+
+    series = orders["order_total"].dropna()
+    series = series[series > 0]
+    if value_min is not None:
+        series = series[series >= value_min]
+    if value_max is not None:
+        series = series[series <= value_max]
+    if series.empty:
+        st.warning("No data in the specified value range.")
+        return
+
+    fig = px.histogram(series, nbins=int(nbins), title=title, labels={"value": x_label})
+    fig.update_layout(xaxis_title=x_label, yaxis_title="Number of Orders", bargap=0.05, showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Count", f"{len(series):,}")
+    c2.metric("Median", f"{series.median():,.0f}")
+    c3.metric("Mean", f"{series.mean():,.0f}")
+    c4.metric("Min", f"{series.min():,.0f}")
+    c5.metric("Max", f"{series.max():,.0f}")
+
+    st.markdown("#### Bucket Breakdown")
+    st.dataframe(_smart_buckets(series), use_container_width=True, hide_index=True)
+
+
+def plot_rolling_average_sales(filtered_data, filtered_data_r,
+                                areas, salesmen, product_groups, customers, products,
+                                windows, metric):
+    """Daily bar + rolling average lines for Sales / Returns / Net Sales."""
+    import plotly.graph_objects as go
+
+    df_f   = _apply_entity_filters_sales(filtered_data,   areas, salesmen, product_groups, customers, products)
+    df_r_f = _apply_entity_filters_sales(filtered_data_r, areas, salesmen, product_groups, customers, products)
+
+    if metric == "Sales":
+        daily = df_f.groupby("date")["altsales"].sum().rename("value")
+    elif metric == "Returns":
+        daily = df_r_f.groupby("date")["treturnamt"].sum().rename("value")
+    else:
+        s = df_f.groupby("date")["altsales"].sum()
+        r = df_r_f.groupby("date")["treturnamt"].sum()
+        daily = s.subtract(r, fill_value=0).rename("value")
+
+    if daily.empty:
+        st.warning("No data for rolling average.")
+        return
+
+    daily.index = pd.to_datetime(daily.index)
+    daily = daily.sort_index().reindex(
+        pd.date_range(daily.index.min(), daily.index.max(), freq="D"), fill_value=0
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=daily.index, y=daily.values, name="Daily",
+                         marker_color="lightgray", opacity=0.5))
+    colors = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"]
+    for i, w in enumerate(sorted(windows)):
+        rolled = daily.rolling(window=w, min_periods=1).mean()
+        fig.add_trace(go.Scatter(x=daily.index, y=rolled.values, mode="lines",
+                                  name=f"{w}-day avg",
+                                  line=dict(color=colors[i % len(colors)], width=2)))
+    fig.update_layout(title=f"Rolling Average — {metric}",
+                      xaxis_title="Date", yaxis_title="Amount",
+                      hovermode="x unified", bargap=0.1)
+    st.plotly_chart(fig, use_container_width=True)
+
 
 @timed
 def convert_month_to_number(month):
@@ -1498,4 +1627,336 @@ def plot_number_of_product_returns(filtered_data_r, current_page):
     st.plotly_chart(fig, use_container_width=True)
 
 
+# ─── Customer Cycles ──────────────────────────────────────────────────────────
 
+def _month_label(year, month):
+    return f"{calendar.month_abbr[int(month)]} {int(year)}"
+
+
+def _month_idx(year, month):
+    return int(year) * 12 + int(month)
+
+
+def _build_area_month_sets(df):
+    """
+    Returns:
+      area_sets  : dict  (area, year, month)  -> frozenset of cusids
+      nat_sets   : dict  (year, month)         -> frozenset of cusids
+      sorted_ym  : list of (year, month) tuples in chronological order
+    """
+    df = df.copy()
+    df["area"] = df["area"].fillna("Unknown").astype(str)
+    area_sets, nat_sets = {}, {}
+    for (yr, mo), g in df.groupby(["year", "month"]):
+        custs = frozenset(g["cusid"].dropna().astype(str))
+        nat_sets[(int(yr), int(mo))] = custs
+        for area, ag in g.groupby("area"):
+            area_sets[(str(area), int(yr), int(mo))] = frozenset(ag["cusid"].dropna().astype(str))
+    sorted_ym = sorted(nat_sets.keys())
+    return area_sets, nat_sets, sorted_ym
+
+
+def compute_monthly_active_customers(df_sales):
+    """
+    Returns (long_df, pivot_df).
+    long_df  : area, year, month, month_label, n_customers, n_orders, total_sales
+    pivot_df : index=area (National first), columns=month_label, values=n_customers
+    """
+    df = df_sales.copy()
+    df["area"] = df["area"].fillna("Unknown").astype(str)
+
+    area_monthly = (
+        df.groupby(["area", "year", "month"])
+        .agg(n_customers=("cusid", "nunique"),
+             n_orders=("voucher", "nunique"),
+             total_sales=("altsales", "sum"))
+        .reset_index()
+    )
+    nat_monthly = (
+        df.groupby(["year", "month"])
+        .agg(n_customers=("cusid", "nunique"),
+             n_orders=("voucher", "nunique"),
+             total_sales=("altsales", "sum"))
+        .reset_index()
+    )
+    nat_monthly.insert(0, "area", "National")
+
+    long_df = pd.concat([nat_monthly, area_monthly], ignore_index=True)
+    long_df["month_label"] = long_df.apply(lambda r: _month_label(r["year"], r["month"]), axis=1)
+    long_df = long_df.sort_values(["year", "month"]).reset_index(drop=True)
+
+    ordered_cols = (
+        long_df[["year", "month", "month_label"]]
+        .drop_duplicates()
+        .sort_values(["year", "month"])["month_label"]
+        .tolist()
+    )
+
+    pivot_df = (
+        long_df.pivot_table(index="area", columns="month_label",
+                            values="n_customers", aggfunc="sum")
+        .reindex(columns=ordered_cols)
+        .fillna(0).astype(int)
+    )
+    nat_row   = pivot_df.loc[["National"]] if "National" in pivot_df.index else pd.DataFrame()
+    area_rows = pivot_df.drop(index="National", errors="ignore").sort_index()
+    pivot_df  = pd.concat([nat_row, area_rows])
+
+    return long_df, pivot_df
+
+
+def compute_customer_flow(df_sales):
+    """
+    Month-on-month customer status breakdown (Retained / Lost / New / Returned).
+    Returns long_df with columns:
+      area, year, month, month_label,
+      total_active, retained, lost, new_customers, returned, net_change
+    Includes 'National' rows.
+    """
+    df = df_sales.copy()
+    df["area"] = df["area"].fillna("Unknown").astype(str)
+    area_sets, nat_sets, sorted_ym = _build_area_month_sets(df)
+    areas = sorted(df["area"].unique().tolist())
+
+    rows = []
+    for target in ["National"] + areas:
+        cumulative_ever: set = set()
+        prev_active: set    = set()
+
+        for i, (yr, mo) in enumerate(sorted_ym):
+            if target == "National":
+                active_now = set(nat_sets.get((yr, mo), set()))
+            else:
+                active_now = set(area_sets.get((target, yr, mo), set()))
+
+            if i == 0:
+                retained = 0; lost = 0
+                new_cust = len(active_now)
+                returned = 0
+            else:
+                retained = len(active_now & prev_active)
+                lost     = len(prev_active - active_now)
+                came_back = active_now - prev_active
+                new_cust  = len(came_back - cumulative_ever)
+                returned  = len(came_back & cumulative_ever)
+
+            cumulative_ever.update(prev_active)
+            rows.append({
+                "area": target, "year": yr, "month": mo,
+                "month_label": _month_label(yr, mo),
+                "total_active": len(active_now),
+                "retained": retained,
+                "lost": lost,
+                "new_customers": new_cust,
+                "returned": returned,
+                "net_change": len(active_now) - len(prev_active),
+            })
+            prev_active = active_now
+
+    return pd.DataFrame(rows)
+
+
+def classify_customer_cycles(df_sales, window_months=12):
+    """
+    Per-customer cycle classification over trailing `window_months`.
+    Returns (result_df, n_window_months).
+    result_df columns:
+      cusid, cusname, area, active_months, activity_rate,
+      avg_gap_months, last_order_date, avg_order_value, class
+    """
+    df = df_sales.copy()
+    df["area"]  = df["area"].fillna("Unknown").astype(str)
+    df["date"]  = pd.to_datetime(df["date"])
+    df["cusid"] = df["cusid"].astype(str)
+
+    max_date   = df["date"].max()
+    win_start  = max_date - pd.DateOffset(months=window_months)
+    df_win     = df[df["date"] >= win_start]
+
+    # Months in window
+    all_ym = {(r.year, r.month)
+              for r in pd.date_range(win_start, max_date, freq="MS")}
+    n_win  = max(len(all_ym), 1)
+
+    # Customer header info (latest area, last order, avg order value per voucher)
+    cust_info = (
+        df.groupby("cusid")
+        .agg(cusname=("cusname", "first"),
+             area=("area", "first"),
+             last_order_date=("date", "max"))
+        .reset_index()
+    )
+    cust_order_val = (
+        df.groupby(["cusid", "voucher"])["altsales"].sum()
+        .reset_index()
+        .groupby("cusid")["altsales"].mean()
+        .reset_index(name="avg_order_value")
+    )
+
+    # Active months per customer in window
+    cust_active = (
+        df_win.groupby(["cusid", "year", "month"])
+        .size().reset_index()
+        .groupby("cusid").size().reset_index(name="active_months")
+    )
+    cust_active["cusid"] = cust_active["cusid"].astype(str)
+
+    # Avg gap between orders (months)
+    month_sets = (
+        df_win.groupby("cusid")
+        .apply(lambda g: sorted({(_month_idx(r["year"], r["month"])) for _, r in g.iterrows()}))
+        .reset_index(name="month_indices")
+    )
+    month_sets["cusid"] = month_sets["cusid"].astype(str)
+
+    def _avg_gap(indices):
+        if len(indices) < 2:
+            return None
+        gaps = [indices[k+1] - indices[k] for k in range(len(indices)-1)]
+        return round(sum(gaps) / len(gaps), 1)
+
+    month_sets["avg_gap_months"] = month_sets["month_indices"].apply(_avg_gap)
+
+    result = (
+        cust_info
+        .merge(cust_active[["cusid", "active_months"]], on="cusid", how="left")
+        .merge(cust_order_val, on="cusid", how="left")
+        .merge(month_sets[["cusid", "avg_gap_months"]], on="cusid", how="left")
+    )
+    result["active_months"]   = result["active_months"].fillna(0).astype(int)
+    result["activity_rate"]   = (result["active_months"] / n_win).round(2)
+    result["avg_order_value"] = result["avg_order_value"].fillna(0).round(0)
+
+    # Lapsed: had any order before 6-month mark but nothing in last 6 months
+    cutoff_6m    = max_date - pd.DateOffset(months=6)
+    recent_custs = set(df[df["date"] >= cutoff_6m]["cusid"].astype(str))
+    old_custs    = set(df[df["date"] < cutoff_6m]["cusid"].astype(str))
+
+    def _classify(row):
+        am = row["active_months"]
+        if am == 0 and row["cusid"] in old_custs and row["cusid"] not in recent_custs:
+            return "Lapsed"
+        if am >= 10: return "Regular"
+        if am >= 7:  return "Active"
+        if am >= 4:  return "Occasional"
+        if am >= 1:  return "Rare"
+        return "Inactive"
+
+    result["class"] = result.apply(_classify, axis=1)
+    result["last_order_date"] = pd.to_datetime(result["last_order_date"]).dt.strftime("%d %b %Y")
+    result = result.sort_values(["area", "cusname"]).reset_index(drop=True)
+    return result, n_win
+
+
+def compute_area_projection(df_sales, trailing_months=3):
+    """
+    For each area + National: project next month's active customers and sales.
+    Returns projection_df with columns:
+      area, last_month_active, inactive_pool,
+      retention_mid, retention_lo, retention_hi,
+      return_mid, return_lo, return_hi,
+      avg_new_per_month, avg_order_value,
+      projected_active_lo, projected_active_mid, projected_active_hi,
+      projected_sales_lo, projected_sales_mid, projected_sales_hi,
+      data_months
+    """
+    import numpy as np
+
+    df = df_sales.copy()
+    df["area"] = df["area"].fillna("Unknown").astype(str)
+
+    flow_df = compute_customer_flow(df_sales)
+    mac_df, _ = compute_monthly_active_customers(df_sales)
+
+    # Monthly avg order value per area: total_sales / n_customers
+    mac_df["aov"] = mac_df["total_sales"] / mac_df["n_customers"].replace(0, np.nan)
+
+    rows = []
+    for target in flow_df["area"].unique():
+        sub = flow_df[flow_df["area"] == target].sort_values(["year", "month"]).reset_index(drop=True)
+        # Drop first row (no prev month available)
+        sub = sub.iloc[1:].copy()
+        if len(sub) < 2:
+            continue
+
+        # Use only trailing_months completed periods (exclude the most recent partial month
+        # by using all available complete months — the data is already filtered by sidebar)
+        window = sub.tail(trailing_months)
+        if len(window) == 0:
+            continue
+
+        mac_sub = mac_df[mac_df["area"] == target].sort_values(["year", "month"])
+
+        # Retention rate per month: retained / prev_active
+        ret_rates = []
+        for _, r in window.iterrows():
+            prev_i = sub.index.get_loc(r.name)
+            if prev_i == 0:
+                continue
+            prev_active = sub.iloc[prev_i - 1]["total_active"]
+            if prev_active > 0:
+                ret_rates.append(r["retained"] / prev_active)
+
+        # Return rate per month: returned / inactive_pool
+        # inactive_pool ≈ cumulative_ever - prev_active
+        cum_ever = set()
+        area_sets_inner, nat_sets_inner, sorted_ym_inner = _build_area_month_sets(df)
+        all_seen: set = set()
+        prev_a: set = set()
+        for yr, mo in sorted_ym_inner:
+            if target == "National":
+                cur = set(nat_sets_inner.get((yr, mo), set()))
+            else:
+                cur = set(area_sets_inner.get((target, yr, mo), set()))
+            all_seen.update(prev_a)
+            prev_a = cur
+
+        # inactive pool at last month = all ever seen - last month active
+        inactive_pool = max(0, len(all_seen) - (window.iloc[-1]["total_active"] if len(window) else 0))
+
+        ret_rates_arr = np.array(ret_rates) if ret_rates else np.array([0.0])
+        ret_lo  = float(np.percentile(ret_rates_arr, 25))
+        ret_mid = float(np.mean(ret_rates_arr))
+        ret_hi  = float(np.percentile(ret_rates_arr, 75))
+
+        rtn_vals = window["returned"].values
+        rtn_lo   = float(np.percentile(rtn_vals, 25))
+        rtn_mid  = float(np.mean(rtn_vals))
+        rtn_hi   = float(np.percentile(rtn_vals, 75))
+
+        new_vals     = window["new_customers"].values
+        avg_new      = float(np.mean(new_vals))
+
+        aov_vals = mac_sub.tail(trailing_months)["aov"].dropna().values
+        avg_aov  = float(np.mean(aov_vals)) if len(aov_vals) else 0.0
+
+        last_active = int(sub.iloc[-1]["total_active"])
+
+        proj_lo  = last_active * ret_lo  + rtn_lo  + avg_new
+        proj_mid = last_active * ret_mid + rtn_mid + avg_new
+        proj_hi  = last_active * ret_hi  + rtn_hi  + avg_new
+
+        rows.append({
+            "Area":                  target,
+            "Last Month Active":     last_active,
+            "Inactive Pool":         inactive_pool,
+            "Retention (mean)":      round(ret_mid * 100, 1),
+            "Retention (lo–hi %)":   f"{ret_lo*100:.0f}%–{ret_hi*100:.0f}%",
+            "Returns / mo (mean)":   round(rtn_mid, 1),
+            "New / mo (mean)":       round(avg_new, 1),
+            "Avg Order Value":       round(avg_aov, 0),
+            "Proj Active (lo)":      max(0, round(proj_lo)),
+            "Proj Active (mid)":     max(0, round(proj_mid)),
+            "Proj Active (hi)":      max(0, round(proj_hi)),
+            "Proj Sales (lo)":       max(0, round(proj_lo  * avg_aov)),
+            "Proj Sales (mid)":      max(0, round(proj_mid * avg_aov)),
+            "Proj Sales (hi)":       max(0, round(proj_hi  * avg_aov)),
+            "Data Months":           len(window),
+        })
+
+    proj_df = pd.DataFrame(rows)
+    if proj_df.empty:
+        return proj_df
+    nat_row   = proj_df[proj_df["Area"] == "National"]
+    area_rows = proj_df[proj_df["Area"] != "National"].sort_values("Area")
+    return pd.concat([nat_row, area_rows], ignore_index=True)

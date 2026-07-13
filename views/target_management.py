@@ -2443,7 +2443,7 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
     # ── Controls ──────────────────────────────────────────────────────────────
     col1, col2, col3 = st.columns([3, 1, 2])
     with col1:
-        sel_label = st.selectbox("Salesman", sp_labels, key="ft_mo_sp")
+        sel_labels = st.multiselect("Salesman", sp_labels, default=sp_labels[:1], key="ft_mo_sp")
     with col2:
         today = pd.Timestamp.today()
         sel_mo = st.date_input(
@@ -2460,108 +2460,126 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
     show_lines  = "Movement lines"   in show_layers
     show_orders = "Order locations"  in show_layers
 
-    username = sp_map[sel_label]
-    sp_name  = name_map.get(username, username)
-    year, month = sel_mo.year, sel_mo.month
-
-    # ── Fetch data ────────────────────────────────────────────────────────────
-    sql, params = queries.get_location_track_monthly(username, year, month)
-    df = get_dataframe(sql, params)
-    if df is not None and not df.empty:
-        df["track_date"] = pd.to_datetime(df["track_date"]).dt.date
-
-    sql2, params2 = queries.get_opmob_order_locations_monthly(list(ft_zids), username, year, month)
-    ord_df = get_dataframe(sql2, params2)
-    if ord_df is not None and not ord_df.empty:
-        ord_df["order_date"] = pd.to_datetime(ord_df["xdate"]).dt.date
-
-    track_empty = df is None or df.empty
-    order_empty = ord_df is None or ord_df.empty
-
-    if track_empty and order_empty:
-        st.info(f"No data for {sp_name} in {sel_mo.strftime('%B %Y')}.")
+    if not sel_labels:
+        st.info("Select at least one salesman.")
         return
 
-    # ── Unified date list for gradient colour mapping ─────────────────────────
-    track_dates = set(df["track_date"].unique())       if not track_empty else set()
-    order_dates = set(ord_df["order_date"].unique())   if not order_empty else set()
-    all_dates   = sorted(track_dates | order_dates)
+    usernames = [sp_map[l] for l in sel_labels]
+    sp_names  = [name_map.get(u, u) for u in usernames]
+    year, month = sel_mo.year, sel_mo.month
+    use_gradient = (len(usernames) == 1)   # date-gradient only for single; per-salesman colours for multi
+
+    # ── Fetch data for each salesman ──────────────────────────────────────────
+    all_track_dfs = {}
+    all_order_dfs = {}
+    for username in usernames:
+        sql, params = queries.get_location_track_monthly(username, year, month)
+        tdf = get_dataframe(sql, params)
+        if tdf is not None and not tdf.empty:
+            tdf["track_date"] = pd.to_datetime(tdf["track_date"]).dt.date
+            all_track_dfs[username] = tdf
+
+        sql2, params2 = queries.get_opmob_order_locations_monthly(list(ft_zids), username, year, month)
+        odf = get_dataframe(sql2, params2)
+        if odf is not None and not odf.empty:
+            odf["order_date"] = pd.to_datetime(odf["xdate"]).dt.date
+            all_order_dfs[username] = odf
+
+    track_empty = not all_track_dfs
+    order_empty = not all_order_dfs
+
+    if track_empty and order_empty:
+        st.info(f"No data for {', '.join(sp_names)} in {sel_mo.strftime('%B %Y')}.")
+        return
+
+    # ── Unified date list ─────────────────────────────────────────────────────
+    all_dates_set = set()
+    for tdf in all_track_dfs.values():
+        all_dates_set.update(tdf["track_date"].unique())
+    for odf in all_order_dfs.values():
+        all_dates_set.update(odf["order_date"].unique())
+    all_dates   = sorted(all_dates_set)
     n_days      = len(all_dates)
     date_to_idx = {d: i for i, d in enumerate(all_dates)}
 
-    # ── No-data working-day warning ───────────────────────────────────────────
-    month_range = pd.date_range(
-        start=pd.Timestamp(year=year, month=month, day=1),
-        end=pd.Timestamp(year=year, month=month, day=_cal.monthrange(year, month)[1]),
-        freq="D",
-    )
-    no_data_days = [
-        d.strftime("%d %b")
-        for d in month_range
-        if d.weekday() != 4
-        and d.date() not in track_dates
-        and d.date() <= pd.Timestamp.today().date()
-    ]
-    if no_data_days:
-        st.caption("⚠ No GPS data (working days): " + ", ".join(no_data_days))
+    # ── No-data working-day warning (single salesman only) ────────────────────
+    if use_gradient:
+        username0   = usernames[0]
+        track_dates0 = set(all_track_dfs[username0]["track_date"].unique()) if username0 in all_track_dfs else set()
+        month_range = pd.date_range(
+            start=pd.Timestamp(year=year, month=month, day=1),
+            end=pd.Timestamp(year=year, month=month, day=_cal.monthrange(year, month)[1]),
+            freq="D",
+        )
+        no_data_days = [
+            d.strftime("%d %b")
+            for d in month_range
+            if d.weekday() != 4
+            and d.date() not in track_dates0
+            and d.date() <= pd.Timestamp.today().date()
+        ]
+        if no_data_days:
+            st.caption("⚠ No GPS data (working days): " + ", ".join(no_data_days))
 
-    # ── Build movement layers ─────────────────────────────────────────────────
-    path_data  = []
-    point_data = []
-    all_coords = []
+    # ── Build layers per salesman ─────────────────────────────────────────────
+    path_data        = []
+    point_data       = []
+    order_data       = []
+    all_coords       = []
+    no_gps_orders_mo = []
 
-    if not track_empty:
-        for day in sorted(track_dates):
-            idx    = date_to_idx[day]
-            color  = _day_color(idx, n_days)
-            day_df = df[df["track_date"] == day]
-            coords = [
-                (float(r["longitude"]), float(r["latitude"]))
-                for _, r in day_df.iterrows()
-            ]
-            if not coords:
-                continue
-            all_coords.extend(coords)
-            if len(coords) >= 2:
-                path_data.append({"path": coords, "color": color})
-            for (lon, lat), (_, row) in zip(coords, day_df.iterrows()):
-                ts_str = pd.to_datetime(row["ts"]).strftime("%H:%M") if pd.notna(row.get("ts")) else ""
-                point_data.append({
+    for sp_idx, username in enumerate(usernames):
+        sp_name   = name_map.get(username, username)
+        sp_color  = _TRACK_COLORS[sp_idx % len(_TRACK_COLORS)]
+
+        tdf = all_track_dfs.get(username)
+        if tdf is not None:
+            for day in sorted(tdf["track_date"].unique()):
+                color  = _day_color(date_to_idx[day], n_days) if use_gradient else sp_color
+                day_df = tdf[tdf["track_date"] == day]
+                coords = [(float(r["longitude"]), float(r["latitude"])) for _, r in day_df.iterrows()]
+                if not coords:
+                    continue
+                all_coords.extend(coords)
+                if len(coords) >= 2:
+                    path_data.append({"path": coords, "color": color})
+                for (lon, lat), (_, row) in zip(coords, day_df.iterrows()):
+                    ts_str = pd.to_datetime(row["ts"]).strftime("%H:%M") if pd.notna(row.get("ts")) else ""
+                    prefix = "" if use_gradient else f"[{sp_name}] "
+                    point_data.append({
+                        "coordinates": [lon, lat],
+                        "color": color, "radius": 12,
+                        "tooltip": f"{prefix}{day.strftime('%d %b')}  {ts_str}",
+                    })
+
+        odf = all_order_dfs.get(username)
+        if odf is not None:
+            for _, row in odf.iterrows():
+                lat   = float(row["lat"] or 0)
+                lon   = float(row["lon"] or 0)
+                odate = row["order_date"]
+                _is_no_stock = "no stock" in str(row.get("status", "")).lower()
+                if not _in_bangladesh(lat, lon):
+                    no_gps_orders_mo.append(row)
+                    continue
+                color = _day_color(date_to_idx.get(odate, 0), n_days) if use_gradient else sp_color
+                all_coords.append((lon, lat))
+                prefix = "" if use_gradient else f"[{sp_name}] "
+                order_data.append({
                     "coordinates": [lon, lat],
-                    "color": color,
-                    "radius": 12,
-                    "tooltip": f"{day.strftime('%d %b')}  {ts_str}",
+                    "color": [180, 180, 180] if _is_no_stock else color,
+                    "icon": _PIN_ICON,
+                    "tooltip": (
+                        f"{prefix}Order: {row['order_num']}\n"
+                        f"Date: {odate.strftime('%d %b')}\n"
+                        f"Customer: {row['cusname']}\n"
+                        f"Status: {row['status']}\n"
+                        f"Total: {int(row['total'] or 0):,}"
+                    ),
                 })
 
-    # ── Build order layer ─────────────────────────────────────────────────────
-    order_data   = []
-    no_gps_orders_mo = []   # orders with missing/invalid GPS for the breakdown table
-    if not order_empty:
-        for _, row in ord_df.iterrows():
-            lat = float(row["lat"] or 0)
-            lon = float(row["lon"] or 0)
-            odate = row["order_date"]
-            if not _in_bangladesh(lat, lon):
-                no_gps_orders_mo.append(row)
-                continue
-            idx   = date_to_idx.get(odate, 0)
-            color = _day_color(idx, n_days)
-            all_coords.append((lon, lat))
-            order_data.append({
-                "coordinates": [lon, lat],
-                "color": color,
-                "icon": _PIN_ICON,
-                "tooltip": (
-                    f"Order: {row['order_num']}\n"
-                    f"Date: {odate.strftime('%d %b')}\n"
-                    f"Customer: {row['cusname']}\n"
-                    f"Status: {row['status']}\n"
-                    f"Total: {int(row['total'] or 0):,}"
-                ),
-            })
-
     if not all_coords:
-        st.info(f"No valid GPS data for {sp_name} in {sel_mo.strftime('%B %Y')}.")
+        st.info(f"No valid GPS data for {', '.join(sp_names)} in {sel_mo.strftime('%B %Y')}.")
         return
 
     # ── Map ───────────────────────────────────────────────────────────────────
@@ -2603,25 +2621,42 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
         tooltip={"text": "{tooltip}"},
     ), use_container_width=True)
 
-    # ── Gradient legend (up to 10 anchors) ───────────────────────────────────
-    step    = max(1, n_days // 10)
-    anchors = sorted(set(list(range(0, n_days, step)) + [n_days - 1]))
-    leg_parts = []
-    for idx in anchors:
-        c     = _day_color(idx, n_days)
-        hex_c = "#{:02x}{:02x}{:02x}".format(*c)
-        leg_parts.append(f"<span style='color:{hex_c}'>●</span> {all_dates[idx].strftime('%d %b')}")
-    st.markdown(
-        "<small>" + "&nbsp;→&nbsp;".join(leg_parts)
-        + "&nbsp;&nbsp;<b>·</b>&nbsp;&nbsp;"
-        + "◯ line ping &nbsp; ● order (same gradient)</small>",
-        unsafe_allow_html=True,
-    )
-    _no_gps_count = len(no_gps_orders_mo)
+    # ── Legend ────────────────────────────────────────────────────────────────
+    if use_gradient and all_dates:
+        step    = max(1, n_days // 10)
+        anchors = sorted(set(list(range(0, n_days, step)) + [n_days - 1]))
+        leg_parts = []
+        for idx in anchors:
+            c     = _day_color(idx, n_days)
+            hex_c = "#{:02x}{:02x}{:02x}".format(*c)
+            leg_parts.append(f"<span style='color:{hex_c}'>●</span> {all_dates[idx].strftime('%d %b')}")
+        st.markdown(
+            "<small>" + "&nbsp;→&nbsp;".join(leg_parts)
+            + "&nbsp;&nbsp;<b>·</b>&nbsp;&nbsp;"
+            + "◯ line ping &nbsp; ● order (same gradient)</small>",
+            unsafe_allow_html=True,
+        )
+    else:
+        leg_items = []
+        for sp_idx, (username, sp_name) in enumerate(zip(usernames, sp_names)):
+            c = _TRACK_COLORS[sp_idx % len(_TRACK_COLORS)]
+            hex_c = "#{:02x}{:02x}{:02x}".format(*c)
+            leg_items.append(f"<span style='color:{hex_c}'>●</span> {sp_name}")
+        leg_items.append("<span style='color:#b4b4b4'>●</span> No stock (not created)")
+        st.markdown("<small>" + "&nbsp; &nbsp;".join(leg_items) + "</small>", unsafe_allow_html=True)
+
+    # ── Caption ───────────────────────────────────────────────────────────────
+    n_created  = sum(1 for o in order_data if o["color"] != [180, 180, 180])
+    n_no_stock_map = len(order_data) - n_created
+    _no_gps_count  = len(no_gps_orders_mo)
+    _days_with_gps = len({d for tdf in all_track_dfs.values() for d in tdf["track_date"].unique()})
     _caption = (
-        f"{sp_name} · {sel_mo.strftime('%B %Y')} · "
-        f"{len(track_dates)} days with GPS · {len(point_data)} pings · {len(order_data)} orders on map"
+        f"{', '.join(sp_names)} · {sel_mo.strftime('%B %Y')} · "
+        f"{_days_with_gps} days with GPS · {len(point_data)} pings · "
+        f"{n_created} orders created"
     )
+    if n_no_stock_map:
+        _caption += f" · {n_no_stock_map} not created (no stock)"
     if _no_gps_count:
         _caption += f" · {_no_gps_count} order(s) without GPS"
     st.caption(_caption)
@@ -2630,37 +2665,45 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
     with st.expander("📋 Day-by-day breakdown", expanded=False):
         rows = []
         for day in all_dates:
-            # Movement stats
-            if not track_empty and day in track_dates:
-                day_df  = df[df["track_date"] == day]
-                n_pings = len(day_df)
-                ts_vals = pd.to_datetime(day_df["ts"], errors="coerce").dropna()
-                first_s = ts_vals.min().strftime("%H:%M") if len(ts_vals) else "—"
-                last_s  = ts_vals.max().strftime("%H:%M") if len(ts_vals) else "—"
-                checkins = int(day_df["is_check_in"].sum()) if "is_check_in" in day_df.columns else 0
-            else:
-                n_pings, first_s, last_s, checkins = 0, "—", "—", 0
+            n_pings, first_s, last_s, checkins = 0, "—", "—", 0
+            for username in usernames:
+                tdf = all_track_dfs.get(username)
+                if tdf is not None and day in tdf["track_date"].values:
+                    day_df   = tdf[tdf["track_date"] == day]
+                    n_pings += len(day_df)
+                    ts_vals  = pd.to_datetime(day_df["ts"], errors="coerce").dropna()
+                    if len(ts_vals):
+                        fv = ts_vals.min().strftime("%H:%M")
+                        lv = ts_vals.max().strftime("%H:%M")
+                        first_s = fv if first_s == "—" else min(first_s, fv)
+                        last_s  = lv if last_s  == "—" else max(last_s,  lv)
+                    checkins += int(day_df["is_check_in"].sum()) if "is_check_in" in day_df.columns else 0
 
-            # Order stats
-            if not order_empty and day in order_dates:
-                day_ord   = ord_df[ord_df["order_date"] == day]
-                n_orders  = len(day_ord)
-                ord_total = int(day_ord["total"].sum())
-                n_cust    = int(day_ord["cusid"].nunique())
-            else:
-                n_orders, ord_total, n_cust = 0, 0, 0
+            n_orders = n_no_stock_d = ord_total = n_cust = 0
+            for username in usernames:
+                odf = all_order_dfs.get(username)
+                if odf is not None and day in odf["order_date"].values:
+                    day_ord    = odf[odf["order_date"] == day]
+                    _ns_mask   = day_ord["status"].str.contains("no stock", case=False, na=False)
+                    n_orders      += int((~_ns_mask).sum())
+                    n_no_stock_d  += int(_ns_mask.sum())
+                    ord_total     += int(day_ord.loc[~_ns_mask, "total"].sum())
+                    n_cust        += int(day_ord["cusid"].nunique())
 
-            rows.append({
-                "Date":            day.strftime("%d %b %Y"),
-                "Day":             day.strftime("%A"),
-                "GPS Pings":       n_pings,
-                "First Seen":      first_s,
-                "Last Seen":       last_s,
-                "Check-ins":       checkins,
-                "Orders":          n_orders,
+            row_d = {
+                "Date":             day.strftime("%d %b %Y"),
+                "Day":              day.strftime("%A"),
+                "GPS Pings":        n_pings,
+                "First Seen":       first_s,
+                "Last Seen":        last_s,
+                "Check-ins":        checkins,
+                "Orders Created":   n_orders,
                 "Unique Customers": n_cust,
-                "Order Total":     ord_total,
-            })
+                "Order Total":      ord_total,
+            }
+            if n_no_stock_d:
+                row_d["No-Stock Attempts"] = n_no_stock_d
+            rows.append(row_d)
 
         tbl = pd.DataFrame(rows)
         st.dataframe(
@@ -2688,14 +2731,11 @@ def _render_field_tracking(zid):
         st.error("pydeck is not installed. Run: pip install pydeck")
         return
 
-    _hcol, _rcol = st.columns([2, 2])
-    with _hcol:
-        st.subheader("🗺️ Field Tracking")
-    with _rcol:
-        _ft_mode = st.radio(
-            "", ["📅 Daily", "📆 Monthly"], horizontal=True,
-            key="ft_mode", label_visibility="collapsed",
-        )
+    st.subheader("🗺️ Field Tracking")
+    _ft_mode = st.radio(
+        "View", ["📅 Daily", "📆 Monthly"], horizontal=True,
+        key="ft_mode", label_visibility="collapsed",
+    )
 
     ft_zids = tuple(_ft_zids(zid))
     sp_df = _load_tracking_salesmen(ft_zids)
@@ -2800,12 +2840,14 @@ def _render_field_tracking(zid):
         sql2, params2 = queries.get_opmob_order_locations(list(ft_zids), username, date_str)
         ord_df        = get_dataframe(sql2, params2)
 
-        n_orders = 0
-        n_no_gps = 0
+        n_orders   = 0
+        n_no_stock = 0
+        n_no_gps   = 0
         if ord_df is not None and not ord_df.empty:
             for _, row in ord_df.iterrows():
                 lat = float(row["lat"] or 0)
                 lon = float(row["lon"] or 0)
+                _is_no_stock = "no stock" in str(row.get("status", "")).lower()
                 if not _in_bangladesh(lat, lon):
                     n_no_gps += 1
                     no_gps_rows.append({
@@ -2817,10 +2859,13 @@ def _render_field_tracking(zid):
                     })
                     continue
                 all_coords.append((lon, lat))
-                n_orders += 1
+                if _is_no_stock:
+                    n_no_stock += 1
+                else:
+                    n_orders += 1
                 order_data.append({
                     "coordinates": [lon, lat],
-                    "color":  _ORDER_COLOR,
+                    "color":  [180, 180, 180] if _is_no_stock else _ORDER_COLOR,
                     "icon":   _PIN_ICON,
                     "tooltip": (
                         f"Order: {row['order_num']}\n"
@@ -2830,7 +2875,9 @@ def _render_field_tracking(zid):
                     ),
                 })
 
-        stat_line = f"**{sp_name}**: {n_pings} pings · {n_orders} orders on map"
+        stat_line = f"**{sp_name}**: {n_pings} pings · {n_orders} orders created"
+        if n_no_stock:
+            stat_line += f" · {n_no_stock} not created (no stock)"
         if n_no_gps:
             stat_line += f" · {n_no_gps} order(s) without GPS"
         if n_dropped_track:

@@ -91,6 +91,10 @@ def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, 
     st.caption("📝 Methodology — see Note [1] at the bottom of the page.")
 
     today = pd.Timestamp.today().normalize()
+    cutoff_30d = today - pd.Timedelta(days=30)
+    _sales_30d_years = tuple(sorted({cutoff_30d.year, today.year}))
+    _sales_raw = _load_sales_window(str(zid), _sales_30d_years)
+
     n_months = st.slider("Costing window (trailing completed months)", 1, 12, 3, key="mfg_costing_window")
     start, end = mfg.trailing_n_months_window(today, n_months)
     st.markdown(f"**Window:** {start.strftime('%b %Y')} – {end.strftime('%b %Y')}")
@@ -132,10 +136,23 @@ def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, 
     fg_row = fg_summary[fg_summary["itemcode"] == sel_fg].iloc[0]
     total_cost_per_unit = float(fg_row["avg_cost_per_unit"]) + alloc_avg_admin
 
-    m1, m2, m3 = st.columns(3)
+    avg_price_30d = None
+    if not _sales_raw.empty and "itemcode" in _sales_raw.columns:
+        mask = (
+            (_sales_raw["itemcode"].astype(str) == str(sel_fg))
+            & (pd.to_datetime(_sales_raw["date"]) >= cutoff_30d)
+        )
+        _item_sales = _sales_raw.loc[mask]
+        if not _item_sales.empty:
+            _total_qty = float(_item_sales["quantity"].sum())
+            if _total_qty > 0:
+                avg_price_30d = float(_item_sales["altsales"].sum()) / _total_qty
+
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Material Cost/Unit (window avg)", f"{fg_row['avg_cost_per_unit']:,.2f}")
     m2.metric("Admin (06) Cost/Unit (allocated)", f"{alloc_avg_admin:,.2f}")
     m3.metric("Total Cost/Unit", f"{total_cost_per_unit:,.2f}")
+    m4.metric("Avg Sales Price (last 30d)", f"{avg_price_30d:,.2f}" if avg_price_30d is not None else "—")
 
     if opspprc_df is not None and not opspprc_df.empty and "item_id" in opspprc_df.columns:
         price_row = opspprc_df[opspprc_df["item_id"].astype(str) == str(sel_fg)]
