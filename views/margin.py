@@ -285,6 +285,18 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                 sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
                 color_by,
             )
+            with st.expander("📖 How to read this chart"):
+                st.markdown("""
+**What you are looking at:** Each dot is one sales order. The x-axis is the total order value and the y-axis is the gross margin percentage for that order (gross margin ÷ order value × 100). The trendline and Pearson correlation coefficient (r) summarise the overall relationship.
+
+**What to look for:**
+- **Positive r (trendline slopes upward)** — larger orders tend to yield better margins. This is the healthy pattern: volume discounts are outweighed by the fixed-cost spread across a bigger basket. Encourage salesmen to build larger orders per visit.
+- **Negative r (trendline slopes downward)** — larger orders are coming with heavier discounts or a worse product mix. You are buying volume at the cost of profitability. Investigate whether discounting practices are tied to order size.
+- **Flat trendline / r ≈ 0** — order size has no consistent margin impact. Margin variability is driven by product mix or customer-specific pricing, not volume.
+- **Clusters** — if dots group into two distinct clouds (e.g. one cluster of high-value / low-margin and another of low-value / high-margin), you likely have two different customer types or product lines mixed together. Use the Color By selector to separate them.
+- **Outliers** — single dots far from the cluster are worth investigating. A very large order with very low margin may be a loss-leader or a pricing error. A small order with very high margin may be a premium product that deserves more focus.
+- **Color By** — switch to Salesman or Area to identify if a specific person or territory is systematically underpricing. If one colour cluster sits consistently below others on the y-axis, that is where the margin problem lives.
+                """)
 
         elif sub_mode == "Rolling Average":
             ra_windows = st.multiselect("Rolling Windows (days)", [5, 10, 30, 60],
@@ -295,5 +307,16 @@ def display_margin_analysis_page(current_page, zid, data_dict):
                     sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
                     ra_windows,
                 )
+                with st.expander("📖 How to read this chart"):
+                    st.markdown("""
+**What you are looking at:** The grey bars show daily gross margin (in value terms). The coloured lines are rolling averages over the selected windows, smoothing out day-to-day noise.
+
+**What to look for:**
+- **Level of the rolling line** — this is your sustainable daily margin run-rate. Compare it to your target to see if you are on track.
+- **Direction** — a rising 30-day line is a genuine margin improvement trend. A falling line, even when sales are growing, means the business is growing unprofitably.
+- **Short-window crossing above long-window** — a 10-day line crossing above the 30-day is a leading indicator of margin improvement, often driven by a recent product mix shift or the end of a discounting campaign.
+- **Short-window dropping below long-window** — early warning of margin erosion. This often precedes a visible drop in monthly profitability by 3–4 weeks.
+- **Comparing to the Sales rolling average** — if sales rolling average is rising but margin rolling average is flat or falling, revenue growth is coming at the cost of margin. Track both together.
+                    """)
             else:
                 st.info("Select at least one rolling window.")

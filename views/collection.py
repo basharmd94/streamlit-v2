@@ -638,6 +638,17 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                 sel_areas, sel_salesmen, sel_customers,
                 value_min, value_max, nbins,
             )
+            with st.expander("📖 How to read this chart"):
+                st.markdown("""
+**What you are looking at:** Each bar represents how many collection vouchers fall within a given payment value range. Only positive-value vouchers (actual payments received) are included; adjustments and reversals are excluded.
+
+**What to look for:**
+- **Where the bulk sits** — if most vouchers are in the 1K–10K range, customers are making many small payments rather than settling large dues at once. This increases collection visits but reduces credit risk concentration.
+- **Large-value tail** — a few very large collection vouchers may represent bulk settlements after long overdue periods, or simply large accounts paying their monthly statement. Check whether these correlate with large outstanding dues in the AR analysis.
+- **Comparing collection size to order size** — if your typical collection voucher is significantly smaller than your typical order, customers are consistently paying in instalments. This is a working-capital signal: the gap between invoicing and full recovery is wider than it appears.
+- **Filtering by salesman** — collection is often the salesman's responsibility. A salesman whose collection distribution skews smaller than peers may be collecting partial payments or avoiding difficult conversations about overdue balances.
+- **Filtering by area** — areas with very small average collection sizes relative to their sales volume may have a cultural or logistics barrier to cash collection that needs a different approach (e.g. mobile banking, more frequent visits).
+                """)
 
         elif sub_mode == "Rolling Average":
             ra_windows = st.multiselect("Rolling Windows (days)", [5, 10, 30, 60],
@@ -648,5 +659,16 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                     sel_areas, sel_salesmen, sel_customers,
                     ra_windows,
                 )
+                with st.expander("📖 How to read this chart"):
+                    st.markdown("""
+**What you are looking at:** The grey bars are daily total collection (sum of all payment vouchers received that day). The coloured lines are rolling averages over your selected windows.
+
+**What to look for:**
+- **Collection rhythm** — unlike sales, which spike at order creation, collection often has a predictable rhythm tied to your credit terms (e.g. 30-day, 45-day). A rolling average that lags the sales rolling average by approximately your credit term is healthy and expected.
+- **Collection dropping faster than sales** — if the collection rolling average falls while the sales average holds steady, receivables are building up. This is a cash-flow warning sign even if the P&L looks fine.
+- **End-of-month spikes in daily bars** — many businesses see collection concentrate in the last week of the month as customers settle before month-end. If this is absent, it may mean customers are not being asked to pay on a schedule.
+- **Short-window vs. long-window divergence** — a 10-day rolling average running consistently below the 30-day average means recent collection is slower than the period average. This often reflects a backlog building or a key collector being absent.
+- **Comparing collection to sales rolling average** — hold both charts side by side (or apply the same filters). A growing gap between sales and collection trends is the clearest operational signal that credit control needs attention.
+                    """)
             else:
                 st.info("Select at least one rolling window.")
