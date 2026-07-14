@@ -1867,25 +1867,20 @@ def classify_customer_cycles(df_sales, window_months=12):
     return result, n_win
 
 
-def compute_area_projection(df_sales, trailing_months=3):
+def compute_area_projection(df_sales, trailing_months=3, group_by="area"):
     """
-    For each area + National: project next month's active customers and sales.
-    Returns projection_df with columns:
-      area, last_month_active, inactive_pool,
-      retention_mid, retention_lo, retention_hi,
-      return_mid, return_lo, return_hi,
-      avg_new_per_month, avg_order_value,
-      projected_active_lo, projected_active_mid, projected_active_hi,
-      projected_sales_lo, projected_sales_mid, projected_sales_hi,
-      data_months
+    Project next month's active customers and sales per area or salesman + National.
+    group_by: "area" (default) or "spname" for salesman view.
     """
     import numpy as np
 
     df = df_sales.copy()
     df["area"] = df["area"].fillna("Unknown").astype(str)
+    if group_by != "area" and group_by in df.columns:
+        df["area"] = df[group_by].fillna("Unknown").astype(str)
 
-    flow_df = compute_customer_flow(df_sales)
-    mac_df, _ = compute_monthly_active_customers(df_sales)
+    flow_df = compute_customer_flow(df)
+    mac_df, _ = compute_monthly_active_customers(df)
 
     # Monthly avg order value per area: total_sales / n_customers
     mac_df["aov"] = mac_df["total_sales"] / mac_df["n_customers"].replace(0, np.nan)

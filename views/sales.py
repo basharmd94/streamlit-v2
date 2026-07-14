@@ -396,19 +396,11 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 st.info("Select at least one rolling window.")
 
     elif analysis_mode == "👥 Customer Cycles":
-        if str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty:
-            _cc_scope = st.radio(
-                "Data scope",
-                [f"Current business ({zid})", "Both businesses (100001 + 100000)"],
-                horizontal=True, key="sales_scope",
-            )
-            _cc_data, _ = _scope_data("Both" in _cc_scope)
-        else:
-            _cc_data = filtered_data
-        _render_customer_cycles(_cc_data)
+        _cc_partner = _partner_s if (str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty) else None
+        _render_customer_cycles(filtered_data, partner_df=_cc_partner, zid_str=str(zid))
 
 
-def _render_customer_cycles(df_sales):
+def _render_customer_cycles(df_sales, partner_df=None, zid_str=None):
     import plotly.graph_objects as go
     import plotly.express as px
     import numpy as np
@@ -436,6 +428,16 @@ def _render_customer_cycles(df_sales):
     if cycle_mode == "📊 Monthly Active Customers":
         st.markdown("#### Monthly Active Customers")
 
+        if partner_df is not None:
+            _mac_zid = st.radio(
+                "Data scope",
+                [f"Current ({zid_str})", "Both businesses (100001 + 100000)"],
+                horizontal=True, key="cc_mac_scope",
+            )
+            df_sub = pd.concat([df_sales, partner_df], ignore_index=True) if "Both" in _mac_zid else df_sales
+        else:
+            df_sub = df_sales
+
         # ── Group by selector ──
         grp_display = st.radio(
             "Group by", ["Salesman", "Area"],
@@ -450,20 +452,20 @@ def _render_customer_cycles(df_sales):
         )
         _mac_vals = []
         if _mac_dim == "Area":
-            _opts = sorted(df_sales["area"].fillna("Unknown").unique().tolist())
+            _opts = sorted(df_sub["area"].fillna("Unknown").unique().tolist())
             _mac_vals = st.multiselect("Areas", _opts, default=_opts, key="cc_mac_fv_area")
-        elif _mac_dim == "Salesman" and "spname" in df_sales.columns:
-            _opts = sorted(df_sales["spname"].dropna().unique().tolist())
+        elif _mac_dim == "Salesman" and "spname" in df_sub.columns:
+            _opts = sorted(df_sub["spname"].dropna().unique().tolist())
             _mac_vals = st.multiselect("Salesmen", _opts, default=_opts, key="cc_mac_fv_sp")
-        elif _mac_dim == "Product Group" and "itemgroup" in df_sales.columns:
-            _opts = sorted(df_sales["itemgroup"].dropna().unique().tolist())
+        elif _mac_dim == "Product Group" and "itemgroup" in df_sub.columns:
+            _opts = sorted(df_sub["itemgroup"].dropna().unique().tolist())
             _mac_vals = st.multiselect("Product Groups", _opts, default=_opts, key="cc_mac_fv_pg")
-        elif _mac_dim == "Product" and "itemname" in df_sales.columns:
-            _opts = sorted(df_sales["itemname"].dropna().unique().tolist())
+        elif _mac_dim == "Product" and "itemname" in df_sub.columns:
+            _opts = sorted(df_sub["itemname"].dropna().unique().tolist())
             _mac_vals = st.multiselect("Products", _opts, default=_opts, key="cc_mac_fv_prod")
 
         # ── Apply filter ──
-        df_mac = df_sales.copy()
+        df_mac = df_sub.copy()
         df_mac["area"] = df_mac["area"].fillna("Unknown").astype(str)
         if "spname" in df_mac.columns:
             df_mac["spname"] = df_mac["spname"].fillna("Unknown").astype(str)
@@ -589,6 +591,16 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             "**Returned**: ordered before, skipped ≥1 month, now back."
         )
 
+        if partner_df is not None:
+            _cf_zid = st.radio(
+                "Data scope",
+                [f"Current ({zid_str})", "Both businesses (100001 + 100000)"],
+                horizontal=True, key="cc_cf_scope",
+            )
+            df_sub = pd.concat([df_sales, partner_df], ignore_index=True) if "Both" in _cf_zid else df_sales
+        else:
+            df_sub = df_sales
+
         # ── Filter — one dimension radio ──
         _cf_dim = st.radio(
             "Filter by", ["All", "Area", "Salesman", "Product Group", "Product"],
@@ -596,20 +608,20 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
         )
         _cf_vals = []
         if _cf_dim == "Area":
-            _opts = sorted(df_sales["area"].fillna("Unknown").unique().tolist())
+            _opts = sorted(df_sub["area"].fillna("Unknown").unique().tolist())
             _cf_vals = st.multiselect("Areas", _opts, default=_opts, key="cf_fv_area")
-        elif _cf_dim == "Salesman" and "spname" in df_sales.columns:
-            _opts = sorted(df_sales["spname"].dropna().unique().tolist())
+        elif _cf_dim == "Salesman" and "spname" in df_sub.columns:
+            _opts = sorted(df_sub["spname"].dropna().unique().tolist())
             _cf_vals = st.multiselect("Salesmen", _opts, default=_opts, key="cf_fv_sp")
-        elif _cf_dim == "Product Group" and "itemgroup" in df_sales.columns:
-            _opts = sorted(df_sales["itemgroup"].dropna().unique().tolist())
+        elif _cf_dim == "Product Group" and "itemgroup" in df_sub.columns:
+            _opts = sorted(df_sub["itemgroup"].dropna().unique().tolist())
             _cf_vals = st.multiselect("Product Groups", _opts, default=_opts, key="cf_fv_pg")
-        elif _cf_dim == "Product" and "itemname" in df_sales.columns:
-            _opts = sorted(df_sales["itemname"].dropna().unique().tolist())
+        elif _cf_dim == "Product" and "itemname" in df_sub.columns:
+            _opts = sorted(df_sub["itemname"].dropna().unique().tolist())
             _cf_vals = st.multiselect("Products", _opts, default=_opts, key="cf_fv_prod")
 
         # Apply filter
-        df_flow = df_sales.copy()
+        df_flow = df_sub.copy()
         df_flow["area"] = df_flow["area"].fillna("Unknown").astype(str)
         if _cf_dim == "Area" and _cf_vals:
             df_flow = df_flow[df_flow["area"].isin(_cf_vals)]
@@ -758,6 +770,17 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
     # ── 3. Cycle Profiles ─────────────────────────────────────────────────────
     elif cycle_mode == "🏷️ Cycle Profiles":
         st.markdown("#### Cycle Profiles")
+
+        if partner_df is not None:
+            _prof_zid = st.radio(
+                "Data scope",
+                [f"Current ({zid_str})", "Both businesses (100001 + 100000)"],
+                horizontal=True, key="cc_prof_scope",
+            )
+            df_sub = pd.concat([df_sales, partner_df], ignore_index=True) if "Both" in _prof_zid else df_sales
+        else:
+            df_sub = df_sales
+
         window = st.slider("Activity window (months)", 6, 24, 12, step=6, key="cc_window")
         st.caption(
             f"Classification over trailing **{window} months**. "
@@ -766,7 +789,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
 
         with st.spinner("Classifying customers..."):
             try:
-                result_df, n_win = overall_sales.classify_customer_cycles(df_sales, window)
+                result_df, n_win = overall_sales.classify_customer_cycles(df_sub, window)
             except Exception as e:
                 st.error(f"Error classifying: {e}")
                 return
@@ -889,17 +912,51 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
     # ── 4. Area Projection ────────────────────────────────────────────────────
     elif cycle_mode == "📐 Area Projection":
         st.markdown("#### Area Projection")
+
+        # ── ZID scope ──
+        if partner_df is not None:
+            _ap_zid = st.radio(
+                "Data scope",
+                [f"Current ({zid_str})", "Both businesses (100001 + 100000)"],
+                horizontal=True, key="cc_ap_scope",
+            )
+            df_ap = pd.concat([df_sales, partner_df], ignore_index=True) if "Both" in _ap_zid else df_sales
+        else:
+            df_ap = df_sales
+
+        # ── View by ──
+        _ap_grp = st.radio(
+            "View by", ["Area", "Salesman"],
+            horizontal=True, key="cc_ap_grp",
+        )
+        _ap_grp_col = "area" if _ap_grp == "Area" else "spname"
+        _ap_grp_label = _ap_grp
+
         trailing = st.slider(
             "Trailing months for rate calculation", 2, 6, 3, key="cc_trail"
         )
-        st.caption(
-            f"Uses the last **{trailing} months** of retention/return/new-customer rates "
-            "to project next month. **Low** = 25th-percentile rates, **Mid** = mean, **High** = 75th-percentile."
-        )
+
+        # ── Projection month label ──
+        if "date" in df_ap.columns and not df_ap.empty:
+            _last_dt = pd.to_datetime(df_ap["date"]).max()
+            _pm = (_last_dt.month % 12) + 1
+            _py = _last_dt.year + (_last_dt.month // 12)
+            _proj_lbl = pd.Timestamp(year=_py, month=_pm, day=1).strftime("%b %Y")
+            _last_lbl = _last_dt.strftime("%b %Y")
+            st.info(
+                f"📅 **Projecting for: {_proj_lbl}** · Last data month: {_last_lbl} · "
+                f"Trailing window: {trailing} months · "
+                "**Low** = 25th-pct rates, **Mid** = mean, **High** = 75th-pct"
+            )
+        else:
+            st.caption(
+                f"Uses the last **{trailing} months** of retention/return/new-customer rates "
+                "to project next month. **Low** = 25th-percentile, **Mid** = mean, **High** = 75th-percentile."
+            )
 
         with st.spinner("Computing projections..."):
             try:
-                proj_df = overall_sales.compute_area_projection(df_sales, trailing)
+                proj_df = overall_sales.compute_area_projection(df_ap, trailing, group_by=_ap_grp_col)
             except Exception as e:
                 st.error(f"Error computing projection: {e}")
                 return
@@ -908,7 +965,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             st.info("Not enough monthly data for projection.")
             return
 
-        # ── Summary cards for National ──
+        # ── Summary cards for National (Overall) ──
         nat = proj_df[proj_df["Area"] == "National"]
         if not nat.empty:
             nat = nat.iloc[0]
@@ -919,34 +976,34 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             c3.metric("Proj Active (mid)", int(nat["Proj Active (mid)"]))
             c4.metric("Retention Rate", f"{nat['Retention (mean)']}%")
 
-        # ── Bar chart: projected active range ──
-        import plotly.express as px
+        # ── Bar charts — exclude National to avoid scale skew ──
+        chart_df = proj_df[proj_df["Area"] != "National"].reset_index(drop=True)
 
         fig_range = go.Figure()
-        areas   = proj_df["Area"].tolist()
-        lo_vals = proj_df["Proj Active (lo)"].tolist()
-        mid_vals= proj_df["Proj Active (mid)"].tolist()
-        hi_vals = proj_df["Proj Active (hi)"].tolist()
+        c_areas  = chart_df["Area"].tolist()
+        lo_vals  = chart_df["Proj Active (lo)"].tolist()
+        mid_vals = chart_df["Proj Active (mid)"].tolist()
+        hi_vals  = chart_df["Proj Active (hi)"].tolist()
 
         fig_range.add_trace(go.Bar(
-            x=areas, y=[h - l for h, l in zip(hi_vals, lo_vals)],
+            x=c_areas, y=[h - l for h, l in zip(hi_vals, lo_vals)],
             base=lo_vals, name="Range (lo–hi)",
             marker_color="rgba(33, 150, 243, 0.35)",
         ))
         fig_range.add_trace(go.Scatter(
-            x=areas, y=mid_vals, mode="markers+text",
+            x=c_areas, y=mid_vals, mode="markers+text",
             name="Mid projection", text=[str(v) for v in mid_vals],
             textposition="top center",
             marker=dict(color="steelblue", size=10, symbol="diamond"),
         ))
         fig_range.add_trace(go.Scatter(
-            x=areas, y=proj_df["Last Month Active"].tolist(),
+            x=c_areas, y=chart_df["Last Month Active"].tolist(),
             mode="markers", name="Last Month Actual",
             marker=dict(color="orange", size=8, symbol="circle"),
         ))
         fig_range.update_layout(
-            title="Projected Active Customers — Next Month",
-            xaxis_title="Area", yaxis_title="Customers",
+            title=f"Projected Active Customers — {_ap_grp_label} View",
+            xaxis_title=_ap_grp_label, yaxis_title="Customers",
             height=430, barmode="overlay",
             legend=dict(orientation="h", y=-0.3),
             margin=dict(l=10, r=10, t=40, b=10),
@@ -955,42 +1012,43 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
 
         # ── Sales projection chart ──
         fig_sales = go.Figure()
-        s_lo  = proj_df["Proj Sales (lo)"].tolist()
-        s_mid = proj_df["Proj Sales (mid)"].tolist()
-        s_hi  = proj_df["Proj Sales (hi)"].tolist()
+        s_lo  = chart_df["Proj Sales (lo)"].tolist()
+        s_mid = chart_df["Proj Sales (mid)"].tolist()
+        s_hi  = chart_df["Proj Sales (hi)"].tolist()
         fig_sales.add_trace(go.Bar(
-            x=areas, y=[h - l for h, l in zip(s_hi, s_lo)],
+            x=c_areas, y=[h - l for h, l in zip(s_hi, s_lo)],
             base=s_lo, name="Sales Range",
             marker_color="rgba(76, 175, 80, 0.35)",
         ))
         fig_sales.add_trace(go.Scatter(
-            x=areas, y=s_mid, mode="markers+text",
+            x=c_areas, y=s_mid, mode="markers+text",
             name="Mid Sales Proj.",
             text=[f"{v/1000:.0f}K" if v >= 1000 else str(int(v)) for v in s_mid],
             textposition="top center",
             marker=dict(color="green", size=10, symbol="diamond"),
         ))
         fig_sales.update_layout(
-            title="Projected Sales — Next Month",
-            xaxis_title="Area", yaxis_title="Sales (BDT)",
+            title=f"Projected Sales — {_ap_grp_label} View",
+            xaxis_title=_ap_grp_label, yaxis_title="Sales (BDT)",
             height=430, barmode="overlay",
             legend=dict(orientation="h", y=-0.3),
             margin=dict(l=10, r=10, t=40, b=10),
         )
         st.plotly_chart(fig_sales, use_container_width=True)
 
-        # ── Detail table ──
+        # ── Detail table (National included for reference) ──
         st.markdown("**Projection detail**")
         st.dataframe(proj_df.reset_index(drop=True), use_container_width=True)
         st.caption(
             "Projection = Last Month Active × Retention Rate + Returns + Avg New Customers. "
             "Sales Projection = Projected Active × Avg Order Value. "
-            f"Rates derived from trailing {trailing} months."
+            f"Rates derived from trailing {trailing} months. "
+            "National row in table shows overall totals; bar charts exclude it to preserve scale."
         )
 
         with st.expander("📖 How to read this analysis"):
             st.markdown(f"""
-**What you are looking at:** A range-based forecast for next month's active customers and sales per area, using the last **{trailing} months** of observed behaviour.
+**What you are looking at:** A range-based forecast for next month's active customers and sales per {_ap_grp_label.lower()}, using the last **{trailing} months** of observed behaviour.
 
 **How the projection is built:**
 
@@ -1009,8 +1067,8 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
 **How to use it for target-setting:**
 - Set salesman targets between **Mid** and **High** to stretch performance without making targets unachievable.
 - If actual results repeatedly come in below **Low**, the issue is structural (customer base erosion, stock, pricing) and targets need revisiting downward, not upward.
-- Areas where the High–Low range is very wide have volatile, unpredictable customer behaviour — these need more frequent monitoring, not just a monthly review.
-- **Avg Order Value** drives the sales projection. If an area has strong customer counts but a weak projected sales number, the focus should be on order size (product mix, upsell) rather than acquiring more customers.
+- {_ap_grp_label}s where the High–Low range is very wide have volatile, unpredictable customer behaviour — these need more frequent monitoring, not just a monthly review.
+- **Avg Order Value** drives the sales projection. If a {_ap_grp_label.lower()} has strong customer counts but a weak projected sales number, the focus should be on order size (product mix, upsell) rather than acquiring more customers.
             """)
 
 
