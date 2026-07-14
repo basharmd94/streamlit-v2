@@ -367,11 +367,63 @@ def _render_customer_cycles(df_sales):
     # ── 1. Monthly Active Customers ──────────────────────────────────────────
     if cycle_mode == "📊 Monthly Active Customers":
         st.markdown("#### Monthly Active Customers")
-        st.caption("Unique customers who placed at least one order in each month.")
+
+        # ── Group by selector ──
+        grp_display = st.radio(
+            "Group by", ["Salesman", "Area"],
+            horizontal=True, key="cc_mac_grp",
+        )
+        grp_col = "spname" if grp_display == "Salesman" else "area"
+
+        # ── Filters with Select-All pattern ──
+        with st.expander("🔍 Filters", expanded=True):
+            fc1, fc2, fc3, fc4 = st.columns(4)
+            with fc1:
+                all_sp_vals = sorted(df_sales["spname"].dropna().unique().tolist()) if "spname" in df_sales.columns else []
+                all_sp = st.checkbox("All Salesmen", value=True, key="cc_mac_all_sp")
+                sel_sp = all_sp_vals if all_sp else st.multiselect(
+                    "Salesmen", all_sp_vals, default=all_sp_vals, key="cc_mac_sel_sp"
+                )
+            with fc2:
+                all_area_vals = sorted(df_sales["area"].dropna().unique().tolist())
+                all_area = st.checkbox("All Areas", value=True, key="cc_mac_all_area")
+                sel_area_f = all_area_vals if all_area else st.multiselect(
+                    "Areas", all_area_vals, default=all_area_vals, key="cc_mac_sel_area"
+                )
+            with fc3:
+                all_pg_vals = sorted(df_sales["itemgroup"].dropna().unique().tolist()) if "itemgroup" in df_sales.columns else []
+                all_pg = st.checkbox("All Product Groups", value=True, key="cc_mac_all_pg")
+                sel_pg = all_pg_vals if all_pg else st.multiselect(
+                    "Product Groups", all_pg_vals, default=all_pg_vals, key="cc_mac_sel_pg"
+                )
+            with fc4:
+                all_prod_vals = sorted(df_sales["itemname"].dropna().unique().tolist()) if "itemname" in df_sales.columns else []
+                all_prod = st.checkbox("All Products", value=True, key="cc_mac_all_prod")
+                sel_prod = all_prod_vals if all_prod else st.multiselect(
+                    "Products", all_prod_vals, default=all_prod_vals, key="cc_mac_sel_prod"
+                )
+
+        # ── Apply filters ──
+        df_mac = df_sales.copy()
+        df_mac["area"] = df_mac["area"].fillna("Unknown").astype(str)
+        if "spname" in df_mac.columns:
+            df_mac["spname"] = df_mac["spname"].fillna("Unknown").astype(str)
+        if not all_sp and sel_sp:
+            df_mac = df_mac[df_mac["spname"].isin(sel_sp)]
+        if not all_area and sel_area_f:
+            df_mac = df_mac[df_mac["area"].isin(sel_area_f)]
+        if not all_pg and sel_pg and "itemgroup" in df_mac.columns:
+            df_mac = df_mac[df_mac["itemgroup"].isin(sel_pg)]
+        if not all_prod and sel_prod and "itemname" in df_mac.columns:
+            df_mac = df_mac[df_mac["itemname"].isin(sel_prod)]
+
+        if df_mac.empty:
+            st.info("No data matches the selected filters.")
+            return
 
         with st.spinner("Computing..."):
             try:
-                long_df, pivot_df = overall_sales.compute_monthly_active_customers(df_sales)
+                long_df, pivot_df = overall_sales.compute_monthly_active_customers(df_mac, group_by=grp_col)
             except Exception as e:
                 st.error(f"Error computing MAC: {e}")
                 return
@@ -380,35 +432,44 @@ def _render_customer_cycles(df_sales):
             st.info("Not enough data.")
             return
 
-        # ── Heatmap ──
+        # ── Heatmap — gradient calibrated to non-National rows only ──
+        area_matrix = pivot_df.drop(index="National", errors="ignore")
+        if not area_matrix.empty and area_matrix.values.max() > 0:
+            z_min = int(area_matrix.values.min())
+            z_max = int(area_matrix.values.max())
+            if z_min == z_max:
+                z_max = z_min + 1
+        else:
+            z_min, z_max = 0, max(1, int(pivot_df.values.max()))
+
         nat_vals = pivot_df.loc["National"].values.astype(float) if "National" in pivot_df.index else None
-        area_rows = pivot_df.drop(index="National", errors="ignore")
 
         fig_heat = go.Figure(data=go.Heatmap(
             z=pivot_df.values.tolist(),
             x=pivot_df.columns.tolist(),
             y=pivot_df.index.tolist(),
             colorscale="Blues",
+            zmin=z_min, zmax=z_max,
             text=pivot_df.values.tolist(),
             texttemplate="%{text}",
             showscale=True,
-            hovertemplate="Area: %{y}<br>Month: %{x}<br>Active Customers: %{z}<extra></extra>",
+            hovertemplate=f"{grp_display}: %{{y}}<br>Month: %{{x}}<br>Active Customers: %{{z}}<extra></extra>",
         ))
         fig_heat.update_layout(
-            title="Active Customers Heatmap (Area × Month)",
+            title=f"Active Customers — {grp_display} × Month",
             height=max(300, 60 + len(pivot_df) * 35),
             margin=dict(l=10, r=10, t=40, b=10),
             xaxis_title="", yaxis_title="",
         )
         st.plotly_chart(fig_heat, use_container_width=True)
 
-        # ── Line chart: national + selectable areas ──
-        areas_avail = [a for a in pivot_df.index.tolist() if a != "National"]
-        sel_areas_cc = st.multiselect(
-            "Areas to highlight on line chart (empty = all)",
-            areas_avail, key="cc_mac_areas",
+        # ── Trend line chart ──
+        others_avail = [g for g in pivot_df.index.tolist() if g != "National"]
+        sel_highlight = st.multiselect(
+            f"{grp_display}s to highlight on trend (empty = all)",
+            others_avail, key="cc_mac_highlight",
         )
-        show_areas = sel_areas_cc if sel_areas_cc else areas_avail
+        show_others = sel_highlight if sel_highlight else others_avail
 
         fig_line = go.Figure()
         if nat_vals is not None:
@@ -417,36 +478,46 @@ def _render_customer_cycles(df_sales):
                 mode="lines+markers", name="National",
                 line=dict(width=3, color="steelblue"), marker=dict(size=7),
             ))
-        for area in show_areas:
-            if area in pivot_df.index:
+        for grp in show_others:
+            if grp in pivot_df.index:
                 fig_line.add_trace(go.Scatter(
                     x=pivot_df.columns.tolist(),
-                    y=pivot_df.loc[area].values.astype(float),
-                    mode="lines+markers", name=area,
+                    y=pivot_df.loc[grp].values.astype(float),
+                    mode="lines+markers", name=grp,
                     line=dict(width=1.5), marker=dict(size=5),
                 ))
         fig_line.update_layout(
-            title="Active Customers — Trend",
+            title=f"Active Customers — Trend by {grp_display}",
             xaxis_title="Month", yaxis_title="Unique Customers",
             height=420, legend=dict(orientation="h", y=-0.3),
             margin=dict(l=10, r=10, t=40, b=10),
         )
         st.plotly_chart(fig_line, use_container_width=True)
 
-        # ── Table ──
-        st.markdown("**Data table**")
-        st.dataframe(pivot_df.style.background_gradient(cmap="Blues", axis=1), use_container_width=True)
-
         with st.expander("📖 How to read this analysis"):
-            st.markdown("""
-**What you are looking at:** Each cell shows how many unique customers placed at least one order in that area and month. Darker blue = more active customers. The **National** row sums unique customers across all areas (note: a customer in two areas is counted once nationally but once per area).
+            st.markdown(f"""
+**What is an "active customer"?**
+A customer is **active** in a month if they placed at least one order during that month — regardless of order size or how many orders they placed.
+
+**Concrete example:**
+
+| Customer | Jan | Feb | Mar | Apr | Active months |
+|---|---|---|---|---|---|
+| Ahmed & Co | ✅ | ❌ | ✅ | ✅ | 3 |
+| Karim Traders | ✅ | ✅ | ❌ | ✅ | 3 |
+| ABC Store | ❌ | ❌ | ❌ | ✅ | 1 |
+| **Active count** | **2** | **1** | **1** | **3** | |
+
+In January, 2 unique customers ordered → the cell for that {grp_display.lower()} shows **2**. Karim Traders ordered twice in January (two different visits) — they still count as **1** active customer for that month.
+
+**What you are looking at:**
+Each cell = unique customers who placed ≥1 order for that {grp_display.lower()} and month. Darker blue = more active customers. The **National** row is the total (colour gradient is calibrated to the individual rows so it does not wash out the area/salesman comparison).
 
 **What to look for:**
-- **Row consistency** — a row that stays uniformly dark has a stable, reliable customer base. Fading towards the right signals declining engagement in that area.
-- **Month-on-month change** — a sudden drop in a cell is worth investigating: was there a stock issue, a pricing change, or did a key salesman leave?
-- **Seasonality** — look for recurring lighter months (e.g. certain months every year). This is your natural demand trough and should be factored into target-setting.
-- **Area vs. National divergence** — if the National row grows but individual area rows stay flat, the growth is coming from new areas, not from deepening existing ones. The reverse (areas growing, National flat) may indicate cannibalisation or data mapping issues.
-- **Benchmark** — use the trailing 3-month average of a healthy area as the baseline when setting targets for a recovering area.
+- **Row consistency** — a uniformly dark row = stable, reliable customer base. Fading rightward = declining engagement.
+- **Sudden drop in a cell** — stock issue, pricing change, key salesman absent that month?
+- **Seasonality** — recurring lighter months across multiple rows = your natural demand trough; factor this into targets.
+- **Use the filters** — narrow to a product group to see which {grp_display.lower()}s drove customers buying that category. Toggle between Salesman and Area to compare perspectives.
             """)
 
     # ── 2. Customer Flow ──────────────────────────────────────────────────────
