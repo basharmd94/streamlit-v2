@@ -4,11 +4,51 @@ import pandas as pd
 from processing import common, overall_sales
 from utils.utils import timed
 
+_CROSS_ZID_PAIR = {"100000", "100001"}
+_PARTNER = {"100000": "100001", "100001": "100000"}
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_partner_sales(partner_zid: str, years: tuple, months: tuple):
+    """Load and process sales + return data for the partner ZID.
+
+    Cached separately so the DB round-trip is paid at most once per
+    (partner_zid, years, months) combination per hour.
+    """
+    from core.analytics import Analytics
+    filters = {"year": list(years), "month": list(months)}
+    raw_s = Analytics("sales", zid=partner_zid, filters=filters).data
+    raw_r = Analytics("return", zid=partner_zid, filters=filters).data
+    if raw_s is None:
+        raw_s = pd.DataFrame()
+    if raw_r is None:
+        raw_r = pd.DataFrame()
+    if raw_s.empty and raw_r.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    proc_s, proc_r = common.data_copy_add_columns(raw_s, raw_r)
+    return proc_s, proc_r
+
 
 @timed
 def display_overall_sales_analysis_page(current_page, zid, data_dict):
     st.title("Overall Sales Analysis")
     filtered_data, filtered_data_r = common.data_copy_add_columns(data_dict['sales'], data_dict['return'])
+
+    # ── Cross-ZID combination for Order Analytics + Customer Cycles ──────────
+    # 100000 and 100001 share the same field sales team; customers see one order
+    # even though the salesman splits it across both entities internally.
+    _combined_data   = filtered_data
+    _combined_data_r = filtered_data_r
+    _cross_zid       = False
+    if str(zid) in _CROSS_ZID_PAIR and not filtered_data.empty:
+        _yrs = tuple(sorted(filtered_data["year"].dropna().unique().astype(int).tolist()))
+        _mos = tuple(sorted(filtered_data["month"].dropna().unique().astype(int).tolist()))
+        _p_s, _p_r = _load_partner_sales(_PARTNER[str(zid)], _yrs, _mos)
+        if not _p_s.empty:
+            _combined_data   = pd.concat([filtered_data,   _p_s], ignore_index=True)
+            _combined_data_r = pd.concat([filtered_data_r, _p_r], ignore_index=True) if not _p_r.empty else filtered_data_r
+            _cross_zid       = True
+
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview", "Comparison", "Distributions", "Descriptive Stats", "📈 Order Analytics", "👥 Customer Cycles"],horizontal=True)
 
     if analysis_mode == "Overview":
@@ -244,25 +284,27 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
 
     elif analysis_mode == "📈 Order Analytics":
         st.subheader("📈 Order Analytics")
+        if _cross_zid:
+            st.info("📊 Combining data from both **HMBR Tools (100001)** and **GI Corporation (100000)** — shared field sales team.")
         st.caption("Filters below apply across all sub-sections. Empty = no filter applied.")
 
         with st.expander("🔍 Entity Filters", expanded=True):
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 sel_areas = st.multiselect("Area",
-                    sorted(filtered_data["area"].dropna().unique().tolist()), key="oa_areas")
+                    sorted(_combined_data["area"].dropna().unique().tolist()), key="oa_areas")
             with col2:
                 sel_salesmen = st.multiselect("Salesman",
-                    sorted(filtered_data["spname"].dropna().unique().tolist()), key="oa_salesmen")
+                    sorted(_combined_data["spname"].dropna().unique().tolist()), key="oa_salesmen")
             with col3:
                 sel_product_groups = st.multiselect("Product Group",
-                    sorted(filtered_data["itemgroup"].dropna().unique().tolist()), key="oa_product_groups")
+                    sorted(_combined_data["itemgroup"].dropna().unique().tolist()), key="oa_product_groups")
             with col4:
                 sel_customers = st.multiselect("Customer",
-                    sorted(filtered_data["cusname"].dropna().unique().tolist()), key="oa_customers")
+                    sorted(_combined_data["cusname"].dropna().unique().tolist()), key="oa_customers")
             with col5:
                 sel_products = st.multiselect("Product",
-                    sorted(filtered_data["itemname"].dropna().unique().tolist()), key="oa_products")
+                    sorted(_combined_data["itemname"].dropna().unique().tolist()), key="oa_products")
 
         sub_mode = st.radio(
             "Sub-section",
@@ -280,7 +322,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 nbins = st.number_input("Number of Bins", min_value=5, max_value=500, value=50, key="oa_bins")
 
             overall_sales.plot_order_size_distribution(
-                filtered_data, filtered_data_r,
+                _combined_data, _combined_data_r,
                 sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
                 value_min, value_max, nbins,
                 "Order Size" if sub_mode == "Order Size Distribution" else "Return Size",
@@ -318,7 +360,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                                             default=[10, 30], key="oa_ra_windows")
             if ra_windows:
                 overall_sales.plot_rolling_average_sales(
-                    filtered_data, filtered_data_r,
+                    _combined_data, _combined_data_r,
                     sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
                     ra_windows, ra_metric,
                 )
@@ -337,7 +379,9 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 st.info("Select at least one rolling window.")
 
     elif analysis_mode == "👥 Customer Cycles":
-        _render_customer_cycles(filtered_data)
+        if _cross_zid:
+            st.info("📊 Combining data from both **HMBR Tools (100001)** and **GI Corporation (100000)** — shared field sales team.")
+        _render_customer_cycles(_combined_data)
 
 
 def _render_customer_cycles(df_sales):
