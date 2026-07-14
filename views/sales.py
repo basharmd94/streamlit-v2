@@ -574,9 +574,53 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             "**Returned**: ordered before, skipped ≥1 month, now back."
         )
 
+        # ── Filters ──────────────────────────────────────────────────────────
+        with st.expander("🔍 Filters", expanded=True):
+            ff1, ff2, ff3, ff4 = st.columns(4)
+            with ff1:
+                _cf_area_opts = sorted(df_sales["area"].fillna("Unknown").unique().tolist())
+                cf_all_area = st.checkbox("All Areas", value=True, key="cf_all_area")
+                cf_sel_area = _cf_area_opts if cf_all_area else st.multiselect(
+                    "Areas", _cf_area_opts, default=_cf_area_opts, key="cf_sel_area"
+                )
+            with ff2:
+                _cf_sp_opts = sorted(df_sales["spname"].dropna().unique().tolist()) if "spname" in df_sales.columns else []
+                cf_all_sp = st.checkbox("All Salesmen", value=True, key="cf_all_sp")
+                cf_sel_sp = _cf_sp_opts if cf_all_sp else st.multiselect(
+                    "Salesmen", _cf_sp_opts, default=_cf_sp_opts, key="cf_sel_sp"
+                )
+            with ff3:
+                _cf_pg_opts = sorted(df_sales["itemgroup"].dropna().unique().tolist()) if "itemgroup" in df_sales.columns else []
+                cf_all_pg = st.checkbox("All Product Groups", value=True, key="cf_all_pg")
+                cf_sel_pg = _cf_pg_opts if cf_all_pg else st.multiselect(
+                    "Product Groups", _cf_pg_opts, default=_cf_pg_opts, key="cf_sel_pg"
+                )
+            with ff4:
+                _cf_prod_opts = sorted(df_sales["itemname"].dropna().unique().tolist()) if "itemname" in df_sales.columns else []
+                cf_all_prod = st.checkbox("All Products", value=True, key="cf_all_prod")
+                cf_sel_prod = _cf_prod_opts if cf_all_prod else st.multiselect(
+                    "Products", _cf_prod_opts, default=_cf_prod_opts, key="cf_sel_prod"
+                )
+
+        # Apply filters
+        df_flow = df_sales.copy()
+        df_flow["area"] = df_flow["area"].fillna("Unknown").astype(str)
+        if not cf_all_area and cf_sel_area:
+            df_flow = df_flow[df_flow["area"].isin(cf_sel_area)]
+        if not cf_all_sp and cf_sel_sp and "spname" in df_flow.columns:
+            df_flow = df_flow[df_flow["spname"].isin(cf_sel_sp)]
+        if not cf_all_pg and cf_sel_pg and "itemgroup" in df_flow.columns:
+            df_flow = df_flow[df_flow["itemgroup"].isin(cf_sel_pg)]
+        if not cf_all_prod and cf_sel_prod and "itemname" in df_flow.columns:
+            df_flow = df_flow[df_flow["itemname"].isin(cf_sel_prod)]
+
+        if df_flow.empty:
+            st.info("No data matches the selected filters.")
+            return
+
         with st.spinner("Computing..."):
             try:
-                flow_df = overall_sales.compute_customer_flow(df_sales)
+                flow_df = overall_sales.compute_customer_flow(df_flow)
             except Exception as e:
                 st.error(f"Error computing flow: {e}")
                 return
@@ -585,7 +629,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             st.info("Not enough data.")
             return
 
-        # Area selector
+        # View-area selector (driven by filtered data)
         areas_avail = [a for a in flow_df["area"].unique() if a != "National"]
         sel_area_flow = st.selectbox(
             "View area", ["National"] + sorted(areas_avail), key="cc_flow_area"
@@ -598,14 +642,19 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             return
 
         months = sub["month_label"].tolist()
-        colors = {"retained": "#4CAF50", "new_customers": "#2196F3",
-                  "returned": "#FF9800", "lost": "#F44336"}
+        _FLOW_COLORS = {
+            "retained":     "#4CAF50",
+            "new_customers":"#2196F3",
+            "returned":     "#FF9800",
+            "lost":         "#F44336",
+        }
 
+        # ── Stacked flow chart ────────────────────────────────────────────────
         fig_stack = go.Figure()
         for col, label, color in [
-            ("retained",     "Retained",  colors["retained"]),
-            ("new_customers","New",        colors["new_customers"]),
-            ("returned",     "Returned",  colors["returned"]),
+            ("retained",      "Retained", _FLOW_COLORS["retained"]),
+            ("new_customers", "New",       _FLOW_COLORS["new_customers"]),
+            ("returned",      "Returned", _FLOW_COLORS["returned"]),
         ]:
             fig_stack.add_trace(go.Bar(
                 x=months, y=sub[col].tolist(), name=label,
@@ -613,7 +662,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             ))
         fig_stack.add_trace(go.Bar(
             x=months, y=[-v for v in sub["lost"].tolist()],
-            name="Lost", marker_color=colors["lost"],
+            name="Lost", marker_color=_FLOW_COLORS["lost"],
         ))
         fig_stack.add_trace(go.Scatter(
             x=months, y=sub["total_active"].tolist(),
@@ -632,7 +681,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
         )
         st.plotly_chart(fig_stack, use_container_width=True)
 
-        # Summary table
+        # ── Summary table ─────────────────────────────────────────────────────
         display_cols = {
             "month_label": "Month", "total_active": "Total Active",
             "retained": "Retained", "new_customers": "New",
@@ -642,6 +691,46 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             sub[list(display_cols.keys())].rename(columns=display_cols).reset_index(drop=True),
             use_container_width=True,
         )
+
+        # ── Individual metric bar chart ───────────────────────────────────────
+        st.markdown("**Individual metric view**")
+        _METRIC_DEFS = {
+            "Total Active":  ("total_active",  "steelblue"),
+            "Retained":      ("retained",       "#4CAF50"),
+            "New":           ("new_customers",  "#2196F3"),
+            "Returned":      ("returned",       "#FF9800"),
+            "Lost":          ("lost",           "#F44336"),
+            "Net Change":    ("net_change",     "#9C27B0"),
+        }
+        sel_metrics = st.multiselect(
+            "Metrics to show (empty = all)",
+            list(_METRIC_DEFS.keys()),
+            default=list(_METRIC_DEFS.keys()),
+            key="cf_ind_metrics",
+        )
+        show_metrics = sel_metrics if sel_metrics else list(_METRIC_DEFS.keys())
+
+        fig_ind = go.Figure()
+        for m in show_metrics:
+            col_key, color = _METRIC_DEFS[m]
+            fig_ind.add_trace(go.Bar(
+                x=months,
+                y=sub[col_key].tolist(),
+                name=m,
+                marker_color=color,
+                text=sub[col_key].tolist(),
+                textposition="outside",
+            ))
+        fig_ind.update_layout(
+            barmode="group",
+            title=f"Individual Metric View — {sel_area_flow}",
+            xaxis_title="Month",
+            yaxis_title="Customers",
+            height=450,
+            legend=dict(orientation="h", y=-0.3),
+            margin=dict(l=10, r=10, t=40, b=60),
+        )
+        st.plotly_chart(fig_ind, use_container_width=True)
 
         with st.expander("📖 How to read this analysis"):
             st.markdown("""
