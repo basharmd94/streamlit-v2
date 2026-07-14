@@ -1822,15 +1822,29 @@ def classify_customer_cycles(df_sales, window_months=12):
 
     month_sets["avg_gap_months"] = month_sets["month_indices"].apply(_avg_gap)
 
+    # Last salesman who served each customer
+    if "spname" in df.columns:
+        last_sp = (
+            df.sort_values("date")
+            .groupby("cusid")["spname"]
+            .last()
+            .reset_index(name="last_salesman")
+        )
+        last_sp["cusid"] = last_sp["cusid"].astype(str)
+    else:
+        last_sp = pd.DataFrame(columns=["cusid", "last_salesman"])
+
     result = (
         cust_info
         .merge(cust_active[["cusid", "active_months"]], on="cusid", how="left")
         .merge(cust_order_val, on="cusid", how="left")
         .merge(month_sets[["cusid", "avg_gap_months"]], on="cusid", how="left")
+        .merge(last_sp, on="cusid", how="left")
     )
     result["active_months"]   = result["active_months"].fillna(0).astype(int)
     result["activity_rate"]   = (result["active_months"] / n_win).round(2)
     result["avg_order_value"] = result["avg_order_value"].fillna(0).round(0)
+    result["last_salesman"]   = result["last_salesman"].fillna("Unknown")
 
     # Lapsed: had any order before 6-month mark but nothing in last 6 months
     cutoff_6m    = max_date - pd.DateOffset(months=6)

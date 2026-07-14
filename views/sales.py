@@ -34,20 +34,22 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
     st.title("Overall Sales Analysis")
     filtered_data, filtered_data_r = common.data_copy_add_columns(data_dict['sales'], data_dict['return'])
 
-    # ── Cross-ZID combination for Order Analytics + Customer Cycles ──────────
-    # 100000 and 100001 share the same field sales team; customers see one order
-    # even though the salesman splits it across both entities internally.
-    _combined_data   = filtered_data
-    _combined_data_r = filtered_data_r
-    _cross_zid       = False
+    # ── Pre-load partner ZID data (lazy, cached) for Order Analytics + CC ────
+    # We load the partner data eagerly but only merge it when the user picks
+    # "Both businesses" via the radio inside each section.
+    _partner_s, _partner_r = pd.DataFrame(), pd.DataFrame()
     if str(zid) in _CROSS_ZID_PAIR and not filtered_data.empty:
         _yrs = tuple(sorted(filtered_data["year"].dropna().unique().astype(int).tolist()))
         _mos = tuple(sorted(filtered_data["month"].dropna().unique().astype(int).tolist()))
-        _p_s, _p_r = _load_partner_sales(_PARTNER[str(zid)], _yrs, _mos)
-        if not _p_s.empty:
-            _combined_data   = pd.concat([filtered_data,   _p_s], ignore_index=True)
-            _combined_data_r = pd.concat([filtered_data_r, _p_r], ignore_index=True) if not _p_r.empty else filtered_data_r
-            _cross_zid       = True
+        _partner_s, _partner_r = _load_partner_sales(_PARTNER[str(zid)], _yrs, _mos)
+
+    def _scope_data(use_both: bool):
+        """Return (sales_df, returns_df) depending on scope choice."""
+        if use_both and not _partner_s.empty:
+            s = pd.concat([filtered_data,   _partner_s], ignore_index=True)
+            r = pd.concat([filtered_data_r, _partner_r], ignore_index=True) if not _partner_r.empty else filtered_data_r
+            return s, r
+        return filtered_data, filtered_data_r
 
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview", "Comparison", "Distributions", "Descriptive Stats", "📈 Order Analytics", "👥 Customer Cycles"],horizontal=True)
 
@@ -284,27 +286,42 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
 
     elif analysis_mode == "📈 Order Analytics":
         st.subheader("📈 Order Analytics")
-        if _cross_zid:
-            st.info("📊 Combining data from both **HMBR Tools (100001)** and **GI Corporation (100000)** — shared field sales team.")
-        st.caption("Filters below apply across all sub-sections. Empty = no filter applied.")
 
-        with st.expander("🔍 Entity Filters", expanded=True):
-            col1, col2, col3, col4, col5 = st.columns(5)
-            with col1:
-                sel_areas = st.multiselect("Area",
-                    sorted(_combined_data["area"].dropna().unique().tolist()), key="oa_areas")
-            with col2:
-                sel_salesmen = st.multiselect("Salesman",
-                    sorted(_combined_data["spname"].dropna().unique().tolist()), key="oa_salesmen")
-            with col3:
-                sel_product_groups = st.multiselect("Product Group",
-                    sorted(_combined_data["itemgroup"].dropna().unique().tolist()), key="oa_product_groups")
-            with col4:
-                sel_customers = st.multiselect("Customer",
-                    sorted(_combined_data["cusname"].dropna().unique().tolist()), key="oa_customers")
-            with col5:
-                sel_products = st.multiselect("Product",
-                    sorted(_combined_data["itemname"].dropna().unique().tolist()), key="oa_products")
+        # Cross-ZID scope selector
+        if str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty:
+            _oa_scope = st.radio(
+                "Data scope",
+                [f"Current business ({zid})", "Both businesses (100001 + 100000)"],
+                horizontal=True, key="sales_scope",
+            )
+            _oa_use_both = "Both" in _oa_scope
+        else:
+            _oa_use_both = False
+        _oa_data, _oa_data_r = _scope_data(_oa_use_both)
+
+        # Filter radio — one dimension at a time
+        _oa_dim = st.radio(
+            "Filter by", ["All", "Area", "Salesman", "Product Group", "Product", "Customer"],
+            horizontal=True, key="oa_filter_dim",
+        )
+        sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products = [], [], [], [], []
+        if _oa_dim == "Area":
+            sel_areas = st.multiselect("Areas", sorted(_oa_data["area"].dropna().unique()),
+                                       default=sorted(_oa_data["area"].dropna().unique()), key="oa_fv_area")
+        elif _oa_dim == "Salesman":
+            sel_salesmen = st.multiselect("Salesmen", sorted(_oa_data["spname"].dropna().unique()),
+                                          default=sorted(_oa_data["spname"].dropna().unique()), key="oa_fv_sp")
+        elif _oa_dim == "Product Group":
+            sel_product_groups = st.multiselect("Product Groups", sorted(_oa_data["itemgroup"].dropna().unique()),
+                                                 default=sorted(_oa_data["itemgroup"].dropna().unique()), key="oa_fv_pg")
+        elif _oa_dim == "Customer":
+            sel_customers = st.multiselect("Customers", sorted(_oa_data["cusname"].dropna().unique()),
+                                           default=sorted(_oa_data["cusname"].dropna().unique()), key="oa_fv_cus")
+        elif _oa_dim == "Product":
+            sel_products = st.multiselect("Products", sorted(_oa_data["itemname"].dropna().unique()),
+                                          default=sorted(_oa_data["itemname"].dropna().unique()), key="oa_fv_prod")
+
+        st.caption("Sub-section selector below.")
 
         sub_mode = st.radio(
             "Sub-section",
@@ -322,7 +339,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 nbins = st.number_input("Number of Bins", min_value=5, max_value=500, value=50, key="oa_bins")
 
             overall_sales.plot_order_size_distribution(
-                _combined_data, _combined_data_r,
+                _oa_data, _oa_data_r,
                 sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
                 value_min, value_max, nbins,
                 "Order Size" if sub_mode == "Order Size Distribution" else "Return Size",
@@ -360,7 +377,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                                             default=[10, 30], key="oa_ra_windows")
             if ra_windows:
                 overall_sales.plot_rolling_average_sales(
-                    _combined_data, _combined_data_r,
+                    _oa_data, _oa_data_r,
                     sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
                     ra_windows, ra_metric,
                 )
@@ -379,9 +396,16 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 st.info("Select at least one rolling window.")
 
     elif analysis_mode == "👥 Customer Cycles":
-        if _cross_zid:
-            st.info("📊 Combining data from both **HMBR Tools (100001)** and **GI Corporation (100000)** — shared field sales team.")
-        _render_customer_cycles(_combined_data)
+        if str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty:
+            _cc_scope = st.radio(
+                "Data scope",
+                [f"Current business ({zid})", "Both businesses (100001 + 100000)"],
+                horizontal=True, key="sales_scope",
+            )
+            _cc_data, _ = _scope_data("Both" in _cc_scope)
+        else:
+            _cc_data = filtered_data
+        _render_customer_cycles(_cc_data)
 
 
 def _render_customer_cycles(df_sales):
@@ -419,47 +443,38 @@ def _render_customer_cycles(df_sales):
         )
         grp_col = "spname" if grp_display == "Salesman" else "area"
 
-        # ── Filters with Select-All pattern ──
-        with st.expander("🔍 Filters", expanded=True):
-            fc1, fc2, fc3, fc4 = st.columns(4)
-            with fc1:
-                all_sp_vals = sorted(df_sales["spname"].dropna().unique().tolist()) if "spname" in df_sales.columns else []
-                all_sp = st.checkbox("All Salesmen", value=True, key="cc_mac_all_sp")
-                sel_sp = all_sp_vals if all_sp else st.multiselect(
-                    "Salesmen", all_sp_vals, default=all_sp_vals, key="cc_mac_sel_sp"
-                )
-            with fc2:
-                all_area_vals = sorted(df_sales["area"].dropna().unique().tolist())
-                all_area = st.checkbox("All Areas", value=True, key="cc_mac_all_area")
-                sel_area_f = all_area_vals if all_area else st.multiselect(
-                    "Areas", all_area_vals, default=all_area_vals, key="cc_mac_sel_area"
-                )
-            with fc3:
-                all_pg_vals = sorted(df_sales["itemgroup"].dropna().unique().tolist()) if "itemgroup" in df_sales.columns else []
-                all_pg = st.checkbox("All Product Groups", value=True, key="cc_mac_all_pg")
-                sel_pg = all_pg_vals if all_pg else st.multiselect(
-                    "Product Groups", all_pg_vals, default=all_pg_vals, key="cc_mac_sel_pg"
-                )
-            with fc4:
-                all_prod_vals = sorted(df_sales["itemname"].dropna().unique().tolist()) if "itemname" in df_sales.columns else []
-                all_prod = st.checkbox("All Products", value=True, key="cc_mac_all_prod")
-                sel_prod = all_prod_vals if all_prod else st.multiselect(
-                    "Products", all_prod_vals, default=all_prod_vals, key="cc_mac_sel_prod"
-                )
+        # ── Filter — one dimension radio ──
+        _mac_dim = st.radio(
+            "Filter by", ["All", "Area", "Salesman", "Product Group", "Product"],
+            horizontal=True, key="cc_mac_dim",
+        )
+        _mac_vals = []
+        if _mac_dim == "Area":
+            _opts = sorted(df_sales["area"].fillna("Unknown").unique().tolist())
+            _mac_vals = st.multiselect("Areas", _opts, default=_opts, key="cc_mac_fv_area")
+        elif _mac_dim == "Salesman" and "spname" in df_sales.columns:
+            _opts = sorted(df_sales["spname"].dropna().unique().tolist())
+            _mac_vals = st.multiselect("Salesmen", _opts, default=_opts, key="cc_mac_fv_sp")
+        elif _mac_dim == "Product Group" and "itemgroup" in df_sales.columns:
+            _opts = sorted(df_sales["itemgroup"].dropna().unique().tolist())
+            _mac_vals = st.multiselect("Product Groups", _opts, default=_opts, key="cc_mac_fv_pg")
+        elif _mac_dim == "Product" and "itemname" in df_sales.columns:
+            _opts = sorted(df_sales["itemname"].dropna().unique().tolist())
+            _mac_vals = st.multiselect("Products", _opts, default=_opts, key="cc_mac_fv_prod")
 
-        # ── Apply filters ──
+        # ── Apply filter ──
         df_mac = df_sales.copy()
         df_mac["area"] = df_mac["area"].fillna("Unknown").astype(str)
         if "spname" in df_mac.columns:
             df_mac["spname"] = df_mac["spname"].fillna("Unknown").astype(str)
-        if not all_sp and sel_sp:
-            df_mac = df_mac[df_mac["spname"].isin(sel_sp)]
-        if not all_area and sel_area_f:
-            df_mac = df_mac[df_mac["area"].isin(sel_area_f)]
-        if not all_pg and sel_pg and "itemgroup" in df_mac.columns:
-            df_mac = df_mac[df_mac["itemgroup"].isin(sel_pg)]
-        if not all_prod and sel_prod and "itemname" in df_mac.columns:
-            df_mac = df_mac[df_mac["itemname"].isin(sel_prod)]
+        if _mac_dim == "Area" and _mac_vals:
+            df_mac = df_mac[df_mac["area"].isin(_mac_vals)]
+        elif _mac_dim == "Salesman" and _mac_vals:
+            df_mac = df_mac[df_mac["spname"].isin(_mac_vals)]
+        elif _mac_dim == "Product Group" and _mac_vals and "itemgroup" in df_mac.columns:
+            df_mac = df_mac[df_mac["itemgroup"].isin(_mac_vals)]
+        elif _mac_dim == "Product" and _mac_vals and "itemname" in df_mac.columns:
+            df_mac = df_mac[df_mac["itemname"].isin(_mac_vals)]
 
         if df_mac.empty:
             st.info("No data matches the selected filters.")
@@ -574,45 +589,36 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             "**Returned**: ordered before, skipped ≥1 month, now back."
         )
 
-        # ── Filters ──────────────────────────────────────────────────────────
-        with st.expander("🔍 Filters", expanded=True):
-            ff1, ff2, ff3, ff4 = st.columns(4)
-            with ff1:
-                _cf_area_opts = sorted(df_sales["area"].fillna("Unknown").unique().tolist())
-                cf_all_area = st.checkbox("All Areas", value=True, key="cf_all_area")
-                cf_sel_area = _cf_area_opts if cf_all_area else st.multiselect(
-                    "Areas", _cf_area_opts, default=_cf_area_opts, key="cf_sel_area"
-                )
-            with ff2:
-                _cf_sp_opts = sorted(df_sales["spname"].dropna().unique().tolist()) if "spname" in df_sales.columns else []
-                cf_all_sp = st.checkbox("All Salesmen", value=True, key="cf_all_sp")
-                cf_sel_sp = _cf_sp_opts if cf_all_sp else st.multiselect(
-                    "Salesmen", _cf_sp_opts, default=_cf_sp_opts, key="cf_sel_sp"
-                )
-            with ff3:
-                _cf_pg_opts = sorted(df_sales["itemgroup"].dropna().unique().tolist()) if "itemgroup" in df_sales.columns else []
-                cf_all_pg = st.checkbox("All Product Groups", value=True, key="cf_all_pg")
-                cf_sel_pg = _cf_pg_opts if cf_all_pg else st.multiselect(
-                    "Product Groups", _cf_pg_opts, default=_cf_pg_opts, key="cf_sel_pg"
-                )
-            with ff4:
-                _cf_prod_opts = sorted(df_sales["itemname"].dropna().unique().tolist()) if "itemname" in df_sales.columns else []
-                cf_all_prod = st.checkbox("All Products", value=True, key="cf_all_prod")
-                cf_sel_prod = _cf_prod_opts if cf_all_prod else st.multiselect(
-                    "Products", _cf_prod_opts, default=_cf_prod_opts, key="cf_sel_prod"
-                )
+        # ── Filter — one dimension radio ──
+        _cf_dim = st.radio(
+            "Filter by", ["All", "Area", "Salesman", "Product Group", "Product"],
+            horizontal=True, key="cf_dim",
+        )
+        _cf_vals = []
+        if _cf_dim == "Area":
+            _opts = sorted(df_sales["area"].fillna("Unknown").unique().tolist())
+            _cf_vals = st.multiselect("Areas", _opts, default=_opts, key="cf_fv_area")
+        elif _cf_dim == "Salesman" and "spname" in df_sales.columns:
+            _opts = sorted(df_sales["spname"].dropna().unique().tolist())
+            _cf_vals = st.multiselect("Salesmen", _opts, default=_opts, key="cf_fv_sp")
+        elif _cf_dim == "Product Group" and "itemgroup" in df_sales.columns:
+            _opts = sorted(df_sales["itemgroup"].dropna().unique().tolist())
+            _cf_vals = st.multiselect("Product Groups", _opts, default=_opts, key="cf_fv_pg")
+        elif _cf_dim == "Product" and "itemname" in df_sales.columns:
+            _opts = sorted(df_sales["itemname"].dropna().unique().tolist())
+            _cf_vals = st.multiselect("Products", _opts, default=_opts, key="cf_fv_prod")
 
-        # Apply filters
+        # Apply filter
         df_flow = df_sales.copy()
         df_flow["area"] = df_flow["area"].fillna("Unknown").astype(str)
-        if not cf_all_area and cf_sel_area:
-            df_flow = df_flow[df_flow["area"].isin(cf_sel_area)]
-        if not cf_all_sp and cf_sel_sp and "spname" in df_flow.columns:
-            df_flow = df_flow[df_flow["spname"].isin(cf_sel_sp)]
-        if not cf_all_pg and cf_sel_pg and "itemgroup" in df_flow.columns:
-            df_flow = df_flow[df_flow["itemgroup"].isin(cf_sel_pg)]
-        if not cf_all_prod and cf_sel_prod and "itemname" in df_flow.columns:
-            df_flow = df_flow[df_flow["itemname"].isin(cf_sel_prod)]
+        if _cf_dim == "Area" and _cf_vals:
+            df_flow = df_flow[df_flow["area"].isin(_cf_vals)]
+        elif _cf_dim == "Salesman" and _cf_vals and "spname" in df_flow.columns:
+            df_flow = df_flow[df_flow["spname"].isin(_cf_vals)]
+        elif _cf_dim == "Product Group" and _cf_vals and "itemgroup" in df_flow.columns:
+            df_flow = df_flow[df_flow["itemgroup"].isin(_cf_vals)]
+        elif _cf_dim == "Product" and _cf_vals and "itemname" in df_flow.columns:
+            df_flow = df_flow[df_flow["itemname"].isin(_cf_vals)]
 
         if df_flow.empty:
             st.info("No data matches the selected filters.")
@@ -792,58 +798,70 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
                                margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig_pie, use_container_width=True)
 
-        # Area breakdown stacked bar
-        st.markdown("**Area-wise class distribution**")
-        area_cls = (
-            result_df[result_df["area"] != "Unknown"]
-            .groupby(["area", "class"]).size().reset_index(name="count")
+        # Class distribution chart — by Area or Salesman
+        _dist_grp = st.radio(
+            "Distribution view", ["By Area", "By Salesman"],
+            horizontal=True, key="cc_prof_dist_grp",
         )
-        if not area_cls.empty:
+        _dist_col = "area" if _dist_grp == "By Area" else "last_salesman"
+        _dist_label = "Area" if _dist_grp == "By Area" else "Salesman"
+
+        dist_cls = (
+            result_df[result_df[_dist_col].notna() & (result_df[_dist_col] != "Unknown")]
+            .groupby([_dist_col, "class"]).size().reset_index(name="count")
+        )
+        if not dist_cls.empty:
             fig_ab = go.Figure()
             for cls in class_order:
-                sub_cls = area_cls[area_cls["class"] == cls]
+                sub_cls = dist_cls[dist_cls["class"] == cls]
                 fig_ab.add_trace(go.Bar(
-                    x=sub_cls["area"], y=sub_cls["count"],
+                    x=sub_cls[_dist_col], y=sub_cls["count"],
                     name=cls, marker_color=class_colors[cls],
                 ))
             fig_ab.update_layout(
                 barmode="stack", height=380,
-                xaxis_title="Area", yaxis_title="Customers",
+                xaxis_title=_dist_label, yaxis_title="Customers",
+                title=f"Class Distribution — {_dist_grp}",
                 legend=dict(orientation="h", y=-0.35),
-                margin=dict(l=10, r=10, t=20, b=10),
+                margin=dict(l=10, r=10, t=40, b=10),
             )
             st.plotly_chart(fig_ab, use_container_width=True)
 
         # Filterable detail table
         st.markdown("**Customer detail**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            filter_area = st.multiselect(
-                "Filter by Area", sorted(result_df["area"].unique()), key="cc_prof_area"
-            )
-        with col2:
-            filter_class = st.multiselect(
-                "Filter by Class", class_order, key="cc_prof_class"
-            )
-        with col3:
+        _sp_vals_prof = sorted(result_df["last_salesman"].dropna().unique().tolist()) if "last_salesman" in result_df.columns else []
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        with tc1:
+            filter_area = st.multiselect("Filter by Area", sorted(result_df["area"].unique()), key="cc_prof_area")
+        with tc2:
+            filter_sp = st.multiselect("Filter by Salesman", _sp_vals_prof, key="cc_prof_sp")
+        with tc3:
+            filter_class = st.multiselect("Filter by Class", class_order, key="cc_prof_class")
+        with tc4:
             search_name = st.text_input("Search customer name", key="cc_prof_search")
 
         disp = result_df.copy()
         if filter_area:
             disp = disp[disp["area"].isin(filter_area)]
+        if filter_sp and "last_salesman" in disp.columns:
+            disp = disp[disp["last_salesman"].isin(filter_sp)]
         if filter_class:
             disp = disp[disp["class"].isin(filter_class)]
         if search_name:
             disp = disp[disp["cusname"].str.contains(search_name, case=False, na=False)]
 
+        _base_cols = ["cusname", "area", "last_salesman", "class",
+                      "active_months", "activity_rate",
+                      "avg_gap_months", "avg_order_value", "last_order_date"]
+        _present = [c for c in _base_cols if c in disp.columns]
         show_cols = {
-            "cusname": "Customer", "area": "Area", "class": "Class",
-            "active_months": "Active Months", "activity_rate": "Activity Rate",
-            "avg_gap_months": "Avg Gap (mo)", "avg_order_value": "Avg Order Value",
-            "last_order_date": "Last Order",
+            "cusname": "Customer", "area": "Area", "last_salesman": "Last Salesman",
+            "class": "Class", "active_months": "Active Months",
+            "activity_rate": "Activity Rate", "avg_gap_months": "Avg Gap (mo)",
+            "avg_order_value": "Avg Order Value", "last_order_date": "Last Order",
         }
         st.dataframe(
-            disp[list(show_cols.keys())].rename(columns=show_cols).reset_index(drop=True),
+            disp[_present].rename(columns=show_cols).reset_index(drop=True),
             use_container_width=True,
         )
         st.caption(f"{len(disp):,} customers shown · {n_win}-month window")
