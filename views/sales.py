@@ -4,11 +4,53 @@ import pandas as pd
 from processing import common, overall_sales
 from utils.utils import timed
 
+_CROSS_ZID_PAIR = {"100000", "100001"}
+_PARTNER = {"100000": "100001", "100001": "100000"}
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_partner_sales(partner_zid: str, years: tuple, months: tuple):
+    """Load and process sales + return data for the partner ZID.
+
+    Cached separately so the DB round-trip is paid at most once per
+    (partner_zid, years, months) combination per hour.
+    """
+    from core.analytics import Analytics
+    filters = {"year": list(years), "month": list(months)}
+    raw_s = Analytics("sales", zid=partner_zid, filters=filters).data
+    raw_r = Analytics("return", zid=partner_zid, filters=filters).data
+    if raw_s is None:
+        raw_s = pd.DataFrame()
+    if raw_r is None:
+        raw_r = pd.DataFrame()
+    if raw_s.empty and raw_r.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    proc_s, proc_r = common.data_copy_add_columns(raw_s, raw_r)
+    return proc_s, proc_r
+
 
 @timed
 def display_overall_sales_analysis_page(current_page, zid, data_dict):
     st.title("Overall Sales Analysis")
     filtered_data, filtered_data_r = common.data_copy_add_columns(data_dict['sales'], data_dict['return'])
+
+    # ── Pre-load partner ZID data (lazy, cached) for Order Analytics + CC ────
+    # We load the partner data eagerly but only merge it when the user picks
+    # "Both businesses" via the radio inside each section.
+    _partner_s, _partner_r = pd.DataFrame(), pd.DataFrame()
+    if str(zid) in _CROSS_ZID_PAIR and not filtered_data.empty:
+        _yrs = tuple(sorted(filtered_data["year"].dropna().unique().astype(int).tolist()))
+        _mos = tuple(sorted(filtered_data["month"].dropna().unique().astype(int).tolist()))
+        _partner_s, _partner_r = _load_partner_sales(_PARTNER[str(zid)], _yrs, _mos)
+
+    def _scope_data(use_both: bool):
+        """Return (sales_df, returns_df) depending on scope choice."""
+        if use_both and not _partner_s.empty:
+            s = pd.concat([filtered_data,   _partner_s], ignore_index=True)
+            r = pd.concat([filtered_data_r, _partner_r], ignore_index=True) if not _partner_r.empty else filtered_data_r
+            return s, r
+        return filtered_data, filtered_data_r
+
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview", "Comparison", "Distributions", "Descriptive Stats", "📈 Order Analytics", "👥 Customer Cycles"],horizontal=True)
 
     if analysis_mode == "Overview":
@@ -244,25 +286,42 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
 
     elif analysis_mode == "📈 Order Analytics":
         st.subheader("📈 Order Analytics")
-        st.caption("Filters below apply across all sub-sections. Empty = no filter applied.")
 
-        with st.expander("🔍 Entity Filters", expanded=True):
-            col1, col2, col3, col4, col5 = st.columns(5)
-            with col1:
-                sel_areas = st.multiselect("Area",
-                    sorted(filtered_data["area"].dropna().unique().tolist()), key="oa_areas")
-            with col2:
-                sel_salesmen = st.multiselect("Salesman",
-                    sorted(filtered_data["spname"].dropna().unique().tolist()), key="oa_salesmen")
-            with col3:
-                sel_product_groups = st.multiselect("Product Group",
-                    sorted(filtered_data["itemgroup"].dropna().unique().tolist()), key="oa_product_groups")
-            with col4:
-                sel_customers = st.multiselect("Customer",
-                    sorted(filtered_data["cusname"].dropna().unique().tolist()), key="oa_customers")
-            with col5:
-                sel_products = st.multiselect("Product",
-                    sorted(filtered_data["itemname"].dropna().unique().tolist()), key="oa_products")
+        # Cross-ZID scope selector
+        if str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty:
+            _oa_scope = st.radio(
+                "Data scope",
+                [f"Current business ({zid})", "Both businesses (100001 + 100000)"],
+                horizontal=True, key="sales_scope",
+            )
+            _oa_use_both = "Both" in _oa_scope
+        else:
+            _oa_use_both = False
+        _oa_data, _oa_data_r = _scope_data(_oa_use_both)
+
+        # Filter radio — one dimension at a time
+        _oa_dim = st.radio(
+            "Filter by", ["All", "Area", "Salesman", "Product Group", "Product", "Customer"],
+            horizontal=True, key="oa_filter_dim",
+        )
+        sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products = [], [], [], [], []
+        if _oa_dim == "Area":
+            sel_areas = st.multiselect("Areas", sorted(_oa_data["area"].dropna().unique()),
+                                       default=sorted(_oa_data["area"].dropna().unique()), key="oa_fv_area")
+        elif _oa_dim == "Salesman":
+            sel_salesmen = st.multiselect("Salesmen", sorted(_oa_data["spname"].dropna().unique()),
+                                          default=sorted(_oa_data["spname"].dropna().unique()), key="oa_fv_sp")
+        elif _oa_dim == "Product Group":
+            sel_product_groups = st.multiselect("Product Groups", sorted(_oa_data["itemgroup"].dropna().unique()),
+                                                 default=sorted(_oa_data["itemgroup"].dropna().unique()), key="oa_fv_pg")
+        elif _oa_dim == "Customer":
+            sel_customers = st.multiselect("Customers", sorted(_oa_data["cusname"].dropna().unique()),
+                                           default=sorted(_oa_data["cusname"].dropna().unique()), key="oa_fv_cus")
+        elif _oa_dim == "Product":
+            sel_products = st.multiselect("Products", sorted(_oa_data["itemname"].dropna().unique()),
+                                          default=sorted(_oa_data["itemname"].dropna().unique()), key="oa_fv_prod")
+
+        st.caption("Sub-section selector below.")
 
         sub_mode = st.radio(
             "Sub-section",
@@ -280,7 +339,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 nbins = st.number_input("Number of Bins", min_value=5, max_value=500, value=50, key="oa_bins")
 
             overall_sales.plot_order_size_distribution(
-                filtered_data, filtered_data_r,
+                _oa_data, _oa_data_r,
                 sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
                 value_min, value_max, nbins,
                 "Order Size" if sub_mode == "Order Size Distribution" else "Return Size",
@@ -318,7 +377,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                                             default=[10, 30], key="oa_ra_windows")
             if ra_windows:
                 overall_sales.plot_rolling_average_sales(
-                    filtered_data, filtered_data_r,
+                    _oa_data, _oa_data_r,
                     sel_areas, sel_salesmen, sel_product_groups, sel_customers, sel_products,
                     ra_windows, ra_metric,
                 )
@@ -337,7 +396,16 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 st.info("Select at least one rolling window.")
 
     elif analysis_mode == "👥 Customer Cycles":
-        _render_customer_cycles(filtered_data)
+        if str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty:
+            _cc_scope = st.radio(
+                "Data scope",
+                [f"Current business ({zid})", "Both businesses (100001 + 100000)"],
+                horizontal=True, key="sales_scope",
+            )
+            _cc_data, _ = _scope_data("Both" in _cc_scope)
+        else:
+            _cc_data = filtered_data
+        _render_customer_cycles(_cc_data)
 
 
 def _render_customer_cycles(df_sales):
@@ -367,11 +435,54 @@ def _render_customer_cycles(df_sales):
     # ── 1. Monthly Active Customers ──────────────────────────────────────────
     if cycle_mode == "📊 Monthly Active Customers":
         st.markdown("#### Monthly Active Customers")
-        st.caption("Unique customers who placed at least one order in each month.")
+
+        # ── Group by selector ──
+        grp_display = st.radio(
+            "Group by", ["Salesman", "Area"],
+            horizontal=True, key="cc_mac_grp",
+        )
+        grp_col = "spname" if grp_display == "Salesman" else "area"
+
+        # ── Filter — one dimension radio ──
+        _mac_dim = st.radio(
+            "Filter by", ["All", "Area", "Salesman", "Product Group", "Product"],
+            horizontal=True, key="cc_mac_dim",
+        )
+        _mac_vals = []
+        if _mac_dim == "Area":
+            _opts = sorted(df_sales["area"].fillna("Unknown").unique().tolist())
+            _mac_vals = st.multiselect("Areas", _opts, default=_opts, key="cc_mac_fv_area")
+        elif _mac_dim == "Salesman" and "spname" in df_sales.columns:
+            _opts = sorted(df_sales["spname"].dropna().unique().tolist())
+            _mac_vals = st.multiselect("Salesmen", _opts, default=_opts, key="cc_mac_fv_sp")
+        elif _mac_dim == "Product Group" and "itemgroup" in df_sales.columns:
+            _opts = sorted(df_sales["itemgroup"].dropna().unique().tolist())
+            _mac_vals = st.multiselect("Product Groups", _opts, default=_opts, key="cc_mac_fv_pg")
+        elif _mac_dim == "Product" and "itemname" in df_sales.columns:
+            _opts = sorted(df_sales["itemname"].dropna().unique().tolist())
+            _mac_vals = st.multiselect("Products", _opts, default=_opts, key="cc_mac_fv_prod")
+
+        # ── Apply filter ──
+        df_mac = df_sales.copy()
+        df_mac["area"] = df_mac["area"].fillna("Unknown").astype(str)
+        if "spname" in df_mac.columns:
+            df_mac["spname"] = df_mac["spname"].fillna("Unknown").astype(str)
+        if _mac_dim == "Area" and _mac_vals:
+            df_mac = df_mac[df_mac["area"].isin(_mac_vals)]
+        elif _mac_dim == "Salesman" and _mac_vals:
+            df_mac = df_mac[df_mac["spname"].isin(_mac_vals)]
+        elif _mac_dim == "Product Group" and _mac_vals and "itemgroup" in df_mac.columns:
+            df_mac = df_mac[df_mac["itemgroup"].isin(_mac_vals)]
+        elif _mac_dim == "Product" and _mac_vals and "itemname" in df_mac.columns:
+            df_mac = df_mac[df_mac["itemname"].isin(_mac_vals)]
+
+        if df_mac.empty:
+            st.info("No data matches the selected filters.")
+            return
 
         with st.spinner("Computing..."):
             try:
-                long_df, pivot_df = overall_sales.compute_monthly_active_customers(df_sales)
+                long_df, pivot_df = overall_sales.compute_monthly_active_customers(df_mac, group_by=grp_col)
             except Exception as e:
                 st.error(f"Error computing MAC: {e}")
                 return
@@ -380,35 +491,44 @@ def _render_customer_cycles(df_sales):
             st.info("Not enough data.")
             return
 
-        # ── Heatmap ──
+        # ── Heatmap — gradient calibrated to non-National rows only ──
+        area_matrix = pivot_df.drop(index="National", errors="ignore")
+        if not area_matrix.empty and area_matrix.values.max() > 0:
+            z_min = int(area_matrix.values.min())
+            z_max = int(area_matrix.values.max())
+            if z_min == z_max:
+                z_max = z_min + 1
+        else:
+            z_min, z_max = 0, max(1, int(pivot_df.values.max()))
+
         nat_vals = pivot_df.loc["National"].values.astype(float) if "National" in pivot_df.index else None
-        area_rows = pivot_df.drop(index="National", errors="ignore")
 
         fig_heat = go.Figure(data=go.Heatmap(
             z=pivot_df.values.tolist(),
             x=pivot_df.columns.tolist(),
             y=pivot_df.index.tolist(),
             colorscale="Blues",
+            zmin=z_min, zmax=z_max,
             text=pivot_df.values.tolist(),
             texttemplate="%{text}",
             showscale=True,
-            hovertemplate="Area: %{y}<br>Month: %{x}<br>Active Customers: %{z}<extra></extra>",
+            hovertemplate=f"{grp_display}: %{{y}}<br>Month: %{{x}}<br>Active Customers: %{{z}}<extra></extra>",
         ))
         fig_heat.update_layout(
-            title="Active Customers Heatmap (Area × Month)",
+            title=f"Active Customers — {grp_display} × Month",
             height=max(300, 60 + len(pivot_df) * 35),
             margin=dict(l=10, r=10, t=40, b=10),
             xaxis_title="", yaxis_title="",
         )
         st.plotly_chart(fig_heat, use_container_width=True)
 
-        # ── Line chart: national + selectable areas ──
-        areas_avail = [a for a in pivot_df.index.tolist() if a != "National"]
-        sel_areas_cc = st.multiselect(
-            "Areas to highlight on line chart (empty = all)",
-            areas_avail, key="cc_mac_areas",
+        # ── Trend line chart ──
+        others_avail = [g for g in pivot_df.index.tolist() if g != "National"]
+        sel_highlight = st.multiselect(
+            f"{grp_display}s to highlight on trend (empty = all)",
+            others_avail, key="cc_mac_highlight",
         )
-        show_areas = sel_areas_cc if sel_areas_cc else areas_avail
+        show_others = sel_highlight if sel_highlight else others_avail
 
         fig_line = go.Figure()
         if nat_vals is not None:
@@ -417,36 +537,46 @@ def _render_customer_cycles(df_sales):
                 mode="lines+markers", name="National",
                 line=dict(width=3, color="steelblue"), marker=dict(size=7),
             ))
-        for area in show_areas:
-            if area in pivot_df.index:
+        for grp in show_others:
+            if grp in pivot_df.index:
                 fig_line.add_trace(go.Scatter(
                     x=pivot_df.columns.tolist(),
-                    y=pivot_df.loc[area].values.astype(float),
-                    mode="lines+markers", name=area,
+                    y=pivot_df.loc[grp].values.astype(float),
+                    mode="lines+markers", name=grp,
                     line=dict(width=1.5), marker=dict(size=5),
                 ))
         fig_line.update_layout(
-            title="Active Customers — Trend",
+            title=f"Active Customers — Trend by {grp_display}",
             xaxis_title="Month", yaxis_title="Unique Customers",
             height=420, legend=dict(orientation="h", y=-0.3),
             margin=dict(l=10, r=10, t=40, b=10),
         )
         st.plotly_chart(fig_line, use_container_width=True)
 
-        # ── Table ──
-        st.markdown("**Data table**")
-        st.dataframe(pivot_df.style.background_gradient(cmap="Blues", axis=1), use_container_width=True)
-
         with st.expander("📖 How to read this analysis"):
-            st.markdown("""
-**What you are looking at:** Each cell shows how many unique customers placed at least one order in that area and month. Darker blue = more active customers. The **National** row sums unique customers across all areas (note: a customer in two areas is counted once nationally but once per area).
+            st.markdown(f"""
+**What is an "active customer"?**
+A customer is **active** in a month if they placed at least one order during that month — regardless of order size or how many orders they placed.
+
+**Concrete example:**
+
+| Customer | Jan | Feb | Mar | Apr | Active months |
+|---|---|---|---|---|---|
+| Ahmed & Co | ✅ | ❌ | ✅ | ✅ | 3 |
+| Karim Traders | ✅ | ✅ | ❌ | ✅ | 3 |
+| ABC Store | ❌ | ❌ | ❌ | ✅ | 1 |
+| **Active count** | **2** | **1** | **1** | **3** | |
+
+In January, 2 unique customers ordered → the cell for that {grp_display.lower()} shows **2**. Karim Traders ordered twice in January (two different visits) — they still count as **1** active customer for that month.
+
+**What you are looking at:**
+Each cell = unique customers who placed ≥1 order for that {grp_display.lower()} and month. Darker blue = more active customers. The **National** row is the total (colour gradient is calibrated to the individual rows so it does not wash out the area/salesman comparison).
 
 **What to look for:**
-- **Row consistency** — a row that stays uniformly dark has a stable, reliable customer base. Fading towards the right signals declining engagement in that area.
-- **Month-on-month change** — a sudden drop in a cell is worth investigating: was there a stock issue, a pricing change, or did a key salesman leave?
-- **Seasonality** — look for recurring lighter months (e.g. certain months every year). This is your natural demand trough and should be factored into target-setting.
-- **Area vs. National divergence** — if the National row grows but individual area rows stay flat, the growth is coming from new areas, not from deepening existing ones. The reverse (areas growing, National flat) may indicate cannibalisation or data mapping issues.
-- **Benchmark** — use the trailing 3-month average of a healthy area as the baseline when setting targets for a recovering area.
+- **Row consistency** — a uniformly dark row = stable, reliable customer base. Fading rightward = declining engagement.
+- **Sudden drop in a cell** — stock issue, pricing change, key salesman absent that month?
+- **Seasonality** — recurring lighter months across multiple rows = your natural demand trough; factor this into targets.
+- **Use the filters** — narrow to a product group to see which {grp_display.lower()}s drove customers buying that category. Toggle between Salesman and Area to compare perspectives.
             """)
 
     # ── 2. Customer Flow ──────────────────────────────────────────────────────
@@ -459,9 +589,44 @@ def _render_customer_cycles(df_sales):
             "**Returned**: ordered before, skipped ≥1 month, now back."
         )
 
+        # ── Filter — one dimension radio ──
+        _cf_dim = st.radio(
+            "Filter by", ["All", "Area", "Salesman", "Product Group", "Product"],
+            horizontal=True, key="cf_dim",
+        )
+        _cf_vals = []
+        if _cf_dim == "Area":
+            _opts = sorted(df_sales["area"].fillna("Unknown").unique().tolist())
+            _cf_vals = st.multiselect("Areas", _opts, default=_opts, key="cf_fv_area")
+        elif _cf_dim == "Salesman" and "spname" in df_sales.columns:
+            _opts = sorted(df_sales["spname"].dropna().unique().tolist())
+            _cf_vals = st.multiselect("Salesmen", _opts, default=_opts, key="cf_fv_sp")
+        elif _cf_dim == "Product Group" and "itemgroup" in df_sales.columns:
+            _opts = sorted(df_sales["itemgroup"].dropna().unique().tolist())
+            _cf_vals = st.multiselect("Product Groups", _opts, default=_opts, key="cf_fv_pg")
+        elif _cf_dim == "Product" and "itemname" in df_sales.columns:
+            _opts = sorted(df_sales["itemname"].dropna().unique().tolist())
+            _cf_vals = st.multiselect("Products", _opts, default=_opts, key="cf_fv_prod")
+
+        # Apply filter
+        df_flow = df_sales.copy()
+        df_flow["area"] = df_flow["area"].fillna("Unknown").astype(str)
+        if _cf_dim == "Area" and _cf_vals:
+            df_flow = df_flow[df_flow["area"].isin(_cf_vals)]
+        elif _cf_dim == "Salesman" and _cf_vals and "spname" in df_flow.columns:
+            df_flow = df_flow[df_flow["spname"].isin(_cf_vals)]
+        elif _cf_dim == "Product Group" and _cf_vals and "itemgroup" in df_flow.columns:
+            df_flow = df_flow[df_flow["itemgroup"].isin(_cf_vals)]
+        elif _cf_dim == "Product" and _cf_vals and "itemname" in df_flow.columns:
+            df_flow = df_flow[df_flow["itemname"].isin(_cf_vals)]
+
+        if df_flow.empty:
+            st.info("No data matches the selected filters.")
+            return
+
         with st.spinner("Computing..."):
             try:
-                flow_df = overall_sales.compute_customer_flow(df_sales)
+                flow_df = overall_sales.compute_customer_flow(df_flow)
             except Exception as e:
                 st.error(f"Error computing flow: {e}")
                 return
@@ -470,7 +635,7 @@ def _render_customer_cycles(df_sales):
             st.info("Not enough data.")
             return
 
-        # Area selector
+        # View-area selector (driven by filtered data)
         areas_avail = [a for a in flow_df["area"].unique() if a != "National"]
         sel_area_flow = st.selectbox(
             "View area", ["National"] + sorted(areas_avail), key="cc_flow_area"
@@ -483,14 +648,19 @@ def _render_customer_cycles(df_sales):
             return
 
         months = sub["month_label"].tolist()
-        colors = {"retained": "#4CAF50", "new_customers": "#2196F3",
-                  "returned": "#FF9800", "lost": "#F44336"}
+        _FLOW_COLORS = {
+            "retained":     "#4CAF50",
+            "new_customers":"#2196F3",
+            "returned":     "#FF9800",
+            "lost":         "#F44336",
+        }
 
+        # ── Stacked flow chart ────────────────────────────────────────────────
         fig_stack = go.Figure()
         for col, label, color in [
-            ("retained",     "Retained",  colors["retained"]),
-            ("new_customers","New",        colors["new_customers"]),
-            ("returned",     "Returned",  colors["returned"]),
+            ("retained",      "Retained", _FLOW_COLORS["retained"]),
+            ("new_customers", "New",       _FLOW_COLORS["new_customers"]),
+            ("returned",      "Returned", _FLOW_COLORS["returned"]),
         ]:
             fig_stack.add_trace(go.Bar(
                 x=months, y=sub[col].tolist(), name=label,
@@ -498,7 +668,7 @@ def _render_customer_cycles(df_sales):
             ))
         fig_stack.add_trace(go.Bar(
             x=months, y=[-v for v in sub["lost"].tolist()],
-            name="Lost", marker_color=colors["lost"],
+            name="Lost", marker_color=_FLOW_COLORS["lost"],
         ))
         fig_stack.add_trace(go.Scatter(
             x=months, y=sub["total_active"].tolist(),
@@ -517,7 +687,7 @@ def _render_customer_cycles(df_sales):
         )
         st.plotly_chart(fig_stack, use_container_width=True)
 
-        # Summary table
+        # ── Summary table ─────────────────────────────────────────────────────
         display_cols = {
             "month_label": "Month", "total_active": "Total Active",
             "retained": "Retained", "new_customers": "New",
@@ -527,6 +697,46 @@ def _render_customer_cycles(df_sales):
             sub[list(display_cols.keys())].rename(columns=display_cols).reset_index(drop=True),
             use_container_width=True,
         )
+
+        # ── Individual metric bar chart ───────────────────────────────────────
+        st.markdown("**Individual metric view**")
+        _METRIC_DEFS = {
+            "Total Active":  ("total_active",  "steelblue"),
+            "Retained":      ("retained",       "#4CAF50"),
+            "New":           ("new_customers",  "#2196F3"),
+            "Returned":      ("returned",       "#FF9800"),
+            "Lost":          ("lost",           "#F44336"),
+            "Net Change":    ("net_change",     "#9C27B0"),
+        }
+        sel_metrics = st.multiselect(
+            "Metrics to show (empty = all)",
+            list(_METRIC_DEFS.keys()),
+            default=list(_METRIC_DEFS.keys()),
+            key="cf_ind_metrics",
+        )
+        show_metrics = sel_metrics if sel_metrics else list(_METRIC_DEFS.keys())
+
+        fig_ind = go.Figure()
+        for m in show_metrics:
+            col_key, color = _METRIC_DEFS[m]
+            fig_ind.add_trace(go.Bar(
+                x=months,
+                y=sub[col_key].tolist(),
+                name=m,
+                marker_color=color,
+                text=sub[col_key].tolist(),
+                textposition="outside",
+            ))
+        fig_ind.update_layout(
+            barmode="group",
+            title=f"Individual Metric View — {sel_area_flow}",
+            xaxis_title="Month",
+            yaxis_title="Customers",
+            height=450,
+            legend=dict(orientation="h", y=-0.3),
+            margin=dict(l=10, r=10, t=40, b=60),
+        )
+        st.plotly_chart(fig_ind, use_container_width=True)
 
         with st.expander("📖 How to read this analysis"):
             st.markdown("""
@@ -588,58 +798,70 @@ def _render_customer_cycles(df_sales):
                                margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig_pie, use_container_width=True)
 
-        # Area breakdown stacked bar
-        st.markdown("**Area-wise class distribution**")
-        area_cls = (
-            result_df[result_df["area"] != "Unknown"]
-            .groupby(["area", "class"]).size().reset_index(name="count")
+        # Class distribution chart — by Area or Salesman
+        _dist_grp = st.radio(
+            "Distribution view", ["By Area", "By Salesman"],
+            horizontal=True, key="cc_prof_dist_grp",
         )
-        if not area_cls.empty:
+        _dist_col = "area" if _dist_grp == "By Area" else "last_salesman"
+        _dist_label = "Area" if _dist_grp == "By Area" else "Salesman"
+
+        dist_cls = (
+            result_df[result_df[_dist_col].notna() & (result_df[_dist_col] != "Unknown")]
+            .groupby([_dist_col, "class"]).size().reset_index(name="count")
+        )
+        if not dist_cls.empty:
             fig_ab = go.Figure()
             for cls in class_order:
-                sub_cls = area_cls[area_cls["class"] == cls]
+                sub_cls = dist_cls[dist_cls["class"] == cls]
                 fig_ab.add_trace(go.Bar(
-                    x=sub_cls["area"], y=sub_cls["count"],
+                    x=sub_cls[_dist_col], y=sub_cls["count"],
                     name=cls, marker_color=class_colors[cls],
                 ))
             fig_ab.update_layout(
                 barmode="stack", height=380,
-                xaxis_title="Area", yaxis_title="Customers",
+                xaxis_title=_dist_label, yaxis_title="Customers",
+                title=f"Class Distribution — {_dist_grp}",
                 legend=dict(orientation="h", y=-0.35),
-                margin=dict(l=10, r=10, t=20, b=10),
+                margin=dict(l=10, r=10, t=40, b=10),
             )
             st.plotly_chart(fig_ab, use_container_width=True)
 
         # Filterable detail table
         st.markdown("**Customer detail**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            filter_area = st.multiselect(
-                "Filter by Area", sorted(result_df["area"].unique()), key="cc_prof_area"
-            )
-        with col2:
-            filter_class = st.multiselect(
-                "Filter by Class", class_order, key="cc_prof_class"
-            )
-        with col3:
+        _sp_vals_prof = sorted(result_df["last_salesman"].dropna().unique().tolist()) if "last_salesman" in result_df.columns else []
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        with tc1:
+            filter_area = st.multiselect("Filter by Area", sorted(result_df["area"].unique()), key="cc_prof_area")
+        with tc2:
+            filter_sp = st.multiselect("Filter by Salesman", _sp_vals_prof, key="cc_prof_sp")
+        with tc3:
+            filter_class = st.multiselect("Filter by Class", class_order, key="cc_prof_class")
+        with tc4:
             search_name = st.text_input("Search customer name", key="cc_prof_search")
 
         disp = result_df.copy()
         if filter_area:
             disp = disp[disp["area"].isin(filter_area)]
+        if filter_sp and "last_salesman" in disp.columns:
+            disp = disp[disp["last_salesman"].isin(filter_sp)]
         if filter_class:
             disp = disp[disp["class"].isin(filter_class)]
         if search_name:
             disp = disp[disp["cusname"].str.contains(search_name, case=False, na=False)]
 
+        _base_cols = ["cusname", "area", "last_salesman", "class",
+                      "active_months", "activity_rate",
+                      "avg_gap_months", "avg_order_value", "last_order_date"]
+        _present = [c for c in _base_cols if c in disp.columns]
         show_cols = {
-            "cusname": "Customer", "area": "Area", "class": "Class",
-            "active_months": "Active Months", "activity_rate": "Activity Rate",
-            "avg_gap_months": "Avg Gap (mo)", "avg_order_value": "Avg Order Value",
-            "last_order_date": "Last Order",
+            "cusname": "Customer", "area": "Area", "last_salesman": "Last Salesman",
+            "class": "Class", "active_months": "Active Months",
+            "activity_rate": "Activity Rate", "avg_gap_months": "Avg Gap (mo)",
+            "avg_order_value": "Avg Order Value", "last_order_date": "Last Order",
         }
         st.dataframe(
-            disp[list(show_cols.keys())].rename(columns=show_cols).reset_index(drop=True),
+            disp[_present].rename(columns=show_cols).reset_index(drop=True),
             use_container_width=True,
         )
         st.caption(f"{len(disp):,} customers shown · {n_win}-month window")
@@ -714,7 +936,7 @@ def _render_customer_cycles(df_sales):
         fig_range.add_trace(go.Scatter(
             x=areas, y=mid_vals, mode="markers+text",
             name="Mid projection", text=[str(v) for v in mid_vals],
-            textposition="outside",
+            textposition="top center",
             marker=dict(color="steelblue", size=10, symbol="diamond"),
         ))
         fig_range.add_trace(go.Scatter(
@@ -745,7 +967,7 @@ def _render_customer_cycles(df_sales):
             x=areas, y=s_mid, mode="markers+text",
             name="Mid Sales Proj.",
             text=[f"{v/1000:.0f}K" if v >= 1000 else str(int(v)) for v in s_mid],
-            textposition="outside",
+            textposition="top center",
             marker=dict(color="green", size=10, symbol="diamond"),
         ))
         fig_sales.update_layout(

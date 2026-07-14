@@ -1656,17 +1656,22 @@ def _build_area_month_sets(df):
     return area_sets, nat_sets, sorted_ym
 
 
-def compute_monthly_active_customers(df_sales):
+def compute_monthly_active_customers(df_sales, group_by="area"):
     """
     Returns (long_df, pivot_df).
-    long_df  : area, year, month, month_label, n_customers, n_orders, total_sales
-    pivot_df : index=area (National first), columns=month_label, values=n_customers
+    group_by : "area" (default, keeps backward compat for compute_area_projection)
+               or "spname" for salesman view.
+    long_df  : <group_by>, year, month, month_label, n_customers, n_orders, total_sales
+    pivot_df : index=<group_by> label (National first), columns=month_label, values=n_customers
     """
     df = df_sales.copy()
-    df["area"] = df["area"].fillna("Unknown").astype(str)
+    df["area"]   = df["area"].fillna("Unknown").astype(str)
+    df["spname"] = df["spname"].fillna("Unknown").astype(str) if "spname" in df.columns else "Unknown"
 
-    area_monthly = (
-        df.groupby(["area", "year", "month"])
+    grp_col = group_by
+
+    grp_monthly = (
+        df.groupby([grp_col, "year", "month"])
         .agg(n_customers=("cusid", "nunique"),
              n_orders=("voucher", "nunique"),
              total_sales=("altsales", "sum"))
@@ -1679,9 +1684,9 @@ def compute_monthly_active_customers(df_sales):
              total_sales=("altsales", "sum"))
         .reset_index()
     )
-    nat_monthly.insert(0, "area", "National")
+    nat_monthly.insert(0, grp_col, "National")
 
-    long_df = pd.concat([nat_monthly, area_monthly], ignore_index=True)
+    long_df = pd.concat([nat_monthly, grp_monthly], ignore_index=True)
     long_df["month_label"] = long_df.apply(lambda r: _month_label(r["year"], r["month"]), axis=1)
     long_df = long_df.sort_values(["year", "month"]).reset_index(drop=True)
 
@@ -1693,14 +1698,14 @@ def compute_monthly_active_customers(df_sales):
     )
 
     pivot_df = (
-        long_df.pivot_table(index="area", columns="month_label",
+        long_df.pivot_table(index=grp_col, columns="month_label",
                             values="n_customers", aggfunc="sum")
         .reindex(columns=ordered_cols)
         .fillna(0).astype(int)
     )
-    nat_row   = pivot_df.loc[["National"]] if "National" in pivot_df.index else pd.DataFrame()
-    area_rows = pivot_df.drop(index="National", errors="ignore").sort_index()
-    pivot_df  = pd.concat([nat_row, area_rows])
+    nat_row    = pivot_df.loc[["National"]] if "National" in pivot_df.index else pd.DataFrame()
+    other_rows = pivot_df.drop(index="National", errors="ignore").sort_index()
+    pivot_df   = pd.concat([nat_row, other_rows])
 
     return long_df, pivot_df
 
@@ -1817,15 +1822,29 @@ def classify_customer_cycles(df_sales, window_months=12):
 
     month_sets["avg_gap_months"] = month_sets["month_indices"].apply(_avg_gap)
 
+    # Last salesman who served each customer
+    if "spname" in df.columns:
+        last_sp = (
+            df.sort_values("date")
+            .groupby("cusid")["spname"]
+            .last()
+            .reset_index(name="last_salesman")
+        )
+        last_sp["cusid"] = last_sp["cusid"].astype(str)
+    else:
+        last_sp = pd.DataFrame(columns=["cusid", "last_salesman"])
+
     result = (
         cust_info
         .merge(cust_active[["cusid", "active_months"]], on="cusid", how="left")
         .merge(cust_order_val, on="cusid", how="left")
         .merge(month_sets[["cusid", "avg_gap_months"]], on="cusid", how="left")
+        .merge(last_sp, on="cusid", how="left")
     )
     result["active_months"]   = result["active_months"].fillna(0).astype(int)
     result["activity_rate"]   = (result["active_months"] / n_win).round(2)
     result["avg_order_value"] = result["avg_order_value"].fillna(0).round(0)
+    result["last_salesman"]   = result["last_salesman"].fillna("Unknown")
 
     # Lapsed: had any order before 6-month mark but nothing in last 6 months
     cutoff_6m    = max_date - pd.DateOffset(months=6)
