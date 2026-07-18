@@ -257,63 +257,82 @@ def collapse_monthly_to_quarterly(
 @st.cache_data(ttl=3600)
 def process_data_daily(
     zid,
-    year: int,
-    month: int,
+    end_year: int,
+    end_month: int,
     income_label_df: pd.DataFrame,
     balance_label_df: pd.DataFrame,
     project=None,
 ):
     """
-    Build daily IS and BS for a single month.
+    Build daily IS and BS for a 3-month window ending at end_month.
 
-    IS columns  : (year, month, day) 3-tuples — each column = that day's GL movements.
-    BS columns  : (year, month, day) 3-tuples — each column = cumulative balance up to that day.
-                  Column (year, month, 0) is the opening balance (prior month-end).
+    Window  : (end_month-2) through end_month (adjusts year boundary).
+    IS cols : (year, month, day) 3-tuples — each = that day's GL movements.
+    BS cols : (year, month, day) 3-tuples — each = cumulative balance up to that day.
+              Column (first_year, first_month, 0) = opening (prior to window start).
 
-    The last day's IS total equals the Monthly IS sum for the same month.
-    The last day's BS balance equals the Monthly BS balance for that month.
+    Last-day IS total = Monthly IS sum for end_month.
+    Last-day BS balance = Monthly BS balance for end_month.
     """
+    # ── 3-month window ────────────────────────────────────────────────────────
+    months: list = []
+    for i in range(2, -1, -1):
+        m = end_month - i
+        y = end_year
+        while m <= 0:
+            m += 12
+            y -= 1
+        months.append((y, m))
+
+    first_y, first_m = months[0]
+
     # ── master chart of accounts ──────────────────────────────────────────────
     df_master_is = get_filtered_master(zid, {'Asset', 'Liability'})
     df_master_bs = get_filtered_master(zid, {'Income', 'Expenditure'})
     meta = ['ac_code', 'ac_name', 'ac_type', 'ac_lv1', 'ac_lv2', 'ac_lv3', 'ac_lv4']
 
-    # ── opening BS (prior month-end cumulative balance) ───────────────────────
-    prior_year  = year - 1 if month == 1 else year
-    prior_month = 12       if month == 1 else month - 1
+    # ── opening BS (prior to window start) ────────────────────────────────────
+    prior_y = first_y - 1 if first_m == 1 else first_y
+    prior_m = 12       if first_m == 1 else first_m - 1
 
     _sql_open, _p_open = queries.get_gl_details(
-        zid=zid, project=project, year=prior_year,
-        smonth=None, emonth=prior_month,
+        zid=zid, project=project, year=prior_y,
+        smonth=None, emonth=prior_m,
         is_bs=True, is_project=bool(project),
     )
     df_open = get_dataframe(_sql_open, _p_open)
-    if df_open is not None and not df_open.empty:
-        opening = df_open.groupby('ac_code')['sum'].sum()
-    else:
-        opening = pd.Series(dtype=float)
+    opening = (df_open.groupby('ac_code')['sum'].sum()
+               if df_open is not None and not df_open.empty
+               else pd.Series(dtype=float))
 
-    # ── daily IS movements ────────────────────────────────────────────────────
-    _sql_is, _p_is = queries.get_gl_details_daily(
-        zid=zid, project=project, year=year, month=month,
-        is_bs=False, is_project=bool(project),
-    )
-    df_is = get_dataframe(_sql_is, _p_is)
+    # ── daily IS and BS movements for all months in the window ───────────────
+    is_parts: list = []
+    bs_parts: list = []
+    for yr, mo in months:
+        _sql_is, _p_is = queries.get_gl_details_daily(
+            zid=zid, project=project, year=yr, month=mo,
+            is_bs=False, is_project=bool(project),
+        )
+        _sql_bs_d, _p_bs_d = queries.get_gl_details_daily(
+            zid=zid, project=project, year=yr, month=mo,
+            is_bs=True, is_project=bool(project),
+        )
+        df_is = get_dataframe(_sql_is, _p_is)
+        df_bs_d = get_dataframe(_sql_bs_d, _p_bs_d)
+        if df_is is not None and not df_is.empty:
+            is_parts.append(df_is)
+        if df_bs_d is not None and not df_bs_d.empty:
+            bs_parts.append(df_bs_d)
 
-    # ── daily BS movements ────────────────────────────────────────────────────
-    _sql_bs, _p_bs = queries.get_gl_details_daily(
-        zid=zid, project=project, year=year, month=month,
-        is_bs=True, is_project=bool(project),
-    )
-    df_bs = get_dataframe(_sql_bs, _p_bs)
+    df_is_all = pd.concat(is_parts, ignore_index=True) if is_parts else None
+    df_bs_all = pd.concat(bs_parts, ignore_index=True) if bs_parts else None
 
     def _build_is(df_raw, df_master):
         """Non-cumulative IS: pivot daily movements, one column per day."""
         base = df_master[meta].copy()
         if df_raw is None or df_raw.empty:
-            return base.merge(
-                income_label_df, on='ac_lv4', how='left'
-            ).fillna(0).rename(columns={'Income Statement': 'ac_lv5'})
+            return (base.merge(income_label_df, on='ac_lv4', how='left')
+                    .fillna(0).rename(columns={'Income Statement': 'ac_lv5'}))
 
         df_raw = df_raw.copy()
         df_raw['date'] = pd.to_datetime(df_raw['date']).dt.date
@@ -323,67 +342,56 @@ def process_data_daily(
             df_raw.pivot_table(values='sum', index='ac_code', columns='date', aggfunc='sum')
             .reset_index()
         )
-        # Rename date columns to (year, month, day) 3-tuples
-        pivot = pivot.rename(
-            columns={d: (d.year, d.month, d.day) for d in dates}
-        )
+        pivot = pivot.rename(columns={d: (d.year, d.month, d.day) for d in dates})
 
-        result = (
+        return (
             base.merge(pivot, on='ac_code', how='left')
             .fillna(0)
             .merge(income_label_df, on='ac_lv4', how='left')
             .fillna(0)
             .rename(columns={'Income Statement': 'ac_lv5'})
         )
-        return result
 
     def _build_bs(df_raw, df_master, opening_series):
-        """Cumulative BS: opening + cumsum of daily movements per ac_code."""
+        """Cumulative BS: opening + cumsum of daily movements across the window."""
         base = df_master[meta].copy()
 
         if df_raw is not None and not df_raw.empty:
             df_raw = df_raw.copy()
             df_raw['date'] = pd.to_datetime(df_raw['date']).dt.date
             dates = sorted(df_raw['date'].unique())
-
             pivot = (
                 df_raw.pivot_table(values='sum', index='ac_code', columns='date', aggfunc='sum')
                 .reset_index()
             )
             date_cols_orig = [c for c in pivot.columns if c != 'ac_code']
-            pivot = pivot.rename(
-                columns={d: (d.year, d.month, d.day) for d in date_cols_orig}
-            )
+            pivot = pivot.rename(columns={d: (d.year, d.month, d.day) for d in date_cols_orig})
         else:
             pivot = pd.DataFrame(columns=['ac_code'])
             dates = []
 
-        # Merge with master
         df = base.merge(pivot, on='ac_code', how='left').fillna(0)
+        day_keys = [(d.year, d.month, d.day) for d in dates]
 
-        day_keys = [(d.year, d.month, d.day) for d in dates] if dates else []
-
-        # Add opening balance as column (year, month, 0)
-        open_col = (year, month, 0)
+        # Opening column: (first_y, first_m, 0) — sorts before all day columns
+        open_col = (first_y, first_m, 0)
         df[open_col] = df['ac_code'].map(opening_series).fillna(0)
 
-        # Cumulative: opening + running sum of daily movements
         if day_keys:
             df[day_keys] = df[day_keys].cumsum(axis=1)
             for dk in day_keys:
                 df[dk] = df[dk] + df[open_col]
 
-        df = (
+        return (
             df.merge(balance_label_df, on='ac_lv4', how='left')
             .fillna(0)
             .rename(columns={'Balance Sheet': 'ac_lv5'})
         )
-        return df
 
-    pl_daily = _build_is(df_is, df_master_is)
-    bs_daily = _build_bs(df_bs, df_master_bs, opening)
+    pl_daily = _build_is(df_is_all, df_master_is)
+    bs_daily = _build_bs(df_bs_all, df_master_bs, opening)
 
-    return pl_daily, bs_daily
+    return pl_daily, bs_daily, months
 
 
 @st.cache_data(ttl=86400)

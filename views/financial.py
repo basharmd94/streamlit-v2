@@ -1035,15 +1035,14 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
 # Daily view
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_daily_view(income_label_df, balance_label_df, year, month, global_zid):
+def _render_daily_view(income_label_df, balance_label_df, end_year, end_month, global_zid):
     """
-    Daily financial statements — Level S only, single ZID, single month.
+    Daily financial statements — Level S only, single ZID.
+    3-month consecutive window ending at end_month.
     IS: per-day GL movements (non-cumulative).
     BS: cumulative daily balance (opening + daily movements).
     """
     import calendar as _cal
-
-    st.title(f"Financial Statements — Daily: {_cal.month_name[month]} {year}")
 
     # ── ZID selector ─────────────────────────────────────────────────────────
     data = common.load_json('data/businesses.json')
@@ -1060,11 +1059,22 @@ def _render_daily_view(income_label_df, balance_label_df, year, month, global_zi
                                  key="daily_zid_sel")
     _sel_zid     = _zid_keys[_zid_labels.index(_sel_label)]
 
-    # ── Load daily data ───────────────────────────────────────────────────────
-    with st.spinner(f"Loading daily data for {_cal.month_name[month]} {year}…"):
+    # ── Load daily data (3-month window) ─────────────────────────────────────
+    _start_m = end_month - 2
+    _start_y = end_year
+    while _start_m <= 0:
+        _start_m += 12
+        _start_y -= 1
+    _title_range = (
+        f"{_cal.month_name[_start_m][:3]} {_start_y} – "
+        f"{_cal.month_name[end_month][:3]} {end_year}"
+    )
+    st.title(f"Financial Statements — Daily · {_title_range}")
+
+    with st.spinner(f"Loading daily data for {_title_range}…"):
         try:
-            pl_daily, bs_daily = financial.process_data_daily(
-                _sel_zid, year, month, income_label_df, balance_label_df
+            pl_daily, bs_daily, months = financial.process_data_daily(
+                _sel_zid, end_year, end_month, income_label_df, balance_label_df
             )
         except Exception as _e:
             st.error(f"Failed to load daily data: {_e}")
@@ -1074,9 +1084,7 @@ def _render_daily_view(income_label_df, balance_label_df, year, month, global_zi
         st.info("No GL data found for this period.")
         return
 
-    # ── Identify period columns ──��────────────────────────────────────────────
     _hier_d = ['ac_type', 'ac_lv1', 'ac_lv2', 'ac_lv3', 'ac_lv4', 'ac_lv5']
-    pl_lv0_d = pl_daily.drop(columns=_hier_d, errors='ignore')
     bs_lv0_d = bs_daily.drop(columns=_hier_d, errors='ignore')
 
     # ── Level S IS ───────────────────────────────────────────────────────────
@@ -1084,7 +1092,7 @@ def _render_daily_view(income_label_df, balance_label_df, year, month, global_zi
     net_income_s_d     = _extract_row(pl_s_d, "Net Income")
     net_income_s_ytd_d = _monthly_to_ytd(net_income_s_d)
 
-    # ── Level S BS (uses cumulative bs_daily) ────────────────────────────────
+    # ── Level S BS ───────────────────────────────────────────────────────────
     bs_s_d = financial.build_bs_level_s(bs_daily, net_income_s_ytd_d, zid=_sel_zid)
 
     # ── Level S CFS ──────────────────────────────────────────────────────────
@@ -1094,39 +1102,36 @@ def _render_daily_view(income_label_df, balance_label_df, year, month, global_zi
         cfs_s_d, summary_s_d = financial.build_cfs_level_s(
             pl_daily, bs_daily, coc_d, net_income_s_d, zid=_sel_zid
         )
-    except Exception as _ce:
+    except Exception:
         _cfs_d_available = False
 
-    # ── Format helper: rename (year, month, day) columns for display ──────────
+    # ── Format helper ─────────────────────────────────────────────────────────
     def _fmt_daily(df: pd.DataFrame):
         num = df.select_dtypes("number").columns
         rename_map = {}
         for c in num:
             if isinstance(c, tuple) and len(c) == 3:
                 yr, mo, dy = c
-                if dy == 0:
-                    rename_map[c] = "Opening"
-                else:
-                    rename_map[c] = f"{_cal.month_abbr[mo]} {dy:02d}"
+                rename_map[c] = "Opening" if dy == 0 else f"{_cal.month_abbr[mo]} {dy:02d}"
         df2 = df.rename(columns=rename_map)
         new_num = [rename_map.get(c, str(c)) for c in num]
-        fmt = {col: "{:,.1f}" for col in new_num}
-        return df2.style.format(fmt, na_rep="")
+        return df2.style.format({col: "{:,.1f}" for col in new_num}, na_rep="")
 
-    # ── Summary info ─────────────────────────────────────────────────────────
-    _day_cols_is = sorted(
+    # ── Data range banner ─────────────────────────────────────────────────────
+    _day_cols = sorted(
         [c for c in pl_s_d.select_dtypes("number").columns
          if isinstance(c, tuple) and len(c) == 3 and c[2] > 0],
-        key=lambda t: t[2],
+        key=financial._period_key,
     )
-    if _day_cols_is:
+    if _day_cols:
+        _first_d, _last_d = _day_cols[0], _day_cols[-1]
         st.caption(
-            f"📅 Data spans {_cal.month_abbr[month]} 01 – "
-            f"{_cal.month_abbr[month]} {max(c[2] for c in _day_cols_is):02d}, {year}  "
-            f"({len(_day_cols_is)} days)"
+            f"📅 {_cal.month_abbr[_first_d[1]]} {_first_d[2]:02d}, {_first_d[0]} – "
+            f"{_cal.month_abbr[_last_d[1]]} {_last_d[2]:02d}, {_last_d[0]} "
+            f"({len(_day_cols)} days)"
         )
 
-    # ── Display ───────────────────────────────────────────────────────────────
+    # ── Main statements ───────────────────────────────────────────────────────
     with st.expander("Income Statement (per-day movements)", expanded=True):
         st.dataframe(_fmt_daily(pl_s_d), use_container_width=True)
 
@@ -1134,18 +1139,55 @@ def _render_daily_view(income_label_df, balance_label_df, year, month, global_zi
         st.dataframe(_fmt_daily(bs_s_d), use_container_width=True)
 
     if _cfs_d_available:
-        with st.expander("Cash Flow Statement (day-on-day)", expanded=True):
+        with st.expander("Cash Flow Statement (day-on-day changes)", expanded=True):
             st.dataframe(_fmt_daily(cfs_s_d), use_container_width=True)
         with st.expander("Cash Flow Summary", expanded=False):
             st.dataframe(_fmt_daily(summary_s_d), use_container_width=True)
     else:
         st.info("Cash flow statement requires ≥ 2 days of data.")
 
-    # ── Download ───────────────────────────────────────────────────────────────
+    # ── Balance / integrity checks ────────────────────────────────────────────
+    with st.expander("🔍 Balance & Integrity Checks", expanded=False):
+        if _day_cols:
+            # 1. BS balance check for each day (Assets + Liabilities should ≈ 0)
+            _bs_bal_row = _extract_row(bs_s_d, "Balance Check")
+            if not _bs_bal_row.empty and _bs_bal_row.abs().max() < 1e6:
+                _bs_chk = pd.DataFrame(
+                    [_bs_bal_row.rename(index={c: ("Opening" if c[2]==0 else f"{_cal.month_abbr[c[1]]} {c[2]:02d}") for c in _bs_bal_row.index if isinstance(c, tuple) and len(c)==3})],
+                    index=["Balance Check (≈ 0)"],
+                )
+                st.markdown("**BS Balance Check** (should be ~0 each day)")
+                st.dataframe(_fmt(
+                    _bs_chk.rename(
+                        columns={c: ("Opening" if c[2]==0 else f"{_cal.month_abbr[c[1]]} {c[2]:02d}")
+                                 for c in _bs_bal_row.index if isinstance(c, tuple) and len(c)==3}
+                    )
+                ), use_container_width=True)
+
+            # 2. Month-end IS total vs prior monthly view
+            _last_col = _day_cols[-1]
+            _last_yr, _last_mo = _last_col[0], _last_col[1]
+            _ni_last_day = float(net_income_s_d.get(_last_col, 0))
+            st.markdown(
+                f"**IS Last-Day Net Income** ({_cal.month_name[_last_mo]} {_last_yr}): "
+                f"`{_ni_last_day:,.1f}` — should equal Monthly Level S Net Income for that month."
+            )
+
+            # 3. Simple per-month IS total check
+            _month_ni: dict = {}
+            for c in _day_cols:
+                mk = (c[0], c[1])
+                _month_ni[mk] = _month_ni.get(mk, 0.0) + float(net_income_s_d.get(c, 0))
+            _chk_rows = [{"Month": f"{_cal.month_name[m]} {y}", "Daily IS Net Income Sum": v}
+                         for (y, m), v in sorted(_month_ni.items())]
+            st.markdown("**Per-Month IS Sum** (each row = sum of daily NI for that month)")
+            st.dataframe(pd.DataFrame(_chk_rows), use_container_width=True)
+
+    # ── Download ──────────────────────────────────────────────────────────────
     _dl_d = common.create_combined_ls_download_link(
         pl_s=pl_s_d, bs_s=bs_s_d,
         cfs_s=cfs_s_d if _cfs_d_available else pd.DataFrame(),
-        filename=f"Daily_Financial_Statements_{_cal.month_name[month]}_{year}.xlsx",
+        filename=f"Daily_Financial_Statements_{_cal.month_name[end_month]}_{end_year}.xlsx",
     )
     st.markdown(_dl_d, unsafe_allow_html=True)
 
@@ -1219,8 +1261,9 @@ def display_financial_statements(current_page, zid):
     elif selected_perspective == 'Daily':
         import calendar as _cal
         _now_d = datetime.now()
+        # Offer up to 4 completed end months (3-month window each)
         _months_back = []
-        for _i in range(1, 4):
+        for _i in range(1, 5):
             _m = _now_d.month - _i
             _y = _now_d.year
             if _m <= 0:
@@ -1228,7 +1271,9 @@ def display_financial_statements(current_page, zid):
                 _y -= 1
             _months_back.append((_y, _m))
         _daily_opts = [f"{_cal.month_name[_m][:3]} {_y}" for _y, _m in _months_back]
-        _daily_sel  = st.sidebar.selectbox("Select Month", _daily_opts, index=0, key="daily_month_sel")
+        _daily_sel  = st.sidebar.selectbox(
+            "End Month (3-month window)", _daily_opts, index=0, key="daily_month_sel"
+        )
         _daily_idx  = _daily_opts.index(_daily_sel)
         _daily_year, _daily_month = _months_back[_daily_idx]
         # Dummy values to satisfy existing validation
@@ -1282,7 +1327,7 @@ def display_financial_statements(current_page, zid):
     if selected_perspective == 'Daily':
         _render_daily_view(
             income_label_df, balance_label_df,
-            _daily_year, _daily_month,
+            _daily_year, _daily_month,   # end_year, end_month
             st.session_state.get("zid", None),
         )
         return
