@@ -305,6 +305,32 @@ def process_data_daily(
                if df_open is not None and not df_open.empty
                else pd.Series(dtype=float))
 
+    # ── prior-period IS: Jan 1 → prior_m of first_y (same-year case only) ───
+    # This gives the YTD NP that must be added to the equity Net Profit column
+    # for the opening balance and all daily columns.
+    # Cross-year windows (first_m == 1 means prior period is Dec of prior year,
+    # whose P/L is already in retained earnings GL accounts) → no offset needed.
+    open_col = (first_y, first_m, 0)
+    prior_is_df: "pd.DataFrame | None" = None
+    if prior_y == first_y:   # same year — prior IS exists within first_y
+        _sql_pis, _p_pis = queries.get_gl_details(
+            zid=zid, project=project, year=first_y,
+            smonth=1, emonth=prior_m,
+            is_bs=False, is_project=bool(project),
+        )
+        df_pis = get_dataframe(_sql_pis, _p_pis)
+        if df_pis is not None and not df_pis.empty:
+            _pis_sum = df_pis.groupby('ac_code')['sum'].sum().reset_index()
+            _pis_sum = _pis_sum.rename(columns={'sum': open_col})
+            prior_is_df = (
+                df_master_is[meta].copy()
+                .merge(_pis_sum, on='ac_code', how='left')
+                .fillna(0)
+                .merge(income_label_df, on='ac_lv4', how='left')
+                .fillna(0)
+                .rename(columns={'Income Statement': 'ac_lv5'})
+            )
+
     # ── daily IS and BS movements for all months in the window ───────────────
     is_parts: list = []
     bs_parts: list = []
@@ -373,7 +399,7 @@ def process_data_daily(
         df = base.merge(pivot, on='ac_code', how='left').fillna(0)
         day_keys = [(d.year, d.month, d.day) for d in dates]
 
-        # Opening column: (first_y, first_m, 0) — sorts before all day columns
+        # Opening column: (first_y, first_m, 0) — must appear before all day columns
         open_col = (first_y, first_m, 0)
         df[open_col] = df['ac_code'].map(opening_series).fillna(0)
 
@@ -381,6 +407,10 @@ def process_data_daily(
             df[day_keys] = df[day_keys].cumsum(axis=1)
             for dk in day_keys:
                 df[dk] = df[dk] + df[open_col]
+
+        # Reorder so open_col is first among numeric (period) columns
+        non_period = [c for c in df.columns if c not in day_keys and c != open_col]
+        df = df[non_period + [open_col] + day_keys]
 
         return (
             df.merge(balance_label_df, on='ac_lv4', how='left')
@@ -391,7 +421,7 @@ def process_data_daily(
     pl_daily = _build_is(df_is_all, df_master_is)
     bs_daily = _build_bs(df_bs_all, df_master_bs, opening)
 
-    return pl_daily, bs_daily, months
+    return pl_daily, bs_daily, months, prior_is_df
 
 
 @st.cache_data(ttl=86400)

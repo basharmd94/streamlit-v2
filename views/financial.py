@@ -1063,7 +1063,7 @@ def _render_daily_view(income_label_df, balance_label_df, end_year, end_month, g
 
     with st.spinner(f"Loading daily data for {_title_range}…"):
         try:
-            pl_daily, bs_daily, months = financial.process_data_daily(
+            pl_daily, bs_daily, months, prior_is_df = financial.process_data_daily(
                 _sel_zid, end_year, end_month, income_label_df, balance_label_df
             )
         except Exception as _e:
@@ -1081,6 +1081,24 @@ def _render_daily_view(income_label_df, balance_label_df, end_year, end_month, g
     pl_s_d   = financial.build_pl_level_s(pl_daily, selected_perspective='Monthly', vat_rows=None)
     net_income_s_d     = _extract_row(pl_s_d, "Net Income")
     net_income_s_ytd_d = _monthly_to_ytd(net_income_s_d)
+
+    # ── Prior-period NP offset (Jan 1 → month before window start) ───────────
+    # The daily BS uses opening BS GL accounts which exclude current-year IS.
+    # Without this offset, total_equity is missing Jan→prior_month NP and the
+    # balance check shows a constant non-zero error equal to that amount.
+    _open_col = (months[0][0], months[0][1], 0)
+    prior_np_scalar = 0.0
+    if prior_is_df is not None and not prior_is_df.empty:
+        _prior_pl_s = financial.build_pl_level_s(
+            prior_is_df, selected_perspective='Monthly', vat_rows=None
+        )
+        _prior_ni = _extract_row(_prior_pl_s, "Net Income")
+        if _open_col in _prior_ni.index:
+            prior_np_scalar = float(_prior_ni[_open_col])
+    # Shift all daily cumulative NP values by the prior-period offset, then
+    # assign the opening column its value (prior period NP only).
+    net_income_s_ytd_d = net_income_s_ytd_d + prior_np_scalar
+    net_income_s_ytd_d[_open_col] = prior_np_scalar
 
     # ── Level S BS ───────────────────────────────────────────────────────────
     bs_s_d = financial.build_bs_level_s(bs_daily, net_income_s_ytd_d, zid=_sel_zid)
@@ -1251,21 +1269,20 @@ def display_financial_statements(current_page, zid):
     elif selected_perspective == 'Daily':
         import calendar as _cal
         _now_d = datetime.now()
-        # Offer up to 4 completed end months (3-month window each)
-        _months_back = []
-        for _i in range(1, 5):
-            _m = _now_d.month - _i
-            _y = _now_d.year
-            if _m <= 0:
-                _m += 12
-                _y -= 1
-            _months_back.append((_y, _m))
-        _daily_opts = [f"{_cal.month_name[_m][:3]} {_y}" for _y, _m in _months_back]
-        _daily_sel  = st.sidebar.selectbox(
-            "End Month (3-month window)", _daily_opts, index=0, key="daily_month_sel"
+        _daily_year_opts = [_now_d.year - i for i in range(3)]
+        _daily_year = st.sidebar.selectbox(
+            "End Year", _daily_year_opts, index=0, key="daily_year_sel"
         )
-        _daily_idx  = _daily_opts.index(_daily_sel)
-        _daily_year, _daily_month = _months_back[_daily_idx]
+        _max_month = _now_d.month - 1 if _daily_year == _now_d.year else 12
+        if _max_month < 1:
+            _max_month = 12
+            _daily_year = _daily_year_opts[1] if len(_daily_year_opts) > 1 else _now_d.year - 1
+        _month_opts = [(_cal.month_name[m], m) for m in range(1, _max_month + 1)]
+        _month_names = [n for n, _ in _month_opts]
+        _daily_month_name = st.sidebar.selectbox(
+            "End Month", _month_names, index=len(_month_names) - 1, key="daily_month_sel"
+        )
+        _daily_month = dict(_month_opts)[_daily_month_name]
         # Dummy values to satisfy existing validation
         selected_year = _daily_year
         year_list     = [_daily_year]

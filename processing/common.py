@@ -96,8 +96,13 @@ def create_download_link(df, filename="data.xlsx"):
     return href
 
 def _period_col_label(col) -> str:
-    """Convert a period column (int year or (year, month) tuple/string) to a display string."""
-    import re, ast
+    """Convert a period column (int year, (year, month) or (year, month, day) tuple) to a display string."""
+    import re, ast, calendar as _cal
+    if isinstance(col, tuple) and len(col) == 3:
+        yr, mo, dy = int(col[0]), int(col[1]), int(col[2])
+        if dy == 0:
+            return f"Opening {_cal.month_abbr[mo]} {yr}"
+        return f"{yr}-{str(mo).zfill(2)}-{str(dy).zfill(2)}"
     if isinstance(col, tuple) and len(col) == 2:
         yr, mo = int(col[0]), int(col[1])
         return str(yr) if mo == 0 else f"{yr}-{str(mo).zfill(2)}"
@@ -147,11 +152,16 @@ def create_combined_ls_download_link(
     import re, ast
 
     def _sort_key(col):
+        if isinstance(col, tuple) and len(col) == 3:
+            return (int(col[0]), int(col[1]) * 100 + int(col[2]))
         if isinstance(col, tuple) and len(col) == 2:
             return (int(col[0]), int(col[1]))
         try:
             if isinstance(col, str) and col.startswith("("):
-                yr, mo = ast.literal_eval(col)
+                parsed = ast.literal_eval(col)
+                if isinstance(parsed, tuple) and len(parsed) == 3:
+                    return (int(parsed[0]), int(parsed[1]) * 100 + int(parsed[2]))
+                yr, mo = parsed
                 return (int(yr), int(mo))
             nums = re.findall(r"\d+", str(col))
             if len(nums) >= 2:
