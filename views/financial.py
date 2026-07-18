@@ -772,6 +772,384 @@ def _sanity_checks(
         st.dataframe(cfs_check, use_container_width=True)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Config Editor
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_config_editor():
+    import json
+    from pathlib import Path
+    st.title("⚙️ Financial Config Editor")
+    _base = Path(__file__).resolve().parent.parent / "data"
+    _files = {
+        "hierarchy.json": str(_base / "hierarchy.json"),
+        "labels.json": str(_base / "labels.json"),
+        "level_s_mapping.json": str(_base / "level_s_mapping.json"),
+    }
+    _sel = st.radio("Select file", list(_files.keys()), horizontal=True, key="cfg_file_radio")
+    _path = _files[_sel]
+    try:
+        with open(_path, "r", encoding="utf-8") as _fh:
+            _raw = json.load(_fh)
+        _txt = st.text_area(
+            f"Edit `{_sel}` (valid JSON)",
+            value=json.dumps(_raw, indent=2),
+            height=600,
+            key=f"cfg_ta_{_sel}",
+        )
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            if st.button("💾 Save", key="cfg_save_btn"):
+                try:
+                    _parsed = json.loads(_txt)
+                    with open(_path, "w", encoding="utf-8") as _fh:
+                        json.dump(_parsed, _fh, indent=2, ensure_ascii=False)
+                    st.success(f"✅ `{_sel}` saved.")
+                    st.cache_data.clear()
+                except json.JSONDecodeError as _e:
+                    st.error(f"Invalid JSON: {_e}")
+    except FileNotFoundError:
+        st.warning(f"File not found: `{_path}`")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Quarterly view
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_quarterly_view(businesses, income_label_df, balance_label_df,
+                            level_options, selected_year, end_month, global_zid):
+    """
+    Quarterly financial statements.
+    Loads: prior year Jan-Dec + current year Jan-end_month (monthly).
+    Collapses to quarterly, then reuses Monthly view builders.
+    """
+    import calendar as _cal
+
+    st.title("Financial Statement Analysis — Quarterly")
+
+    # ── Build quarterly DataFrames for every business ─────────────────────────
+    main_data_dict_pl_q: dict = {}
+    main_data_dict_bs_q: dict = {}
+
+    prior_year = selected_year - 1
+
+    for zid_k, details in businesses.items():
+        for project in details.get('projects', [None]):
+            try:
+                pl_prior = financial.process_data_month(
+                    zid_k, prior_year, 1, 12, 'Income Statement', income_label_df,
+                    project, {'Asset', 'Liability'},
+                )
+                pl_curr = financial.process_data_month(
+                    zid_k, selected_year, 1, end_month, 'Income Statement', income_label_df,
+                    project, {'Asset', 'Liability'},
+                )
+                bs_prior = financial.process_data_month(
+                    zid_k, prior_year, 1, 12, 'Balance Sheet', balance_label_df,
+                    project, {'Income', 'Expenditure'},
+                )
+                bs_curr = financial.process_data_month(
+                    zid_k, selected_year, 1, end_month, 'Balance Sheet', balance_label_df,
+                    project, {'Income', 'Expenditure'},
+                )
+                pl_monthly = _merge_ytd(pl_prior, pl_curr)
+                bs_monthly = _merge_ytd(bs_prior, bs_curr)
+                pl_q, bs_q = financial.collapse_monthly_to_quarterly(pl_monthly, bs_monthly)
+                main_data_dict_pl_q[(zid_k, project)] = pl_q
+                main_data_dict_bs_q[(zid_k, project)] = bs_q
+            except Exception as _e:
+                st.warning(f"Could not load quarterly data for ZID {zid_k}: {_e}")
+
+    # ── Business / Level selectors ────────────────────────────────────────────
+    cols = st.columns(2)
+    with cols[0]:
+        _CONSOL_KEY = ("consolidated", "All Businesses - Consolidated")
+        biz_options  = [_CONSOL_KEY] + [k for k in main_data_dict_pl_q.keys()]
+        default_idx  = next(
+            (i for i, k in enumerate(biz_options) if str(k[0]) == str(global_zid)), 0
+        )
+        analyse_zid = st.selectbox("View Statements For", biz_options, index=default_idx,
+                                    key="qtr_biz_sel")
+    _is_consolidated = str(analyse_zid[0]) == "consolidated"
+    with cols[1]:
+        if _is_consolidated:
+            _level_opts_q = [
+                "Level C - Raw Consolidation",
+                "Level C2 - Consolidated Detail",
+                "Level 1 - Moderate Detail",
+                "Level 2 - Least Detail",
+                "Level S - Customised Detail",
+            ]
+        else:
+            _level_opts_q = level_options
+        selected_level = st.selectbox("Select Level", _level_opts_q, key="qtr_level_sel")
+
+    # ── Raw DataFrames ────────────────────────────────────────────────────────
+    _hier_cols_q = ['ac_type', 'ac_lv1', 'ac_lv2', 'ac_lv3', 'ac_lv4', 'ac_lv5']
+    from processing import consolidation as _consol_q
+    level_c_is = level_c_bs = c2_is = c2_bs = None
+
+    if _is_consolidated:
+        _zid_frames_pl_q = {
+            int(k[0]): v.drop(columns=_hier_cols_q, errors='ignore')
+            for k, v in main_data_dict_pl_q.items()
+        }
+        _zid_frames_bs_q = {
+            int(k[0]): v.drop(columns=_hier_cols_q, errors='ignore')
+            for k, v in main_data_dict_bs_q.items()
+        }
+        level_c_is = _consol_q.build_level_c(_zid_frames_pl_q, kind="is")
+        level_c_bs = _consol_q.build_level_c(_zid_frames_bs_q, kind="bs")
+        c2_is = _consol_q.build_level_c2_is(level_c_is)
+        c2_bs = _consol_q.build_level_c2_bs(level_c_bs)
+        pl_raw = c2_is
+        bs_raw = c2_bs
+    else:
+        if analyse_zid not in main_data_dict_pl_q:
+            st.warning("No quarterly data available for this entity.")
+            return
+        pl_raw = main_data_dict_pl_q[analyse_zid]
+        bs_raw = main_data_dict_bs_q[analyse_zid]
+
+    pl_lv0 = pl_raw.drop(columns=_hier_cols_q, errors='ignore')
+    bs_lv0 = bs_raw.drop(columns=_hier_cols_q, errors='ignore')
+
+    # ── Level 0 builders ──────────────────────────────────────────────────────
+    pl_sorted, net_profit, net_profit_m, dep_row = financial.sort_pl_level0(
+        pl_lv0, selected_perspective='Monthly'
+    )
+    bs_lv0 = financial.append_net_profit_to_bs_level0(bs_lv0, net_profit_m)
+    coc_lv0 = financial.cash_open_close(bs_lv0)
+
+    _cfs_qtr_available = True
+    try:
+        cfs_df, summary_df = financial.make_cashflow_statement_level0(
+            pl_lv0, bs_lv0, coc_lv0, selected_perspective='Monthly'
+        )
+    except Exception:
+        _cfs_qtr_available = False
+
+    pl_lv1, pl_lv2 = financial.level_builder(pl_sorted, "IS")
+    bs_lv1, bs_lv2 = financial.level_builder(bs_lv0, "BS")
+
+    pl_lv1, bs_lv1, net_profitlv1, dep_rowlv1 = financial.add_np_and_balance_lv1(
+        pl_lv1, bs_lv1, selected_perspective='Monthly'
+    )
+    if _cfs_qtr_available:
+        cfs_lv1 = financial.consolidate_cfs(cfs_df, level=1, debug=True)
+        cfs_lv1, summary_df1 = financial.build_cfs_level1_summary_df(
+            cfs_lv1, net_profitlv1, dep_rowlv1, coc_lv0
+        )
+
+    pl_lv2, bs_lv2, net_profitlv2 = financial.add_np_and_balance_lv2(
+        pl_lv2, bs_lv2, selected_perspective='Monthly'
+    )
+    if _cfs_qtr_available:
+        cfs_lv2 = financial.consolidate_cfs(cfs_df, level=2, debug=True)
+        cfs_lv2, summary_df2 = financial.build_cfs_level2_summary(
+            cfs_lv2, net_profitlv2, dep_rowlv1, coc_lv0
+        )
+
+    # ── Helper to rename (year, quarter) columns for display ─────────────────
+    def _fmt_qtr(df: pd.DataFrame):
+        num = df.select_dtypes("number").columns
+        rename_map = {}
+        for c in num:
+            if isinstance(c, tuple) and len(c) == 2:
+                rename_map[c] = f"Q{c[1]} {c[0]}"
+        df2 = df.rename(columns=rename_map)
+        new_num = [rename_map.get(c, c) for c in num]
+        fmt = {col: "{:,.1f}" for col in new_num}
+        return df2.style.format(fmt, na_rep="")
+
+    # ─��� Level S ───────────────────────────────────────────────────────────────
+    _az  = str(analyse_zid[0]) if analyse_zid else None
+    _ap  = analyse_zid[1] if analyse_zid and len(analyse_zid) > 1 else None
+    _num_cols_q = pl_raw.select_dtypes("number").columns
+    _years_in_data_q = sorted({c[0] for c in _num_cols_q if isinstance(c, tuple)})
+
+    _vat_rows_q = {}
+    if _az and not _is_consolidated:
+        try:
+            _sql_vat_q, _p_vat_q = queries.get_vat_breakdown_gl(
+                zid=_az, project=_ap, year_list=_years_in_data_q, smonth=1, emonth=12,
+            )
+            _gl_vat_q = get_dataframe(_sql_vat_q, _p_vat_q)
+            _vat_rows_q = financial.compute_vat_is_rows(
+                _gl_vat_q, _num_cols_q, selected_perspective='Monthly'
+            )
+        except Exception:
+            pass
+
+    pl_s  = financial.build_pl_level_s(
+        pl_raw, selected_perspective='Monthly', vat_rows=_vat_rows_q
+    )
+    net_income_s_q    = _extract_row(pl_s, "Net Income")
+    net_income_s_ytd_q = _monthly_to_ytd(net_income_s_q)
+    bs_s  = financial.build_bs_level_s(bs_raw, net_income_s_ytd_q, zid=_az)
+    cfs_s, summary_s = financial.build_cfs_level_s(
+        pl_raw, bs_raw, coc_lv0, net_income_s_q, zid=_az
+    )
+
+    # ── Dispatch to selected level ────────────────────────────────────────────
+    def _expanders(pl_df, bs_df, cfs_df_=None, summary_df_=None, fmt_fn=_fmt_qtr):
+        with st.expander("Income Statement", expanded=True):
+            st.dataframe(fmt_fn(pl_df), use_container_width=True)
+        with st.expander("Balance Sheet", expanded=True):
+            st.dataframe(fmt_fn(bs_df), use_container_width=True)
+        if cfs_df_ is not None:
+            with st.expander("Cash Flow Statement", expanded=True):
+                st.dataframe(fmt_fn(cfs_df_), use_container_width=True)
+        if summary_df_ is not None:
+            with st.expander("Cash Flow Summary", expanded=False):
+                st.dataframe(fmt_fn(summary_df_), use_container_width=True)
+
+    if selected_level == "Level S - Customised Detail":
+        _expanders(pl_s, bs_s, cfs_s, summary_s)
+        _dl = common.create_combined_ls_download_link(
+            pl_s=pl_s, bs_s=bs_s, cfs_s=cfs_s,
+            filename="LevelS_Financial_Statements_Quarterly.xlsx",
+        )
+        st.markdown(_dl, unsafe_allow_html=True)
+    elif selected_level == "Level 0 - Most Detail":
+        _expanders(pl_sorted, bs_lv0,
+                   cfs_df if _cfs_qtr_available else None,
+                   summary_df if _cfs_qtr_available else None)
+    elif selected_level == "Level 1 - Moderate Detail":
+        _expanders(pl_lv1, bs_lv1,
+                   cfs_lv1 if _cfs_qtr_available else None,
+                   summary_df1 if _cfs_qtr_available else None)
+    elif selected_level == "Level 2 - Least Detail":
+        _expanders(pl_lv2, bs_lv2,
+                   cfs_lv2 if _cfs_qtr_available else None,
+                   summary_df2 if _cfs_qtr_available else None)
+    elif selected_level in ("Level C - Raw Consolidation", "Level C2 - Consolidated Detail"):
+        st.info("Consolidated quarterly view uses Level S. Select 'Level S - Customised Detail'.")
+        _expanders(pl_s, bs_s, cfs_s, summary_s)
+
+    if not _cfs_qtr_available:
+        st.info("Cash flow statement not available — requires ≥ 2 common quarterly periods.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Daily view
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_daily_view(income_label_df, balance_label_df, year, month, global_zid):
+    """
+    Daily financial statements — Level S only, single ZID, single month.
+    IS: per-day GL movements (non-cumulative).
+    BS: cumulative daily balance (opening + daily movements).
+    """
+    import calendar as _cal
+
+    st.title(f"Financial Statements — Daily: {_cal.month_name[month]} {year}")
+
+    # ── ZID selector ─────────────────────────────────────────────────────────
+    data = common.load_json('data/businesses.json')
+    businesses_d = data.get('businesses', {})
+    biz_opts = [(str(z), det.get('zorg', str(z))) for z, det in businesses_d.items()]
+    if not biz_opts:
+        st.warning("No businesses configured.")
+        return
+
+    _zid_labels  = [f"{name} ({z})" for z, name in biz_opts]
+    _zid_keys    = [z for z, _ in biz_opts]
+    _default_idx = next((i for i, z in enumerate(_zid_keys) if z == str(global_zid)), 0)
+    _sel_label   = st.selectbox("View Statements For", _zid_labels, index=_default_idx,
+                                 key="daily_zid_sel")
+    _sel_zid     = _zid_keys[_zid_labels.index(_sel_label)]
+
+    # ── Load daily data ───────────────────────────────────────────────────────
+    with st.spinner(f"Loading daily data for {_cal.month_name[month]} {year}…"):
+        try:
+            pl_daily, bs_daily = financial.process_data_daily(
+                _sel_zid, year, month, income_label_df, balance_label_df
+            )
+        except Exception as _e:
+            st.error(f"Failed to load daily data: {_e}")
+            return
+
+    if pl_daily is None or pl_daily.empty:
+        st.info("No GL data found for this period.")
+        return
+
+    # ── Identify period columns ──��────────────────────────────────────────────
+    _hier_d = ['ac_type', 'ac_lv1', 'ac_lv2', 'ac_lv3', 'ac_lv4', 'ac_lv5']
+    pl_lv0_d = pl_daily.drop(columns=_hier_d, errors='ignore')
+    bs_lv0_d = bs_daily.drop(columns=_hier_d, errors='ignore')
+
+    # ── Level S IS ───────────────────────────────────────────────────────────
+    pl_s_d   = financial.build_pl_level_s(pl_daily, selected_perspective='Monthly', vat_rows=None)
+    net_income_s_d     = _extract_row(pl_s_d, "Net Income")
+    net_income_s_ytd_d = _monthly_to_ytd(net_income_s_d)
+
+    # ── Level S BS (uses cumulative bs_daily) ────────────────────────────────
+    bs_s_d = financial.build_bs_level_s(bs_daily, net_income_s_ytd_d, zid=_sel_zid)
+
+    # ── Level S CFS ──────────────────────────────────────────────────────────
+    coc_d = financial.cash_open_close(bs_lv0_d)
+    _cfs_d_available = True
+    try:
+        cfs_s_d, summary_s_d = financial.build_cfs_level_s(
+            pl_daily, bs_daily, coc_d, net_income_s_d, zid=_sel_zid
+        )
+    except Exception as _ce:
+        _cfs_d_available = False
+
+    # ── Format helper: rename (year, month, day) columns for display ──────────
+    def _fmt_daily(df: pd.DataFrame):
+        num = df.select_dtypes("number").columns
+        rename_map = {}
+        for c in num:
+            if isinstance(c, tuple) and len(c) == 3:
+                yr, mo, dy = c
+                if dy == 0:
+                    rename_map[c] = "Opening"
+                else:
+                    rename_map[c] = f"{_cal.month_abbr[mo]} {dy:02d}"
+        df2 = df.rename(columns=rename_map)
+        new_num = [rename_map.get(c, str(c)) for c in num]
+        fmt = {col: "{:,.1f}" for col in new_num}
+        return df2.style.format(fmt, na_rep="")
+
+    # ── Summary info ─────────────────────────────────────────────────────────
+    _day_cols_is = sorted(
+        [c for c in pl_s_d.select_dtypes("number").columns
+         if isinstance(c, tuple) and len(c) == 3 and c[2] > 0],
+        key=lambda t: t[2],
+    )
+    if _day_cols_is:
+        st.caption(
+            f"📅 Data spans {_cal.month_abbr[month]} 01 – "
+            f"{_cal.month_abbr[month]} {max(c[2] for c in _day_cols_is):02d}, {year}  "
+            f"({len(_day_cols_is)} days)"
+        )
+
+    # ── Display ───────────────────────────────────────────────────────────────
+    with st.expander("Income Statement (per-day movements)", expanded=True):
+        st.dataframe(_fmt_daily(pl_s_d), use_container_width=True)
+
+    with st.expander("Balance Sheet (daily running balance)", expanded=True):
+        st.dataframe(_fmt_daily(bs_s_d), use_container_width=True)
+
+    if _cfs_d_available:
+        with st.expander("Cash Flow Statement (day-on-day)", expanded=True):
+            st.dataframe(_fmt_daily(cfs_s_d), use_container_width=True)
+        with st.expander("Cash Flow Summary", expanded=False):
+            st.dataframe(_fmt_daily(summary_s_d), use_container_width=True)
+    else:
+        st.info("Cash flow statement requires ≥ 2 days of data.")
+
+    # ── Download ───────────────────────────────────────────────────────────────
+    _dl_d = common.create_combined_ls_download_link(
+        pl_s=pl_s_d, bs_s=bs_s_d,
+        cfs_s=cfs_s_d if _cfs_d_available else pd.DataFrame(),
+        filename=f"Daily_Financial_Statements_{_cal.month_name[month]}_{year}.xlsx",
+    )
+    st.markdown(_dl_d, unsafe_allow_html=True)
+
+
 @timed
 def display_financial_statements(current_page, zid):
     st.sidebar.title("Financial Statements")
@@ -781,10 +1159,18 @@ def display_financial_statements(current_page, zid):
             'Yearly - Custom Range',
             'Yearly - Full Year vs YTD',
             'Monthly',
+            'Quarterly',
+            'Daily',
             'Lifetime',
+            '⚙️ Config Editor',
         ],
         index=0,
     )
+
+    # ── Config Editor: early return, no data loading needed ──────────────────
+    if selected_perspective == '⚙️ Config Editor':
+        _render_config_editor()
+        return
 
     main_data_dict_pl = {}
     main_data_dict_bs = {}
@@ -817,6 +1203,41 @@ def display_financial_statements(current_page, zid):
         )
         start_month, end_month = 1, 12
 
+    elif selected_perspective == 'Quarterly':
+        import calendar as _cal
+        options       = [current_year - i for i in range(5)]
+        selected_year = st.sidebar.selectbox("Select Year", options, index=0)
+        year_list     = [selected_year]
+        end_month     = st.sidebar.selectbox(
+            "Up to Month", month_list,
+            index=datetime.now().month - 2 if datetime.now().month > 1 else 11,
+            key="qtr_end_month",
+        )
+        start_month = 1
+        ytd_month   = end_month
+
+    elif selected_perspective == 'Daily':
+        import calendar as _cal
+        _now_d = datetime.now()
+        _months_back = []
+        for _i in range(1, 4):
+            _m = _now_d.month - _i
+            _y = _now_d.year
+            if _m <= 0:
+                _m += 12
+                _y -= 1
+            _months_back.append((_y, _m))
+        _daily_opts = [f"{_cal.month_name[_m][:3]} {_y}" for _y, _m in _months_back]
+        _daily_sel  = st.sidebar.selectbox("Select Month", _daily_opts, index=0, key="daily_month_sel")
+        _daily_idx  = _daily_opts.index(_daily_sel)
+        _daily_year, _daily_month = _months_back[_daily_idx]
+        # Dummy values to satisfy existing validation
+        selected_year = _daily_year
+        year_list     = [_daily_year]
+        start_month   = _daily_month
+        end_month     = _daily_month
+        ytd_month     = _daily_month
+
     else:
         # Yearly - Custom Range  or  Monthly
         options      = [current_year - i for i in range(10)]
@@ -847,6 +1268,24 @@ def display_financial_statements(current_page, zid):
         "Level 2 - Least Detail",
         "Level S - Customised Detail",
     ]
+
+    # ── Quarterly view ────────────────────────────────────────────────────────
+    if selected_perspective == 'Quarterly':
+        _render_quarterly_view(
+            businesses, income_label_df, balance_label_df, level_options,
+            selected_year, end_month,
+            st.session_state.get("zid", None),
+        )
+        return
+
+    # ── Daily view ────────────────────────────────────────────────────────────
+    if selected_perspective == 'Daily':
+        _render_daily_view(
+            income_label_df, balance_label_df,
+            _daily_year, _daily_month,
+            st.session_state.get("zid", None),
+        )
+        return
 
     _is_lt_persp = selected_perspective in ('Yearly - Full Year vs YTD', 'Lifetime')
 

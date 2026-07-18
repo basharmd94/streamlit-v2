@@ -1258,6 +1258,58 @@ def get_gl_details(zid, project=None, year=None, smonth=None, emonth=None,
     return sql, tuple(params)
 
 
+def get_gl_details_daily(zid, project=None, year=None, month=None,
+                          is_bs=False, is_project=False) -> Tuple[str, tuple]:
+    """
+    GL movements for a single month grouped by (ac_code, date).
+    Used for the Daily financial view.
+    Returns rows: (ac_code, date, sum).
+    """
+    where = [
+        "glmst.zid = %s",
+        "gldetail.zid = %s",
+        "glheader.zid = %s",
+    ]
+    params = [zid, zid, zid]
+
+    if is_bs:
+        where.append(
+            "(glmst.xacctype IN ('Asset', 'Liability') "
+            "OR (glmst.xacctype IS NULL "
+            "    AND LEFT(glmst.xacc, 2) IN ('01','02','03','09','10','11','12','13')))"
+        )
+    else:
+        where.append(
+            "(glmst.xacctype IN ('Income', 'Expenditure') "
+            "OR (glmst.xacctype IS NULL "
+            "    AND LEFT(glmst.xacc, 2) IN ('04','05','06','07','08','14','15')))"
+        )
+
+    if year:
+        where.append("glheader.xyear = %s")
+        params.append(year)
+    if month:
+        where.append("glheader.xper = %s")
+        params.append(month)
+
+    if is_project and project:
+        where.append("gldetail.xproj = %s")
+        params.append(project)
+
+    sql = f"""
+        SELECT glmst.xacc AS ac_code,
+               glheader.xdate AS date,
+               SUM(gldetail.xprime) AS sum
+        FROM glmst
+        JOIN gldetail ON glmst.xacc     = gldetail.xacc
+        JOIN glheader ON gldetail.xvoucher = glheader.xvoucher
+        WHERE {" AND ".join(where)}
+        GROUP BY glmst.xacc, glheader.xdate
+        ORDER BY glheader.xdate ASC
+    """
+    return sql, tuple(params)
+
+
 def get_gl_mtd(zid, year: int, month: int) -> Tuple[str, tuple]:
     """
     MTD Income Statement: SUM(xprime) per xacc from gldetail for a single
