@@ -204,6 +204,196 @@ def process_data_month(zid, year, start_month, end_month,label_col, label_df, pr
 
     return df_new.rename(columns={'Income Statement': 'ac_lv5'})
 
+
+def collapse_monthly_to_quarterly(
+    pl_monthly: pd.DataFrame,
+    bs_monthly: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Collapse monthly DataFrames (columns = (year, month) tuples) to quarterly.
+    IS/P&L: sum months within each quarter.
+    BS: take the last month of each quarter (quarter-end balance).
+    Returns (pl_quarterly, bs_quarterly) with (year, quarter) tuple columns.
+    """
+    def _qkey(yr, mo):
+        return (yr, (mo - 1) // 3 + 1)
+
+    meta_cols_pl = [c for c in pl_monthly.columns if not isinstance(c, tuple)]
+    period_cols_pl = sorted(
+        [c for c in pl_monthly.columns if isinstance(c, tuple)],
+        key=lambda t: (int(t[0]), int(t[1])),
+    )
+
+    # IS: sum within each quarter
+    qmap_pl: dict = {}
+    for col in period_cols_pl:
+        qk = _qkey(*col)
+        qmap_pl.setdefault(qk, []).append(col)
+
+    pl_q = pl_monthly[meta_cols_pl].copy()
+    for qk in sorted(qmap_pl):
+        pl_q[qk] = pl_monthly[qmap_pl[qk]].sum(axis=1)
+
+    # BS: last month of each quarter
+    meta_cols_bs = [c for c in bs_monthly.columns if not isinstance(c, tuple)]
+    period_cols_bs = sorted(
+        [c for c in bs_monthly.columns if isinstance(c, tuple)],
+        key=lambda t: (int(t[0]), int(t[1])),
+    )
+
+    qmap_bs: dict = {}
+    for col in period_cols_bs:
+        qk = _qkey(*col)
+        if qk not in qmap_bs or col > qmap_bs[qk]:
+            qmap_bs[qk] = col
+
+    bs_q = bs_monthly[meta_cols_bs].copy()
+    for qk in sorted(qmap_bs):
+        bs_q[qk] = bs_monthly[qmap_bs[qk]]
+
+    return pl_q, bs_q
+
+
+@st.cache_data(ttl=3600)
+def process_data_daily(
+    zid,
+    end_year: int,
+    end_month: int,
+    income_label_df: pd.DataFrame,
+    balance_label_df: pd.DataFrame,
+    project=None,
+):
+    """
+    Build daily IS and BS for a 3-month window ending at end_month.
+
+    Window  : (end_month-2) through end_month (adjusts year boundary).
+    IS cols : (year, month, day) 3-tuples — each = that day's GL movements.
+    BS cols : (year, month, day) 3-tuples — each = cumulative balance up to that day.
+              Column (first_year, first_month, 0) = opening (prior to window start).
+
+    Last-day IS total = Monthly IS sum for end_month.
+    Last-day BS balance = Monthly BS balance for end_month.
+    """
+    # ── 3-month window ────────────────────────────────────────────────────────
+    months: list = []
+    for i in range(2, -1, -1):
+        m = end_month - i
+        y = end_year
+        while m <= 0:
+            m += 12
+            y -= 1
+        months.append((y, m))
+
+    first_y, first_m = months[0]
+
+    # ── master chart of accounts ──────────────────────────────────────────────
+    df_master_is = get_filtered_master(zid, {'Asset', 'Liability'})
+    df_master_bs = get_filtered_master(zid, {'Income', 'Expenditure'})
+    meta = ['ac_code', 'ac_name', 'ac_type', 'ac_lv1', 'ac_lv2', 'ac_lv3', 'ac_lv4']
+
+    # ── opening BS (prior to window start) ────────────────────────────────────
+    prior_y = first_y - 1 if first_m == 1 else first_y
+    prior_m = 12       if first_m == 1 else first_m - 1
+
+    _sql_open, _p_open = queries.get_gl_details(
+        zid=zid, project=project, year=prior_y,
+        smonth=None, emonth=prior_m,
+        is_bs=True, is_project=bool(project),
+    )
+    df_open = get_dataframe(_sql_open, _p_open)
+    opening = (df_open.groupby('ac_code')['sum'].sum()
+               if df_open is not None and not df_open.empty
+               else pd.Series(dtype=float))
+
+    # ── daily IS and BS movements for all months in the window ───────────────
+    is_parts: list = []
+    bs_parts: list = []
+    for yr, mo in months:
+        _sql_is, _p_is = queries.get_gl_details_daily(
+            zid=zid, project=project, year=yr, month=mo,
+            is_bs=False, is_project=bool(project),
+        )
+        _sql_bs_d, _p_bs_d = queries.get_gl_details_daily(
+            zid=zid, project=project, year=yr, month=mo,
+            is_bs=True, is_project=bool(project),
+        )
+        df_is = get_dataframe(_sql_is, _p_is)
+        df_bs_d = get_dataframe(_sql_bs_d, _p_bs_d)
+        if df_is is not None and not df_is.empty:
+            is_parts.append(df_is)
+        if df_bs_d is not None and not df_bs_d.empty:
+            bs_parts.append(df_bs_d)
+
+    df_is_all = pd.concat(is_parts, ignore_index=True) if is_parts else None
+    df_bs_all = pd.concat(bs_parts, ignore_index=True) if bs_parts else None
+
+    def _build_is(df_raw, df_master):
+        """Non-cumulative IS: pivot daily movements, one column per day."""
+        base = df_master[meta].copy()
+        if df_raw is None or df_raw.empty:
+            return (base.merge(income_label_df, on='ac_lv4', how='left')
+                    .fillna(0).rename(columns={'Income Statement': 'ac_lv5'}))
+
+        df_raw = df_raw.copy()
+        df_raw['date'] = pd.to_datetime(df_raw['date']).dt.date
+        dates = sorted(df_raw['date'].unique())
+
+        pivot = (
+            df_raw.pivot_table(values='sum', index='ac_code', columns='date', aggfunc='sum')
+            .reset_index()
+        )
+        pivot = pivot.rename(columns={d: (d.year, d.month, d.day) for d in dates})
+
+        return (
+            base.merge(pivot, on='ac_code', how='left')
+            .fillna(0)
+            .merge(income_label_df, on='ac_lv4', how='left')
+            .fillna(0)
+            .rename(columns={'Income Statement': 'ac_lv5'})
+        )
+
+    def _build_bs(df_raw, df_master, opening_series):
+        """Cumulative BS: opening + cumsum of daily movements across the window."""
+        base = df_master[meta].copy()
+
+        if df_raw is not None and not df_raw.empty:
+            df_raw = df_raw.copy()
+            df_raw['date'] = pd.to_datetime(df_raw['date']).dt.date
+            dates = sorted(df_raw['date'].unique())
+            pivot = (
+                df_raw.pivot_table(values='sum', index='ac_code', columns='date', aggfunc='sum')
+                .reset_index()
+            )
+            date_cols_orig = [c for c in pivot.columns if c != 'ac_code']
+            pivot = pivot.rename(columns={d: (d.year, d.month, d.day) for d in date_cols_orig})
+        else:
+            pivot = pd.DataFrame(columns=['ac_code'])
+            dates = []
+
+        df = base.merge(pivot, on='ac_code', how='left').fillna(0)
+        day_keys = [(d.year, d.month, d.day) for d in dates]
+
+        # Opening column: (first_y, first_m, 0) — sorts before all day columns
+        open_col = (first_y, first_m, 0)
+        df[open_col] = df['ac_code'].map(opening_series).fillna(0)
+
+        if day_keys:
+            df[day_keys] = df[day_keys].cumsum(axis=1)
+            for dk in day_keys:
+                df[dk] = df[dk] + df[open_col]
+
+        return (
+            df.merge(balance_label_df, on='ac_lv4', how='left')
+            .fillna(0)
+            .rename(columns={'Balance Sheet': 'ac_lv5'})
+        )
+
+    pl_daily = _build_is(df_is_all, df_master_is)
+    bs_daily = _build_bs(df_bs_all, df_master_bs, opening)
+
+    return pl_daily, bs_daily, months
+
+
 @st.cache_data(ttl=86400)
 def process_data(
     zid,
@@ -294,11 +484,16 @@ def process_data(
     return df_new.rename(columns=rename_map)
 
 def _period_key(col):
+    if isinstance(col, tuple) and len(col) == 3:   # daily: (year, month, day)
+        return int(col[0]), int(col[1]) * 100 + int(col[2])
     if isinstance(col, tuple) and len(col) == 2:
         return int(col[0]), int(col[1])
     try:
         if isinstance(col, str) and col.startswith("("):
-            y, m = ast.literal_eval(col)
+            parsed = ast.literal_eval(col)
+            if isinstance(parsed, tuple) and len(parsed) == 3:
+                return int(parsed[0]), int(parsed[1]) * 100 + int(parsed[2])
+            y, m = parsed
             return int(y), int(m)
         nums = re.findall(r"\d+", str(col))
         if len(nums) >= 2:
@@ -307,7 +502,7 @@ def _period_key(col):
             return int(nums[0]), 0
     except Exception:
         pass
-    return (9999, 99) 
+    return (9999, 99)
 
 @st.cache_data(ttl=86400)
 def _cash_codes_from_json() -> List[str]:
@@ -420,7 +615,10 @@ def sort_pl_level0(pl_df: pd.DataFrame,
 
     if selected_perspective.lower() == "monthly":
         # 1) column order → chronological
-        if all(isinstance(c, tuple) and len(c) == 2 for c in col_headers):
+        if all(isinstance(c, tuple) and len(c) == 3 for c in col_headers):
+            # daily: (year, month, day) — sort by encoded key
+            ordered = sorted(col_headers, key=_period_key)
+        elif all(isinstance(c, tuple) and len(c) == 2 for c in col_headers):
             ordered = sorted(col_headers, key=lambda t: (int(t[0]), int(t[1])))
         else:
             def _key(col):
