@@ -828,32 +828,22 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
     st.title("Financial Statement Analysis — Quarterly")
 
     # ── Build quarterly DataFrames for every business ─────────────────────────
+    # process_data_month(year, ...) already returns both (year, m) AND (year-1, m)
+    # columns — one call covers both years needed for quarterly collapse.
     main_data_dict_pl_q: dict = {}
     main_data_dict_bs_q: dict = {}
-
-    prior_year = selected_year - 1
 
     for zid_k, details in businesses.items():
         for project in details.get('projects', [None]):
             try:
-                pl_prior = financial.process_data_month(
-                    zid_k, prior_year, 1, 12, 'Income Statement', income_label_df,
-                    project, {'Asset', 'Liability'},
-                )
-                pl_curr = financial.process_data_month(
+                pl_monthly = financial.process_data_month(
                     zid_k, selected_year, 1, end_month, 'Income Statement', income_label_df,
                     project, {'Asset', 'Liability'},
                 )
-                bs_prior = financial.process_data_month(
-                    zid_k, prior_year, 1, 12, 'Balance Sheet', balance_label_df,
-                    project, {'Income', 'Expenditure'},
-                )
-                bs_curr = financial.process_data_month(
+                bs_monthly = financial.process_data_month(
                     zid_k, selected_year, 1, end_month, 'Balance Sheet', balance_label_df,
                     project, {'Income', 'Expenditure'},
                 )
-                pl_monthly = _merge_ytd(pl_prior, pl_curr)
-                bs_monthly = _merge_ytd(bs_prior, bs_curr)
                 pl_q, bs_q = financial.collapse_monthly_to_quarterly(pl_monthly, bs_monthly)
                 main_data_dict_pl_q[(zid_k, project)] = pl_q
                 main_data_dict_bs_q[(zid_k, project)] = bs_q
