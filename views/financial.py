@@ -1096,9 +1096,14 @@ def _render_daily_view(income_label_df, balance_label_df, end_year, end_month, g
         if _open_col in _prior_ni.index:
             prior_np_scalar = float(_prior_ni[_open_col])
     # Shift all daily cumulative NP values by the prior-period offset, then
-    # assign the opening column its value (prior period NP only).
+    # prepend the opening column. Use pd.concat with an explicit object-dtype
+    # Index to avoid "Too many indexers" — _monthly_to_ytd returns a Series
+    # with a 3-level MultiIndex when columns are 3-tuples, and __setitem__
+    # with a tuple key fails on MultiIndex Series.
     net_income_s_ytd_d = net_income_s_ytd_d + prior_np_scalar
-    net_income_s_ytd_d[_open_col] = prior_np_scalar
+    _ni_idx = pd.Index([_open_col] + list(net_income_s_ytd_d.index), dtype=object)
+    _ni_vals = [prior_np_scalar] + list(net_income_s_ytd_d.values)
+    net_income_s_ytd_d = pd.Series(_ni_vals, index=_ni_idx)
 
     # ── Level S BS ───────────────────────────────────────────────────────────
     bs_s_d = financial.build_bs_level_s(bs_daily, net_income_s_ytd_d, zid=_sel_zid)
@@ -1277,12 +1282,10 @@ def display_financial_statements(current_page, zid):
         if _max_month < 1:
             _max_month = 12
             _daily_year = _daily_year_opts[1] if len(_daily_year_opts) > 1 else _now_d.year - 1
-        _month_opts = [(_cal.month_name[m], m) for m in range(1, _max_month + 1)]
-        _month_names = [n for n, _ in _month_opts]
-        _daily_month_name = st.sidebar.selectbox(
-            "End Month", _month_names, index=len(_month_names) - 1, key="daily_month_sel"
+        _month_opts = list(range(1, _max_month + 1))
+        _daily_month = st.sidebar.selectbox(
+            "End Month", _month_opts, index=len(_month_opts) - 1, key="daily_month_sel"
         )
-        _daily_month = dict(_month_opts)[_daily_month_name]
         # Dummy values to satisfy existing validation
         selected_year = _daily_year
         year_list     = [_daily_year]
