@@ -1540,6 +1540,7 @@ def display_financial_statements(current_page, zid):
                     "Level 1 - Moderate Detail",
                     "Level 2 - Least Detail",
                     "Level S - Customised Detail",
+                    "Level P - Projection View",
                 ]
             else:
                 _level_opts = level_options + (
@@ -1902,15 +1903,31 @@ def display_financial_statements(current_page, zid):
                 pl_raw, bs_raw, coc_lv0, net_income_s_p, zid=_az
             )
             pl_p_y, bs_p_y = financial.build_condensed_view(pl_s_p, bs_s_p)
+
+            # ── FY Projection column (only for Full Year vs YTD) ──────────────
+            _pl_p_y_disp = pl_p_y.copy()
+            if selected_perspective == 'Yearly - Full Year vs YTD' and ytd_month > 0:
+                _ytd_int_col = year_list[-1]
+                _proj_label  = f"Proj FY {_ytd_int_col}"
+                _num_p_y = financial._ls_num_cols(_pl_p_y_disp)
+                if _ytd_int_col in _num_p_y:
+                    _pl_p_y_disp[_proj_label] = (
+                        _pl_p_y_disp[_ytd_int_col] * 12 / ytd_month
+                    )
+                    st.caption(
+                        f"ℹ️ **{_proj_label}** = YTD ({ytd_month} months) × 12 / {ytd_month} "
+                        f"(straight-line extrapolation to full year)"
+                    )
+
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_p_y), use_container_width=True)
+                st.dataframe(_fmt(_pl_p_y_disp), use_container_width=True)
             with st.expander("Balance Sheet", expanded=True):
                 st.dataframe(_fmt(bs_p_y), use_container_width=True)
             with st.expander("Cash Flow Summary", expanded=True):
                 st.dataframe(_fmt(summary_s_p), use_container_width=True)
             st.markdown(
                 common.create_combined_ls_download_link(
-                    pl_s=pl_p_y, bs_s=bs_p_y, cfs_s=summary_s_p,
+                    pl_s=_pl_p_y_disp, bs_s=bs_p_y, cfs_s=summary_s_p,
                     filename="LevelP_Financial_Statements_Yearly.xlsx",
                     link_label="⬇ Download Level P Financial Statements (Excel)",
                 ),
@@ -2514,6 +2531,7 @@ def display_financial_statements(current_page, zid):
                     "Level 1 - Moderate Detail",
                     "Level 2 - Least Detail",
                     "Level S - Customised Detail",
+                    "Level P - Projection View",
                 ]
             else:
                 _level_opts_m = level_options
@@ -2909,3 +2927,117 @@ def display_financial_statements(current_page, zid):
                 ),
                 unsafe_allow_html=True,
             )
+
+            # ── Margin Sensitivity Analysis ───────────────────────────────────
+            with st.expander("📐 Margin Sensitivity Analysis", expanded=False):
+                try:
+                    _msa_cols = financial._ls_num_cols(pl_p_m)
+                    _name_col = "ac_name"
+
+                    def _msa_row(label):
+                        r = pl_p_m.loc[pl_p_m[_name_col].astype(str) == label]
+                        if r.empty:
+                            return pd.Series(0.0, index=_msa_cols)
+                        return r[_msa_cols].iloc[0].fillna(0.0)
+
+                    _rev   = _msa_row("Adjusted Revenue (Pending)")
+                    _cogs  = _msa_row("COGS")
+                    _gp    = _msa_row("Gross Profit")
+                    _sga   = _msa_row("Total SG&A")
+                    _sd    = _msa_row("Total Sales & Distribution")
+                    _int   = _msa_row("Total Interest & Charges")
+                    _vat   = _msa_row("0629-VAT & Tax Total (A+B+C)")
+                    _ni    = _msa_row("Net Income")
+
+                    # Gross margin % and fixed costs (semi-fixed: SG&A + S&D + Interest + VAT)
+                    _gm_pct      = _gp / _rev.replace(0, float('nan'))
+                    _fixed_costs = _sga + _sd + _int + _vat
+                    # Break-even revenue = Fixed Costs / Gross Margin%
+                    _be_rev      = _fixed_costs / _gm_pct.replace(0, float('nan'))
+                    _safety_mar  = _rev - _be_rev
+                    _safety_pct  = (_safety_mar / _rev.replace(0, float('nan'))) * 100
+                    # Max tolerable fixed cost at current revenue to break even
+                    _max_fixed   = _rev * _gm_pct
+
+                    _lbl = [common._period_col_label(c) for c in _msa_cols]
+
+                    def _pct_fmt(s):
+                        return {c: f"{v:.1f}%" if not pd.isna(v) else "—"
+                                for c, v in zip(_lbl, s.values)}
+
+                    def _amt_fmt(s):
+                        return {c: f"{v:,.0f}" if not pd.isna(v) else "—"
+                                for c, v in zip(_lbl, s.values)}
+
+                    _be_df = pd.DataFrame([
+                        {"Metric": "Revenue (Actual)", **_amt_fmt(_rev)},
+                        {"Metric": "Gross Margin %",   **_pct_fmt(_gm_pct * 100)},
+                        {"Metric": "Fixed Costs (SG&A + S&D + Interest + Tax)",
+                                                        **_amt_fmt(_fixed_costs)},
+                        {"Metric": "Break-even Revenue Required",
+                                                        **_amt_fmt(_be_rev)},
+                        {"Metric": "Revenue Surplus / (Deficit) vs Break-even",
+                                                        **_amt_fmt(_safety_mar)},
+                        {"Metric": "Safety Margin %",   **_pct_fmt(_safety_pct)},
+                        {"Metric": "Max Tolerable Fixed Cost at Current Revenue",
+                                                        **_amt_fmt(_max_fixed)},
+                    ]).set_index("Metric")
+
+                    st.markdown("**Break-even Summary (per month)**")
+                    st.caption(
+                        "Fixed Costs = SG&A + S&D + Interest + VAT/Tax  |  "
+                        "Break-even Revenue = Fixed Costs ÷ Gross Margin %  |  "
+                        "Safety Margin = Actual Revenue − Break-even Revenue"
+                    )
+                    st.dataframe(_be_df, use_container_width=True)
+
+                    # ── Revenue sensitivity grid ──────────────────────────────
+                    st.markdown("**Revenue Sensitivity — Net Income at Various Revenue Levels**")
+                    st.caption(
+                        "Assumes COGS scales proportionally with revenue (constant gross margin %). "
+                        "Fixed costs (SG&A, S&D, Interest, VAT/Tax) held constant."
+                    )
+                    _scenarios = [0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.30]
+                    _sens_rows = []
+                    for _pct in _scenarios:
+                        _adj_rev  = _rev * _pct
+                        _adj_cogs = _cogs * _pct
+                        _adj_gp   = _adj_rev - _adj_cogs
+                        _adj_ni   = _adj_gp - _fixed_costs
+                        _sens_rows.append({
+                            "Revenue Level": f"{int(_pct*100)}%",
+                            **_amt_fmt(_adj_rev),
+                            **{f"NI @ {c}": (f"{v:,.0f}" if not pd.isna(v) else "—")
+                               for c, v in zip(_lbl, _adj_ni.values)},
+                        })
+                    # Simpler: show one row per scenario, columns = month labels
+                    _sens_rows2 = []
+                    for _pct in _scenarios:
+                        _adj_rev  = _rev * _pct
+                        _adj_ni   = _adj_rev * _gm_pct - _fixed_costs
+                        row = {"Revenue Level": f"{int(_pct*100)}% of Actual"}
+                        row.update({c: (f"{v:,.0f}" if not pd.isna(v) else "—")
+                                    for c, v in zip(_lbl, _adj_ni.values)})
+                        _sens_rows2.append(row)
+                    _sens_df = pd.DataFrame(_sens_rows2).set_index("Revenue Level")
+                    st.dataframe(_sens_df, use_container_width=True)
+
+                    # ── Cost sensitivity: max tolerable fixed cost for NI targets ─
+                    st.markdown("**Max Tolerable Fixed Cost — at Current Revenue for Target Net Margin**")
+                    st.caption(
+                        "Shows the maximum fixed cost (SG&A + S&D + Interest + Tax) "
+                        "the business can sustain at current revenue to achieve each Net Income margin target."
+                    )
+                    _ni_targets = [0.0, 0.02, 0.05, 0.08, 0.10]
+                    _cost_rows = []
+                    for _tgt in _ni_targets:
+                        _max_fc = _rev * (_gm_pct - _tgt)
+                        row = {"Target Net Margin": f"{int(_tgt*100)}%"}
+                        row.update({c: (f"{v:,.0f}" if not pd.isna(v) else "—")
+                                    for c, v in zip(_lbl, _max_fc.values)})
+                        _cost_rows.append(row)
+                    _cost_df = pd.DataFrame(_cost_rows).set_index("Target Net Margin")
+                    st.dataframe(_cost_df, use_container_width=True)
+
+                except Exception as _msa_err:
+                    st.warning(f"Could not compute sensitivity analysis: {_msa_err}")
