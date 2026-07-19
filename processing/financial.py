@@ -2390,6 +2390,86 @@ def build_bs_level_s(
     return pd.concat(rows, ignore_index=True)
 
 
+def build_condensed_view(
+    pl_s: pd.DataFrame,
+    bs_s: pd.DataFrame,
+    name_col: str = "ac_name",
+) -> "Tuple[pd.DataFrame, pd.DataFrame]":
+    """
+    Level P — Projection View: condensed IS and BS derived from Level S.
+
+    IS  : extract 9 key summary rows from pl_s (no re-calculation).
+    BS  : group Level S rows into ~19 consolidated lines.
+          Balance Check is always included for integrity verification.
+    CFS : caller should pass summary_s from build_cfs_level_s() unchanged.
+    """
+    num_is = _ls_num_cols(pl_s)
+    num_bs = _ls_num_cols(bs_s)
+
+    def _g(df, label, num):
+        row = df.loc[df[name_col].astype(str) == label]
+        if row.empty:
+            return pd.Series(0.0, index=num)
+        return row.select_dtypes("number").iloc[0].reindex(num, fill_value=0.0)
+
+    def _row(label, series, num):
+        return pd.DataFrame({name_col: [label], **series.reindex(num, fill_value=0.0).to_dict()})
+
+    def _gi(lbl):   return _g(pl_s, lbl, num_is)
+    def _gb(lbl):   return _g(bs_s, lbl, num_bs)
+    def _ri(l, s):  return _row(l, s, num_is)
+    def _rb(l, s):  return _row(l, s, num_bs)
+
+    # ── IS: extract key Level S rows ──────────────────────────────────────────
+    pl_p = pd.concat([
+        _ri("Adjusted Revenue (Pending)",   _gi("Adjusted Revenue (Pending)")),
+        _ri("COGS",                          _gi("COGS")),
+        _ri("Gross Profit",                  _gi("Gross Profit")),
+        _ri("Total SG&A",                    _gi("Total SG&A")),
+        _ri("Total Sales & Distribution",    _gi("Total Sales & Distribution")),
+        _ri("EBITDA",                        _gi("EBITDA")),
+        _ri("Total Interest & Charges",      _gi("Total Interest & Charges")),
+        _ri("0629-VAT & Tax Total (A+B+C)",  _gi("0629-VAT & Tax Total (A+B+C)")),
+        _ri("Net Income",                    _gi("Net Income")),
+    ], ignore_index=True)
+
+    # ── BS: group Level S rows ────────────────────────────────────────────────
+    bs_p = pd.concat([
+        # Assets
+        _rb("Total Cash",
+            _gb("0101-Cash & Cash Equivalent") + _gb("0102-Bank Balance")),
+        _rb("Total Internal Receivables",
+            _gb("Accounts Receivable (Internal)") + _gb("Accounts Receivable (Local)")),
+        _rb("Total External Receivables",
+            _gb("Accounts Receivable") + _gb("Recognized Agent (Dealers)") + _gb("Defaulted Receivables")),
+        _rb("0104-Prepaid Expenses",         _gb("0104-Prepaid Expenses")),
+        _rb("0105-Advance Accounts",         _gb("0105-Advance Accounts")),
+        _rb("0106-Stock in Hand",            _gb("0106-Stock in Hand")),
+        _rb("Total Non-Current Assets",
+            _gb("Total Other Assets (B)") + _gb("Total Fixed Assets (C)")),
+        _rb("Total Assets",                  _gb("Total Assets (A+B+C)")),
+        # Liabilities
+        _rb("Total Trade Payables",
+            _gb("Accounts Payable (Local)") + _gb("Accounts Payable (International)")),
+        _rb("0901-Accrued Expenses",         _gb("0901-Accrued Expenses")),
+        _rb("Accounts Payable (Internal)",   _gb("Accounts Payable (Internal)")),
+        _rb("Total Other Liabilities",
+            _gb("0904-Reconciliation Liability") + _gb("0905-C & F Liability") + _gb("0906-Others Liability")),
+        _rb("0904-Money Agent Liability",    _gb("0904-Money Agent Liability")),
+        _rb("1001-Short Term Bank Loan (B)", _gb("1001-Short Term Bank Loan (B)")),
+        _rb("1001-Short Term Loan (Related Parties)", _gb("1001-Short Term Loan (Related Parties)")),
+        _rb("1201-Long Term Bank Loan (E)",  _gb("1201-Long Term Bank Loan (E)")),
+        _rb("Total Reserve & Funds",
+            _gb("1101-Employee Fund") + _gb("1102-Directors Award Fund") +
+            _gb("1102-Office Rent Tax Fund") + _gb("1103-Employee Educational Fund") +
+            _gb("1104-Security Deposit Fund")),
+        _rb("Total Equity",                  _gb("Total Equity")),
+        _rb("Balance Check",                 _gb("Balance Check")),
+    ], ignore_index=True)
+
+    return pl_p, bs_p
+
+
 def build_cfs_level_s(
     pl_raw: pd.DataFrame,
     bs_raw: pd.DataFrame,

@@ -820,7 +820,8 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
                             level_options, selected_year, end_month, global_zid):
     """
     Quarterly financial statements.
-    Loads: prior year Jan-Dec + current year Jan-end_month (monthly).
+    Loads: 2 prior years (full) + current year Jan-end_month (monthly).
+    e.g. year=2026 month=6 → Q1 2024 … Q2 2026.
     Collapses to quarterly, then reuses Monthly view builders.
     """
     import calendar as _cal
@@ -828,14 +829,15 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
     st.title("Financial Statement Analysis — Quarterly")
 
     # ── Build quarterly DataFrames for every business ─────────────────────────
-    # process_data_month(year, ...) already returns both (year, m) AND (year-1, m)
-    # columns — one call covers both years needed for quarterly collapse.
+    # process_data_month(year) already returns (year, m) AND (year-1, m) columns.
+    # A second call with (year-1) adds (year-2, m) columns for the extra prior year.
     main_data_dict_pl_q: dict = {}
     main_data_dict_bs_q: dict = {}
 
     for zid_k, details in businesses.items():
         for project in details.get('projects', [None]):
             try:
+                # Primary: current year + 1 prior year
                 pl_monthly = financial.process_data_month(
                     zid_k, selected_year, 1, end_month, 'Income Statement', income_label_df,
                     project, {'Asset', 'Liability'},
@@ -844,6 +846,31 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
                     zid_k, selected_year, 1, end_month, 'Balance Sheet', balance_label_df,
                     project, {'Income', 'Expenditure'},
                 )
+
+                # Secondary: year-1 full year → extracts year-2 columns
+                yr2 = selected_year - 2
+                try:
+                    pl_prev = financial.process_data_month(
+                        zid_k, selected_year - 1, 1, 12, 'Income Statement', income_label_df,
+                        project, {'Asset', 'Liability'},
+                    )
+                    bs_prev = financial.process_data_month(
+                        zid_k, selected_year - 1, 1, 12, 'Balance Sheet', balance_label_df,
+                        project, {'Income', 'Expenditure'},
+                    )
+                    pl_yr2 = [c for c in pl_prev.columns if isinstance(c, tuple) and c[0] == yr2]
+                    bs_yr2 = [c for c in bs_prev.columns if isinstance(c, tuple) and c[0] == yr2]
+                    if pl_yr2:
+                        pl_monthly = pl_monthly.merge(
+                            pl_prev[['ac_code'] + pl_yr2], on='ac_code', how='left'
+                        )
+                    if bs_yr2:
+                        bs_monthly = bs_monthly.merge(
+                            bs_prev[['ac_code'] + bs_yr2], on='ac_code', how='left'
+                        )
+                except Exception:
+                    pass  # year-2 data unavailable — show what we have
+
                 pl_q, bs_q = financial.collapse_monthly_to_quarterly(pl_monthly, bs_monthly)
                 main_data_dict_pl_q[(zid_k, project)] = pl_q
                 main_data_dict_bs_q[(zid_k, project)] = bs_q
@@ -994,6 +1021,31 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
             with st.expander("Cash Flow Summary", expanded=False):
                 st.dataframe(fmt_fn(summary_df_), use_container_width=True)
 
+    def _qtr_to_yearly(pl_q, bs_q, cfs_q=None):
+        """Collapse quarterly (year,q) tuple columns to integer year columns.
+        IS/CFS: sum quarters within year.  BS: last quarter of each year."""
+        qcols_pl = [c for c in pl_q.columns if isinstance(c, tuple) and len(c) == 2]
+        years    = sorted({c[0] for c in qcols_pl})
+        meta_pl  = [c for c in pl_q.columns  if c not in qcols_pl]
+        meta_bs  = [c for c in bs_q.columns  if c not in [c2 for c2 in bs_q.columns if isinstance(c2, tuple)]]
+        pl_yr = pl_q[meta_pl].copy()
+        bs_yr = bs_q[meta_bs].copy()
+        for y in years:
+            ycols = sorted([c for c in qcols_pl if c[0] == y])
+            pl_yr[y] = pl_q[ycols].sum(axis=1)
+            bs_yr[y] = bs_q[ycols[-1]]
+        if cfs_q is not None and not cfs_q.empty:
+            qcols_cf = [c for c in cfs_q.columns if isinstance(c, tuple) and len(c) == 2]
+            meta_cf  = [c for c in cfs_q.columns if c not in qcols_cf]
+            cfs_yr = cfs_q[meta_cf].copy()
+            for y in years:
+                ycols_cf = sorted([c for c in qcols_cf if c[0] == y])
+                if ycols_cf:
+                    cfs_yr[y] = cfs_q[ycols_cf].sum(axis=1)
+        else:
+            cfs_yr = pd.DataFrame()
+        return pl_yr, bs_yr, cfs_yr
+
     if selected_level == "Level S - Customised Detail":
         _expanders(pl_s, bs_s, cfs_s, summary_s)
         _dl = common.create_combined_ls_download_link(
@@ -1001,6 +1053,74 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
             filename="LevelS_Financial_Statements_Quarterly.xlsx",
         )
         st.markdown(_dl, unsafe_allow_html=True)
+
+        # ── Financial Ratios (computed on yearly-aggregated data) ─────────────
+        _pl_s_yr_q, _bs_s_yr_q, _cfs_s_yr_q = _qtr_to_yearly(pl_s, bs_s, cfs_s if _cfs_qtr_available else None)
+        _avail_yrs_q = sorted({c[0] for c in pl_s.select_dtypes("number").columns if isinstance(c, tuple)})
+        _entity_label_q = "Consolidated Group" if _is_consolidated else f"ZID {_az}"
+        try:
+            _ratio_df_q = _build_ls_ratios(
+                _pl_s_yr_q, _bs_s_yr_q, _cfs_s_yr_q,
+                perspective="Yearly",
+                partial_year_months=end_month,
+            )
+        except Exception:
+            _ratio_df_q = None
+        with st.expander("📊 Financial Ratios", expanded=False):
+            if _ratio_df_q is not None:
+                st.dataframe(_ratio_df_q.set_index("Ratio"), use_container_width=True)
+            else:
+                st.warning("Could not compute ratios.")
+
+        # ── Cross-Level Sanity Checks ─────────────────────────────────────────
+        if _cfs_qtr_available:
+            _sanity_checks(
+                pl_sorted, pl_lv1, pl_lv2, pl_s,
+                bs_lv0, bs_lv1, bs_lv2, bs_s,
+                summary_df, summary_df1, summary_df2, summary_s,
+            )
+
+        # ── Notes & Context / ZID Breakdown / Analysis Dashboard ─────────────
+        if _is_consolidated:
+            _panel_q = st.radio(
+                "View",
+                ["📋 Notes & Context", "📊 ZID Contribution Breakdown", "📈 Analysis Dashboard"],
+                horizontal=True,
+                key="ls_panel_q",
+            )
+            if _panel_q == "📋 Notes & Context":
+                _render_ls_notes(key_suffix="q")
+            elif _panel_q == "📊 ZID Contribution Breakdown":
+                _render_zid_contribution_breakdown(
+                    pl_s, bs_s,
+                    _zid_frames_pl_q, _zid_frames_bs_q,
+                    perspective="Monthly",
+                    key_suffix="q",
+                )
+            else:
+                render_analysis_dashboard(
+                    _pl_s_yr_q, _bs_s_yr_q, _cfs_s_yr_q, _ratio_df_q,
+                    _entity_label_q, _avail_yrs_q,
+                    entity_zid="consolidated",
+                    partial_year_months=end_month,
+                )
+        else:
+            _panel_q_single = st.radio(
+                "View",
+                ["📋 Notes & Context", "📈 Analysis Dashboard"],
+                horizontal=True,
+                key="ls_panel_q_single",
+            )
+            if _panel_q_single == "📋 Notes & Context":
+                _render_ls_notes(key_suffix="q_single")
+            else:
+                render_analysis_dashboard(
+                    _pl_s_yr_q, _bs_s_yr_q, _cfs_s_yr_q, _ratio_df_q,
+                    _entity_label_q, _avail_yrs_q,
+                    entity_zid=str(_az),
+                    partial_year_months=end_month,
+                )
+
     elif selected_level == "Level 0 - Most Detail":
         _expanders(pl_sorted, bs_lv0,
                    cfs_df if _cfs_qtr_available else None,
@@ -1013,6 +1133,19 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
         _expanders(pl_lv2, bs_lv2,
                    cfs_lv2 if _cfs_qtr_available else None,
                    summary_df2 if _cfs_qtr_available else None)
+    elif selected_level == "Level P - Projection View":
+        pl_p_q, bs_p_q = financial.build_condensed_view(pl_s, bs_s)
+        _expanders(pl_p_q, bs_p_q, summary_s if _cfs_qtr_available else None, fmt_fn=_fmt_qtr)
+        st.markdown(
+            common.create_combined_ls_download_link(
+                pl_s=pl_p_q, bs_s=bs_p_q,
+                cfs_s=summary_s if _cfs_qtr_available else pd.DataFrame(),
+                filename="LevelP_Financial_Statements_Quarterly.xlsx",
+                link_label="⬇ Download Level P Financial Statements (Excel)",
+            ),
+            unsafe_allow_html=True,
+        )
+
     elif selected_level in ("Level C - Raw Consolidation", "Level C2 - Consolidated Detail"):
         st.info("Consolidated quarterly view uses Level S. Select 'Level S - Customised Detail'.")
         _expanders(pl_s, bs_s, cfs_s, summary_s)
@@ -1265,7 +1398,7 @@ def display_financial_statements(current_page, zid):
         year_list     = [selected_year]
         end_month     = st.sidebar.selectbox(
             "Up to Month", month_list,
-            index=datetime.now().month - 2 if datetime.now().month > 1 else 11,
+            index=datetime.now().month - 1,
             key="qtr_end_month",
         )
         start_month = 1
@@ -1322,6 +1455,7 @@ def display_financial_statements(current_page, zid):
         "Level 1 - Moderate Detail",
         "Level 2 - Least Detail",
         "Level S - Customised Detail",
+        "Level P - Projection View",
     ]
 
     # ── Quarterly view ────────────────────────────────────────────────────────
@@ -1721,6 +1855,67 @@ def display_financial_statements(current_page, zid):
                         entity_zid=str(_az),
                         partial_year_months=_partial_months,
                     )
+
+        elif selected_level == "Level P - Projection View":
+            st.info("ℹ️ Level P — Projection View (condensed from Level S).")
+            _az, _ap = analyse_zid
+            _num_cols_p = financial._ls_num_cols(pl_raw)
+            _years_in_data_p = sorted(set(
+                int(financial._period_key(c)[0]) for c in _num_cols_p
+            ))
+            if _is_consolidated:
+                _vat_gl_parts_p = []
+                for _vat_zid in _consol.load_consolidation_rules().get("all_zids", []):
+                    try:
+                        _sql_vat_z, _params_vat_z = queries.get_vat_breakdown_gl(
+                            zid=_vat_zid, year_list=_years_in_data_p, smonth=1, emonth=12,
+                        )
+                        _gl_vat_z = get_dataframe(_sql_vat_z, _params_vat_z)
+                        if _gl_vat_z is not None and not _gl_vat_z.empty:
+                            _vat_gl_parts_p.append(_gl_vat_z)
+                    except Exception:
+                        pass
+                _gl_vat_all_p = (
+                    pd.concat(_vat_gl_parts_p, ignore_index=True)
+                    if _vat_gl_parts_p else pd.DataFrame()
+                )
+                _vat_rows_p = financial.compute_vat_is_rows(
+                    _gl_vat_all_p, _num_cols_p, selected_perspective='Yearly'
+                )
+            else:
+                _vat_smonth_p = 1  if _is_lt_persp else start_month
+                _vat_emonth_p = 12 if _is_lt_persp else end_month
+                _sql_vat_p, _params_vat_p = queries.get_vat_breakdown_gl(
+                    zid=_az, project=_ap, year_list=_years_in_data_p,
+                    smonth=_vat_smonth_p, emonth=_vat_emonth_p,
+                )
+                _gl_vat_p = get_dataframe(_sql_vat_p, _params_vat_p)
+                _vat_rows_p = financial.compute_vat_is_rows(
+                    _gl_vat_p, _num_cols_p, selected_perspective='Yearly'
+                )
+            pl_s_p = financial.build_pl_level_s(
+                pl_raw, selected_perspective='Yearly', vat_rows=_vat_rows_p
+            )
+            net_income_s_p = _extract_row(pl_s_p, "Net Income")
+            bs_s_p = financial.build_bs_level_s(bs_raw, net_income_s_p, zid=_az)
+            _, summary_s_p = financial.build_cfs_level_s(
+                pl_raw, bs_raw, coc_lv0, net_income_s_p, zid=_az
+            )
+            pl_p_y, bs_p_y = financial.build_condensed_view(pl_s_p, bs_s_p)
+            with st.expander("Income Statement", expanded=True):
+                st.dataframe(_fmt(pl_p_y), use_container_width=True)
+            with st.expander("Balance Sheet", expanded=True):
+                st.dataframe(_fmt(bs_p_y), use_container_width=True)
+            with st.expander("Cash Flow Summary", expanded=True):
+                st.dataframe(_fmt(summary_s_p), use_container_width=True)
+            st.markdown(
+                common.create_combined_ls_download_link(
+                    pl_s=pl_p_y, bs_s=bs_p_y, cfs_s=summary_s_p,
+                    filename="LevelP_Financial_Statements_Yearly.xlsx",
+                    link_label="⬇ Download Level P Financial Statements (Excel)",
+                ),
+                unsafe_allow_html=True,
+            )
 
         elif selected_level == "Level T - Trading Adjustments":
             st.info("📈 Analysis Dashboard is available at Level S only.")
@@ -2654,3 +2849,63 @@ def display_financial_statements(current_page, zid):
                         _render_mtd_dashboard(pl_s, _mtd)
                     except Exception as _mtd_err:
                         st.error(f"MTD Dashboard error: {_mtd_err}")
+
+        elif selected_level == "Level P - Projection View":
+            st.info("ℹ️ Level P — Projection View (condensed from Level S).")
+            _az, _ap = analyse_zid
+            _num_cols_pm = financial._ls_num_cols(pl_raw)
+            _years_in_data_pm = sorted(set(
+                int(financial._period_key(c)[0]) for c in _num_cols_pm
+            ))
+            if _is_consolidated:
+                _vat_gl_parts_pm = []
+                for _vat_zid in _consol.load_consolidation_rules().get("all_zids", []):
+                    try:
+                        _sql_vat_z, _params_vat_z = queries.get_vat_breakdown_gl(
+                            zid=_vat_zid, year_list=_years_in_data_pm, smonth=1, emonth=12,
+                        )
+                        _gl_vat_z = get_dataframe(_sql_vat_z, _params_vat_z)
+                        if _gl_vat_z is not None and not _gl_vat_z.empty:
+                            _vat_gl_parts_pm.append(_gl_vat_z)
+                    except Exception:
+                        pass
+                _gl_vat_all_pm = (
+                    pd.concat(_vat_gl_parts_pm, ignore_index=True)
+                    if _vat_gl_parts_pm else pd.DataFrame()
+                )
+                _vat_rows_pm = financial.compute_vat_is_rows(
+                    _gl_vat_all_pm, _num_cols_pm, selected_perspective='Monthly'
+                )
+            else:
+                _sql_vat_pm, _params_vat_pm = queries.get_vat_breakdown_gl(
+                    zid=_az, project=_ap, year_list=_years_in_data_pm,
+                    smonth=1, emonth=12,
+                )
+                _gl_vat_pm = get_dataframe(_sql_vat_pm, _params_vat_pm)
+                _vat_rows_pm = financial.compute_vat_is_rows(
+                    _gl_vat_pm, _num_cols_pm, selected_perspective='Monthly'
+                )
+            pl_s_pm = financial.build_pl_level_s(
+                pl_raw, selected_perspective='Monthly', vat_rows=_vat_rows_pm
+            )
+            net_income_s_pm = _extract_row(pl_s_pm, "Net Income")
+            net_income_s_ytd_pm = _monthly_to_ytd(net_income_s_pm)
+            bs_s_pm = financial.build_bs_level_s(bs_raw, net_income_s_ytd_pm, zid=_az)
+            _, summary_s_pm = financial.build_cfs_level_s(
+                pl_raw, bs_raw, coc_lv0, net_income_s_pm, zid=_az
+            )
+            pl_p_m, bs_p_m = financial.build_condensed_view(pl_s_pm, bs_s_pm)
+            with st.expander("Income Statement", expanded=True):
+                st.dataframe(_fmt(pl_p_m), use_container_width=True)
+            with st.expander("Balance Sheet", expanded=True):
+                st.dataframe(_fmt(bs_p_m), use_container_width=True)
+            with st.expander("Cash Flow Summary", expanded=True):
+                st.dataframe(_fmt(summary_s_pm), use_container_width=True)
+            st.markdown(
+                common.create_combined_ls_download_link(
+                    pl_s=pl_p_m, bs_s=bs_p_m, cfs_s=summary_s_pm,
+                    filename="LevelP_Financial_Statements_Monthly.xlsx",
+                    link_label="⬇ Download Level P Financial Statements (Excel)",
+                ),
+                unsafe_allow_html=True,
+            )
