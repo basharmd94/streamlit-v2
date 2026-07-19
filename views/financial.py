@@ -820,7 +820,8 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
                             level_options, selected_year, end_month, global_zid):
     """
     Quarterly financial statements.
-    Loads: prior year Jan-Dec + current year Jan-end_month (monthly).
+    Loads: 2 prior years (full) + current year Jan-end_month (monthly).
+    e.g. year=2026 month=6 → Q1 2024 … Q2 2026.
     Collapses to quarterly, then reuses Monthly view builders.
     """
     import calendar as _cal
@@ -828,14 +829,15 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
     st.title("Financial Statement Analysis — Quarterly")
 
     # ── Build quarterly DataFrames for every business ─────────────────────────
-    # process_data_month(year, ...) already returns both (year, m) AND (year-1, m)
-    # columns — one call covers both years needed for quarterly collapse.
+    # process_data_month(year) already returns (year, m) AND (year-1, m) columns.
+    # A second call with (year-1) adds (year-2, m) columns for the extra prior year.
     main_data_dict_pl_q: dict = {}
     main_data_dict_bs_q: dict = {}
 
     for zid_k, details in businesses.items():
         for project in details.get('projects', [None]):
             try:
+                # Primary: current year + 1 prior year
                 pl_monthly = financial.process_data_month(
                     zid_k, selected_year, 1, end_month, 'Income Statement', income_label_df,
                     project, {'Asset', 'Liability'},
@@ -844,6 +846,31 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
                     zid_k, selected_year, 1, end_month, 'Balance Sheet', balance_label_df,
                     project, {'Income', 'Expenditure'},
                 )
+
+                # Secondary: year-1 full year → extracts year-2 columns
+                yr2 = selected_year - 2
+                try:
+                    pl_prev = financial.process_data_month(
+                        zid_k, selected_year - 1, 1, 12, 'Income Statement', income_label_df,
+                        project, {'Asset', 'Liability'},
+                    )
+                    bs_prev = financial.process_data_month(
+                        zid_k, selected_year - 1, 1, 12, 'Balance Sheet', balance_label_df,
+                        project, {'Income', 'Expenditure'},
+                    )
+                    pl_yr2 = [c for c in pl_prev.columns if isinstance(c, tuple) and c[0] == yr2]
+                    bs_yr2 = [c for c in bs_prev.columns if isinstance(c, tuple) and c[0] == yr2]
+                    if pl_yr2:
+                        pl_monthly = pl_monthly.merge(
+                            pl_prev[['ac_code'] + pl_yr2], on='ac_code', how='left'
+                        )
+                    if bs_yr2:
+                        bs_monthly = bs_monthly.merge(
+                            bs_prev[['ac_code'] + bs_yr2], on='ac_code', how='left'
+                        )
+                except Exception:
+                    pass  # year-2 data unavailable — show what we have
+
                 pl_q, bs_q = financial.collapse_monthly_to_quarterly(pl_monthly, bs_monthly)
                 main_data_dict_pl_q[(zid_k, project)] = pl_q
                 main_data_dict_bs_q[(zid_k, project)] = bs_q
@@ -1265,7 +1292,7 @@ def display_financial_statements(current_page, zid):
         year_list     = [selected_year]
         end_month     = st.sidebar.selectbox(
             "Up to Month", month_list,
-            index=datetime.now().month - 2 if datetime.now().month > 1 else 11,
+            index=datetime.now().month - 1,
             key="qtr_end_month",
         )
         start_month = 1
