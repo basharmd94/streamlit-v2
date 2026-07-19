@@ -106,10 +106,19 @@ def _period_col_label(col) -> str:
     if isinstance(col, tuple) and len(col) == 2:
         yr, mo = int(col[0]), int(col[1])
         return str(yr) if mo == 0 else f"{yr}-{str(mo).zfill(2)}"
+    # Strings that are stringified tuples like "(2021, 4)" need parsing;
+    # all other strings (custom labels, free-text) must pass through unchanged
+    # so they never collide with digit-extracted integer column labels.
+    if isinstance(col, str):
+        if col.startswith("("):
+            try:
+                parsed = ast.literal_eval(col)
+                yr, mo = parsed[0], parsed[1]
+                return f"{int(yr)}-{str(int(mo)).zfill(2)}"
+            except Exception:
+                pass
+        return str(col)
     try:
-        if isinstance(col, str) and col.startswith("("):
-            yr, mo = ast.literal_eval(col)
-            return f"{int(yr)}-{str(int(mo)).zfill(2)}"
         nums = re.findall(r"\d+", str(col))
         if len(nums) >= 2:
             return f"{nums[0]}-{nums[1].zfill(2)}"
