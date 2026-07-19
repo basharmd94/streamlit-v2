@@ -1021,6 +1021,31 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
             with st.expander("Cash Flow Summary", expanded=False):
                 st.dataframe(fmt_fn(summary_df_), use_container_width=True)
 
+    def _qtr_to_yearly(pl_q, bs_q, cfs_q=None):
+        """Collapse quarterly (year,q) tuple columns to integer year columns.
+        IS/CFS: sum quarters within year.  BS: last quarter of each year."""
+        qcols_pl = [c for c in pl_q.columns if isinstance(c, tuple) and len(c) == 2]
+        years    = sorted({c[0] for c in qcols_pl})
+        meta_pl  = [c for c in pl_q.columns  if c not in qcols_pl]
+        meta_bs  = [c for c in bs_q.columns  if c not in [c2 for c2 in bs_q.columns if isinstance(c2, tuple)]]
+        pl_yr = pl_q[meta_pl].copy()
+        bs_yr = bs_q[meta_bs].copy()
+        for y in years:
+            ycols = sorted([c for c in qcols_pl if c[0] == y])
+            pl_yr[y] = pl_q[ycols].sum(axis=1)
+            bs_yr[y] = bs_q[ycols[-1]]
+        if cfs_q is not None and not cfs_q.empty:
+            qcols_cf = [c for c in cfs_q.columns if isinstance(c, tuple) and len(c) == 2]
+            meta_cf  = [c for c in cfs_q.columns if c not in qcols_cf]
+            cfs_yr = cfs_q[meta_cf].copy()
+            for y in years:
+                ycols_cf = sorted([c for c in qcols_cf if c[0] == y])
+                if ycols_cf:
+                    cfs_yr[y] = cfs_q[ycols_cf].sum(axis=1)
+        else:
+            cfs_yr = pd.DataFrame()
+        return pl_yr, bs_yr, cfs_yr
+
     if selected_level == "Level S - Customised Detail":
         _expanders(pl_s, bs_s, cfs_s, summary_s)
         _dl = common.create_combined_ls_download_link(
@@ -1028,6 +1053,74 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
             filename="LevelS_Financial_Statements_Quarterly.xlsx",
         )
         st.markdown(_dl, unsafe_allow_html=True)
+
+        # ── Financial Ratios (computed on yearly-aggregated data) ─────────────
+        _pl_s_yr_q, _bs_s_yr_q, _cfs_s_yr_q = _qtr_to_yearly(pl_s, bs_s, cfs_s if _cfs_qtr_available else None)
+        _avail_yrs_q = sorted({c[0] for c in pl_s.select_dtypes("number").columns if isinstance(c, tuple)})
+        _entity_label_q = "Consolidated Group" if _is_consolidated else f"ZID {_az}"
+        try:
+            _ratio_df_q = _build_ls_ratios(
+                _pl_s_yr_q, _bs_s_yr_q, _cfs_s_yr_q,
+                perspective="Yearly",
+                partial_year_months=end_month,
+            )
+        except Exception:
+            _ratio_df_q = None
+        with st.expander("📊 Financial Ratios", expanded=False):
+            if _ratio_df_q is not None:
+                st.dataframe(_ratio_df_q.set_index("Ratio"), use_container_width=True)
+            else:
+                st.warning("Could not compute ratios.")
+
+        # ── Cross-Level Sanity Checks ─────────────────────────────────────────
+        if _cfs_qtr_available:
+            _sanity_checks(
+                pl_sorted, pl_lv1, pl_lv2, pl_s,
+                bs_lv0, bs_lv1, bs_lv2, bs_s,
+                summary_df, summary_df1, summary_df2, summary_s,
+            )
+
+        # ── Notes & Context / ZID Breakdown / Analysis Dashboard ─────────────
+        if _is_consolidated:
+            _panel_q = st.radio(
+                "View",
+                ["📋 Notes & Context", "📊 ZID Contribution Breakdown", "📈 Analysis Dashboard"],
+                horizontal=True,
+                key="ls_panel_q",
+            )
+            if _panel_q == "📋 Notes & Context":
+                _render_ls_notes(key_suffix="q")
+            elif _panel_q == "📊 ZID Contribution Breakdown":
+                _render_zid_contribution_breakdown(
+                    pl_s, bs_s,
+                    _zid_frames_pl_q, _zid_frames_bs_q,
+                    perspective="Monthly",
+                    key_suffix="q",
+                )
+            else:
+                render_analysis_dashboard(
+                    _pl_s_yr_q, _bs_s_yr_q, _cfs_s_yr_q, _ratio_df_q,
+                    _entity_label_q, _avail_yrs_q,
+                    entity_zid="consolidated",
+                    partial_year_months=end_month,
+                )
+        else:
+            _panel_q_single = st.radio(
+                "View",
+                ["📋 Notes & Context", "📈 Analysis Dashboard"],
+                horizontal=True,
+                key="ls_panel_q_single",
+            )
+            if _panel_q_single == "📋 Notes & Context":
+                _render_ls_notes(key_suffix="q_single")
+            else:
+                render_analysis_dashboard(
+                    _pl_s_yr_q, _bs_s_yr_q, _cfs_s_yr_q, _ratio_df_q,
+                    _entity_label_q, _avail_yrs_q,
+                    entity_zid=str(_az),
+                    partial_year_months=end_month,
+                )
+
     elif selected_level == "Level 0 - Most Detail":
         _expanders(pl_sorted, bs_lv0,
                    cfs_df if _cfs_qtr_available else None,
