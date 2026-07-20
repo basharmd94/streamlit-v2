@@ -811,71 +811,73 @@ def _level_p_sanity_checks(pl_p: pd.DataFrame, pl_s: pd.DataFrame, name_col: str
     Shows: (1) IS formula verification and (2) Level P NI vs Level S NI.
     """
     st.markdown("---")
-    st.subheader("Level P Sanity Checks")
-    st.caption(
-        "Arithmetic verification of Level P IS rows. "
-        "GP = Adj Revenue + COGS, EBITDA = GP + SG&A + S&D + Others Direct, "
-        "NI = EBITDA + Interest + VAT. "
-        "Level P NI should equal Level S NI (Others Revenue redistributed equally into SG&A and S&D)."
-    )
+    with st.expander("🔍 Level P Sanity Checks", expanded=False):
+        st.caption(
+            "Arithmetic verification of Level P IS rows. "
+            "GP = Adj Revenue + COGS, EBITDA = GP + SG&A + S&D + Others Direct, "
+            "NI = EBITDA + Interest + VAT. "
+            "Level P NI should equal Level S NI (Others Revenue redistributed equally into SG&A and S&D)."
+        )
 
-    num_p = financial._ls_num_cols(pl_p)
-    num_s = financial._ls_num_cols(pl_s)
+        num_p = financial._ls_num_cols(pl_p)
+        num_s = financial._ls_num_cols(pl_s)
 
-    def _gp(df, label, num):
-        r = df.loc[df[name_col].astype(str) == label]
-        if r.empty:
-            return pd.Series(0.0, index=num)
-        return r.select_dtypes("number").iloc[0].reindex(num, fill_value=0.0)
+        def _gp(df, label, num):
+            r = df.loc[df[name_col].astype(str) == label]
+            if r.empty:
+                return pd.Series(0.0, index=num)
+            return r.select_dtypes("number").iloc[0].reindex(num, fill_value=0.0)
 
-    _adj_rev  = _gp(pl_p, "Adjusted Revenue (Pending)", num_p)
-    _cogs     = _gp(pl_p, "COGS", num_p)
-    _gross_p  = _gp(pl_p, "Gross Profit", num_p)
-    _sga      = _gp(pl_p, "Total SG&A", num_p)
-    _sd       = _gp(pl_p, "Total Sales & Distribution", num_p)
-    _od       = _gp(pl_p, "0501-Others Direct Expenses", num_p)
-    _ebitda   = _gp(pl_p, "EBITDA", num_p)
-    _int      = _gp(pl_p, "Total Interest & Charges", num_p)
-    _vat      = _gp(pl_p, "0629-VAT & Tax Total (A+B+C)", num_p)
-    _ni_p     = _gp(pl_p, "Net Income", num_p)
-    _ni_s     = _gp(pl_s, "Net Income", num_s)
+        _adj_rev  = _gp(pl_p, "Adjusted Revenue (Pending)", num_p)
+        _cogs     = _gp(pl_p, "COGS", num_p)
+        _gross_p  = _gp(pl_p, "Gross Profit", num_p)
+        _sga      = _gp(pl_p, "Total SG&A", num_p)
+        _sd       = _gp(pl_p, "Total Sales & Distribution", num_p)
+        _od       = _gp(pl_p, "0501-Others Direct Expenses", num_p)
+        _ebitda   = _gp(pl_p, "EBITDA", num_p)
+        _int      = _gp(pl_p, "Total Interest & Charges", num_p)
+        _vat      = _gp(pl_p, "0629-VAT & Tax Total (A+B+C)", num_p)
+        _ni_p     = _gp(pl_p, "Net Income", num_p)
+        _ni_s     = _gp(pl_s, "Net Income", num_s)
 
-    _gp_computed     = _adj_rev + _cogs
-    _ebitda_computed = _gross_p + _sga + _sd + _od
-    _ni_computed     = _ebitda + _int + _vat
+        _gp_computed     = _adj_rev + _cogs
+        _ebitda_computed = _gross_p + _sga + _sd + _od
+        _ni_computed     = _ebitda + _int + _vat
 
-    _lbl = [str(common._period_col_label(c)) for c in num_p]
-    _lbl_s = [str(common._period_col_label(c)) for c in num_s]
+        _lbl = [str(common._period_col_label(c)) for c in num_p]
+        _lbl_s = [str(common._period_col_label(c)) for c in num_s]
 
-    def _fmt_val(v):
-        try:
-            f = float(v)
-            return f"{f:,.0f}" if abs(f) >= 1 else f"{f:.2f}"
-        except Exception:
-            return str(v)
+        def _fmt_val(v):
+            try:
+                f = float(v)
+                return f"{f:,.0f}" if abs(f) >= 1 else f"{f:.2f}"
+            except Exception:
+                return str(v)
 
-    def _check_row(check_name, reported, computed, col_labels):
-        diff = (reported - computed).fillna(0.0)
-        status = "✅ Pass" if diff.abs().max() < 1 else "⚠️ Diff"
-        row = {"Check": check_name, "Status": status}
-        row.update({c: _fmt_val(v) for c, v in zip(col_labels, diff.values)})
-        return row
+        def _check_row(check_name, reported, computed, col_labels):
+            diff = (reported - computed).fillna(0.0)
+            status = "✅ Pass" if diff.abs().max() < 1 else "⚠️ Diff"
+            row = {"Check": check_name, "Status": status}
+            row.update({c: _fmt_val(v) for c, v in zip(col_labels, diff.values)})
+            return row
 
-    arith_rows = [
-        _check_row("GP = Adj Rev + COGS",              _gross_p, _gp_computed,     _lbl),
-        _check_row("EBITDA = GP + SG&A + S&D + OthDir", _ebitda, _ebitda_computed, _lbl),
-        _check_row("NI = EBITDA + Interest + VAT",      _ni_p,   _ni_computed,     _lbl),
-    ]
-    arith_df = pd.DataFrame(arith_rows).set_index("Check")
-    st.markdown("**IS Arithmetic Verification** *(difference shown; should be 0)*")
-    st.dataframe(arith_df, use_container_width=True)
+        arith_rows = [
+            _check_row("GP = Adj Rev + COGS",               _gross_p, _gp_computed,     _lbl),
+            _check_row("EBITDA = GP + SG&A + S&D + OthDir", _ebitda,  _ebitda_computed, _lbl),
+            _check_row("NI = EBITDA + Interest + VAT",       _ni_p,    _ni_computed,     _lbl),
+        ]
+        arith_df = pd.DataFrame(arith_rows).set_index("Check")
+        st.markdown("**IS Arithmetic Verification** *(difference shown; should be 0)*")
+        st.dataframe(arith_df, use_container_width=True)
 
-    # Cross-level NI comparison (Level P NI vs Level S NI)
-    ni_p_row = {"Level": "Level P"};  ni_p_row.update({c: _fmt_val(v) for c, v in zip(_lbl, _ni_p.values)})
-    ni_s_row = {"Level": "Level S"};  ni_s_row.update({c: _fmt_val(v) for c, v in zip(_lbl_s, _ni_s.values)})
-    ni_cross_df = pd.DataFrame([ni_p_row, ni_s_row]).set_index("Level")
-    st.markdown("**Level P vs Level S — Net Income** *(should be identical)*")
-    st.dataframe(ni_cross_df, use_container_width=True)
+        # Cross-level NI comparison (Level P NI vs Level S NI)
+        ni_p_row = {"Level": "Level P"}
+        ni_p_row.update({c: _fmt_val(v) for c, v in zip(_lbl, _ni_p.values)})
+        ni_s_row = {"Level": "Level S"}
+        ni_s_row.update({c: _fmt_val(v) for c, v in zip(_lbl_s, _ni_s.values)})
+        ni_cross_df = pd.DataFrame([ni_p_row, ni_s_row]).set_index("Level")
+        st.markdown("**Level P vs Level S — Net Income** *(should be identical)*")
+        st.dataframe(ni_cross_df, use_container_width=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
