@@ -2420,28 +2420,33 @@ def build_condensed_view(
     def _ri(l, s):  return _row(l, s, num_is)
     def _rb(l, s):  return _row(l, s, num_bs)
 
-    # ── IS: extract key Level S rows ──────────────────────────────────────────
-    # Others Revenue (positive in Level S) offsets the S&D cost.
-    # Total S&D is shown as-is (informational); Net S&D = S&D + Others Revenue
-    # (less negative) drives the recalculated EBITDA and Net Income.
-    _gp         = _gi("Gross Profit")
-    _sga        = _gi("Total SG&A")
-    _total_sd   = _gi("Total Sales & Distribution")   # negative (expense)
-    _others_rev = _gi("Others Revenue")               # positive (revenue)
-    _net_sd     = _total_sd + _others_rev             # S&D net of Others Revenue
+    # ── IS: Level P formulas ──────────────────────────────────────────────────
+    # GP(P) = Adjusted Revenue (Pending) + COGS — product margin only.
+    # Others Revenue (positive) is NOT in Adjusted Revenue and NOT shown as a row.
+    # Instead, OR is split equally and reduces SG&A and S&D costs (both less negative),
+    # so EBITDA(P) = EBITDA(S) and Net Income(P) = Net Income(S).
+    _adj_rev    = _gi("Adjusted Revenue (Pending)")
+    _cogs       = _gi("COGS")                              # negative
+    _gp_p       = _adj_rev + _cogs                         # GP(P) — excludes Others Rev
+    _sga        = _gi("Total SG&A")                        # negative
+    _total_sd   = _gi("Total Sales & Distribution")        # negative
+    _others_rev = _gi("Others Revenue")                    # positive
+    _half_or    = _others_rev / 2
+    _adj_sga    = _sga + _half_or                          # less negative
+    _adj_sd     = _total_sd + _half_or                     # less negative
+    _others_dir = _gi("0501-Others Direct Expenses")
     _int        = _gi("Total Interest & Charges")
     _vat        = _gi("0629-VAT & Tax Total (A+B+C)")
-    _adj_ebitda = _gp + _sga + _net_sd
+    _adj_ebitda = _gp_p + _adj_sga + _adj_sd + _others_dir
     _adj_ni     = _adj_ebitda + _int + _vat
 
     pl_p = pd.concat([
-        _ri("Adjusted Revenue (Pending)",   _gi("Adjusted Revenue (Pending)")),
-        _ri("COGS",                          _gi("COGS")),
-        _ri("Gross Profit",                  _gp),
-        _ri("Total SG&A",                    _sga),
-        _ri("Total Sales & Distribution",    _total_sd),   # original, informational
-        _ri("Others Revenue",                _others_rev), # revenue that offsets S&D
-        _ri("Net Sales & Distribution",      _net_sd),     # used in EBITDA calculation
+        _ri("Adjusted Revenue (Pending)",    _adj_rev),
+        _ri("COGS",                          _cogs),
+        _ri("Gross Profit",                  _gp_p),
+        _ri("Total SG&A",                    _adj_sga),
+        _ri("Total Sales & Distribution",    _adj_sd),
+        _ri("0501-Others Direct Expenses",   _others_dir),
         _ri("EBITDA",                        _adj_ebitda),
         _ri("Total Interest & Charges",      _int),
         _ri("0629-VAT & Tax Total (A+B+C)",  _vat),
