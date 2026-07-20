@@ -1939,26 +1939,31 @@ def display_financial_statements(current_page, zid):
                         r = pl_p_y.loc[pl_p_y["ac_name"].astype(str) == row_label, _ytd_int_col]
                         return float(r.iloc[0]) if not r.empty else 0.0
 
-                    _ann_rev  = _annualise("Adjusted Revenue (Pending)") * 12 / ytd_month
-                    _ann_cogs = _annualise("COGS")                       * 12 / ytd_month
-                    _ann_gp   = _annualise("Gross Profit")               * 12 / ytd_month
-                    _ann_sga  = _annualise("Total SG&A")                 * 12 / ytd_month
-                    _ann_sd   = _annualise("Total Sales & Distribution") * 12 / ytd_month
-                    _ann_ebit = _annualise("EBITDA")                     * 12 / ytd_month
-                    _ann_int  = _annualise("Total Interest & Charges")   * 12 / ytd_month
-                    _ann_vat  = _annualise("0629-VAT & Tax Total (A+B+C)") * 12 / ytd_month
-                    _ann_ni   = _annualise("Net Income")                 * 12 / ytd_month
+                    _ann_rev        = _annualise("Adjusted Revenue (Pending)") * 12 / ytd_month
+                    _ann_cogs       = _annualise("COGS")                       * 12 / ytd_month
+                    _ann_gp         = _annualise("Gross Profit")               * 12 / ytd_month
+                    _ann_sga        = _annualise("Total SG&A")                 * 12 / ytd_month
+                    _ann_sd         = _annualise("Total Sales & Distribution") * 12 / ytd_month
+                    _ann_others_rev = _annualise("Others Revenue")             * 12 / ytd_month
+                    _ann_net_sd     = _ann_sd + _ann_others_rev   # S&D net of Others Revenue
+                    _ann_int        = _annualise("Total Interest & Charges")   * 12 / ytd_month
+                    _ann_vat        = _annualise("0629-VAT & Tax Total (A+B+C)") * 12 / ytd_month
+                    # Recalculated EBITDA and NI using Net S&D (matching build_condensed_view)
+                    _ann_ebit = _ann_gp + _ann_sga + _ann_net_sd
+                    _ann_ni   = _ann_ebit + _ann_int + _ann_vat
 
                     if _proj_mode == "📅 Straight-line (month average)":
-                        _p_rev  = _ann_rev
-                        _p_cogs = _ann_cogs
-                        _p_gp   = _ann_gp
-                        _p_sga  = _ann_sga
-                        _p_sd   = _ann_sd
-                        _p_ebit = _ann_ebit
-                        _p_int  = _ann_int
-                        _p_vat  = _ann_vat
-                        _p_ni   = _ann_ni
+                        _p_rev        = _ann_rev
+                        _p_cogs       = _ann_cogs
+                        _p_gp         = _ann_gp
+                        _p_sga        = _ann_sga
+                        _p_sd         = _ann_sd
+                        _p_others_rev = _ann_others_rev
+                        _p_net_sd     = _ann_net_sd
+                        _p_ebit       = _ann_ebit
+                        _p_int        = _ann_int
+                        _p_vat        = _ann_vat
+                        _p_ni         = _ann_ni
                         st.caption(
                             f"Annualising {ytd_month} months of actuals × 12/{ytd_month}. "
                             "Switch to Manual % adjustment to override individual lines."
@@ -2004,28 +2009,37 @@ def display_financial_statements(current_page, zid):
                                 "VAT/Tax % of annualised", min_value=0.0, value=100.0,
                                 step=5.0, key="lp_pct_vat",
                             )
+                            _pct_others_rev = st.number_input(
+                                "Others Revenue % of annualised", min_value=0.0, value=100.0,
+                                step=5.0, key="lp_pct_others_rev",
+                                help="Others Revenue offsets S&D cost; Net S&D = S&D − Others Revenue.",
+                            )
                         # Keep Level S sign convention throughout: costs stay negative.
-                        _p_rev  = _ann_rev * _pct_rev / 100
-                        _p_cogs = -(_p_rev * _pct_cogs_rev / 100)   # negate → negative
-                        _p_gp   = _p_rev + _p_cogs                  # Rev + (neg COGS)
-                        _p_sga  = _ann_sga * _pct_sga / 100         # already negative
-                        _p_sd   = _ann_sd  * _pct_sd  / 100         # already negative
-                        _p_ebit = _p_gp + _p_sga + _p_sd            # GP + neg costs
-                        _p_int  = _ann_int * _pct_int / 100         # already negative
-                        _p_vat  = _ann_vat * _pct_vat / 100         # already negative
-                        _p_ni   = _p_ebit + _p_int + _p_vat         # EBIT + neg costs
+                        _p_rev        = _ann_rev * _pct_rev / 100
+                        _p_cogs       = -(_p_rev * _pct_cogs_rev / 100)       # negate → negative
+                        _p_gp         = _p_rev + _p_cogs                       # Rev + (neg COGS)
+                        _p_sga        = _ann_sga * _pct_sga / 100             # already negative
+                        _p_sd         = _ann_sd  * _pct_sd  / 100             # already negative
+                        _p_others_rev = _ann_others_rev * _pct_others_rev / 100  # positive
+                        _p_net_sd     = _p_sd + _p_others_rev                 # S&D net of Others Rev
+                        _p_ebit       = _p_gp + _p_sga + _p_net_sd            # GP + neg costs
+                        _p_int        = _ann_int * _pct_int / 100             # already negative
+                        _p_vat        = _ann_vat * _pct_vat / 100             # already negative
+                        _p_ni         = _p_ebit + _p_int + _p_vat             # EBIT + neg costs
 
                     _proj_col_lbl = f"Proj FY {_ytd_int_col}"
                     _proj_rows = [
-                        ("Adjusted Revenue (Pending)", _p_rev),
-                        ("COGS",                        _p_cogs),
-                        ("Gross Profit",                _p_gp),
-                        ("Total SG&A",                  _p_sga),
-                        ("Total Sales & Distribution",  _p_sd),
-                        ("EBITDA",                      _p_ebit),
-                        ("Total Interest & Charges",    _p_int),
-                        ("0629-VAT & Tax Total (A+B+C)",_p_vat),
-                        ("Net Income",                  _p_ni),
+                        ("Adjusted Revenue (Pending)",  _p_rev),
+                        ("COGS",                         _p_cogs),
+                        ("Gross Profit",                 _p_gp),
+                        ("Total SG&A",                   _p_sga),
+                        ("Total Sales & Distribution",   _p_sd),         # original, informational
+                        ("Others Revenue",               _p_others_rev),
+                        ("Net Sales & Distribution",     _p_net_sd),
+                        ("EBITDA",                       _p_ebit),
+                        ("Total Interest & Charges",     _p_int),
+                        ("0629-VAT & Tax Total (A+B+C)", _p_vat),
+                        ("Net Income",                   _p_ni),
                     ]
                     # Build side-by-side: YTD actual | annualised | projected
                     _ytd_vals = {

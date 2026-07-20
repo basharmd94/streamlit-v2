@@ -2421,16 +2421,31 @@ def build_condensed_view(
     def _rb(l, s):  return _row(l, s, num_bs)
 
     # ── IS: extract key Level S rows ──────────────────────────────────────────
+    # Others Revenue (positive in Level S) offsets the S&D cost.
+    # Total S&D is shown as-is (informational); Net S&D = S&D + Others Revenue
+    # (less negative) drives the recalculated EBITDA and Net Income.
+    _gp         = _gi("Gross Profit")
+    _sga        = _gi("Total SG&A")
+    _total_sd   = _gi("Total Sales & Distribution")   # negative (expense)
+    _others_rev = _gi("Others Revenue")               # positive (revenue)
+    _net_sd     = _total_sd + _others_rev             # S&D net of Others Revenue
+    _int        = _gi("Total Interest & Charges")
+    _vat        = _gi("0629-VAT & Tax Total (A+B+C)")
+    _adj_ebitda = _gp + _sga + _net_sd
+    _adj_ni     = _adj_ebitda + _int + _vat
+
     pl_p = pd.concat([
         _ri("Adjusted Revenue (Pending)",   _gi("Adjusted Revenue (Pending)")),
         _ri("COGS",                          _gi("COGS")),
-        _ri("Gross Profit",                  _gi("Gross Profit")),
-        _ri("Total SG&A",                    _gi("Total SG&A")),
-        _ri("Total Sales & Distribution",    _gi("Total Sales & Distribution")),
-        _ri("EBITDA",                        _gi("EBITDA")),
-        _ri("Total Interest & Charges",      _gi("Total Interest & Charges")),
-        _ri("0629-VAT & Tax Total (A+B+C)",  _gi("0629-VAT & Tax Total (A+B+C)")),
-        _ri("Net Income",                    _gi("Net Income")),
+        _ri("Gross Profit",                  _gp),
+        _ri("Total SG&A",                    _sga),
+        _ri("Total Sales & Distribution",    _total_sd),   # original, informational
+        _ri("Others Revenue",                _others_rev), # revenue that offsets S&D
+        _ri("Net Sales & Distribution",      _net_sd),     # used in EBITDA calculation
+        _ri("EBITDA",                        _adj_ebitda),
+        _ri("Total Interest & Charges",      _int),
+        _ri("0629-VAT & Tax Total (A+B+C)",  _vat),
+        _ri("Net Income",                    _adj_ni),
     ], ignore_index=True)
 
     # ── BS: group Level S rows ────────────────────────────────────────────────
