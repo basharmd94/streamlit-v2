@@ -3321,25 +3321,41 @@ def display_financial_statements(current_page, zid):
                     _m_vat  = _be_row("0629-VAT & Tax Total (A+B+C)")
                     _m_ni   = _be_row("Net Income")
 
-                    # Monthly averages (scalars)
-                    _n_mo   = len(_be_cols)
-                    _a_rev  = float(_m_rev.mean())
-                    _a_cogs = float(_m_cogs.mean())
-                    _a_gp   = float(_m_gp.mean())
-                    _a_sga  = float(_m_sga.mean())
-                    _a_sd   = float(_m_sd.mean())
-                    _a_od   = float(_m_od.mean())
-                    _a_int  = float(_m_int.mean())
-                    _a_vat  = float(_m_vat.mean())
-                    _a_ni   = float(_m_ni.mean())
+                    # ── Lookback window ──────────────────────────────────────
+                    _max_mo = len(_be_cols)
+                    _n_avg  = st.number_input(
+                        "Months to average",
+                        min_value=1,
+                        max_value=_max_mo,
+                        value=_max_mo,
+                        step=1,
+                        key="be_n_avg",
+                        help=(
+                            f"Use the most recent N months for the averages. "
+                            f"Max = {_max_mo} (all months currently loaded)."
+                        ),
+                    )
+                    _avg_cols = _be_cols[-_n_avg:]   # last N chronological months
+
+                    # Monthly averages (scalars) over the selected lookback window
+                    _n_mo   = _n_avg
+                    _a_rev  = float(_m_rev[_avg_cols].mean())
+                    _a_cogs = float(_m_cogs[_avg_cols].mean())
+                    _a_gp   = float(_m_gp[_avg_cols].mean())
+                    _a_sga  = float(_m_sga[_avg_cols].mean())
+                    _a_sd   = float(_m_sd[_avg_cols].mean())
+                    _a_od   = float(_m_od[_avg_cols].mean())
+                    _a_int  = float(_m_int[_avg_cols].mean())
+                    _a_vat  = float(_m_vat[_avg_cols].mean())
+                    _a_ni   = float(_m_ni[_avg_cols].mean())
 
                     # Gross margin ratio (positive) for COGS scaling
-                    _gm_ratio = _a_gp / _a_rev if _a_rev != 0 else 0.0
+                    _gm_ratio   = _a_gp   / _a_rev if _a_rev != 0 else 0.0
                     _cogs_ratio = _a_cogs / _a_rev if _a_rev != 0 else 0.0  # negative ratio
 
                     # ── Inputs ───────────────────────────────────────────────
                     st.caption(
-                        f"Averages computed over {_n_mo} month(s) in the selected period. "
+                        f"Averages computed over the last **{_n_mo}** of {_max_mo} available month(s). "
                         "COGS scales automatically with projected revenue at the same gross margin ratio. "
                         "Adjust cost lines as % of their monthly average."
                     )
