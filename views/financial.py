@@ -11,6 +11,7 @@ from core.db import get_dataframe
 from views.financial_dashboard import render_analysis_dashboard
 
 _LP_PROJ_FILE = Path(__file__).resolve().parent.parent / "data" / "level_p_projections.json"
+_LP_BE_FILE   = Path(__file__).resolve().parent.parent / "data" / "level_p_breakeven.json"
 _LP_PROJ_MAX  = 20  # max snapshots to keep
 
 
@@ -37,6 +38,34 @@ def _delete_lp_projection(saved_at: str) -> None:
     snaps = _load_lp_projections()
     snaps = [s for s in snaps if s.get("saved_at") != saved_at]
     _LP_PROJ_FILE.write_text(
+        json.dumps({"snapshots": snaps}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _load_lp_breakeven() -> list:
+    try:
+        if _LP_BE_FILE.exists():
+            return json.loads(_LP_BE_FILE.read_text(encoding="utf-8")).get("snapshots", [])
+    except Exception:
+        pass
+    return []
+
+
+def _save_lp_breakeven(snapshot: dict) -> None:
+    snaps = _load_lp_breakeven()
+    snaps.append(snapshot)
+    snaps = snaps[-_LP_PROJ_MAX:]
+    _LP_BE_FILE.write_text(
+        json.dumps({"snapshots": snaps}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _delete_lp_breakeven(saved_at: str) -> None:
+    snaps = _load_lp_breakeven()
+    snaps = [s for s in snaps if s.get("saved_at") != saved_at]
+    _LP_BE_FILE.write_text(
         json.dumps({"snapshots": snaps}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -3269,104 +3298,230 @@ def display_financial_statements(current_page, zid):
             )
             _level_p_sanity_checks(pl_p_m, pl_s_pm)
 
-            # ── Margin Sensitivity Analysis ───────────────────────────────────
-            with st.expander("📐 Margin Sensitivity Analysis", expanded=False):
+            # ── Break-even Analysis ───────────────────────────────────────────
+            with st.expander("📐 Break-even Analysis", expanded=False):
                 try:
-                    _msa_cols = financial._ls_num_cols(pl_p_m)
-                    _name_col = "ac_name"
+                    _be_cols  = financial._ls_num_cols(pl_p_m)
+                    _nc       = "ac_name"
 
-                    def _msa_row(label):
-                        r = pl_p_m.loc[pl_p_m[_name_col].astype(str) == label]
+                    def _be_row(label):
+                        r = pl_p_m.loc[pl_p_m[_nc].astype(str) == label]
                         if r.empty:
-                            return pd.Series(0.0, index=_msa_cols)
-                        return r[_msa_cols].iloc[0].fillna(0.0)
+                            return pd.Series(0.0, index=_be_cols)
+                        return r[_be_cols].iloc[0].fillna(0.0)
 
-                    _rev   = _msa_row("Adjusted Revenue (Pending)")
-                    _cogs  = _msa_row("COGS")
-                    _gp    = _msa_row("Gross Profit")
-                    _sga   = _msa_row("Total SG&A")
-                    _sd    = _msa_row("Total Sales & Distribution")
-                    _int   = _msa_row("Total Interest & Charges")
-                    _vat   = _msa_row("0629-VAT & Tax Total (A+B+C)")
-                    _ni    = _msa_row("Net Income")
+                    # Monthly actuals per period (Level S sign: costs negative)
+                    _m_rev  = _be_row("Adjusted Revenue (Pending)")
+                    _m_cogs = _be_row("COGS")
+                    _m_gp   = _be_row("Gross Profit")
+                    _m_sga  = _be_row("Total SG&A")
+                    _m_sd   = _be_row("Total Sales & Distribution")
+                    _m_od   = _be_row("0501-Others Direct Expenses")
+                    _m_int  = _be_row("Total Interest & Charges")
+                    _m_vat  = _be_row("0629-VAT & Tax Total (A+B+C)")
+                    _m_ni   = _be_row("Net Income")
 
-                    # Level S sign: SGA/SD/Int/VAT are negative; negate to positive for MSA.
-                    _gm_pct         = _gp / _rev.replace(0, float('nan'))  # GP(P)/Rev, positive
-                    _fixed_costs_abs = -(_sga + _sd + _int + _vat)         # positive absolute costs
-                    # Break-even revenue = Fixed Costs / Gross Margin%
-                    _be_rev      = _fixed_costs_abs / _gm_pct.replace(0, float('nan'))
-                    _safety_mar  = _rev - _be_rev
-                    _safety_pct  = (_safety_mar / _rev.replace(0, float('nan'))) * 100
-                    # Max tolerable fixed cost at current revenue to achieve break even
-                    _max_fixed   = _rev * _gm_pct
+                    # Monthly averages (scalars)
+                    _n_mo   = len(_be_cols)
+                    _a_rev  = float(_m_rev.mean())
+                    _a_cogs = float(_m_cogs.mean())
+                    _a_gp   = float(_m_gp.mean())
+                    _a_sga  = float(_m_sga.mean())
+                    _a_sd   = float(_m_sd.mean())
+                    _a_od   = float(_m_od.mean())
+                    _a_int  = float(_m_int.mean())
+                    _a_vat  = float(_m_vat.mean())
+                    _a_ni   = float(_m_ni.mean())
 
-                    _lbl = [common._period_col_label(c) for c in _msa_cols]
+                    # Gross margin ratio (positive) for COGS scaling
+                    _gm_ratio = _a_gp / _a_rev if _a_rev != 0 else 0.0
+                    _cogs_ratio = _a_cogs / _a_rev if _a_rev != 0 else 0.0  # negative ratio
 
-                    def _pct_fmt(s):
-                        return {c: f"{v:.1f}%" if not pd.isna(v) else "—"
-                                for c, v in zip(_lbl, s.values)}
-
-                    def _amt_fmt(s):
-                        return {c: f"{v:,.0f}" if not pd.isna(v) else "—"
-                                for c, v in zip(_lbl, s.values)}
-
-                    _be_df = pd.DataFrame([
-                        {"Metric": "Revenue (Actual)", **_amt_fmt(_rev)},
-                        {"Metric": "Gross Margin %",   **_pct_fmt(_gm_pct * 100)},
-                        {"Metric": "Fixed Costs (SG&A + S&D + Interest + Tax)",
-                                                        **_amt_fmt(_fixed_costs_abs)},
-                        {"Metric": "Break-even Revenue Required",
-                                                        **_amt_fmt(_be_rev)},
-                        {"Metric": "Revenue Surplus / (Deficit) vs Break-even",
-                                                        **_amt_fmt(_safety_mar)},
-                        {"Metric": "Safety Margin %",   **_pct_fmt(_safety_pct)},
-                        {"Metric": "Max Tolerable Fixed Cost at Current Revenue",
-                                                        **_amt_fmt(_max_fixed)},
-                    ]).set_index("Metric")
-
-                    st.markdown("**Break-even Summary (per month)**")
+                    # ── Inputs ───────────────────────────────────────────────
                     st.caption(
-                        "Fixed Costs = SG&A + S&D + Interest + VAT/Tax  |  "
-                        "Break-even Revenue = Fixed Costs ÷ Gross Margin %  |  "
-                        "Safety Margin = Actual Revenue − Break-even Revenue"
+                        f"Averages computed over {_n_mo} month(s) in the selected period. "
+                        "COGS scales automatically with projected revenue at the same gross margin ratio. "
+                        "Adjust cost lines as % of their monthly average."
                     )
+                    _bi_c1, _bi_c2, _bi_c3 = st.columns(3)
+                    with _bi_c1:
+                        _proj_rev_m = st.number_input(
+                            "Projected Monthly Revenue",
+                            min_value=0.0,
+                            value=float(round(_a_rev)),
+                            step=100000.0,
+                            format="%.0f",
+                            key="be_proj_rev",
+                            help="Revenue target for the projection column.",
+                        )
+                        _be_pct_sga = st.number_input(
+                            "Total SG&A % of avg", min_value=0.0, value=100.0,
+                            step=5.0, key="be_pct_sga",
+                        )
+                    with _bi_c2:
+                        _be_pct_sd = st.number_input(
+                            "Total S&D % of avg", min_value=0.0, value=100.0,
+                            step=5.0, key="be_pct_sd",
+                        )
+                        _be_pct_int = st.number_input(
+                            "Total Interest % of avg", min_value=0.0, value=100.0,
+                            step=5.0, key="be_pct_int",
+                        )
+                    with _bi_c3:
+                        _be_pct_vat = st.number_input(
+                            "VAT/Tax % of avg", min_value=0.0, value=100.0,
+                            step=5.0, key="be_pct_vat",
+                        )
+
+                    # ── Projection calculations ───────────────────────────────
+                    # Straight-line: revenue = user input, COGS scales, all costs = avg
+                    _sl_rev    = _proj_rev_m
+                    _sl_cogs   = _proj_rev_m * _cogs_ratio          # negative
+                    _sl_gp     = _sl_rev + _sl_cogs
+                    _sl_sga    = _a_sga
+                    _sl_sd     = _a_sd
+                    _sl_od     = _a_od
+                    _sl_ebitda = _sl_gp + _sl_sga + _sl_sd + _sl_od
+                    _sl_int    = _a_int
+                    _sl_vat    = _a_vat
+                    _sl_ni     = _sl_ebitda + _sl_int + _sl_vat
+
+                    # Manual: revenue = user input, COGS scales, adjustable costs
+                    _mn_rev    = _proj_rev_m
+                    _mn_cogs   = _proj_rev_m * _cogs_ratio          # negative
+                    _mn_gp     = _mn_rev + _mn_cogs
+                    _mn_sga    = _a_sga * _be_pct_sga / 100
+                    _mn_sd     = _a_sd  * _be_pct_sd  / 100
+                    _mn_od     = _a_od
+                    _mn_ebitda = _mn_gp + _mn_sga + _mn_sd + _mn_od
+                    _mn_int    = _a_int * _be_pct_int / 100
+                    _mn_vat    = _a_vat * _be_pct_vat / 100
+                    _mn_ni     = _mn_ebitda + _mn_int + _mn_vat
+
+                    # Break-even revenue: NI=0 → Rev = |fixed costs| / GM ratio
+                    def _be_revenue(sga, sd, od, int_, vat):
+                        fixed = sga + sd + od + int_ + vat   # negative sum
+                        return (-fixed / _gm_ratio) if _gm_ratio != 0 else float('nan')
+
+                    _avg_be_rev = _be_revenue(_a_sga, _a_sd, _a_od, _a_int, _a_vat)
+                    _sl_be_rev  = _avg_be_rev   # costs same as avg
+                    _mn_be_rev  = _be_revenue(_mn_sga, _mn_sd, _mn_od, _mn_int, _mn_vat)
+
+                    # ── Single table ─────────────────────────────────────────
+                    def _f(v):
+                        if v is None or (isinstance(v, float) and pd.isna(v)):
+                            return "—"
+                        return f"{v:,.0f}"
+
+                    _be_table_rows = [
+                        ("Adjusted Revenue (Pending)", _a_rev,   _sl_rev,    _mn_rev),
+                        ("COGS",                       _a_cogs,  _sl_cogs,   _mn_cogs),
+                        ("Gross Profit",               _a_gp,    _sl_gp,     _mn_gp),
+                        ("Total SG&A",                 _a_sga,   _sl_sga,    _mn_sga),
+                        ("Total Sales & Distribution", _a_sd,    _sl_sd,     _mn_sd),
+                        ("0501-Others Direct Expenses",_a_od,    _sl_od,     _mn_od),
+                        ("EBITDA",           _a_gp + _a_sga + _a_sd + _a_od,
+                                                       _sl_ebitda, _mn_ebitda),
+                        ("Total Interest & Charges",   _a_int,   _sl_int,    _mn_int),
+                        ("0629-VAT & Tax Total (A+B+C)", _a_vat, _sl_vat,    _mn_vat),
+                        ("Net Income",                 _a_ni,    _sl_ni,     _mn_ni),
+                        ("― Break-even Revenue ―",    _avg_be_rev, _sl_be_rev, _mn_be_rev),
+                    ]
+                    _be_df = pd.DataFrame(
+                        [{"Row": r, f"Monthly Avg ({_n_mo}m)": _f(a),
+                          "Straight-line": _f(b), "Manual Projection": _f(c)}
+                         for r, a, b, c in _be_table_rows]
+                    ).set_index("Row")
                     st.dataframe(_be_df, use_container_width=True)
 
-                    # ── Revenue sensitivity grid ──────────────────────────────
-                    st.markdown("**Revenue Sensitivity — Net Income at Various Revenue Levels**")
-                    st.caption(
-                        "Assumes COGS scales proportionally with revenue (constant gross margin %). "
-                        "Fixed costs (SG&A, S&D, Interest, VAT/Tax) held constant."
-                    )
-                    # NI = GP(P) - |FixedCosts| = Rev*gm% - fixed_costs_abs
-                    _scenarios = [0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.30]
-                    _sens_rows2 = []
-                    for _pct in _scenarios:
-                        _sc_rev = _rev * _pct
-                        _sc_ni  = _sc_rev * _gm_pct - _fixed_costs_abs
-                        row = {"Revenue Level": f"{int(_pct*100)}% of Actual"}
-                        row.update({c: (f"{v:,.0f}" if not pd.isna(v) else "—")
-                                    for c, v in zip(_lbl, _sc_ni.values)})
-                        _sens_rows2.append(row)
-                    _sens_df = pd.DataFrame(_sens_rows2).set_index("Revenue Level")
-                    st.dataframe(_sens_df, use_container_width=True)
+                    # ── Save / Delete snapshots ───────────────────────────────
+                    with st.expander("💾 Break-even Snapshots", expanded=False):
+                        _be_note = st.text_area(
+                            "Note / explanation",
+                            placeholder="e.g. July scenario — cost cuts assumed, revenue target 17M...",
+                            key="be_snap_note",
+                            height=80,
+                        )
+                        if st.button("💾 Save Snapshot", key="be_snap_save"):
+                            _be_snap = {
+                                "saved_at": datetime.now().isoformat(timespec="seconds"),
+                                "zid": str(_az),
+                                "n_months": _n_mo,
+                                "proj_rev": _proj_rev_m,
+                                "inputs": {
+                                    "pct_sga": _be_pct_sga,
+                                    "pct_sd":  _be_pct_sd,
+                                    "pct_int": _be_pct_int,
+                                    "pct_vat": _be_pct_vat,
+                                },
+                                "table": {
+                                    r: {"avg": round(a, 2), "straight": round(b, 2), "manual": round(c, 2)}
+                                    for r, a, b, c in _be_table_rows
+                                },
+                                "note": _be_note.strip(),
+                            }
+                            _save_lp_breakeven(_be_snap)
+                            st.success(f"Snapshot saved — {_be_snap['saved_at']}")
 
-                    # ── Cost sensitivity: max tolerable fixed cost for NI targets ─
-                    st.markdown("**Max Tolerable Fixed Cost — at Current Revenue for Target Net Margin**")
-                    st.caption(
-                        "Shows the maximum fixed cost (SG&A + S&D + Interest + Tax) "
-                        "the business can sustain at current revenue to achieve each Net Income margin target."
-                    )
-                    _ni_targets = [0.0, 0.02, 0.05, 0.08, 0.10]
-                    _cost_rows = []
-                    for _tgt in _ni_targets:
-                        _max_fc = _rev * (_gm_pct - _tgt)
-                        row = {"Target Net Margin": f"{int(_tgt*100)}%"}
-                        row.update({c: (f"{v:,.0f}" if not pd.isna(v) else "—")
-                                    for c, v in zip(_lbl, _max_fc.values)})
-                        _cost_rows.append(row)
-                    _cost_df = pd.DataFrame(_cost_rows).set_index("Target Net Margin")
-                    st.dataframe(_cost_df, use_container_width=True)
+                        _all_be_snaps = _load_lp_breakeven()
+                        if _all_be_snaps:
+                            st.markdown(
+                                f"**Saved Snapshots** ({len(_all_be_snaps)})"
+                            )
+                            for _bsi, _bsnap in enumerate(reversed(_all_be_snaps)):
+                                _bts   = _bsnap.get("saved_at", "?")
+                                _bprev = _bsnap.get("note", "")[:60]
+                                if _bprev:
+                                    _bprev = f" — {_bprev}{'…' if len(_bsnap.get('note','')) > 60 else ''}"
+                                _btitle = (
+                                    f"{'🔵' if _bsi == 0 else '⚪'} "
+                                    f"ZID {_bsnap.get('zid','?')}  |  {_bts}{_bprev}"
+                                )
+                                with st.expander(_btitle, expanded=(_bsi == 0)):
+                                    if _bsnap.get("note"):
+                                        st.info(_bsnap["note"])
+                                    _bc1, _bc2 = st.columns([3, 1])
+                                    with _bc1:
+                                        _b_meta = [
+                                            ("ZID", _bsnap.get("zid")),
+                                            ("Months in Avg", _bsnap.get("n_months")),
+                                            ("Projected Revenue", f"{_bsnap.get('proj_rev', 0):,.0f}"),
+                                            ("Saved At", _bts),
+                                        ]
+                                        st.table(
+                                            pd.DataFrame(_b_meta, columns=["Field", "Value"])
+                                            .set_index("Field")
+                                        )
+                                        if _bsnap.get("inputs"):
+                                            _inp = _bsnap["inputs"]
+                                            st.markdown("**Inputs (%)**")
+                                            st.table(pd.DataFrame([
+                                                ("SG&A % of avg",      _inp.get("pct_sga")),
+                                                ("S&D % of avg",       _inp.get("pct_sd")),
+                                                ("Interest % of avg",  _inp.get("pct_int")),
+                                                ("VAT/Tax % of avg",   _inp.get("pct_vat")),
+                                            ], columns=["Input", "%"]).set_index("Input"))
+                                    with _bc2:
+                                        if st.button(
+                                            "🗑 Delete",
+                                            key=f"be_del_{_bts}_{_bsi}",
+                                            help="Remove this snapshot",
+                                        ):
+                                            _delete_lp_breakeven(_bts)
+                                            st.rerun()
+                                    if _bsnap.get("table"):
+                                        st.markdown("**Saved Table**")
+                                        _snap_rows = [
+                                            {"Row": r,
+                                             f"Monthly Avg ({_bsnap.get('n_months','?')}m)": f"{v.get('avg',0):,.0f}",
+                                             "Straight-line": f"{v.get('straight',0):,.0f}",
+                                             "Manual Projection": f"{v.get('manual',0):,.0f}"}
+                                            for r, v in _bsnap["table"].items()
+                                        ]
+                                        st.dataframe(
+                                            pd.DataFrame(_snap_rows).set_index("Row"),
+                                            use_container_width=True,
+                                        )
 
-                except Exception as _msa_err:
-                    st.warning(f"Could not compute sensitivity analysis: {_msa_err}")
+                except Exception as _be_err:
+                    st.warning(f"Could not compute break-even analysis: {_be_err}")
