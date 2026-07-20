@@ -72,6 +72,7 @@ data/targets.json
 data/public_holidays.json
 data/warehouse_filters.json
 data/crm_log.json
+data/level_p_projections.json
 
 # Personal Claude Code tool permissions — local to this machine
 .claude/settings.local.json
