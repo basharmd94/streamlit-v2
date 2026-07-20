@@ -1968,7 +1968,11 @@ def display_financial_statements(current_page, zid):
                             "Adjust each line relative to the straight-line annualised base. "
                             "COGS is expressed as % of projected revenue; all others as % of annualised."
                         )
-                        _gm_default = round((1 - _ann_cogs / _ann_rev) * 100, 1) if _ann_rev else 65.0
+                        # Level S sign convention: COGS/SG&A/S&D/Interest/VAT are negative.
+                        # Gross margin % = Gross Profit / Revenue (both positive).
+                        # COGS % of revenue = -COGS / Revenue (negate to get positive %).
+                        _gm_default   = round(_ann_gp / _ann_rev * 100, 1) if _ann_rev > 0 else 35.0
+                        _cogs_default = max(0.0, round(-_ann_cogs / _ann_rev * 100, 1)) if _ann_rev > 0 else 65.0
                         _c1, _c2, _c3 = st.columns(3)
                         with _c1:
                             _pct_rev = st.number_input(
@@ -1981,10 +1985,11 @@ def display_financial_statements(current_page, zid):
                             )
                         with _c2:
                             _pct_cogs_rev = st.number_input(
-                                "COGS % of projected revenue", min_value=0.0, value=round(100 - _gm_default, 1),
+                                "COGS % of projected revenue", min_value=0.0, value=_cogs_default,
                                 step=1.0, key="lp_pct_cogs",
-                                help=f"Current gross margin is ~{_gm_default:.1f}%. "
-                                     "Lower this number to improve margins.",
+                                help=f"Current gross margin ≈ {_gm_default:.1f}% "
+                                     f"(COGS ≈ {_cogs_default:.1f}% of revenue). "
+                                     "Lower COGS% to widen the margin.",
                             )
                             _pct_sd = st.number_input(
                                 "Total S&D % of annualised", min_value=0.0, value=100.0,
@@ -1999,15 +2004,16 @@ def display_financial_statements(current_page, zid):
                                 "VAT/Tax % of annualised", min_value=0.0, value=100.0,
                                 step=5.0, key="lp_pct_vat",
                             )
-                        _p_rev  = _ann_rev  * _pct_rev  / 100
-                        _p_cogs = _p_rev    * _pct_cogs_rev / 100
-                        _p_gp   = _p_rev - _p_cogs
-                        _p_sga  = _ann_sga  * _pct_sga  / 100
-                        _p_sd   = _ann_sd   * _pct_sd   / 100
-                        _p_ebit = _p_gp  - _p_sga - _p_sd
-                        _p_int  = _ann_int  * _pct_int  / 100
-                        _p_vat  = _ann_vat  * _pct_vat  / 100
-                        _p_ni   = _p_ebit - _p_int - _p_vat
+                        # Keep Level S sign convention throughout: costs stay negative.
+                        _p_rev  = _ann_rev * _pct_rev / 100
+                        _p_cogs = -(_p_rev * _pct_cogs_rev / 100)   # negate → negative
+                        _p_gp   = _p_rev + _p_cogs                  # Rev + (neg COGS)
+                        _p_sga  = _ann_sga * _pct_sga / 100         # already negative
+                        _p_sd   = _ann_sd  * _pct_sd  / 100         # already negative
+                        _p_ebit = _p_gp + _p_sga + _p_sd            # GP + neg costs
+                        _p_int  = _ann_int * _pct_int / 100         # already negative
+                        _p_vat  = _ann_vat * _pct_vat / 100         # already negative
+                        _p_ni   = _p_ebit + _p_int + _p_vat         # EBIT + neg costs
 
                     _proj_col_lbl = f"Proj FY {_ytd_int_col}"
                     _proj_rows = [
