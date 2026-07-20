@@ -772,6 +772,79 @@ def _sanity_checks(
         st.dataframe(cfs_check, use_container_width=True)
 
 
+def _level_p_sanity_checks(pl_p: pd.DataFrame, pl_s: pd.DataFrame, name_col: str = "ac_name"):
+    """
+    Render Level P arithmetic checks and cross-level NI comparison.
+    Shows: (1) IS formula verification and (2) Level P NI vs Level S NI.
+    """
+    st.markdown("---")
+    st.subheader("Level P Sanity Checks")
+    st.caption(
+        "Arithmetic verification of Level P IS rows. "
+        "GP = Adj Revenue + COGS, EBITDA = GP + SG&A + S&D + Others Direct, "
+        "NI = EBITDA + Interest + VAT. "
+        "Level P NI should equal Level S NI (Others Revenue redistributed equally into SG&A and S&D)."
+    )
+
+    num_p = financial._ls_num_cols(pl_p)
+    num_s = financial._ls_num_cols(pl_s)
+
+    def _gp(df, label, num):
+        r = df.loc[df[name_col].astype(str) == label]
+        if r.empty:
+            return pd.Series(0.0, index=num)
+        return r.select_dtypes("number").iloc[0].reindex(num, fill_value=0.0)
+
+    _adj_rev  = _gp(pl_p, "Adjusted Revenue (Pending)", num_p)
+    _cogs     = _gp(pl_p, "COGS", num_p)
+    _gross_p  = _gp(pl_p, "Gross Profit", num_p)
+    _sga      = _gp(pl_p, "Total SG&A", num_p)
+    _sd       = _gp(pl_p, "Total Sales & Distribution", num_p)
+    _od       = _gp(pl_p, "0501-Others Direct Expenses", num_p)
+    _ebitda   = _gp(pl_p, "EBITDA", num_p)
+    _int      = _gp(pl_p, "Total Interest & Charges", num_p)
+    _vat      = _gp(pl_p, "0629-VAT & Tax Total (A+B+C)", num_p)
+    _ni_p     = _gp(pl_p, "Net Income", num_p)
+    _ni_s     = _gp(pl_s, "Net Income", num_s)
+
+    _gp_computed     = _adj_rev + _cogs
+    _ebitda_computed = _gross_p + _sga + _sd + _od
+    _ni_computed     = _ebitda + _int + _vat
+
+    _lbl = [str(common._period_col_label(c)) for c in num_p]
+    _lbl_s = [str(common._period_col_label(c)) for c in num_s]
+
+    def _fmt_val(v):
+        try:
+            f = float(v)
+            return f"{f:,.0f}" if abs(f) >= 1 else f"{f:.2f}"
+        except Exception:
+            return str(v)
+
+    def _check_row(check_name, reported, computed, col_labels):
+        diff = (reported - computed).fillna(0.0)
+        status = "✅ Pass" if diff.abs().max() < 1 else "⚠️ Diff"
+        row = {"Check": check_name, "Status": status}
+        row.update({c: _fmt_val(v) for c, v in zip(col_labels, diff.values)})
+        return row
+
+    arith_rows = [
+        _check_row("GP = Adj Rev + COGS",              _gross_p, _gp_computed,     _lbl),
+        _check_row("EBITDA = GP + SG&A + S&D + OthDir", _ebitda, _ebitda_computed, _lbl),
+        _check_row("NI = EBITDA + Interest + VAT",      _ni_p,   _ni_computed,     _lbl),
+    ]
+    arith_df = pd.DataFrame(arith_rows).set_index("Check")
+    st.markdown("**IS Arithmetic Verification** *(difference shown; should be 0)*")
+    st.dataframe(arith_df, use_container_width=True)
+
+    # Cross-level NI comparison (Level P NI vs Level S NI)
+    ni_p_row = {"Level": "Level P"};  ni_p_row.update({c: _fmt_val(v) for c, v in zip(_lbl, _ni_p.values)})
+    ni_s_row = {"Level": "Level S"};  ni_s_row.update({c: _fmt_val(v) for c, v in zip(_lbl_s, _ni_s.values)})
+    ni_cross_df = pd.DataFrame([ni_p_row, ni_s_row]).set_index("Level")
+    st.markdown("**Level P vs Level S — Net Income** *(should be identical)*")
+    st.dataframe(ni_cross_df, use_container_width=True)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Config Editor
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1145,6 +1218,7 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
             ),
             unsafe_allow_html=True,
         )
+        _level_p_sanity_checks(pl_p_q, pl_s)
 
     elif selected_level in ("Level C - Raw Consolidation", "Level C2 - Consolidated Detail"):
         st.info("Consolidated quarterly view uses Level S. Select 'Level S - Customised Detail'.")
@@ -1918,6 +1992,7 @@ def display_financial_statements(current_page, zid):
                 ),
                 unsafe_allow_html=True,
             )
+            _level_p_sanity_checks(pl_p_y, pl_s_p)
 
             # ── FY Projection (only for Full Year vs YTD) ────────────────────
             if selected_perspective == 'Yearly - Full Year vs YTD' and ytd_month > 0:
@@ -1939,27 +2014,26 @@ def display_financial_statements(current_page, zid):
                         r = pl_p_y.loc[pl_p_y["ac_name"].astype(str) == row_label, _ytd_int_col]
                         return float(r.iloc[0]) if not r.empty else 0.0
 
-                    _ann_rev        = _annualise("Adjusted Revenue (Pending)") * 12 / ytd_month
-                    _ann_cogs       = _annualise("COGS")                       * 12 / ytd_month
-                    _ann_gp         = _annualise("Gross Profit")               * 12 / ytd_month
-                    _ann_sga        = _annualise("Total SG&A")                 * 12 / ytd_month
-                    _ann_sd         = _annualise("Total Sales & Distribution") * 12 / ytd_month
-                    _ann_others_rev = _annualise("Others Revenue")             * 12 / ytd_month
-                    _ann_net_sd     = _ann_sd + _ann_others_rev   # S&D net of Others Revenue
-                    _ann_int        = _annualise("Total Interest & Charges")   * 12 / ytd_month
-                    _ann_vat        = _annualise("0629-VAT & Tax Total (A+B+C)") * 12 / ytd_month
-                    # Recalculated EBITDA and NI using Net S&D (matching build_condensed_view)
-                    _ann_ebit = _ann_gp + _ann_sga + _ann_net_sd
-                    _ann_ni   = _ann_ebit + _ann_int + _ann_vat
+                    # pl_p_y already has GP(P)=Adj Rev+COGS and adjusted SGA/SD
+                    # (Others Revenue split equally into SGA and SD via build_condensed_view).
+                    _ann_rev        = _annualise("Adjusted Revenue (Pending)")    * 12 / ytd_month
+                    _ann_cogs       = _annualise("COGS")                          * 12 / ytd_month
+                    _ann_gp_p       = _annualise("Gross Profit")                  * 12 / ytd_month
+                    _ann_sga        = _annualise("Total SG&A")                    * 12 / ytd_month
+                    _ann_sd         = _annualise("Total Sales & Distribution")    * 12 / ytd_month
+                    _ann_others_dir = _annualise("0501-Others Direct Expenses")   * 12 / ytd_month
+                    _ann_int        = _annualise("Total Interest & Charges")      * 12 / ytd_month
+                    _ann_vat        = _annualise("0629-VAT & Tax Total (A+B+C)")  * 12 / ytd_month
+                    _ann_ebit       = _ann_gp_p + _ann_sga + _ann_sd + _ann_others_dir
+                    _ann_ni         = _ann_ebit + _ann_int + _ann_vat
 
                     if _proj_mode == "📅 Straight-line (month average)":
                         _p_rev        = _ann_rev
                         _p_cogs       = _ann_cogs
-                        _p_gp         = _ann_gp
+                        _p_gp         = _ann_gp_p
                         _p_sga        = _ann_sga
                         _p_sd         = _ann_sd
-                        _p_others_rev = _ann_others_rev
-                        _p_net_sd     = _ann_net_sd
+                        _p_others_dir = _ann_others_dir
                         _p_ebit       = _ann_ebit
                         _p_int        = _ann_int
                         _p_vat        = _ann_vat
@@ -1971,12 +2045,12 @@ def display_financial_statements(current_page, zid):
                     else:
                         st.caption(
                             "Adjust each line relative to the straight-line annualised base. "
-                            "COGS is expressed as % of projected revenue; all others as % of annualised."
+                            "COGS is expressed as % of projected revenue; all others as % of annualised. "
+                            "SG&A and S&D already reflect the Others Revenue offset."
                         )
                         # Level S sign convention: COGS/SG&A/S&D/Interest/VAT are negative.
-                        # Gross margin % = Gross Profit / Revenue (both positive).
-                        # COGS % of revenue = -COGS / Revenue (negate to get positive %).
-                        _gm_default   = round(_ann_gp / _ann_rev * 100, 1) if _ann_rev > 0 else 35.0
+                        # GP(P) = Adj Revenue + COGS; GP% = GP(P) / Revenue.
+                        _gm_default   = round(_ann_gp_p / _ann_rev * 100, 1) if _ann_rev > 0 else 35.0
                         _cogs_default = max(0.0, round(-_ann_cogs / _ann_rev * 100, 1)) if _ann_rev > 0 else 65.0
                         _c1, _c2, _c3 = st.columns(3)
                         with _c1:
@@ -2009,37 +2083,30 @@ def display_financial_statements(current_page, zid):
                                 "VAT/Tax % of annualised", min_value=0.0, value=100.0,
                                 step=5.0, key="lp_pct_vat",
                             )
-                            _pct_others_rev = st.number_input(
-                                "Others Revenue % of annualised", min_value=0.0, value=100.0,
-                                step=5.0, key="lp_pct_others_rev",
-                                help="Others Revenue offsets S&D cost; Net S&D = S&D − Others Revenue.",
-                            )
                         # Keep Level S sign convention throughout: costs stay negative.
                         _p_rev        = _ann_rev * _pct_rev / 100
                         _p_cogs       = -(_p_rev * _pct_cogs_rev / 100)       # negate → negative
-                        _p_gp         = _p_rev + _p_cogs                       # Rev + (neg COGS)
-                        _p_sga        = _ann_sga * _pct_sga / 100             # already negative
-                        _p_sd         = _ann_sd  * _pct_sd  / 100             # already negative
-                        _p_others_rev = _ann_others_rev * _pct_others_rev / 100  # positive
-                        _p_net_sd     = _p_sd + _p_others_rev                 # S&D net of Others Rev
-                        _p_ebit       = _p_gp + _p_sga + _p_net_sd            # GP + neg costs
+                        _p_gp         = _p_rev + _p_cogs                       # GP(P) = Adj Rev + COGS
+                        _p_sga        = _ann_sga * _pct_sga / 100             # already negative, adjusted
+                        _p_sd         = _ann_sd  * _pct_sd  / 100             # already negative, adjusted
+                        _p_others_dir = _ann_others_dir                       # keep same as annualised
+                        _p_ebit       = _p_gp + _p_sga + _p_sd + _p_others_dir
                         _p_int        = _ann_int * _pct_int / 100             # already negative
                         _p_vat        = _ann_vat * _pct_vat / 100             # already negative
-                        _p_ni         = _p_ebit + _p_int + _p_vat             # EBIT + neg costs
+                        _p_ni         = _p_ebit + _p_int + _p_vat
 
                     _proj_col_lbl = f"Proj FY {_ytd_int_col}"
                     _proj_rows = [
-                        ("Adjusted Revenue (Pending)",  _p_rev),
-                        ("COGS",                         _p_cogs),
-                        ("Gross Profit",                 _p_gp),
-                        ("Total SG&A",                   _p_sga),
-                        ("Total Sales & Distribution",   _p_sd),         # original, informational
-                        ("Others Revenue",               _p_others_rev),
-                        ("Net Sales & Distribution",     _p_net_sd),
-                        ("EBITDA",                       _p_ebit),
-                        ("Total Interest & Charges",     _p_int),
-                        ("0629-VAT & Tax Total (A+B+C)", _p_vat),
-                        ("Net Income",                   _p_ni),
+                        ("Adjusted Revenue (Pending)",   _p_rev),
+                        ("COGS",                          _p_cogs),
+                        ("Gross Profit",                  _p_gp),
+                        ("Total SG&A",                    _p_sga),
+                        ("Total Sales & Distribution",    _p_sd),
+                        ("0501-Others Direct Expenses",   _p_others_dir),
+                        ("EBITDA",                        _p_ebit),
+                        ("Total Interest & Charges",      _p_int),
+                        ("0629-VAT & Tax Total (A+B+C)",  _p_vat),
+                        ("Net Income",                    _p_ni),
                     ]
                     # Build side-by-side: YTD actual | annualised | projected
                     _ytd_vals = {
@@ -3062,6 +3129,7 @@ def display_financial_statements(current_page, zid):
                 ),
                 unsafe_allow_html=True,
             )
+            _level_p_sanity_checks(pl_p_m, pl_s_pm)
 
             # ── Margin Sensitivity Analysis ───────────────────────────────────
             with st.expander("📐 Margin Sensitivity Analysis", expanded=False):
@@ -3084,14 +3152,14 @@ def display_financial_statements(current_page, zid):
                     _vat   = _msa_row("0629-VAT & Tax Total (A+B+C)")
                     _ni    = _msa_row("Net Income")
 
-                    # Gross margin % and fixed costs (semi-fixed: SG&A + S&D + Interest + VAT)
-                    _gm_pct      = _gp / _rev.replace(0, float('nan'))
-                    _fixed_costs = _sga + _sd + _int + _vat
+                    # Level S sign: SGA/SD/Int/VAT are negative; negate to positive for MSA.
+                    _gm_pct         = _gp / _rev.replace(0, float('nan'))  # GP(P)/Rev, positive
+                    _fixed_costs_abs = -(_sga + _sd + _int + _vat)         # positive absolute costs
                     # Break-even revenue = Fixed Costs / Gross Margin%
-                    _be_rev      = _fixed_costs / _gm_pct.replace(0, float('nan'))
+                    _be_rev      = _fixed_costs_abs / _gm_pct.replace(0, float('nan'))
                     _safety_mar  = _rev - _be_rev
                     _safety_pct  = (_safety_mar / _rev.replace(0, float('nan'))) * 100
-                    # Max tolerable fixed cost at current revenue to break even
+                    # Max tolerable fixed cost at current revenue to achieve break even
                     _max_fixed   = _rev * _gm_pct
 
                     _lbl = [common._period_col_label(c) for c in _msa_cols]
@@ -3108,7 +3176,7 @@ def display_financial_statements(current_page, zid):
                         {"Metric": "Revenue (Actual)", **_amt_fmt(_rev)},
                         {"Metric": "Gross Margin %",   **_pct_fmt(_gm_pct * 100)},
                         {"Metric": "Fixed Costs (SG&A + S&D + Interest + Tax)",
-                                                        **_amt_fmt(_fixed_costs)},
+                                                        **_amt_fmt(_fixed_costs_abs)},
                         {"Metric": "Break-even Revenue Required",
                                                         **_amt_fmt(_be_rev)},
                         {"Metric": "Revenue Surplus / (Deficit) vs Break-even",
@@ -3132,27 +3200,15 @@ def display_financial_statements(current_page, zid):
                         "Assumes COGS scales proportionally with revenue (constant gross margin %). "
                         "Fixed costs (SG&A, S&D, Interest, VAT/Tax) held constant."
                     )
+                    # NI = GP(P) - |FixedCosts| = Rev*gm% - fixed_costs_abs
                     _scenarios = [0.70, 0.80, 0.90, 1.00, 1.10, 1.20, 1.30]
-                    _sens_rows = []
-                    for _pct in _scenarios:
-                        _adj_rev  = _rev * _pct
-                        _adj_cogs = _cogs * _pct
-                        _adj_gp   = _adj_rev - _adj_cogs
-                        _adj_ni   = _adj_gp - _fixed_costs
-                        _sens_rows.append({
-                            "Revenue Level": f"{int(_pct*100)}%",
-                            **_amt_fmt(_adj_rev),
-                            **{f"NI @ {c}": (f"{v:,.0f}" if not pd.isna(v) else "—")
-                               for c, v in zip(_lbl, _adj_ni.values)},
-                        })
-                    # Simpler: show one row per scenario, columns = month labels
                     _sens_rows2 = []
                     for _pct in _scenarios:
-                        _adj_rev  = _rev * _pct
-                        _adj_ni   = _adj_rev * _gm_pct - _fixed_costs
+                        _sc_rev = _rev * _pct
+                        _sc_ni  = _sc_rev * _gm_pct - _fixed_costs_abs
                         row = {"Revenue Level": f"{int(_pct*100)}% of Actual"}
                         row.update({c: (f"{v:,.0f}" if not pd.isna(v) else "—")
-                                    for c, v in zip(_lbl, _adj_ni.values)})
+                                    for c, v in zip(_lbl, _sc_ni.values)})
                         _sens_rows2.append(row)
                     _sens_df = pd.DataFrame(_sens_rows2).set_index("Revenue Level")
                     st.dataframe(_sens_df, use_container_width=True)
