@@ -33,6 +33,15 @@ def _save_lp_projection(snapshot: dict) -> None:
     )
 
 
+def _delete_lp_projection(saved_at: str) -> None:
+    snaps = _load_lp_projections()
+    snaps = [s for s in snaps if s.get("saved_at") != saved_at]
+    _LP_PROJ_FILE.write_text(
+        json.dumps({"snapshots": snaps}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 def _fmt(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     """Return a Styler that formats every numeric column with comma separators."""
     num_cols = df.select_dtypes("number").columns
@@ -2197,52 +2206,71 @@ def display_financial_statements(current_page, zid):
                         _save_lp_projection(_snap)
                         st.success(f"Snapshot saved — {_snap['saved_at']}")
 
-                    # ── Last Saved Snapshot ───────────────────────────────────
+                    # ── Saved Snapshots ───────────────────────────────────────
                     _all_snaps = _load_lp_projections()
                     if _all_snaps:
-                        _latest = _all_snaps[-1]
-                        _snap_header = (
-                            f"📋 Last Saved Snapshot — {_latest.get('label', '?')}  |  "
-                            f"ZID {_latest.get('zid', '?')}  |  "
-                            f"saved {_latest.get('saved_at', '?')}"
+                        st.markdown(
+                            f"**📋 Saved Projections** ({len(_all_snaps)} snapshot"
+                            f"{'s' if len(_all_snaps) != 1 else ''})"
                         )
-                        with st.expander(_snap_header, expanded=False):
-                            if _latest.get("note"):
-                                st.info(_latest["note"])
-                            _meta_rows = [
-                                ("Year", _latest.get("year")),
-                                ("YTD Months", _latest.get("ytd_month")),
-                                ("ZID", _latest.get("zid")),
-                                ("Projection Mode", _latest.get("mode")),
-                                ("Saved At", _latest.get("saved_at")),
-                            ]
-                            st.table(
-                                pd.DataFrame(_meta_rows, columns=["Field", "Value"]).set_index("Field")
+                        # Show newest first
+                        for _si, _snap in enumerate(reversed(_all_snaps)):
+                            _snap_ts   = _snap.get("saved_at", "?")
+                            _snap_lbl  = _snap.get("label", "?")
+                            _snap_zid  = _snap.get("zid", "?")
+                            _snap_note_preview = _snap.get("note", "")[:60]
+                            if _snap_note_preview:
+                                _snap_note_preview = f" — {_snap_note_preview}{'…' if len(_snap.get('note','')) > 60 else ''}"
+                            _exp_title = (
+                                f"{'🔵' if _si == 0 else '⚪'} "
+                                f"{_snap_lbl}  |  ZID {_snap_zid}  |  {_snap_ts}"
+                                f"{_snap_note_preview}"
                             )
-                            if _latest.get("inputs"):
-                                st.markdown("**Adjustment Inputs**")
-                                _inp_df = pd.DataFrame(
-                                    [{"Input": k, "%": v}
-                                     for k, v in _latest["inputs"].items()]
-                                ).set_index("Input")
-                                st.dataframe(_inp_df, use_container_width=True)
-                            if _latest.get("projection"):
-                                st.markdown("**Projected Income Statement**")
-                                _snap_proj_df = pd.DataFrame(
-                                    [{"Row": r, "Projected Value": v}
-                                     for r, v in _latest["projection"].items()]
-                                ).set_index("Row")
-                                st.dataframe(
-                                    _snap_proj_df.style.format(
-                                        {"Projected Value": lambda v: f"{v:,.0f}"}
-                                    ),
-                                    use_container_width=True,
-                                )
-                            if len(_all_snaps) > 1:
-                                st.caption(
-                                    f"Showing latest of {len(_all_snaps)} saved snapshots. "
-                                    "Older snapshots are stored in `data/level_p_projections.json`."
-                                )
+                            with st.expander(_exp_title, expanded=(_si == 0)):
+                                if _snap.get("note"):
+                                    st.info(_snap["note"])
+                                _s_col1, _s_col2 = st.columns([3, 1])
+                                with _s_col1:
+                                    _meta_rows = [
+                                        ("Year", _snap.get("year")),
+                                        ("YTD Months", _snap.get("ytd_month")),
+                                        ("ZID", _snap.get("zid")),
+                                        ("Mode", _snap.get("mode")),
+                                        ("Saved At", _snap_ts),
+                                    ]
+                                    st.table(
+                                        pd.DataFrame(_meta_rows, columns=["Field", "Value"])
+                                        .set_index("Field")
+                                    )
+                                with _s_col2:
+                                    if st.button(
+                                        "🗑 Delete",
+                                        key=f"lp_del_{_snap_ts}_{_si}",
+                                        help="Permanently remove this snapshot",
+                                    ):
+                                        _delete_lp_projection(_snap_ts)
+                                        st.rerun()
+                                if _snap.get("inputs"):
+                                    st.markdown("**Adjustment Inputs**")
+                                    st.dataframe(
+                                        pd.DataFrame(
+                                            [{"Input": k, "%": v}
+                                             for k, v in _snap["inputs"].items()]
+                                        ).set_index("Input"),
+                                        use_container_width=True,
+                                    )
+                                if _snap.get("projection"):
+                                    st.markdown("**Projected Income Statement**")
+                                    _snap_proj_df = pd.DataFrame(
+                                        [{"Row": r, "Projected Value": v}
+                                         for r, v in _snap["projection"].items()]
+                                    ).set_index("Row")
+                                    st.dataframe(
+                                        _snap_proj_df.style.format(
+                                            {"Projected Value": lambda v: f"{v:,.0f}"}
+                                        ),
+                                        use_container_width=True,
+                                    )
 
         elif selected_level == "Level T - Trading Adjustments":
             st.info("📈 Analysis Dashboard is available at Level S only.")
