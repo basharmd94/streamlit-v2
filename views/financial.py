@@ -1,12 +1,36 @@
+import json
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from pathlib import Path
 from processing import common, financial
 from processing import consolidation as _consol
 from utils.utils import timed
 from core import queries
 from core.db import get_dataframe
 from views.financial_dashboard import render_analysis_dashboard
+
+_LP_PROJ_FILE = Path(__file__).resolve().parent.parent / "data" / "level_p_projections.json"
+_LP_PROJ_MAX  = 20  # max snapshots to keep
+
+
+def _load_lp_projections() -> list:
+    try:
+        if _LP_PROJ_FILE.exists():
+            return json.loads(_LP_PROJ_FILE.read_text(encoding="utf-8")).get("snapshots", [])
+    except Exception:
+        pass
+    return []
+
+
+def _save_lp_projection(snapshot: dict) -> None:
+    snaps = _load_lp_projections()
+    snaps.append(snapshot)
+    snaps = snaps[-_LP_PROJ_MAX:]
+    _LP_PROJ_FILE.write_text(
+        json.dumps({"snapshots": snaps}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def _fmt(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
@@ -2135,6 +2159,90 @@ def display_financial_statements(current_page, zid):
                         _proj_df.style.format(_proj_fmt),
                         use_container_width=True,
                     )
+
+                    # ── Save Projection Snapshot ──────────────────────────────
+                    st.markdown("---")
+                    st.subheader("💾 Save Projection Snapshot")
+                    _snap_note = st.text_area(
+                        "Projection note / explanation",
+                        placeholder=(
+                            "e.g. Conservative estimate based on H1 momentum — "
+                            "assuming 10% revenue growth and stable margins..."
+                        ),
+                        key=f"lp_snap_note_{_ytd_int_col}_{_az}",
+                        height=90,
+                    )
+                    if st.button("💾 Save Snapshot", key=f"lp_snap_save_{_ytd_int_col}_{_az}"):
+                        _snap_inputs = {}
+                        if _proj_mode == "✏️ Manual % adjustment":
+                            _snap_inputs = {
+                                "Revenue % of annualised": _pct_rev,
+                                "COGS % of projected revenue": _pct_cogs_rev,
+                                "Total SG&A % of annualised": _pct_sga,
+                                "Total S&D % of annualised": _pct_sd,
+                                "Interest % of annualised": _pct_int,
+                                "VAT/Tax % of annualised": _pct_vat,
+                            }
+                        _snap = {
+                            "saved_at": datetime.now().isoformat(timespec="seconds"),
+                            "label": _proj_col_lbl,
+                            "year": int(_ytd_int_col),
+                            "ytd_month": int(ytd_month),
+                            "zid": str(_az),
+                            "mode": _proj_mode,
+                            "inputs": _snap_inputs,
+                            "projection": {r: round(v, 2) for r, v in _proj_rows},
+                            "note": _snap_note.strip(),
+                        }
+                        _save_lp_projection(_snap)
+                        st.success(f"Snapshot saved — {_snap['saved_at']}")
+
+                    # ── Last Saved Snapshot ───────────────────────────────────
+                    _all_snaps = _load_lp_projections()
+                    if _all_snaps:
+                        _latest = _all_snaps[-1]
+                        _snap_header = (
+                            f"📋 Last Saved Snapshot — {_latest.get('label', '?')}  |  "
+                            f"ZID {_latest.get('zid', '?')}  |  "
+                            f"saved {_latest.get('saved_at', '?')}"
+                        )
+                        with st.expander(_snap_header, expanded=False):
+                            if _latest.get("note"):
+                                st.info(_latest["note"])
+                            _meta_rows = [
+                                ("Year", _latest.get("year")),
+                                ("YTD Months", _latest.get("ytd_month")),
+                                ("ZID", _latest.get("zid")),
+                                ("Projection Mode", _latest.get("mode")),
+                                ("Saved At", _latest.get("saved_at")),
+                            ]
+                            st.table(
+                                pd.DataFrame(_meta_rows, columns=["Field", "Value"]).set_index("Field")
+                            )
+                            if _latest.get("inputs"):
+                                st.markdown("**Adjustment Inputs**")
+                                _inp_df = pd.DataFrame(
+                                    [{"Input": k, "%": v}
+                                     for k, v in _latest["inputs"].items()]
+                                ).set_index("Input")
+                                st.dataframe(_inp_df, use_container_width=True)
+                            if _latest.get("projection"):
+                                st.markdown("**Projected Income Statement**")
+                                _snap_proj_df = pd.DataFrame(
+                                    [{"Row": r, "Projected Value": v}
+                                     for r, v in _latest["projection"].items()]
+                                ).set_index("Row")
+                                st.dataframe(
+                                    _snap_proj_df.style.format(
+                                        {"Projected Value": lambda v: f"{v:,.0f}"}
+                                    ),
+                                    use_container_width=True,
+                                )
+                            if len(_all_snaps) > 1:
+                                st.caption(
+                                    f"Showing latest of {len(_all_snaps)} saved snapshots. "
+                                    "Older snapshots are stored in `data/level_p_projections.json`."
+                                )
 
         elif selected_level == "Level T - Trading Adjustments":
             st.info("📈 Analysis Dashboard is available at Level S only.")
