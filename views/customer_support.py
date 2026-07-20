@@ -86,6 +86,12 @@ def _sales_14day_data() -> pd.DataFrame:
     return cs.load_all_sales_7day()
 
 
+@st.cache_data(show_spinner="Building Sales & Collection table…", ttl=1800)
+def _sc_data(zid: str) -> pd.DataFrame:
+    """Build the latest-sale/collection summary for one ZID — cached for 30 min."""
+    return cs.build_latest_sc_for_zid(_ar_data(), zid, _cacus_data())
+
+
 # ── Radio 1: 14-Day Activity ───────────────────────────────────────────────────
 
 def _render_14day_activity():
@@ -380,25 +386,13 @@ def _render_sc_table(
 
 
 def _render_latest_sales_collection():
-    ar_df    = _ar_data()
-    cacus_df = _cacus_data()
+    df_100001 = _sc_data("100001")
+    df_100000 = _sc_data("100000")
+    df_100005 = _sc_data("100005")
 
-    if ar_df is None or ar_df.empty:
+    if df_100001 is None and df_100000 is None and df_100005 is None:
         st.warning("AR ledger data unavailable.")
         return
-
-    # Cache built DataFrames in session_state keyed by object id of ar_df.
-    _ar_id = id(ar_df)
-    if st.session_state.get("_sc_ar_id") != _ar_id:
-        with st.spinner("Building Latest Sales & Collection…"):
-            st.session_state["_sc_ar_id"]  = _ar_id
-            st.session_state["_sc_100001"] = cs.build_latest_sc_for_zid(ar_df, "100001", cacus_df)
-            st.session_state["_sc_100000"] = cs.build_latest_sc_for_zid(ar_df, "100000", cacus_df)
-            st.session_state["_sc_100005"] = cs.build_latest_sc_for_zid(ar_df, "100005", cacus_df)
-
-    df_100001 = st.session_state["_sc_100001"]
-    df_100000 = st.session_state["_sc_100000"]
-    df_100005 = st.session_state["_sc_100005"]
 
     days_opts = {"All Days": None, "7+ days": 7, "14+ days": 14, "24+ days": 24, "30+ days": 30}
 
