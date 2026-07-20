@@ -1904,35 +1904,150 @@ def display_financial_statements(current_page, zid):
             )
             pl_p_y, bs_p_y = financial.build_condensed_view(pl_s_p, bs_s_p)
 
-            # ── FY Projection column (only for Full Year vs YTD) ──────────────
-            _pl_p_y_disp = pl_p_y.copy()
-            if selected_perspective == 'Yearly - Full Year vs YTD' and ytd_month > 0:
-                _ytd_int_col = year_list[-1]
-                _proj_label  = f"Proj FY {_ytd_int_col}"
-                _num_p_y = financial._ls_num_cols(_pl_p_y_disp)
-                if _ytd_int_col in _num_p_y:
-                    _pl_p_y_disp[_proj_label] = (
-                        _pl_p_y_disp[_ytd_int_col] * 12 / ytd_month
-                    )
-                    st.caption(
-                        f"ℹ️ **{_proj_label}** = YTD ({ytd_month} months) × 12 / {ytd_month} "
-                        f"(straight-line extrapolation to full year)"
-                    )
-
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(_pl_p_y_disp), use_container_width=True)
+                st.dataframe(_fmt(pl_p_y), use_container_width=True)
             with st.expander("Balance Sheet", expanded=True):
                 st.dataframe(_fmt(bs_p_y), use_container_width=True)
             with st.expander("Cash Flow Summary", expanded=True):
                 st.dataframe(_fmt(summary_s_p), use_container_width=True)
             st.markdown(
                 common.create_combined_ls_download_link(
-                    pl_s=_pl_p_y_disp, bs_s=bs_p_y, cfs_s=summary_s_p,
+                    pl_s=pl_p_y, bs_s=bs_p_y, cfs_s=summary_s_p,
                     filename="LevelP_Financial_Statements_Yearly.xlsx",
                     link_label="⬇ Download Level P Financial Statements (Excel)",
                 ),
                 unsafe_allow_html=True,
             )
+
+            # ── FY Projection (only for Full Year vs YTD) ────────────────────
+            if selected_perspective == 'Yearly - Full Year vs YTD' and ytd_month > 0:
+                _ytd_int_col = year_list[-1]
+                _num_p_y     = financial._ls_num_cols(pl_p_y)
+                if _ytd_int_col in _num_p_y:
+                    st.markdown("---")
+                    st.subheader(f"📈 Full-Year Projection ({_ytd_int_col})")
+
+                    _proj_mode = st.radio(
+                        "Projection method",
+                        ["📅 Straight-line (month average)", "✏️ Manual % adjustment"],
+                        horizontal=True,
+                        key="lp_proj_mode_y",
+                    )
+
+                    # Annualised baseline for every IS row
+                    def _annualise(row_label):
+                        r = pl_p_y.loc[pl_p_y["ac_name"].astype(str) == row_label, _ytd_int_col]
+                        return float(r.iloc[0]) if not r.empty else 0.0
+
+                    _ann_rev  = _annualise("Adjusted Revenue (Pending)") * 12 / ytd_month
+                    _ann_cogs = _annualise("COGS")                       * 12 / ytd_month
+                    _ann_gp   = _annualise("Gross Profit")               * 12 / ytd_month
+                    _ann_sga  = _annualise("Total SG&A")                 * 12 / ytd_month
+                    _ann_sd   = _annualise("Total Sales & Distribution") * 12 / ytd_month
+                    _ann_ebit = _annualise("EBITDA")                     * 12 / ytd_month
+                    _ann_int  = _annualise("Total Interest & Charges")   * 12 / ytd_month
+                    _ann_vat  = _annualise("0629-VAT & Tax Total (A+B+C)") * 12 / ytd_month
+                    _ann_ni   = _annualise("Net Income")                 * 12 / ytd_month
+
+                    if _proj_mode == "📅 Straight-line (month average)":
+                        _p_rev  = _ann_rev
+                        _p_cogs = _ann_cogs
+                        _p_gp   = _ann_gp
+                        _p_sga  = _ann_sga
+                        _p_sd   = _ann_sd
+                        _p_ebit = _ann_ebit
+                        _p_int  = _ann_int
+                        _p_vat  = _ann_vat
+                        _p_ni   = _ann_ni
+                        st.caption(
+                            f"Annualising {ytd_month} months of actuals × 12/{ytd_month}. "
+                            "Switch to Manual % adjustment to override individual lines."
+                        )
+                    else:
+                        st.caption(
+                            "Adjust each line relative to the straight-line annualised base. "
+                            "COGS is expressed as % of projected revenue; all others as % of annualised."
+                        )
+                        _gm_default = round((1 - _ann_cogs / _ann_rev) * 100, 1) if _ann_rev else 65.0
+                        _c1, _c2, _c3 = st.columns(3)
+                        with _c1:
+                            _pct_rev = st.number_input(
+                                "Revenue % of annualised", min_value=0.0, value=100.0,
+                                step=5.0, key="lp_pct_rev",
+                            )
+                            _pct_sga = st.number_input(
+                                "Total SG&A % of annualised", min_value=0.0, value=100.0,
+                                step=5.0, key="lp_pct_sga",
+                            )
+                        with _c2:
+                            _pct_cogs_rev = st.number_input(
+                                "COGS % of projected revenue", min_value=0.0, value=round(100 - _gm_default, 1),
+                                step=1.0, key="lp_pct_cogs",
+                                help=f"Current gross margin is ~{_gm_default:.1f}%. "
+                                     "Lower this number to improve margins.",
+                            )
+                            _pct_sd = st.number_input(
+                                "Total S&D % of annualised", min_value=0.0, value=100.0,
+                                step=5.0, key="lp_pct_sd",
+                            )
+                        with _c3:
+                            _pct_int = st.number_input(
+                                "Interest % of annualised", min_value=0.0, value=100.0,
+                                step=5.0, key="lp_pct_int",
+                            )
+                            _pct_vat = st.number_input(
+                                "VAT/Tax % of annualised", min_value=0.0, value=100.0,
+                                step=5.0, key="lp_pct_vat",
+                            )
+                        _p_rev  = _ann_rev  * _pct_rev  / 100
+                        _p_cogs = _p_rev    * _pct_cogs_rev / 100
+                        _p_gp   = _p_rev - _p_cogs
+                        _p_sga  = _ann_sga  * _pct_sga  / 100
+                        _p_sd   = _ann_sd   * _pct_sd   / 100
+                        _p_ebit = _p_gp  - _p_sga - _p_sd
+                        _p_int  = _ann_int  * _pct_int  / 100
+                        _p_vat  = _ann_vat  * _pct_vat  / 100
+                        _p_ni   = _p_ebit - _p_int - _p_vat
+
+                    _proj_col_lbl = f"Proj FY {_ytd_int_col}"
+                    _proj_rows = [
+                        ("Adjusted Revenue (Pending)", _p_rev),
+                        ("COGS",                        _p_cogs),
+                        ("Gross Profit",                _p_gp),
+                        ("Total SG&A",                  _p_sga),
+                        ("Total Sales & Distribution",  _p_sd),
+                        ("EBITDA",                      _p_ebit),
+                        ("Total Interest & Charges",    _p_int),
+                        ("0629-VAT & Tax Total (A+B+C)",_p_vat),
+                        ("Net Income",                  _p_ni),
+                    ]
+                    # Build side-by-side: YTD actual | annualised | projected
+                    _ytd_vals = {
+                        r: float(pl_p_y.loc[pl_p_y["ac_name"].astype(str) == r, _ytd_int_col].iloc[0])
+                        if not pl_p_y.loc[pl_p_y["ac_name"].astype(str) == r].empty else 0.0
+                        for r, _ in _proj_rows
+                    }
+                    _proj_df = pd.DataFrame([
+                        {
+                            "Row": r,
+                            f"YTD {_ytd_int_col} ({ytd_month}m)": _ytd_vals[r],
+                            "Annualised (×12/m)": _ytd_vals[r] * 12 / ytd_month,
+                            _proj_col_lbl: v,
+                        }
+                        for r, v in _proj_rows
+                    ]).set_index("Row")
+
+                    def _proj_fmt(val):
+                        try:
+                            f = float(val)
+                            return f"{f:,.0f}" if abs(f) >= 1 else f"{f:.2f}"
+                        except Exception:
+                            return str(val)
+
+                    st.dataframe(
+                        _proj_df.style.format(_proj_fmt),
+                        use_container_width=True,
+                    )
 
         elif selected_level == "Level T - Trading Adjustments":
             st.info("📈 Analysis Dashboard is available at Level S only.")
