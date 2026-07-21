@@ -909,6 +909,69 @@ def _level_p_sanity_checks(pl_p: pd.DataFrame, pl_s: pd.DataFrame, name_col: str
         st.dataframe(ni_cross_df, use_container_width=True)
 
 
+def _render_expense_changes(pl_sorted: pd.DataFrame) -> None:
+    """
+    Render the 'Expense Changes' expander for Level 0 IS.
+
+    Shows period-over-period differences for every 06xx (SG&A) and 07xx (S&D)
+    account row.  Works for any column granularity (yearly ints, monthly tuples,
+    quarterly tuples) — period columns are detected via select_dtypes.
+    Positive diff = cost went up; negative = cost went down (Level 0 sign).
+    """
+    with st.expander("📊 Expense Changes", expanded=False):
+        if "ac_code" not in pl_sorted.columns:
+            st.info("Account code column not available.")
+            return
+
+        # Period columns = every numeric column in pl_sorted
+        num_cols = list(pl_sorted.select_dtypes(include="number").columns)
+        if len(num_cols) < 2:
+            st.info("At least 2 periods are needed to compute changes.")
+            return
+
+        # Filter 06xx / 07xx rows
+        mask = pl_sorted["ac_code"].astype(str).str.match(r"^0[67]")
+        exp_df = pl_sorted.loc[mask, ["ac_code", "ac_name"] + num_cols].copy()
+
+        if exp_df.empty:
+            st.info("No 06xx / 07xx expense rows found in this dataset.")
+            return
+
+        # Build diff columns: each column = current period − prior period
+        diff_parts = {"ac_code": exp_df["ac_code"], "ac_name": exp_df["ac_name"]}
+        diff_labels = []
+        for i in range(1, len(num_cols)):
+            prev_lbl = str(common._period_col_label(num_cols[i - 1]))
+            curr_lbl = str(common._period_col_label(num_cols[i]))
+            col_name = f"{prev_lbl} → {curr_lbl}"
+            diff_parts[col_name] = (
+                exp_df[num_cols[i]].fillna(0) - exp_df[num_cols[i - 1]].fillna(0)
+            )
+            diff_labels.append(col_name)
+
+        diff_df = (
+            pd.DataFrame(diff_parts)
+            .set_index(["ac_code", "ac_name"])
+        )
+
+        st.caption(
+            "Period-over-period change for 06xx (SG&A) and 07xx (S&D) accounts. "
+            "**+** = cost increased · **−** = cost decreased (Level 0 accounting sign)."
+        )
+
+        def _sign_fmt(v):
+            try:
+                f = float(v)
+                return f"{f:+,.0f}"
+            except Exception:
+                return str(v)
+
+        st.dataframe(
+            diff_df.style.format({c: _sign_fmt for c in diff_labels}),
+            use_container_width=True,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Config Editor
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1262,6 +1325,7 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
         _expanders(pl_sorted, bs_lv0,
                    cfs_df if _cfs_qtr_available else None,
                    summary_df if _cfs_qtr_available else None)
+        _render_expense_changes(pl_sorted)
     elif selected_level == "Level 1 - Moderate Detail":
         _expanders(pl_lv1, bs_lv1,
                    cfs_lv1 if _cfs_qtr_available else None,
@@ -1819,6 +1883,8 @@ def display_financial_statements(current_page, zid):
                 ),
                 unsafe_allow_html=True,
             )
+            if selected_level == "Level 0 - Most Detail" and selected_perspective != 'Yearly - Full Year vs YTD':
+                _render_expense_changes(pl_sorted)
 
         elif selected_level == "Level 1 - Moderate Detail":
             with st.expander("Income Statement", expanded=True):
@@ -3061,6 +3127,8 @@ def display_financial_statements(current_page, zid):
                 ),
                 unsafe_allow_html=True,
             )
+            if selected_level == "Level 0 - Most Detail":
+                _render_expense_changes(pl_sorted)
 
         elif selected_level == "Level 1 - Moderate Detail":
             with st.expander("Income Statement", expanded=True):
