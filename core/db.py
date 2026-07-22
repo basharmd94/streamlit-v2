@@ -44,6 +44,28 @@ def get_data(query: str, *args):
             _get_pool().putconn(conn)
 
 
+def execute_write(sql: str, params: tuple = ()) -> bool:
+    """Execute a single DML statement (INSERT / UPDATE / DELETE). Returns True on success."""
+    conn = None
+    try:
+        conn = _get_pool().getconn()
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+        conn.commit()
+        return True
+    except Exception as e:
+        LogManager.logger.error(f"execute_write error: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return False
+    finally:
+        if conn:
+            _get_pool().putconn(conn)
+
+
 @timed
 def get_dataframe(query: str, params: tuple) -> pd.DataFrame:
     """Execute a query and return a pandas DataFrame. Uses the connection pool."""

@@ -2117,3 +2117,32 @@ def get_latest_sales_collection(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     # param order: ar_bal(zid,proj), sale_latest(zid), sale_amt(zid),
     #              coll_latest(zid,proj), coll_amt(zid,proj)
     return sql, (zid, project, zid, zid, zid, project, zid, project)
+
+
+# ── Call log CRUD ──────────────────────────────────────────────────────────────
+
+def get_call_logs(cusid: str) -> Tuple[str, tuple]:
+    """Fetch all call log entries for a customer (any ZID), newest first."""
+    sql = """
+        SELECT id, zid, cusid, called_at, called_by, outcome, notes
+        FROM crm_call_log
+        WHERE cusid = %s
+        ORDER BY called_at DESC
+        LIMIT 50
+    """
+    return sql, (cusid,)
+
+
+def insert_call_log(
+    zid: str, cusid: str, called_by: str, outcome: str, notes: str
+) -> Tuple[str, tuple]:
+    sql = """
+        INSERT INTO crm_call_log (zid, cusid, called_by, outcome, notes)
+        VALUES (%s, %s, %s, %s, %s)
+    """
+    return sql, (zid, cusid, called_by, outcome, notes)
+
+
+def delete_call_log(log_id: int) -> Tuple[str, tuple]:
+    sql = "DELETE FROM crm_call_log WHERE id = %s"
+    return sql, (log_id,)
