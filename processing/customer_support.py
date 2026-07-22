@@ -5,17 +5,12 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
 
 from processing.salesman_due import prep_ar_ledger
-
-_CRM_PATH = Path(__file__).parent.parent / "data" / "crm_log.json"
 
 # ZIDs that have customer-facing AR (project per ZID matches Salesman Due)
 _ZID_PROJECT: dict[str, str] = {
@@ -272,79 +267,39 @@ def build_latest_sc_for_zid(
     return out[[c for c in keep if c in out.columns]].reset_index(drop=True)
 
 
-# ─── CRM JSON I/O ─────────────────────────────────────────────────────────────
+# ─── Merged SC table (100001 + 100000) ───────────────────────────────────────
 
-def _read_raw() -> dict:
-    if not _CRM_PATH.exists():
-        return {"last_modified": None, "entries": {}}
-    return json.loads(_CRM_PATH.read_text(encoding="utf-8"))
+def build_merged_sc_table(
+    df_100001: pd.DataFrame,
+    df_100000: pd.DataFrame,
+) -> pd.DataFrame:
+    """Combine SC tables for 100001 and 100000 into one grouped table.
 
-
-def load_crm_log() -> tuple[dict, datetime]:
-    """Return (entries_dict, loaded_at). Creates the file if it does not exist."""
-    _CRM_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not _CRM_PATH.exists():
-        _CRM_PATH.write_text(
-            json.dumps({"last_modified": None, "entries": {}}, indent=2),
-            encoding="utf-8",
-        )
-    raw = _read_raw()
-    loaded_at = datetime.now(timezone.utc)
-    return raw.get("entries", {}), loaded_at
-
-
-def save_crm_log(
-    new_entries: dict,
-    loaded_at: datetime,
-    logged_by: str,
-    force: bool = False,
-    delete_keys: "set | None" = None,
-) -> tuple[bool, str]:
-    """Merge new_entries into the JSON and remove delete_keys.
-
-    Returns (success, message).  If the file was modified after loaded_at by
-    another session, returns (False, warning_message) unless force=True.
+    A customer present in both ZIDs appears as two adjacent rows. Groups are
+    sorted by max(days_since_sale) across the group, descending, so the most
+    overdue customer cluster floats to the top regardless of which ZID holds
+    the longer balance.
     """
-    current = _read_raw()
-    last_mod_str = current.get("last_modified")
+    parts: list[pd.DataFrame] = []
+    for zid, df in [("100001", df_100001), ("100000", df_100000)]:
+        if df is not None and not df.empty:
+            tmp = df.copy()
+            tmp["zid"] = zid
+            parts.append(tmp)
 
-    if not force and last_mod_str:
-        last_mod = datetime.fromisoformat(last_mod_str)
-        if last_mod.tzinfo is None:
-            last_mod = last_mod.replace(tzinfo=timezone.utc)
-        if last_mod > loaded_at:
-            return (
-                False,
-                f"⚠️ CRM log was updated by another user at "
-                f"{last_mod.strftime('%Y-%m-%d %H:%M:%S UTC')}. "
-                "Your changes were NOT saved. Reload the page and re-enter your updates, "
-                "or tick **Force save** to overwrite.",
-            )
+    if not parts:
+        return pd.DataFrame()
 
-    existing: dict = current.get("entries", {})
-    now_str = datetime.now(timezone.utc).isoformat()
+    merged = pd.concat(parts, ignore_index=True)
 
-    for key, entry in new_entries.items():
-        entry["logged_by"] = logged_by
-        entry["logged_at"] = now_str
-        existing[key] = entry
-
-    if delete_keys:
-        for k in delete_keys:
-            existing.pop(k, None)
-
-    current["entries"] = existing
-    current["last_modified"] = now_str
-    _CRM_PATH.write_text(
-        json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8"
+    days_col = pd.to_numeric(merged.get("days_since_sale", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    merged["_days"] = days_col
+    group_rank = merged.groupby("cusid")["_days"].max().rename("_group_rank")
+    merged = (
+        merged
+        .merge(group_rank, on="cusid")
+        .sort_values(["_group_rank", "cusid", "zid"], ascending=[False, True, True])
+        .drop(columns=["_days", "_group_rank"])
+        .reset_index(drop=True)
     )
-    n  = len(new_entries)
-    nd = len(delete_keys) if delete_keys else 0
-    if n and nd:
-        return True, f"✅ Saved {n} CRM entr{'y' if n == 1 else 'ies'}, removed {nd}."
-    elif n:
-        return True, f"✅ Saved {n} CRM entr{'y' if n == 1 else 'ies'}."
-    elif nd:
-        return True, f"✅ Removed {nd} cleared CRM entr{'y' if nd == 1 else 'ies'}."
-    else:
-        return True, "✅ Changes saved."
+    return merged
