@@ -9,7 +9,7 @@ import streamlit as st
 
 from processing import customer_support as cs
 
-_6M_DAYS = 183
+_3M_DAYS = 92   # ~3 calendar months for ledger display window
 
 _FEED_COLS = [
     "zid", "xdate", "xsub", "customer_name", "xcity",
@@ -35,11 +35,38 @@ _ZID_LABEL = {
 }
 _OUTCOMES = ["Promised", "Paid", "Not answered", "Dispute", "Other"]
 
+# Blue panel CSS — applied once per page render inside display_customer_support
+_BLUE_CSS = """<style>
+/* Blue border on every expander on this page */
+div[data-testid="stExpander"] > details {
+    border: 1.5px solid #2E86C1 !important;
+    border-radius: 8px !important;
+}
+div[data-testid="stExpander"] > details > summary {
+    background: #EBF5FB !important;
+    border-radius: 6px !important;
+}
+</style>"""
+
+# Reusable blue panel HTML wrappers for call log sections
+def _blue_header(title: str) -> str:
+    return (
+        f'<div style="background:#EBF5FB;border:1.5px solid #2E86C1;'
+        f'border-radius:8px 8px 0 0;padding:8px 14px 6px;margin-bottom:0;">'
+        f'<span style="color:#1A5276;font-weight:500;font-size:14px;">{title}</span>'
+        f'</div>'
+        f'<div style="border:1.5px solid #2E86C1;border-top:none;'
+        f'border-radius:0 0 8px 8px;padding:10px 14px 4px;margin-bottom:12px;">'
+    )
+
+_BLUE_FOOTER = '</div>'
+
 
 # ── Public entry point ─────────────────────────────────────────────────────────
 
 def display_customer_support(zid, project):
     st.title("📞 Customer Support")
+    st.markdown(_BLUE_CSS, unsafe_allow_html=True)
     radio = st.radio(
         "View",
         ["📋 14-Day Activity", "📊 Latest Sales & Collection"],
@@ -86,6 +113,18 @@ def _load_call_logs(cusid: str) -> pd.DataFrame:
     return pd.DataFrame(records, columns=cols)
 
 
+def _get_call_logs_cached(cusid: str) -> pd.DataFrame:
+    """Serve call logs from session_state — avoids DB hit on every filter keystroke."""
+    key = f"_calllog_{cusid}"
+    if key not in st.session_state:
+        st.session_state[key] = _load_call_logs(cusid)
+    return st.session_state[key]
+
+
+def _bust_call_log_cache(cusid: str) -> None:
+    st.session_state.pop(f"_calllog_{cusid}", None)
+
+
 def _save_call_log(zid: str, cusid: str, outcome: str, notes: str) -> bool:
     from core.queries import insert_call_log
     from core.db import execute_write
@@ -106,46 +145,81 @@ def _delete_call_log(log_id: int) -> bool:
 
 # ── Call log panel ─────────────────────────────────────────────────────────────
 
+_OUTCOME_BADGE = {
+    "Paid":         ("background:#D5F5E3;color:#1E8449;", "Paid"),
+    "Promised":     ("background:#FDEBD0;color:#A04000;", "Promised"),
+    "Not answered": ("background:#F2F3F4;color:#5D6D7E;", "Not answered"),
+    "Dispute":      ("background:#FADBD8;color:#A93226;", "Dispute"),
+}
+
 def _render_call_log_panel(
     cusid: str,
     zid: str,
     customer_name: str,
     key_suffix: str = "",
 ) -> None:
-    """Render call log history + add-new form for one customer."""
-    st.markdown(f"**📞 Call Log — {customer_name} ({cusid})**")
-    logs_df = _load_call_logs(cusid)
+    """Blue-bordered call log section: history + add-new form."""
+    logs_df = _get_call_logs_cached(cusid)
 
+    # ── Blue header + history as HTML ─────────────────────────────────────────
+    entries_html = ""
     if logs_df.empty:
-        st.caption("No calls logged yet for this customer.")
+        entries_html = '<p style="color:#7F8C8D;font-style:italic;font-size:13px;margin:0 0 6px;">No calls logged yet.</p>'
     else:
         for _, row in logs_df.iterrows():
             ts = (
                 pd.to_datetime(row["called_at"]).strftime("%Y-%m-%d %H:%M")
-                if pd.notna(row["called_at"]) else "—"
+                if pd.notna(row.get("called_at")) else "—"
             )
-            c1, c2 = st.columns([8, 1])
-            with c1:
-                st.markdown(
-                    f"`{ts}` &nbsp;·&nbsp; **{row.get('called_by','—')}** "
-                    f"&nbsp;·&nbsp; `{row.get('outcome','—')}`"
-                )
-                if row.get("notes"):
-                    st.caption(str(row["notes"]))
-            with c2:
-                if st.button("🗑", key=f"del_log_{row['id']}{key_suffix}", help="Delete this entry"):
-                    if _delete_call_log(int(row["id"])):
-                        st.rerun()
+            by      = str(row.get("called_by") or "—")
+            outcome = str(row.get("outcome") or "—")
+            notes   = str(row.get("notes") or "")
+            style, label = _OUTCOME_BADGE.get(outcome, ("background:#F2F3F4;color:#5D6D7E;", outcome))
+            badge = (
+                f'<span style="{style}padding:2px 7px;border-radius:10px;'
+                f'font-size:11px;font-weight:500;">{label}</span>'
+            )
+            note_line = f'<div style="font-size:13px;color:#2C3E50;margin:2px 0 6px 0;">{notes}</div>' if notes else ""
+            entries_html += (
+                f'<div style="border-left:3px solid #2E86C1;padding:3px 0 3px 10px;margin-bottom:6px;">'
+                f'<span style="font-size:11px;color:#7F8C8D;">{ts} · <strong>{by}</strong></span> &nbsp;{badge}'
+                f'{note_line}</div>'
+            )
 
-    st.markdown("---")
+    st.markdown(
+        _blue_header(f"📞 Call Log — {customer_name} ({cusid})")
+        + entries_html
+        + _BLUE_FOOTER,
+        unsafe_allow_html=True,
+    )
+
+    # ── Delete picker (only if there are logs) ────────────────────────────────
+    if not logs_df.empty:
+        del_options = {
+            f"{pd.to_datetime(r['called_at']).strftime('%Y-%m-%d %H:%M')} · {r.get('outcome','—')} · {str(r.get('notes',''))[:40]}": int(r["id"])
+            for _, r in logs_df.iterrows()
+        }
+        dc1, dc2 = st.columns([5, 1])
+        del_sel = dc1.selectbox(
+            "Delete a log entry",
+            ["— select to delete —"] + list(del_options.keys()),
+            key=f"del_sel_{cusid}{key_suffix}",
+            label_visibility="collapsed",
+        )
+        if dc2.button("🗑 Delete", key=f"del_btn_{cusid}{key_suffix}") and del_sel != "— select to delete —":
+            if _delete_call_log(del_options[del_sel]):
+                _bust_call_log_cache(cusid)
+                st.rerun()
+
+    # ── Add new log form ──────────────────────────────────────────────────────
     with st.form(f"call_log_form_{cusid}{key_suffix}", clear_on_submit=True):
         fc1, fc2, fc3 = st.columns([2, 4, 1])
-        outcome = fc1.selectbox("Outcome", _OUTCOMES, key=f"outcome_{key_suffix}")
-        notes   = fc2.text_input("Notes", placeholder="What did they say?", key=f"notes_{key_suffix}")
+        outcome  = fc1.selectbox("Outcome", _OUTCOMES)
+        notes    = fc2.text_input("Notes", placeholder="What did they say?")
         fc3.markdown("<br>", unsafe_allow_html=True)
-        submitted = fc3.form_submit_button("Save")
-        if submitted:
+        if fc3.form_submit_button("Save"):
             if _save_call_log(zid, cusid, outcome, notes):
+                _bust_call_log_cache(cusid)
                 st.success("Call logged.")
                 st.rerun()
             else:
@@ -267,22 +341,21 @@ def _render_14day_activity():
 
             st.markdown("---")
 
-            _6M_CAPTION = (
-                "Balance is cumulative from all history; only the last 6 months "
+            _3M_CAPTION = (
+                "Balance is cumulative from all history; only the last 3 months "
                 "of transactions are displayed. Final balance matches Salesman Due."
             )
             if sel_group == "100001+100000":
-                st.markdown("##### 6-Month AR Ledger — 100001 · GULSHAN TRADING")
-                st.caption(_6M_CAPTION)
-                _render_ledger(ar_df, "100001", sel_cusid, "_100001")
-                st.markdown("---")
-                st.markdown("##### 6-Month AR Ledger — 100000 · GI Corporation")
-                st.caption(_6M_CAPTION)
-                _render_ledger(ar_df, "100000", sel_cusid, "_100000")
+                with st.expander("3-Month AR Ledger — 100001 · HMBR Tools", expanded=False):
+                    st.caption(_3M_CAPTION)
+                    _render_ledger(ar_df, "100001", sel_cusid, "_100001")
+                with st.expander("3-Month AR Ledger — 100000 · GI Corporation", expanded=False):
+                    st.caption(_3M_CAPTION)
+                    _render_ledger(ar_df, "100000", sel_cusid, "_100000")
             else:
-                st.markdown("##### 6-Month AR Ledger — 100005 · Zepto Chemicals")
-                st.caption(_6M_CAPTION)
-                _render_ledger(ar_df, "100005", sel_cusid, "_100005")
+                with st.expander("3-Month AR Ledger — 100005 · Zepto Chemicals", expanded=False):
+                    st.caption(_3M_CAPTION)
+                    _render_ledger(ar_df, "100005", sel_cusid, "_100005")
 
             st.markdown("---")
             _render_call_log_panel(sel_cusid, "100001", sel_name, key_suffix="_14d")
@@ -366,7 +439,6 @@ def _render_merged_sc_table(
     df = df_merged.copy()
 
     if days_min and "days_since_sale" in df.columns:
-        # Keep whole customer group if ANY row meets the threshold
         qualifying = df[df["days_since_sale"].fillna(0) >= days_min]["cusid"].unique()
         df = df[df["cusid"].isin(qualifying)]
 
@@ -375,8 +447,7 @@ def _render_merged_sc_table(
             df["customer_name"].str.contains(cust_filter, case=False, na=False)
             | df["cusid"].astype(str).str.contains(cust_filter, case=False, na=False)
         )
-        matched_cusids = df[mask]["cusid"].unique()
-        df = df[df["cusid"].isin(matched_cusids)]
+        df = df[df["cusid"].isin(df[mask]["cusid"].unique())]
 
     if df.empty:
         st.info("No customers match the current filters.")
@@ -393,28 +464,19 @@ def _render_merged_sc_table(
     ]
     disp_cols = [c for c in col_order if c in df.columns]
     disp = df[disp_cols].copy().rename(columns={
-        "_status":          "⚠",
-        "zid":              "ZID",
-        "cusid":            "Cust Code",
-        "customer_name":    "Customer",
-        "cusmobile":        "Mobile",
-        "spid":             "SP Code",
-        "salesman_name":    "Salesman",
-        "city":             "City",
-        "days_since_sale":  "Days Sale",
-        "last_sale_date":   "Latest Sale Date",
-        "last_sale_amount": "Sale Amt",
-        "days_since_coll":  "Days Coll",
-        "last_coll_date":   "Latest Coll Date",
-        "last_coll_amount": "Last Coll Amt",
-        "current_balance":  "Balance",
+        "_status": "⚠", "zid": "ZID", "cusid": "Cust Code",
+        "customer_name": "Customer", "cusmobile": "Mobile",
+        "spid": "SP Code", "salesman_name": "Salesman", "city": "City",
+        "days_since_sale": "Days Sale", "last_sale_date": "Latest Sale Date",
+        "last_sale_amount": "Sale Amt", "days_since_coll": "Days Coll",
+        "last_coll_date": "Latest Coll Date", "last_coll_amount": "Last Coll Amt",
+        "current_balance": "Balance",
     })
 
     unique_cust = df[["cusid", "customer_name"]].drop_duplicates("cusid")
     st.caption(
         f"**{len(unique_cust):,}** customers · **{len(df):,}** rows (100001+100000)"
-        "  ·  ⚠️ = 24-30 days  ·  🔴 = >30 days"
-        "  ·  sorted by group: most overdue first"
+        "  ·  ⚠️ = 24-30 days  ·  🔴 = >30 days  ·  sorted: most overdue group first"
     )
     st.dataframe(
         disp,
@@ -432,8 +494,7 @@ def _render_merged_sc_table(
         hide_index=True,
     )
 
-    # ── Customer selector + call log panel ────────────────────────────────────
-    st.markdown("#### Call Log")
+    # ── Call log panel ────────────────────────────────────────────────────────
     cust_options = (
         unique_cust
         .sort_values("customer_name")
@@ -456,7 +517,6 @@ def _render_sc_table_zepto(
     days_min: int | None,
     cust_filter: str | None,
 ) -> None:
-    """Render the Zepto-only SC table with its own call log panel."""
     if df.empty:
         st.info(f"No customers with an outstanding balance for {_ZID_LABEL['100005']}.")
         return
@@ -513,7 +573,6 @@ def _render_sc_table_zepto(
         hide_index=True,
     )
 
-    st.markdown("#### Call Log")
     cust_options = (
         df[["cusid", "customer_name"]]
         .drop_duplicates("cusid")
@@ -543,7 +602,6 @@ def _render_latest_sales_collection():
 
     days_opts = {"All Days": None, "7+ days": 7, "14+ days": 14, "24+ days": 24, "30+ days": 30}
 
-    # ── Merged 100001 + 100000 ────────────────────────────────────────────────
     st.markdown("#### HMBR Tools (100001) + GI Corporation (100000)")
     fc1, fc2 = st.columns(2)
     sel_days_ab = days_opts[fc1.selectbox(
@@ -559,7 +617,6 @@ def _render_latest_sales_collection():
     )
     _render_merged_sc_table(df_merged, sel_days_ab, sel_cust_ab, table_key="ab")
 
-    # ── Zepto (100005) ────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("#### Zepto Chemicals (100005)")
     fz1, fz2 = st.columns(2)
@@ -596,14 +653,14 @@ def _render_ledger(ar_df: pd.DataFrame, zid: str, cusid: str, key_suffix: str = 
     if current_bal is not None:
         col3.metric("Current AR Balance", f"{current_bal:,.0f}")
 
-    cutoff = pd.Timestamp.today() - pd.Timedelta(days=_6M_DAYS)
+    cutoff = pd.Timestamp.today() - pd.Timedelta(days=_3M_DAYS)
     disp   = ledger[ledger["xdate"] >= cutoff].copy()
 
     l_cols   = [c for c in _LEDGER_COLS if c in disp.columns]
     l_rename = {k: v for k, v in _LEDGER_RENAME.items() if k in l_cols}
     disp     = disp[l_cols].rename(columns=l_rename)
 
-    st.caption(f"{len(disp):,} transaction row(s) in last 6 months")
+    st.caption(f"{len(disp):,} transaction row(s) in last 3 months")
     try:
         st.dataframe(
             disp.style.format(
