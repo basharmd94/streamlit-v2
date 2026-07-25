@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 import io
@@ -6,6 +7,26 @@ import decimal
 import math
 import json
 from utils.utils import timed
+
+_PHONE_COLS = {"cusmobile", "whatsapp", "Mobile", "WhatsApp Number", "WhatsApp"}
+
+def normalize_phone_cols(df: pd.DataFrame, extra_cols: "list[str] | None" = None) -> pd.DataFrame:
+    """Ensure comma-separated phone numbers always have a space after the comma.
+
+    Prevents CSV readers from treating '01711234567,01900000000' as two separate
+    fields.  '01711234567,01900000000' → '01711234567, 01900000000'.
+    """
+    cols = _PHONE_COLS | set(extra_cols or [])
+    df = df.copy()
+    for col in cols:
+        if col in df.columns:
+            df[col] = (
+                df[col].astype(str)
+                .str.replace(r",(?! )", ", ", regex=True)
+                .str.replace(r"^nan$", "", regex=True)
+            )
+    return df
+
 
 def to_dataframe(data, columns):
     """Convert the fetched data to a pandas dataframe."""
