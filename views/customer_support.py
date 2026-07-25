@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from processing import customer_support as cs
+from processing.common import normalize_phone_cols
 
 _3M_DAYS = 92   # ~3 calendar months for ledger display window
 
@@ -312,7 +313,7 @@ def _render_14day_activity():
         return
 
     disp_cols = [c for c in _FEED_COLS if c in feed.columns]
-    disp = feed[disp_cols].copy().rename(columns=_FEED_RENAME)
+    disp = normalize_phone_cols(feed[disp_cols].copy()).rename(columns=_FEED_RENAME)
 
     # Inject last-called date column
     _lc_map = _last_called_map(feed["xsub"].astype(str).unique().tolist())
@@ -470,9 +471,9 @@ def _sc_status(days) -> str:
     except (TypeError, ValueError):
         return ""
     if d > 30:
-        return "🔴"
+        return ">30"
     if d >= 24:
-        return "⚠️"
+        return ">24"
     return ""
 
 
@@ -518,7 +519,7 @@ def _render_merged_sc_table(
         "current_balance",
     ]
     disp_cols = [c for c in col_order if c in df.columns]
-    disp = df[disp_cols].copy().rename(columns={
+    disp = normalize_phone_cols(df[disp_cols].copy()).rename(columns={
         "_status": "⚠", "zid": "ZID", "cusid": "Cust Code",
         "customer_name": "Customer", "last_called": "Last Called",
         "cusmobile": "Mobile",
@@ -532,7 +533,7 @@ def _render_merged_sc_table(
     unique_cust = df[["cusid", "customer_name"]].drop_duplicates("cusid")
     st.caption(
         f"**{len(unique_cust):,}** customers · **{len(df):,}** rows (100001+100000)"
-        "  ·  ⚠️ = 24-30 days  ·  🔴 = >30 days  ·  sorted: most overdue group first"
+        "  ·  >24 = 24+ days  ·  >30 = 30+ days  ·  sorted: most overdue group first"
     )
     st.dataframe(
         disp,
@@ -605,7 +606,7 @@ def _render_sc_table_zepto(
         "current_balance",
     ]
     disp_cols = [c for c in col_order if c in df.columns]
-    disp = df[disp_cols].copy().rename(columns={
+    disp = normalize_phone_cols(df[disp_cols].copy()).rename(columns={
         "_status": "⚠", "cusid": "Cust Code", "customer_name": "Customer",
         "last_called": "Last Called", "cusmobile": "Mobile",
         "spid": "SP Code", "salesman_name": "Salesman",
@@ -617,7 +618,7 @@ def _render_sc_table_zepto(
 
     st.caption(
         f"**{len(disp):,}** customers with outstanding balance"
-        "  ·  ⚠️ = 24-30 days  ·  🔴 = >30 days"
+        "  ·  >24 = 24+ days  ·  >30 = 30+ days"
     )
     st.dataframe(
         disp,

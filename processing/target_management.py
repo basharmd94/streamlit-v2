@@ -1,5 +1,6 @@
 import calendar
 import pandas as pd
+from processing.common import normalize_phone_cols
 
 
 def _month_label(year: int, month: int) -> str:
@@ -88,7 +89,7 @@ def build_customer_wise_monthly(sales_df: pd.DataFrame, returns_df: pd.DataFrame
     if sales_df.empty or "final_sales" not in sales_df.columns:
         return pd.DataFrame()
     id_cols = ["spid", "spname", "cusid", "cusname", "cusmobile", "whatsapp", "area"]
-    return _build_pivot(sales_df, returns_df, id_cols)
+    return normalize_phone_cols(_build_pivot(sales_df, returns_df, id_cols))
 
 
 def build_customer_product_monthly(sales_df: pd.DataFrame, returns_df: pd.DataFrame) -> pd.DataFrame:
@@ -96,4 +97,4 @@ def build_customer_product_monthly(sales_df: pd.DataFrame, returns_df: pd.DataFr
     if sales_df.empty or "final_sales" not in sales_df.columns:
         return pd.DataFrame()
     id_cols = ["spid", "spname", "cusid", "cusname", "cusmobile", "whatsapp", "area", "itemcode", "itemname"]
-    return _build_pivot(sales_df, returns_df, id_cols)
+    return normalize_phone_cols(_build_pivot(sales_df, returns_df, id_cols))

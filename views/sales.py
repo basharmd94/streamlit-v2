@@ -103,8 +103,18 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
         summary_stats = overall_sales.calculate_summary_statistics(filtered_data, filtered_data_r)
         overall_sales.display_summary_statistics(summary_stats)
 
-        # Expandable section for pivot tables
-        overall_sales.display_entity_metric_pivot(filtered_data, filtered_data_r, current_page)
+        # Pivot tables — two modes selectable by radio
+        st.markdown("---")
+        pivot_mode = st.radio(
+            "Pivot view",
+            ["📊 Entity × Time", "🔁 Cross Relation (Entity × Entity)"],
+            horizontal=True,
+            key="os_pivot_mode",
+        )
+        if pivot_mode == "📊 Entity × Time":
+            overall_sales.display_entity_metric_pivot(filtered_data, filtered_data_r, current_page)
+        else:
+            overall_sales.display_cross_relation_pivot(filtered_data, filtered_data_r, current_page)
 
     elif analysis_mode == "Comparison":
         all_years = sorted(filtered_data["year"].dropna().unique().astype(int).tolist())
