@@ -1986,6 +1986,7 @@ def get_opmob_order_locations_monthly(zids: "list[int]", username: str, year: in
     placeholders, zid_params = _build_in_clause(zids)
     sql = f"""
         SELECT
+            zid::text                             AS zid,
             xordernum                             AS order_num,
             MIN(xlat)                             AS lat,
             MIN(xlong)                            AS lon,
@@ -1999,7 +2000,7 @@ def get_opmob_order_locations_monthly(zids: "list[int]", username: str, year: in
           AND username = %s
           AND EXTRACT(YEAR  FROM xdate) = %s
           AND EXTRACT(MONTH FROM xdate) = %s
-        GROUP BY xordernum, xcus, xstatusord, xdate
+        GROUP BY zid, xordernum, xcus, xstatusord, xdate
         ORDER BY xdate, xordernum
     """
     return sql, zid_params + (username, int(year), int(month))
