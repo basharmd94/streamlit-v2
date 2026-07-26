@@ -288,8 +288,17 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             st.dataframe(overhead_out["summary_df"], use_container_width=True)
 
-            st.metric("Shipment Overhead Allocated",
-                    round(overhead_out["totals"]["overhead_for_shipment_sum"], 2))
+            _m1, _m2 = st.columns(2)
+            with _m1:
+                st.metric(
+                    "Total Overhead (all accounts, full period)",
+                    f"{round(overhead_out['totals']['overhead_total_sum'], 2):,.2f}",
+                )
+            with _m2:
+                st.metric(
+                    "Shipment Overhead Allocated",
+                    f"{round(overhead_out['totals']['overhead_for_shipment_sum'], 2):,.2f}",
+                )
 
             if show_details and overhead_out["details_df"] is not None:
                 with st.expander("Daily Diagnostics", expanded=False):
