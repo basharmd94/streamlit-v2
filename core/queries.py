@@ -702,16 +702,16 @@ def get_gl_income_overhead(filters=None):
     sql = """
         SELECT
             d.zid,
-            h.xproj                AS project,
+            d.xproj::text          AS project,
             h.xdate::date          AS date,
             d.xacc::text           AS ac_code,
             SUM(d.xprime::numeric) AS value
         FROM gldetail d
         JOIN glheader h ON d.xvoucher = h.xvoucher AND d.zid = h.zid
         WHERE d.zid = %s
-          AND h.xproj = %s
+          AND d.xproj = %s
           AND LEFT(d.xacc::text, 2) = '08'
-        GROUP BY d.zid, h.xproj, h.xdate::date, d.xacc
+        GROUP BY d.zid, d.xproj, h.xdate::date, d.xacc
     """
     return sql, (zid, project)
 
