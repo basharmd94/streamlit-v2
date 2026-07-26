@@ -687,6 +687,35 @@ def get_gl_overhead_daily(filters=None):
     return sql, (zid, project)
 
 
+def get_gl_income_overhead(filters=None):
+    """
+    Fetches income-family (08xx) GL postings with daily totals, joined to glheader for date.
+    Same output shape as mv_gl_overhead_daily (zid, project, date, ac_code, value) so the
+    two can be concatenated before passing to build_accounts_overhead_summary.
+
+    Used to bring revenue-adjustment accounts (e.g. 08020003) into the overhead pool, since
+    mv_gl_overhead_daily is filtered to expense families 05/06/07 only.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    project = filters.get("project")
+    sql = """
+        SELECT
+            d.zid,
+            h.xproj                AS project,
+            h.xdate::date          AS date,
+            d.xacc::text           AS ac_code,
+            SUM(d.xprime::numeric) AS value
+        FROM gldetail d
+        JOIN glheader h ON d.xvoucher = h.xvoucher AND d.zid = h.zid
+        WHERE d.zid = %s
+          AND h.xproj = %s
+          AND LEFT(d.xacc::text, 2) = '08'
+        GROUP BY d.zid, h.xproj, h.xdate::date, d.xacc
+    """
+    return sql, (zid, project)
+
+
 def get_returns_daily_item(filters=None):
     """Queries mv_returns_daily_item — daily return quantities per (zid, itemcode, date).
 

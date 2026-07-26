@@ -252,23 +252,14 @@ def _show_campaign_planner(
     sales_df: pd.DataFrame,
     zid: str,
 ) -> None:
-    areas   = sorted(result["area"].dropna().astype(str).unique())
-    spnames = sorted(result["spname"].dropna().astype(str).unique())
-
-    col1, col2 = st.columns(2)
-    with col1:
-        area_sel = st.selectbox("Area", ["(All)"] + areas, key="camp_area")
-    with col2:
-        sp_sel = st.selectbox("Salesman", ["(All)"] + spnames, key="camp_sp")
-
-    area_filter = None if area_sel == "(All)" else area_sel
-    sp_filter   = None if sp_sel   == "(All)" else sp_sel
+    # Salesman + area are already pre-filtered at the view level; pass None so the
+    # processing helpers operate on the full (already-filtered) input DataFrames.
 
     # ── Section A: Top 10 customers by composite score ───────────────────────
     st.markdown("#### 📋 Top Customers to Contact")
-    top_cus = build_area_campaign_top_customers(result, area=area_filter, spname=sp_filter)
+    top_cus = build_area_campaign_top_customers(result)
     if top_cus.empty:
-        st.info("No customers with a composite score in the selected area/salesman.")
+        st.info("No customers with a composite score for the current filters.")
     else:
         disp_cus = normalize_phone_cols(top_cus.copy())
         disp_cus["composite_score"] = disp_cus["composite_score"].apply(
@@ -287,11 +278,11 @@ def _show_campaign_planner(
         })
         st.dataframe(disp_cus, use_container_width=True)
 
-    # ── Section B: Top 10 products by sales value in this area ──────────────
-    st.markdown("#### 📦 Top Products in This Area (by Sales Value)")
-    top_prod = build_area_top_products(sales_df, area=area_filter, spname=sp_filter)
+    # ── Section B: Top 10 products by sales value ────────────────────────────
+    st.markdown("#### 📦 Top Products (by Sales Value)")
+    top_prod = build_area_top_products(sales_df)
     if top_prod.empty:
-        st.info("No sales data for this area/salesman combination.")
+        st.info("No sales data for the current filters.")
     else:
         disp_prod = top_prod.copy()
         disp_prod["total_sales"] = disp_prod["total_sales"].apply(
@@ -306,7 +297,7 @@ def _show_campaign_planner(
     # ── Section C: Stock gap opportunities ───────────────────────────────────
     st.markdown("#### 🔍 Stock Gap Opportunities")
     st.caption(
-        "Products **in stock** whose **product group** has sold in this area, "
+        "Products **in stock** whose **product group** has sold in the current filter, "
         "but this specific product has **not yet sold** here."
     )
 
@@ -323,11 +314,10 @@ def _show_campaign_planner(
         )
         gap_df = build_stock_gap(
             sales_df, stock_df,
-            area=area_filter, spname=sp_filter,
             warehouses=selected_wh if selected_wh else None,
         )
         if gap_df.empty:
-            st.success("No gap found — all in-stock items for matching groups have already sold in this area.")
+            st.success("No gap found — all in-stock items for matching groups have already sold here.")
         else:
             st.info(f"**{len(gap_df)}** products in stock not yet sold here, but their group has sold here.")
             disp_gap = gap_df.copy()
@@ -359,11 +349,10 @@ def _show_campaign_planner(
     if frames:
         combined = pd.concat(frames, ignore_index=True)
         csv = combined.to_csv(index=False).encode("utf-8")
-        label_parts = [area_filter or "all_areas", sp_filter or "all_sp"]
         st.download_button(
             "⬇ Download Campaign Report",
             data=csv,
-            file_name=f"campaign_{'_'.join(label_parts)}.csv",
+            file_name="campaign_report.csv",
             mime="text/csv",
         )
 
@@ -371,15 +360,16 @@ def _show_campaign_planner(
         st.markdown("""
 **Section A — Top Customers to Contact**
 Ranked by composite Score (0–100). These are the most valuable, most active customers in the
-selected area. Prioritise them for WhatsApp/phone calls promoting the products in Section B.
+current salesman/area filter. Prioritise them for WhatsApp/phone calls promoting the products
+in Section B.
 
-**Section B — Top Products in This Area**
-The products that have driven the most revenue in this area over the selected period.
+**Section B — Top Products**
+The products that have driven the most revenue in the current filter over the selected period.
 Use these as the focus of your campaign message — they have proven demand here.
 
 **Section C — Stock Gap Opportunities**
 Products sitting in your warehouse whose *product group* sells in this area, but this specific
-SKU has never been ordered by anyone in the area. These are expansion opportunities:
+SKU has never been ordered by anyone in the filter. These are expansion opportunities:
 - **For 100001/100009**: actual on-hand stock shown by warehouse — you have the goods ready.
 - **For 100000/100005**: the product group is known to sell here; push these SKUs to your agents.
 
@@ -392,7 +382,13 @@ Each row has a `section` column so you can filter/sort in Excel.
 # inactive outreach sub-view
 # ---------------------------------------------------------------------------
 
-def _show_inactive_outreach(zid: str, proj: str, cacus_df: pd.DataFrame) -> None:
+def _show_inactive_outreach(
+    zid: str,
+    proj: str,
+    cacus_df: pd.DataFrame,
+    sp_filter: str = None,
+    area_filter: list = None,
+) -> None:
     months = st.slider(
         "Inactive for more than (months)", min_value=1, max_value=12, value=6,
         key="outreach_months",
@@ -410,6 +406,12 @@ def _show_inactive_outreach(zid: str, proj: str, cacus_df: pd.DataFrame) -> None
     if sales_all.empty:
         st.warning("No sales data available.")
         return
+
+    # Apply inline salesman/area filter to all-time data
+    if sp_filter:
+        sales_all = sales_all[sales_all["spname"].fillna("") == sp_filter]
+    if area_filter:
+        sales_all = sales_all[sales_all["area"].isin(area_filter)]
 
     inactive = build_inactive_customers(sales_all, cacus_df=cacus_df, months=months)
 
@@ -494,13 +496,55 @@ for a broader reactivation push.
 def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_years: list):
     st.title("Marketing Analysis")
 
-    sales_df = data_dict.get("sales")
-    coll_df  = data_dict.get("collection")
+    sales_raw = data_dict.get("sales")
+    coll_df   = data_dict.get("collection")
 
-    if sales_df is None or (isinstance(sales_df, pd.DataFrame) and sales_df.empty):
+    if sales_raw is None or (isinstance(sales_raw, pd.DataFrame) and sales_raw.empty):
         st.info("No sales data available for the selected filters.")
         return
 
+    # ── Inline salesman + area filters ───────────────────────────────────────
+    sp_opts = sorted(sales_raw["spname"].dropna().astype(str).unique().tolist())
+
+    f_col1, f_col2 = st.columns(2)
+    with f_col1:
+        sp_sel = st.selectbox(
+            "Salesman",
+            ["All Salesmen"] + sp_opts,
+            key="mkt_inline_sp",
+        )
+
+    # Area options cascade from selected salesman
+    if sp_sel == "All Salesmen":
+        area_pool = sorted(sales_raw["area"].dropna().astype(str).unique().tolist())
+    else:
+        area_pool = sorted(
+            sales_raw[sales_raw["spname"].astype(str) == sp_sel]["area"]
+            .dropna().astype(str).unique().tolist()
+        )
+
+    with f_col2:
+        area_sel = st.multiselect(
+            "Area",
+            area_pool,
+            default=area_pool,
+            key="mkt_inline_area",
+        )
+
+    # Apply filters — empty area_sel means all areas for the salesman
+    sales_df = sales_raw.copy()
+    if sp_sel != "All Salesmen":
+        sales_df = sales_df[sales_df["spname"].astype(str) == sp_sel]
+    if area_sel:
+        sales_df = sales_df[sales_df["area"].isin(area_sel)]
+
+    if sales_df.empty:
+        st.info("No sales data for the selected salesman / area combination.")
+        return
+
+    st.markdown("---")
+
+    # ── Load supporting data ─────────────────────────────────────────────────
     with st.spinner("Loading supporting data…"):
         ar_df    = _load_ar_balance(str(zid), proj)
         cacus_df = _load_cacus(str(zid))
@@ -518,6 +562,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
         st.warning("No results to display for the selected filters.")
         return
 
+    # ── View radio ───────────────────────────────────────────────────────────
     mode = st.radio(
         "View",
         ["📊 Customer Scoring", "🎯 Area Campaign Planner", "📱 Inactive Outreach"],
@@ -527,9 +572,12 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
 
     st.markdown("---")
 
+    sp_filter   = None if sp_sel == "All Salesmen" else sp_sel
+    area_filter = area_sel if area_sel else None
+
     if mode == "📊 Customer Scoring":
         _show_customer_scoring(result)
     elif mode == "🎯 Area Campaign Planner":
         _show_campaign_planner(result, sales_df, str(zid))
     else:
-        _show_inactive_outreach(str(zid), proj, cacus_df)
+        _show_inactive_outreach(str(zid), proj, cacus_df, sp_filter=sp_filter, area_filter=area_filter)
