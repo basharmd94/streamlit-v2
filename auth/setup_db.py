@@ -147,6 +147,7 @@ def setup_auth_tables():
             ('crm', 'Overall Sales Analysis'),
             ('crm', 'Daily Sales Analysis'),
             ('crm', 'Customer Data View'),
+            ('crm', 'Target Management'),
             ('finance', 'Home'),
             ('finance', 'Overall Margin Analysis'),
             ('finance', 'Financial Statements'),
