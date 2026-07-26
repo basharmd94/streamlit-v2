@@ -276,6 +276,25 @@ def load_purchase_data(zid: str, project: str, mv_version: str = "") -> dict:
     for table in purchase_tables:
         df = Analytics(table, zid=zid, project=project, filters={}).data
         data_dict[table] = df if df is not None else pd.DataFrame()
+
+    if str(zid) == "100001":
+        # Append 100009 expenses (MV now covers both ZIDs after the May-2024 MV update)
+        glo_100009 = Analytics("gl_overhead_daily", zid="100009", project="Gulshan Packaging", filters={}).data
+        if glo_100009 is not None and not glo_100009.empty:
+            existing = data_dict.get("gl_overhead_daily", pd.DataFrame())
+            data_dict["gl_overhead_daily"] = pd.concat(
+                [existing, glo_100009], ignore_index=True
+            ) if not existing.empty else glo_100009
+
+        # Append 08020003 revenue adjustment — done here (cached) so it never
+        # accumulates across renders when purchase_analysis() is called each time.
+        gli_100001 = Analytics("gl_income_overhead", zid="100001", project="GULSHAN TRADING", filters={}).data
+        if gli_100001 is not None and not gli_100001.empty:
+            existing = data_dict.get("gl_overhead_daily", pd.DataFrame())
+            data_dict["gl_overhead_daily"] = pd.concat(
+                [existing, gli_100001], ignore_index=True
+            ) if not existing.empty else gli_100001
+
     return data_dict
 
 def create_multi_download_buttons(data_dict: dict):
@@ -737,24 +756,17 @@ class BaseApp:
     def purchase_analysis(self, data_dict):
 
         # --- Force GL tables for overhead explorer to always come from trading (100001) ---
+        # For non-100001 ZIDs, load_purchase_data skips GL tables, so we load them here.
+        # Include 100009 expenses and the 08020003 revenue adjustment alongside 100001.
         if str(st.session_state.zid) != "100001":
             glo_100001 = Analytics("gl_overhead_daily", zid="100001", project="GULSHAN TRADING", filters={}).data
-            gm_100001  = Analytics("glmst_simple",      zid="100001", filters={}).data
-
-            data_dict["gl_overhead_daily"] = glo_100001 if glo_100001 is not None else pd.DataFrame()
-            data_dict["glmst_simple"]      = gm_100001  if gm_100001  is not None else pd.DataFrame()
-
-        # --- Supplement gl_overhead_daily with 08020003 revenue adjustment (100001 only) ---
-        # mv_gl_overhead_daily is filtered to expense families 05/06/07 only; 08020003 must
-        # be appended from raw gldetail. Only relevant for ZID 100001 (GULSHAN TRADING).
-        if str(st.session_state.zid) == "100001":
+            glo_100009 = Analytics("gl_overhead_daily", zid="100009", project="Gulshan Packaging", filters={}).data
             gli_100001 = Analytics("gl_income_overhead", zid="100001", project="GULSHAN TRADING", filters={}).data
-            if gli_100001 is not None and not gli_100001.empty:
-                existing = data_dict.get("gl_overhead_daily")
-                if existing is not None and not existing.empty:
-                    data_dict["gl_overhead_daily"] = pd.concat([existing, gli_100001], ignore_index=True)
-                else:
-                    data_dict["gl_overhead_daily"] = gli_100001
+            gm_100001  = Analytics("glmst_simple",       zid="100001", filters={}).data
+
+            parts = [df for df in [glo_100001, glo_100009, gli_100001] if df is not None and not df.empty]
+            data_dict["gl_overhead_daily"] = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+            data_dict["glmst_simple"]      = gm_100001 if gm_100001 is not None else pd.DataFrame()
 
         # --- Ensure stock_movement exists (load base zid if missing/empty) ---
         zid_str = str(st.session_state.zid)
