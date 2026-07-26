@@ -128,16 +128,16 @@ def _sales_metrics(sales_df: pd.DataFrame, years: list) -> pd.DataFrame:
         s = s[s["year"].isin(years)]
 
     # ── totals ──────────────────────────────────────────────────────────────
-    totals = (
-        s.groupby("cusid")
-        .agg(
-            total_sales=("altsales", "sum"),
-            cusname=("cusname", "first"),
-            area=("area", "first"),
-            spname=("spname", "first"),
-        )
-        .reset_index()
-    )
+    agg_spec = {
+        "total_sales": ("altsales", "sum"),
+        "cusname":     ("cusname",  "first"),
+        "area":        ("area",     "first"),
+        "spname":      ("spname",   "first"),
+    }
+    if "cusmobile" in s.columns:
+        agg_spec["cusmobile"] = ("cusmobile", "first")
+
+    totals = s.groupby("cusid").agg(**agg_spec).reset_index()
 
     # ── QoQ growth (sequential quarters across the full period) ─────────────
     yoy = _qoq_growth_sequential(s, "altsales", years, "sales")
@@ -334,6 +334,60 @@ def _ar_balance(ar_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# composite score
+# ---------------------------------------------------------------------------
+
+_SCORE_WEIGHTS = {
+    "total_sales":               {"weight": 0.25, "direction": "higher"},
+    "monthly_activity_rate":     {"weight": 0.20, "direction": "higher"},
+    "yoy_sales_growth_pct":      {"weight": 0.15, "direction": "higher"},
+    "avg_days_to_collection":    {"weight": 0.15, "direction": "lower"},
+    "total_collection":          {"weight": 0.10, "direction": "higher"},
+    "avg_order_interval_days":   {"weight": 0.10, "direction": "lower"},
+    "yoy_collection_growth_pct": {"weight": 0.05, "direction": "higher"},
+}
+
+
+def _compute_composite_score(df: pd.DataFrame) -> pd.Series:
+    """
+    Min-max scale each metric to 0-100, apply weights, sum to composite score.
+
+    - inf (New ↑ growth) is capped at the 90th percentile of finite values so
+      brand-new customers get a good-but-not-perfect growth signal.
+    - lower-is-better metrics are inverted after scaling (100 - scaled).
+    - Missing metrics are skipped; remaining weights still sum to their full value.
+    """
+    scores = pd.DataFrame(index=df.index)
+
+    for col, cfg in _SCORE_WEIGHTS.items():
+        if col not in df.columns:
+            continue
+
+        series = pd.to_numeric(df[col], errors="coerce")
+
+        # Cap inf at 90th pct of finite values
+        finite = series[np.isfinite(series.fillna(0))]
+        cap = float(finite.quantile(0.90)) if not finite.empty else 0.0
+        series = series.replace([np.inf, -np.inf], cap).fillna(cap)
+
+        mn, mx = series.min(), series.max()
+        if mx > mn:
+            scaled = (series - mn) / (mx - mn) * 100.0
+        else:
+            scaled = pd.Series(50.0, index=df.index)
+
+        if cfg["direction"] == "lower":
+            scaled = 100.0 - scaled
+
+        scores[col] = scaled * cfg["weight"]
+
+    if scores.empty:
+        return pd.Series(np.nan, index=df.index)
+
+    return scores.sum(axis=1).round(1)
+
+
+# ---------------------------------------------------------------------------
 # public entry point
 # ---------------------------------------------------------------------------
 
@@ -343,6 +397,7 @@ def build_customer_marketing_table(
     collection_df: pd.DataFrame,
     ar_df: pd.DataFrame,
     selected_years: tuple,
+    cacus_df: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """Assemble full per-customer marketing metrics table."""
     years = list(selected_years) if selected_years else []
@@ -367,14 +422,27 @@ def build_customer_marketing_table(
         mask = result["cusname"].isna()
         result.loc[mask, "cusname"] = result.loc[mask, "cusid"].map(cus_names)
 
+    # ── mobile number from cacus if not already in sales_df ─────────────────
+    if "cusmobile" not in result.columns and cacus_df is not None and not cacus_df.empty:
+        mob = (
+            cacus_df[["cusid", "cusmobile"]]
+            .dropna(subset=["cusid"])
+            .drop_duplicates("cusid")
+        )
+        result = result.merge(mob, on="cusid", how="left")
+
+    # ── composite score ──────────────────────────────────────────────────────
+    result["composite_score"] = _compute_composite_score(result)
+
     # Friendly column order (helper count cols kept for view-level formatting)
     ordered = [
-        "cusid", "cusname", "area", "spname",
+        "cusid", "cusname", "cusmobile", "area", "spname",
         "total_sales", "total_collection",
         "yoy_sales_growth_pct", "yoy_collection_growth_pct",
         "avg_days_to_collection", "avg_days_between_collections",
         "avg_order_interval_days", "monthly_activity_rate",
         "current_balance",
+        "composite_score",
         # helper columns (used for display context, not shown to user)
         "order_count", "coll_event_count",
     ]
@@ -384,3 +452,149 @@ def build_customer_marketing_table(
 
     result = result.sort_values("total_sales", ascending=False, na_position="last").reset_index(drop=True)
     return result
+
+
+# ---------------------------------------------------------------------------
+# campaign planner helpers
+# ---------------------------------------------------------------------------
+
+def build_area_campaign_top_customers(
+    result_df: pd.DataFrame,
+    area: str = None,
+    spname: str = None,
+    top_n: int = 10,
+) -> pd.DataFrame:
+    df = result_df.copy()
+    if area:
+        df = df[df["area"].fillna("").str.lower() == area.lower()]
+    if spname:
+        df = df[df["spname"].fillna("").str.lower() == spname.lower()]
+    df = df.dropna(subset=["composite_score"])
+    cols = [c for c in [
+        "cusid", "cusname", "cusmobile", "area", "spname",
+        "composite_score", "total_sales", "total_collection",
+    ] if c in df.columns]
+    return df.nlargest(top_n, "composite_score")[cols].reset_index(drop=True)
+
+
+def build_area_top_products(
+    sales_df: pd.DataFrame,
+    area: str = None,
+    spname: str = None,
+    top_n: int = 10,
+) -> pd.DataFrame:
+    s = sales_df.copy()
+    s["altsales"] = pd.to_numeric(s["altsales"], errors="coerce").fillna(0)
+    if area:
+        s = s[s["area"].fillna("").str.lower() == area.lower()]
+    if spname:
+        s = s[s["spname"].fillna("").str.lower() == spname.lower()]
+    if s.empty:
+        return pd.DataFrame()
+    agg = (
+        s.groupby(["itemcode", "itemname", "itemgroup"], dropna=False)
+        .agg(total_sales=("altsales", "sum"), transaction_count=("altsales", "count"))
+        .reset_index()
+    )
+    return agg.nlargest(top_n, "total_sales").reset_index(drop=True)
+
+
+def build_stock_gap(
+    sales_df: pd.DataFrame,
+    stock_df: pd.DataFrame,
+    area: str = None,
+    spname: str = None,
+    warehouses: list = None,
+) -> pd.DataFrame:
+    """
+    Products in stock (in selected warehouses) whose product group has sold in
+    the area but the specific item has not yet sold there.
+    """
+    s = sales_df.copy()
+    s["altsales"] = pd.to_numeric(s["altsales"], errors="coerce").fillna(0)
+    if area:
+        s = s[s["area"].fillna("").str.lower() == area.lower()]
+    if spname:
+        s = s[s["spname"].fillna("").str.lower() == spname.lower()]
+
+    if s.empty or stock_df.empty:
+        return pd.DataFrame()
+
+    sold_groups = set(s["itemgroup"].dropna().str.strip().unique())
+    sold_items  = set(s["itemcode"].dropna().unique())
+
+    stk = stock_df.copy()
+    if warehouses:
+        stk = stk[stk["warehouse"].isin(warehouses)]
+
+    qty_col = "stockqty" if "stockqty" in stk.columns else "stock"
+    stk[qty_col] = pd.to_numeric(stk[qty_col], errors="coerce").fillna(0)
+
+    current = (
+        stk.groupby(["itemcode", "itemname", "itemgroup", "warehouse"])
+        [qty_col].sum()
+        .reset_index()
+        .rename(columns={qty_col: "stock_qty"})
+    )
+    current = current[current["stock_qty"] > 0]
+
+    if current.empty:
+        return pd.DataFrame()
+
+    current["_group_clean"] = current["itemgroup"].fillna("").str.strip()
+    gap = current[
+        current["_group_clean"].isin(sold_groups) &
+        ~current["itemcode"].isin(sold_items)
+    ].drop(columns=["_group_clean"])
+
+    return gap.sort_values("stock_qty", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# inactive outreach
+# ---------------------------------------------------------------------------
+
+def build_inactive_customers(
+    sales_df: pd.DataFrame,
+    cacus_df: pd.DataFrame = None,
+    months: int = 6,
+) -> pd.DataFrame:
+    """
+    Customers with no orders in the past `months` months.
+    Sorted by last order date descending (most recently lapsed first — warmest leads).
+    """
+    if sales_df is None or sales_df.empty:
+        return pd.DataFrame()
+
+    s = _ensure_date(sales_df, "date").copy()
+    s["altsales"] = pd.to_numeric(s["altsales"], errors="coerce").fillna(0)
+
+    cutoff = pd.Timestamp.today().normalize() - pd.DateOffset(months=months)
+
+    summary = (
+        s.groupby("cusid")
+        .agg(
+            last_order_date=("date",     "max"),
+            total_lifetime_sales=("altsales", "sum"),
+            cusname=("cusname", "first"),
+            area=("area",     "first"),
+            spname=("spname",   "first"),
+        )
+        .reset_index()
+    )
+
+    inactive = summary[summary["last_order_date"] < cutoff].copy()
+
+    if cacus_df is not None and not cacus_df.empty:
+        mob_cols = [c for c in ["cusid", "cusmobile", "whatsapp"] if c in cacus_df.columns]
+        if len(mob_cols) > 1:
+            mob = cacus_df[mob_cols].drop_duplicates("cusid")
+            inactive = inactive.merge(mob, on="cusid", how="left")
+
+    col_order = [c for c in [
+        "cusid", "cusname", "cusmobile", "whatsapp",
+        "area", "spname", "last_order_date", "total_lifetime_sales",
+    ] if c in inactive.columns]
+    inactive = inactive[col_order]
+
+    return inactive.sort_values("last_order_date", ascending=False).reset_index(drop=True)
