@@ -562,6 +562,12 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
         st.warning("No results to display for the selected filters.")
         return
 
+    # build_customer_marketing_table uses an outer merge so collection/AR data
+    # can re-introduce customers outside the salesman/area filter.  Restrict the
+    # result to only customers who actually appear in the filtered sales data.
+    filtered_cusids = set(sales_df["cusid"].dropna().astype(str).unique())
+    result = result[result["cusid"].astype(str).isin(filtered_cusids)].reset_index(drop=True)
+
     # ── View radio ───────────────────────────────────────────────────────────
     mode = st.radio(
         "View",
