@@ -63,6 +63,7 @@ class Analytics:
             "sales_entity_opts":      queries.get_sales_entity_opts,
             "purchase_batches":       queries.get_purchase_batches,
             "gl_overhead_daily":      queries.get_gl_overhead_daily,
+            "gl_income_overhead":     queries.get_gl_income_overhead,
             "sales_daily_item":       queries.get_sales_daily_item,
             "returns_daily_item":     queries.get_returns_daily_item,
             "ar":               queries.get_ar_data,

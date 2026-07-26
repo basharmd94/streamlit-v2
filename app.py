@@ -570,7 +570,9 @@ class BaseApp:
                 }
 
             elif self.current_page == "Marketing Analysis":
-                # ── Marketing Analysis sidebar: Year + Salesman + Area only ───────
+                # ── Marketing Analysis sidebar: Year only ─────────────────────────
+                # Salesman + Area filters are handled inline inside the view so that
+                # area choices can cascade from the selected salesman.
                 _mv_ver = _mv_version_key()
                 period_df = _load_sales_period_opts(st.session_state.zid, mv_version=_mv_ver)
                 if not period_df.empty:
@@ -587,30 +589,7 @@ class BaseApp:
                     key="sidebar_mkt_year",
                 )
 
-                entity_df = _load_sales_entity_opts(
-                    st.session_state.zid,
-                    tuple(int(y) for y in selected_years),
-                    (),
-                    mv_version=_mv_ver,
-                )
-                if not entity_df.empty:
-                    ec = set(entity_df.columns)
-                    if {"spid", "spname"} <= ec:
-                        tmp = entity_df[["spid", "spname"]].dropna().drop_duplicates().sort_values(["spid", "spname"])
-                        sp_opts = (tmp["spid"].astype(str) + " - " + tmp["spname"].astype(str)).tolist()
-                    else:
-                        sp_opts = []
-                    area_opts = sorted(entity_df["area"].dropna().unique().tolist()) if "area" in ec else []
-                else:
-                    sp_opts, area_opts = [], []
-
-                selected_salesmen = st.sidebar.multiselect("Select Salesman", sp_opts, key="sidebar_mkt_salesman")
-                selected_areas    = st.sidebar.multiselect("Select Area",     area_opts, key="sidebar_mkt_area")
-                selected_filters  = {
-                    "year":   [int(x) for x in selected_years],
-                    "spname": selected_salesmen,
-                    "area":   selected_areas,
-                }
+                selected_filters = {"year": [int(x) for x in selected_years]}
 
             else:
                 # ── Progressive filter loading (fast path for sales-based pages) ─
@@ -764,6 +743,17 @@ class BaseApp:
 
             data_dict["gl_overhead_daily"] = glo_100001 if glo_100001 is not None else pd.DataFrame()
             data_dict["glmst_simple"]      = gm_100001  if gm_100001  is not None else pd.DataFrame()
+
+        # --- Supplement gl_overhead_daily with income accounts (08xx) ---
+        # mv_gl_overhead_daily is filtered to expense families 05/06/07 only; income accounts
+        # used as revenue adjustments (e.g. 08020003) must be appended from raw gldetail.
+        gli_100001 = Analytics("gl_income_overhead", zid="100001", project="GULSHAN TRADING", filters={}).data
+        if gli_100001 is not None and not gli_100001.empty:
+            existing = data_dict.get("gl_overhead_daily")
+            if existing is not None and not existing.empty:
+                data_dict["gl_overhead_daily"] = pd.concat([existing, gli_100001], ignore_index=True)
+            else:
+                data_dict["gl_overhead_daily"] = gli_100001
 
         # --- Ensure stock_movement exists (load base zid if missing/empty) ---
         zid_str = str(st.session_state.zid)
