@@ -499,55 +499,62 @@ def build_area_top_products(
     return agg.nlargest(top_n, "total_sales").reset_index(drop=True)
 
 
+_PROMOTABLE_STATUSES = {"In Stock NS", "Low Stock NS", "In Stock"}
+
+
 def build_stock_gap(
     sales_df: pd.DataFrame,
-    stock_df: pd.DataFrame,
-    area: str = None,
-    spname: str = None,
-    warehouses: list = None,
+    final_items_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Products in stock (in selected warehouses) whose product group has sold in
-    the area but the specific item has not yet sold there.
-    """
-    s = sales_df.copy()
-    s["altsales"] = pd.to_numeric(s["altsales"], errors="coerce").fillna(0)
-    if area:
-        s = s[s["area"].fillna("").str.lower() == area.lower()]
-    if spname:
-        s = s[s["spname"].fillna("").str.lower() == spname.lower()]
+    Items from final_items_view (100001, which already includes 100009 cross-ZID
+    logic) with a promotable status whose product group has sold in the current
+    sales_df filter.
 
-    if s.empty or stock_df.empty:
+    Promotable statuses: "In Stock NS", "Low Stock NS", "In Stock".
+    A "sold_here_before" column flags whether this specific item has ever moved
+    in the filtered area/salesman period so the marketing team can prioritise.
+    """
+    if sales_df.empty or final_items_df.empty:
         return pd.DataFrame()
 
+    s = sales_df.copy()
+    s["altsales"] = pd.to_numeric(s["altsales"], errors="coerce").fillna(0)
+
+    # Groups + items that have sold in the current filter
     sold_groups = set(s["itemgroup"].dropna().str.strip().unique())
     sold_items  = set(s["itemcode"].dropna().unique())
 
-    stk = stock_df.copy()
-    if warehouses:
-        stk = stk[stk["warehouse"].isin(warehouses)]
+    fiv = final_items_df.copy()
 
-    qty_col = "stockqty" if "stockqty" in stk.columns else "stock"
-    stk[qty_col] = pd.to_numeric(stk[qty_col], errors="coerce").fillna(0)
+    # Filter to promotable statuses if the column is present
+    if "status" in fiv.columns:
+        fiv = fiv[fiv["status"].isin(_PROMOTABLE_STATUSES)]
 
-    current = (
-        stk.groupby(["itemcode", "itemname", "itemgroup", "warehouse"])
-        [qty_col].sum()
-        .reset_index()
-        .rename(columns={qty_col: "stock_qty"})
-    )
-    current = current[current["stock_qty"] > 0]
-
-    if current.empty:
+    if fiv.empty:
         return pd.DataFrame()
 
-    current["_group_clean"] = current["itemgroup"].fillna("").str.strip()
-    gap = current[
-        current["_group_clean"].isin(sold_groups) &
-        ~current["itemcode"].isin(sold_items)
-    ].drop(columns=["_group_clean"])
+    # Identify the item code column (may be item_id or itemcode)
+    id_col    = "item_id"    if "item_id"    in fiv.columns else "itemcode"
+    name_col  = "item_name"  if "item_name"  in fiv.columns else "itemname"
+    group_col = "item_group" if "item_group" in fiv.columns else "itemgroup"
 
-    return gap.sort_values("stock_qty", ascending=False).reset_index(drop=True)
+    fiv["_group_clean"] = fiv[group_col].fillna("").str.strip()
+    candidates = fiv[fiv["_group_clean"].isin(sold_groups)].copy()
+    candidates = candidates.drop(columns=["_group_clean"])
+
+    if candidates.empty:
+        return pd.DataFrame()
+
+    candidates["sold_here_before"] = candidates[id_col].isin(sold_items)
+
+    # Tidy column order
+    keep = [c for c in [id_col, name_col, group_col, "stock", "status", "sold_here_before"]
+            if c in candidates.columns]
+    extra = [c for c in candidates.columns if c not in keep]
+    candidates = candidates[keep + extra]
+
+    return candidates.sort_values("stock", ascending=False).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

@@ -702,16 +702,16 @@ def get_gl_income_overhead(filters=None):
     sql = """
         SELECT
             d.zid,
-            h.xproj                AS project,
+            d.xproj::text          AS project,
             h.xdate::date          AS date,
             d.xacc::text           AS ac_code,
             SUM(d.xprime::numeric) AS value
         FROM gldetail d
         JOIN glheader h ON d.xvoucher = h.xvoucher AND d.zid = h.zid
         WHERE d.zid = %s
-          AND h.xproj = %s
+          AND d.xproj = %s
           AND LEFT(d.xacc::text, 2) = '08'
-        GROUP BY d.zid, h.xproj, h.xdate::date, d.xacc
+        GROUP BY d.zid, d.xproj, h.xdate::date, d.xacc
     """
     return sql, (zid, project)
 
@@ -1144,15 +1144,11 @@ def get_opspprc_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
 def get_final_items_view(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """
     Query the final_items_view database view.
-    Returns item_id, item_name, item_group, stock filtered by zid.
+    Returns all columns (item_id, item_name, item_group, stock, status, …).
     """
     zid = filters["zid"][0]
     sql = """
-        SELECT
-            item_id,
-            item_name,
-            item_group,
-            stock
+        SELECT *
         FROM final_items_view
         WHERE zid = %s
         ORDER BY item_name
