@@ -237,10 +237,18 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             show_details = st.checkbox("Show daily ratio diagnostics")
 
-            overhead_out = purchase.build_accounts_overhead_summary(
+            # Split gl_overhead_daily by ZID so each entity gets its own table
+            _gl_all = data_dict.get("gl_overhead_daily", pd.DataFrame())
+            def _gl_for_zid(df, zid_val):
+                if df is None or df.empty:
+                    return pd.DataFrame()
+                d = df.copy()
+                d["zid"] = d["zid"].astype(str).str.strip()
+                return d[d["zid"] == str(zid_val)].reset_index(drop=True)
+
+            _common_kw = dict(
                 purchase_df=data_dict["purchase_batches"],
                 stock_movement_df=data_dict["stock_movement"],
-                gl_overhead_df=data_dict.get("gl_overhead_daily", pd.DataFrame()),
                 glmst_df=data_dict["glmst_simple"],
                 hierarchy_path="data/hierarchy.json",
                 shipmentname=selected_shipment,
@@ -253,7 +261,52 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 revenue_selections=revenue_selections,
             )
 
-            db_overhead = float(overhead_out["totals"].get("overhead_for_shipment_sum", 0.0))
+            out_100001 = purchase.build_accounts_overhead_summary(
+                gl_overhead_df=_gl_for_zid(_gl_all, "100001"), **_common_kw
+            )
+            out_100009 = purchase.build_accounts_overhead_summary(
+                gl_overhead_df=_gl_for_zid(_gl_all, "100009"), **_common_kw
+            )
+
+            alloc_100001 = float(out_100001["totals"].get("overhead_for_shipment_sum", 0.0))
+            alloc_100009 = float(out_100009["totals"].get("overhead_for_shipment_sum", 0.0))
+            pool_100001  = float(out_100001["totals"].get("overhead_total_sum", 0.0))
+            pool_100009  = float(out_100009["totals"].get("overhead_total_sum", 0.0))
+            db_overhead  = alloc_100001 + alloc_100009
+
+            # ── Per-entity tables ──────────────────────────────────────────────
+            st.markdown("#### 🏢 HMBR Tools & Chemicals — 100001")
+            if not out_100001["summary_df"].empty:
+                st.dataframe(out_100001["summary_df"], use_container_width=True)
+            else:
+                st.info("No overhead data for 100001 in this shipment window.")
+
+            if show_details and out_100001["details_df"] is not None and not out_100001["details_df"].empty:
+                with st.expander("Daily Diagnostics — 100001", expanded=False):
+                    st.dataframe(out_100001["details_df"], use_container_width=True)
+
+            st.markdown("#### 📦 Gulshan Packaging — 100009")
+            if not out_100009["summary_df"].empty:
+                st.dataframe(out_100009["summary_df"], use_container_width=True)
+            else:
+                st.info("No overhead data for 100009 in this shipment window.")
+
+            if show_details and out_100009["details_df"] is not None and not out_100009["details_df"].empty:
+                with st.expander("Daily Diagnostics — 100009", expanded=False):
+                    st.dataframe(out_100009["details_df"], use_container_width=True)
+
+            # ── Totals breakdown ───────────────────────────────────────────────
+            st.markdown("#### 📊 Overhead Totals")
+            _tc1, _tc2, _tc3 = st.columns(3)
+            with _tc1:
+                st.metric("100001 — Total Pool", f"{pool_100001:,.0f}")
+                st.metric("100001 — Shipment Allocated", f"{alloc_100001:,.0f}")
+            with _tc2:
+                st.metric("100009 — Total Pool", f"{pool_100009:,.0f}")
+                st.metric("100009 — Shipment Allocated", f"{alloc_100009:,.0f}")
+            with _tc3:
+                st.metric("Combined — Total Pool", f"{pool_100001 + pool_100009:,.0f}")
+                st.metric("Combined — Shipment Allocated", f"{db_overhead:,.0f}")
 
             st.markdown("### Overhead Add-ons (optional)")
 
@@ -282,27 +335,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 "Total overhead passed to engine (estimate)": round(db_overhead + vat_est + manual_val, 2),
             })
 
-            st.session_state["shipment_overhead_total"] = float(
-                overhead_out["totals"]["overhead_for_shipment_sum"]
-            )
-
-            st.dataframe(overhead_out["summary_df"], use_container_width=True)
-
-            _m1, _m2 = st.columns(2)
-            with _m1:
-                st.metric(
-                    "Total Overhead (all accounts, full period)",
-                    f"{round(overhead_out['totals']['overhead_total_sum'], 2):,.2f}",
-                )
-            with _m2:
-                st.metric(
-                    "Shipment Overhead Allocated",
-                    f"{round(overhead_out['totals']['overhead_for_shipment_sum'], 2):,.2f}",
-                )
-
-            if show_details and overhead_out["details_df"] is not None:
-                with st.expander("Daily Diagnostics", expanded=False):
-                    st.dataframe(overhead_out["details_df"], use_container_width=True)
+            st.session_state["shipment_overhead_total"] = db_overhead
 
             with st.expander("📐 How Accounts Explorer calculates overhead", expanded=False):
                 st.markdown("""
