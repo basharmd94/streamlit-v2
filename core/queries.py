@@ -710,7 +710,7 @@ def get_gl_income_overhead(filters=None):
         JOIN glheader h ON d.xvoucher = h.xvoucher AND d.zid = h.zid
         WHERE d.zid = %s
           AND d.xproj = %s
-          AND LEFT(d.xacc::text, 2) = '08'
+          AND d.xacc::text = '08020003'
         GROUP BY d.zid, d.xproj, h.xdate::date, d.xacc
     """
     return sql, (zid, project)

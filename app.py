@@ -744,16 +744,17 @@ class BaseApp:
             data_dict["gl_overhead_daily"] = glo_100001 if glo_100001 is not None else pd.DataFrame()
             data_dict["glmst_simple"]      = gm_100001  if gm_100001  is not None else pd.DataFrame()
 
-        # --- Supplement gl_overhead_daily with income accounts (08xx) ---
-        # mv_gl_overhead_daily is filtered to expense families 05/06/07 only; income accounts
-        # used as revenue adjustments (e.g. 08020003) must be appended from raw gldetail.
-        gli_100001 = Analytics("gl_income_overhead", zid="100001", project="GULSHAN TRADING", filters={}).data
-        if gli_100001 is not None and not gli_100001.empty:
-            existing = data_dict.get("gl_overhead_daily")
-            if existing is not None and not existing.empty:
-                data_dict["gl_overhead_daily"] = pd.concat([existing, gli_100001], ignore_index=True)
-            else:
-                data_dict["gl_overhead_daily"] = gli_100001
+        # --- Supplement gl_overhead_daily with 08020003 revenue adjustment (100001 only) ---
+        # mv_gl_overhead_daily is filtered to expense families 05/06/07 only; 08020003 must
+        # be appended from raw gldetail. Only relevant for ZID 100001 (GULSHAN TRADING).
+        if str(st.session_state.zid) == "100001":
+            gli_100001 = Analytics("gl_income_overhead", zid="100001", project="GULSHAN TRADING", filters={}).data
+            if gli_100001 is not None and not gli_100001.empty:
+                existing = data_dict.get("gl_overhead_daily")
+                if existing is not None and not existing.empty:
+                    data_dict["gl_overhead_daily"] = pd.concat([existing, gli_100001], ignore_index=True)
+                else:
+                    data_dict["gl_overhead_daily"] = gli_100001
 
         # --- Ensure stock_movement exists (load base zid if missing/empty) ---
         zid_str = str(st.session_state.zid)
