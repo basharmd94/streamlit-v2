@@ -2715,13 +2715,21 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
         if no_gps_orders_mo:
             st.markdown(f"**{len(no_gps_orders_mo)} order(s) without GPS coordinates (not shown on map):**")
             no_gps_tbl = pd.DataFrame([{
-                "Date":     r["order_date"].strftime("%d %b %Y"),
-                "Order":    r["order_num"],
-                "Customer": r["cusname"],
-                "Status":   r["status"],
-                "Total":    int(r["total"] or 0),
+                "Date":         r["order_date"].strftime("%d %b %Y"),
+                "Order":        r["order_num"],
+                "Cust. Code":   r.get("cusid", ""),
+                "Customer":     r["cusname"],
+                "Lat":          r.get("lat", ""),
+                "Lon":          r.get("lon", ""),
+                "Status":       r["status"],
+                "Order Value":  int(r["total"] or 0),
+                "ZID":          r.get("zid", ""),
             } for r in no_gps_orders_mo])
-            st.dataframe(no_gps_tbl, use_container_width=True, hide_index=True)
+            st.dataframe(
+                no_gps_tbl.style.format({"Order Value": "{:,.0f}"}),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def _render_field_tracking(zid):
