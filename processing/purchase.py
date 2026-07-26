@@ -1841,7 +1841,8 @@ def build_accounts_overhead_summary(
     include_details: bool = False,
     zids_inventory: Optional[List[str]] = None,
     warehouse_filters: Optional[Dict[str, List[str]]] = None,
-    warehouse_json_path: str = "data/warehouse_filters.json",) -> Dict[str, Any]:
+    warehouse_json_path: str = "data/warehouse_filters.json",
+    revenue_selections: tuple = (),) -> Dict[str, Any]:
     """
     Shipment-level overhead allocation over shipment age:
       date range = combinedate .. (end_of_shipment if closed else today)
@@ -1959,6 +1960,14 @@ def build_accounts_overhead_summary(
     m = _selection_masks(gl, level=level, selections=selections_list, hierarchy_path=hierarchy_path)
     gl_sel = gl[m].copy()
 
+    # Revenue adjustments: income accounts whose negative GL values reduce the overhead pool
+    if revenue_selections:
+        rev_codes = [str(s).strip() for s in revenue_selections]
+        rev_mask = gl["ac_code"].isin(rev_codes)
+        gl_rev = gl[rev_mask].copy()
+        if not gl_rev.empty:
+            gl_sel = pd.concat([gl_sel, gl_rev], ignore_index=True)
+
     # daily overhead totals
     ov_day = (
         gl_sel.groupby("date", as_index=False)["value"]
@@ -2042,6 +2051,38 @@ def build_accounts_overhead_summary(
             "overhead_total": float(tmp["overhead_total_for_day"].sum()),
             "overhead_for_shipment": float(tmp["overhead_allocated_for_day"].sum()),
         })
+
+    # Revenue adjustments summary row — show each selected revenue account separately
+    if revenue_selections:
+        rev_codes = [str(s).strip() for s in revenue_selections]
+        for rev_code in rev_codes:
+            gl_rev_part = gl[gl["ac_code"] == rev_code].copy()
+            if gl_rev_part.empty:
+                continue
+            rev_lbl = rev_code
+            if glmst_df is not None and not glmst_df.empty:
+                gm_tmp = glmst_df.copy()
+                gm_tmp["ac_code"] = gm_tmp["ac_code"].astype(str).str.strip()
+                hit = gm_tmp[gm_tmp["ac_code"] == rev_code]
+                if not hit.empty:
+                    rev_lbl = f"{rev_code} - {hit['ac_name'].iloc[0]}"
+            ovp_r = (
+                gl_rev_part.groupby("date", as_index=False)["value"]
+                .sum()
+                .rename(columns={"value": "overhead_total_for_day"})
+            )
+            tmp_r = base[["date", "total_inventory_value_cost", "shipment_value_cost"]].merge(ovp_r, on="date", how="left")
+            tmp_r["overhead_total_for_day"] = tmp_r["overhead_total_for_day"].fillna(0.0)
+            denom_r = tmp_r["total_inventory_value_cost"].replace(0.0, np.nan)
+            tmp_r["ratio"] = (tmp_r["shipment_value_cost"] / denom_r).fillna(0.0)
+            tmp_r["overhead_allocated_for_day"] = tmp_r["overhead_total_for_day"] * tmp_r["ratio"]
+            rows.append({
+                "level": 0,
+                "selection": rev_code,
+                "label": f"[Revenue Adj] {rev_lbl}",
+                "overhead_total": float(tmp_r["overhead_total_for_day"].sum()),
+                "overhead_for_shipment": float(tmp_r["overhead_allocated_for_day"].sum()),
+            })
 
     summary_df = pd.DataFrame(rows)
 
@@ -2195,16 +2236,24 @@ def build_accounts_selector_options(glmst_df: pd.DataFrame, hierarchy_path: str)
     special_groups = _load_special_level2_groups(hierarchy_path)  # {"06A":[...], "06B":[...]}
 
     if glmst_df is None or glmst_df.empty:
-        return {"level2_options": [], "level1_options": [], "level0_options": []}
+        return {"level2_options": [], "level1_options": [], "level0_options": [], "revenue_options": []}
 
     gm = glmst_df.copy()
     gm["ac_code"] = gm["ac_code"].astype(str).fillna("").str.strip()
     gm["ac_name"] = gm.get("ac_name", "").astype(str).fillna("").str.strip()
 
+    # Revenue accounts (Income type) — negative GL values reduce overhead when selected
+    if "ac_type" in gm.columns:
+        gm_rev = gm[gm["ac_type"].astype(str).str.lower() == "income"].copy()
+    else:
+        gm_rev = gm[gm["ac_code"].str.startswith("08")].copy()
+    gm_rev = gm_rev.sort_values("ac_code")
+    revenue_options = (gm_rev["ac_code"] + " " + gm_rev["ac_name"]).tolist()
+
     # Keep only expense families we care about (numeric prefixes only; 06A/06B are hierarchy groupings, not ac_code prefixes)
     gm = gm[gm["ac_code"].str.startswith(("05", "06", "07"))].copy()
     if gm.empty:
-        return {"level2_options": [], "level1_options": [], "level0_options": []}
+        return {"level2_options": [], "level1_options": [], "level0_options": [], "revenue_options": revenue_options}
 
     # -----------------------------
     # Level 2 options
@@ -2241,6 +2290,7 @@ def build_accounts_selector_options(glmst_df: pd.DataFrame, hierarchy_path: str)
         "level2_options": level2_options,
         "level1_options": level1_options,
         "level0_options": level0_options,
+        "revenue_options": revenue_options,
     }
 
 def _load_special_level2_groups(hierarchy_path: str) -> Dict[str, List[str]]:

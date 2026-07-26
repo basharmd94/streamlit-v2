@@ -208,12 +208,12 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             level_choice = st.radio(
                 "Selection level",
-                ["Level 0", "Level 1", "Level 2"],
+                ["Level 0", "Level 1"],
                 horizontal=True,
-                index=2,
+                index=0,
             )
 
-            level_map = {"Level 0": 0, "Level 1": 1, "Level 2": 2}
+            level_map = {"Level 0": 0, "Level 1": 1}
             level = level_map[level_choice]
 
             if level_choice == "Level 0":
@@ -224,19 +224,20 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 )
                 selections = [s.split(" ", 1)[0].strip() for s in selections]
 
-            elif level_choice == "Level 1":
+            else:
                 selections = st.multiselect(
                     "Select Level 1 head(s)",
                     opts["level1_options"],
                     default=opts["level1_options"],
                 )
 
-            else:
-                selections = st.multiselect(
-                    "Select Level 2 head(s)",
-                    opts["level2_options"],
-                    default=opts["level2_options"],
-                )
+            revenue_adjustments = st.multiselect(
+                "Revenue Adjustments (optional) — income accounts whose negative GL values reduce overhead",
+                opts.get("revenue_options", []),
+                default=[],
+                key="ae_revenue_adjustments",
+            )
+            revenue_selections = tuple(s.split(" ", 1)[0].strip() for s in revenue_adjustments)
 
             show_details = st.checkbox("Show daily ratio diagnostics")
 
@@ -253,6 +254,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 zids_inventory=["100001", "100009"],
                 warehouse_filters=override_wh,
                 warehouse_json_path="data/warehouse_filters.json",
+                revenue_selections=revenue_selections,
             )
 
             db_overhead = float(overhead_out["totals"].get("overhead_for_shipment_sum", 0.0))
@@ -296,6 +298,42 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             if show_details and overhead_out["details_df"] is not None:
                 with st.expander("Daily Diagnostics", expanded=False):
                     st.dataframe(overhead_out["details_df"], use_container_width=True)
+
+            with st.expander("📐 How Accounts Explorer calculates overhead", expanded=False):
+                st.markdown("""
+**Purpose:** Allocates GL overhead expenses (05/06/07 accounts) to this shipment proportionally, based on the shipment's share of total inventory value each day it is active.
+
+**Date range:** From the shipment's `combinedate` to either the date the shipment is fully depleted (stock-depletion model) or today if still open.
+
+---
+**Daily allocation formula:**
+
+| Variable | Meaning |
+|---|---|
+| `shipment_value_cost` | Cost of shipment units still on-hand on that day (depletion model) |
+| `total_inventory_value_cost` | Cumulative on-hand cost across all items in selected warehouses |
+| `ratio` | `shipment_value_cost ÷ total_inventory_value_cost` |
+| `overhead_total_for_day` | Sum of selected GL expense postings on that day |
+| `overhead_allocated_for_day` | `overhead_total_for_day × ratio` |
+
+**Total allocated to shipment** = Σ `overhead_allocated_for_day` over all active days → stored as `shipment_overhead_total` and passed to Batch Profitability.
+
+---
+**Revenue Adjustments:** When a revenue account is selected here, its GL value (negative, since it is an income credit) is added to the overhead pool for that day. This reduces `overhead_total_for_day` by the revenue amount, which in turn lowers the allocated overhead for the shipment.
+
+*Example: Revenue adjustment posting = −10,000 on a day with 50,000 in expenses → net overhead_for_day = 40,000 → allocated at 10% ratio = 4,000 instead of 5,000.*
+
+---
+**Numerical example (simplified):**
+
+| Day | Expenses (GL) | Rev Adj | Net OH | Ship Value | Total Inv | Ratio | Allocated |
+|---|---|---|---|---|---|---|---|
+| 1 | 50,000 | −10,000 | 40,000 | 10,00,000 | 1,00,00,000 | 10.0% | 4,000 |
+| 2 | 30,000 | 0 | 30,000 | 9,80,000 | 1,00,00,000 | 9.8% | 2,940 |
+| 3 | 45,000 | 0 | 45,000 | 9,50,000 | 1,00,00,000 | 9.5% | 4,275 |
+
+**Total allocated → 11,215** → this is `shipment_overhead_total` fed into Batch Profitability.
+""")
 
             return
 
@@ -366,27 +404,56 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                     "Avg days_to_clear (weighted by remaining_qty)": round(w_avg_days_to_clear, 2),
                     "Shipment Overhead Total From Account Explorer": shipment_overhead_total,
                 })
-                with st.expander("Totals Logic Reference", expanded=False):
+                with st.expander("📐 How Batch Profitability calculates profit", expanded=False):
                     st.markdown("""
-                        **Batch Profitability Totals Logic**
+**FIFO allocation rule:** Sales are allocated to batches of the same SKU in chronological order. Earlier batches get consumed first. A later batch can only absorb sales that exceed the remaining stock of all earlier batches.
 
-                        - sold_revenue = FIFO-allocated realized sales value
-                        - realized_cogs = sold_qty × unit_cost
-                        - realized_gm = sold_revenue − realized_cogs
-                        - overhead_realized = D0 × realized_days × realized_share
-                        - net_profit_realized = realized_gm − overhead_realized
-                        - remaining_cost_value = remaining_qty × unit_cost
-                        - proj_remaining_revenue = remaining_qty × scenario_price
-                        - proj_remaining_gm = proj_remaining_revenue − remaining_cost_value
-                        - overhead_projected = D0 × (0.97)^(days_to_clear / 60) × days_to_clear × remaining_share
-                        - Proj_remaining_profit = proj_remaining_gm − overhead_projected
-                        - proj_final_profit = net_profit_realized + Proj_remaining_profit
+---
+**Per-batch fields:**
 
-                        Where:
-                        - D0 = total_overhead_pool / max(days_active)
-                        - realized_days = days from combinedate to batch_end_date (or today if still open)
-                        - remaining_share = SKU projected remaining revenue share of shipment
-                        """)
+| Field | Formula |
+|---|---|
+| `sold_qty` | Units of this batch consumed by sales (FIFO, net of returns) |
+| `sold_revenue` | `sold_qty × weighted avg selling price` during the batch's active period |
+| `realized_cogs` | `sold_qty × unit_cost` |
+| `realized_gm` | `sold_revenue − realized_cogs` |
+
+**Overhead (realized portion):**
+
+| Field | Formula |
+|---|---|
+| `D0` | `total_overhead_pool ÷ max(days_active)` across all SKUs in this shipment |
+| `realized_share` | `SKU sold_revenue ÷ shipment total sold_revenue` (falls back to cost share if 0) |
+| `overhead_realized` | `D0 × days_active × realized_share` |
+| `net_profit_realized` | `realized_gm − overhead_realized` |
+
+**Projected (remaining stock):**
+
+| Field | Formula |
+|---|---|
+| `proj_remaining_revenue` | `remaining_qty × avg_price` (avg selling price of this SKU) |
+| `proj_remaining_gm` | `proj_remaining_revenue − (remaining_qty × unit_cost)` |
+| `remaining_share` | `SKU proj_remaining_revenue ÷ total proj remaining revenue` |
+| `overhead_projected` | `D0 × 0.97^(days_to_clear ÷ 60) × days_to_clear × remaining_share` |
+| `Proj_remaining_profit` | `proj_remaining_gm − overhead_projected` |
+| `proj_final_profit` | `net_profit_realized + Proj_remaining_profit` |
+
+*The 0.97 decay factor reflects that overhead pressure on remaining stock diminishes as a shipment ages — the cost base is already partially recouped.*
+
+---
+**Numerical example:**
+
+- Batch: 100 units purchased at BDT 500/unit → `batch_cost = 50,000`
+- 70 units sold at avg BDT 750 → `sold_revenue = 52,500`; `realized_cogs = 35,000`; `realized_gm = 17,500`
+- `D0 = 100/day`; `days_active = 90`; `realized_share = 40%`
+  → `overhead_realized = 100 × 90 × 0.40 = 3,600`
+  → `net_profit_realized = 17,500 − 3,600 = 13,900`
+- Remaining: 30 units; `days_to_clear = 45`; `remaining_share = 25%`
+  → `proj_remaining_revenue = 30 × 750 = 22,500`; `proj_remaining_gm = 22,500 − 15,000 = 7,500`
+  → `overhead_projected = 100 × 0.97^(45/60) × 45 × 0.25 ≈ 1,084`
+  → `Proj_remaining_profit = 7,500 − 1,084 = 6,416`
+  → `proj_final_profit = 13,900 + 6,416 = 20,316`
+""")
             return
         # ============================================================
         # 4 WAREHOUSE SNAPSHOT
@@ -594,96 +661,64 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             st.dataframe(final_display_df, use_container_width=True)
 
             st.session_state["last_scenario_worksheet_df"] = calc_df.copy()
-            return
 
-            with st.expander("SKU Simulator Calculation Logic", expanded=False):
+            with st.expander("📐 How SKU Simulator calculates scenario profit", expanded=False):
                 st.markdown("""
-                        ### SKU Simulator Calculation Logic
-                        The SKU Simulator recomputes the projected profitability of a single SKU while keeping the rest of the shipment unchanged.
+**Purpose:** Test pricing and clearance scenarios using the same overhead pool from Batch Profitability — without re-running the full engine.
 
-                        #### Inputs
-                        - **remaining_qty**: Remaining units from the latest batch profitability result
-                        - **unit_cost**: Purchase cost per unit
-                        - **scenario_price**: User-defined selling price
-                        - **days_to_clear**: User-defined clearance horizon (capped at 730 days)
+---
+**Editable inputs (per row):**
 
-                        ---
+| Input | Effect |
+|---|---|
+| `avg_price` | New selling price per unit for the remaining stock |
+| `days_to_clear` | Revised estimate of how many days to sell the remaining units (capped at 730) |
 
-                        ### Revenue Projection
-                        Projected revenue of remaining stock:
-                        proj_remaining_revenue = remaining_qty × scenario_price
+---
+**What stays fixed (anchored to the original Batch Profitability run):**
+- All realized figures: `sold_qty`, `sold_revenue`, `realized_cogs`, `realized_gm`, `overhead_realized`, `net_profit_realized`
+- Overhead pool: `D0 = total_overhead_pool ÷ max(days_active)` — same as original run
+- `remaining_qty` and `remaining_cost_value`
 
-                        ---
+---
+**What recalculates from your edits:**
 
-                        ### Gross Margin Projection
-                        remaining_cost_value = remaining_qty × unit_cost
-                        proj_remaining_gm = proj_remaining_revenue − remaining_cost_value
+| Field | Formula |
+|---|---|
+| `proj_remaining_revenue` | `remaining_qty × new avg_price` |
+| `proj_remaining_gm` | `proj_remaining_revenue − remaining_cost_value` |
+| `remaining_share` | `SKU proj_remaining_revenue ÷ total new proj remaining revenue` (falls back to cost share if 0) |
+| `overhead_projected` | `D0 × 0.97^(days_to_clear ÷ 60) × days_to_clear × remaining_share` |
+| `Proj_remaining_profit` | `proj_remaining_gm − overhead_projected` |
+| `proj_final_profit` | `net_profit_realized + Proj_remaining_profit` |
 
-                        ---
+*The 0.97 decay factor means longer clearance horizons attract diminishing marginal overhead — consistent with the Batch Profitability engine.*
 
-                        ### Remaining Revenue Share
-                        The SKU's share of the remaining shipment value is recalculated using the simulated projected revenue.
+---
+**Velocity (read-only, from Batch Profitability):**
+- `velocity = sold_qty ÷ days_active` (units/day)
+- If `sold_qty = 0` → velocity defaults to 0.02
+- `days_to_clear` is initially set to `remaining_qty ÷ velocity` but you can override it here
 
-                        remaining_share =
-                        simulated_projected_revenue_of_selected_sku
-                        /
-                        total_simulated_projected_revenue_of_shipment
-                        Fallback if projected revenue is zero:
-                        remaining_share =
-                        remaining_cost_value
-                        /
-                        total_remaining_cost_value_of_shipment
+---
+**Numerical example:**
 
-                        ---
+Original result from Batch Profitability:
+- `net_profit_realized = 13,900`; `remaining_qty = 30`; `unit_cost = 500`
+- `remaining_cost_value = 15,000`; `avg_price = 750`; `days_to_clear = 45`
+- `D0 = 100/day`; `remaining_share = 25%`
+- `proj_final_profit = 20,316` (from Batch Profitability)
 
-                        ### Overhead Pool Baseline
-                        Daily overhead baseline:
-                        D0 = total_overhead_pool / max(days_active_in_shipment)
+**Scenario: lower price to 650:**
+- `proj_remaining_revenue = 30 × 650 = 19,500`
+- `proj_remaining_gm = 19,500 − 15,000 = 4,500`
+- `overhead_projected = 100 × 0.97^(45/60) × 45 × 0.25 ≈ 1,084`
+- `Proj_remaining_profit = 4,500 − 1,084 = 3,416`
+- `proj_final_profit = 13,900 + 3,416 = 17,316` *(vs 20,316 at BDT 750)*
 
-                        Where:
-                        - **total_overhead_pool** = total overhead allocated to the shipment
-                        - **days_active** = maximum days_active across all SKUs in the shipment
-
-                        ---
-
-                        ### Decaying Overhead Projection
-                        Projected overhead uses the diminishing overhead formula:
-
-                        overhead_projected =
-                        D0 × (0.97)^(days_to_clear / 60)
-                        × days_to_clear
-                        × remaining_share
-                        This reflects the empirical observation that shipment overhead pressure declines over time as the shipment mix dilutes.
-
-                        ---
-
-                        ### Remaining Projected Profit
-                        Proj_remaining_profit =
-                        proj_remaining_gm − overhead_projected
-                        ---
-
-                        ### Final SKU Profit
-                        proj_final_profit =
-                        net_profit_realized + Proj_remaining_profit
-
-                        Where:
-                        net_profit_realized =
-                        realized_gm − overhead_realized
-                        ---
-
-                        ### Velocity Logic
-
-                        velocity =
-                        sold_qty / days_active
-                        If sold_qty = 0:
-                        velocity_used = 0.02
-                        Projected clearance time:
-                        days_to_clear =
-                        remaining_qty / velocity_used
-                        days_to_clear is capped at **730 days** to prevent extreme projections.
-
-                        ---
-                        ### Key Concept
-                        The SKU Simulator modifies **only the selected SKU scenario** while keeping all other shipment SKUs unchanged.
-                        This allows testing pricing and clearance scenarios without rebuilding the entire shipment profitability model.
-                        """)
+**Scenario: same price 750 but push clearance to 90 days:**
+- `overhead_projected = 100 × 0.97^(90/60) × 90 × 0.25 ≈ 2,119`
+- `Proj_remaining_profit = 7,500 − 2,119 = 5,381`
+- `proj_final_profit = 13,900 + 5,381 = 19,281` *(slower clearance costs ~1,000 in overhead)*
+""")
+            return
