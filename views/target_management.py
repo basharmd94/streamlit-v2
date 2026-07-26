@@ -2715,21 +2715,38 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
         if no_gps_orders_mo:
             st.markdown(f"**{len(no_gps_orders_mo)} order(s) without GPS coordinates (not shown on map):**")
             no_gps_tbl = pd.DataFrame([{
-                "Date":         r["order_date"].strftime("%d %b %Y"),
-                "Order":        r["order_num"],
-                "Cust. Code":   r.get("cusid", ""),
-                "Customer":     r["cusname"],
-                "Lat":          r.get("lat", ""),
-                "Lon":          r.get("lon", ""),
-                "Status":       r["status"],
-                "Order Value":  int(r["total"] or 0),
-                "ZID":          r.get("zid", ""),
+                "Date":     r["order_date"].strftime("%d %b %Y"),
+                "Order":    r["order_num"],
+                "Customer": r["cusname"],
+                "Status":   r["status"],
+                "Total":    int(r["total"] or 0),
             } for r in no_gps_orders_mo])
-            st.dataframe(
-                no_gps_tbl.style.format({"Order Value": "{:,.0f}"}),
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.dataframe(no_gps_tbl, use_container_width=True, hide_index=True)
+
+        # ── All orders this month (GPS + no-GPS, full detail) ─────────────────
+        if all_order_dfs:
+            all_ord_rows = []
+            for _odf in all_order_dfs.values():
+                for _, row in _odf.iterrows():
+                    try:
+                        loc = f"{float(row['lat']):.6f}, {float(row['lon']):.6f}"
+                    except (TypeError, ValueError):
+                        loc = ""
+                    all_ord_rows.append({
+                        "ZID":         row.get("zid", ""),
+                        "Date":        row["order_date"].strftime("%d %b %Y"),
+                        "Cust. Code":  row.get("cusid", ""),
+                        "Customer":    row["cusname"],
+                        "Lat, Lon":    loc,
+                        "Order Value": int(row["total"] or 0),
+                    })
+            if all_ord_rows:
+                st.markdown("**All orders this month:**")
+                st.dataframe(
+                    pd.DataFrame(all_ord_rows).style.format({"Order Value": "{:,.0f}"}),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 
 def _render_field_tracking(zid):
