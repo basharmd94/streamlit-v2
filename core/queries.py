@@ -1144,15 +1144,11 @@ def get_opspprc_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
 def get_final_items_view(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """
     Query the final_items_view database view.
-    Returns item_id, item_name, item_group, stock filtered by zid.
+    Returns all columns (item_id, item_name, item_group, stock, status, …).
     """
     zid = filters["zid"][0]
     sql = """
-        SELECT
-            item_id,
-            item_name,
-            item_group,
-            stock
+        SELECT *
         FROM final_items_view
         WHERE zid = %s
         ORDER BY item_name

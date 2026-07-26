@@ -90,15 +90,10 @@ def _load_cacus(zid: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def _load_stock_for_gap(zid: str) -> pd.DataFrame:
-    """Load stock movements for 100001+100009 (cross-ZID) or the given ZID."""
-    zids = ["100001", "100009"] if zid == "100001" else [zid]
-    frames = []
-    for z in zids:
-        df = Analytics("stock", zid=z, filters={}).data
-        if df is not None and not df.empty:
-            frames.append(df)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+def _load_final_items_100001() -> pd.DataFrame:
+    """Load final_items_view for ZID 100001 (cross-ZID 100009 logic baked in)."""
+    df = Analytics("final_items_view", zid="100001", filters={}).data
+    return df if df is not None else pd.DataFrame()
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -294,39 +289,39 @@ def _show_campaign_planner(
         })
         st.dataframe(disp_prod, use_container_width=True)
 
-    # ── Section C: Stock gap opportunities ───────────────────────────────────
-    st.markdown("#### 🔍 Stock Gap Opportunities")
+    # ── Section C: In-stock promotion candidates ─────────────────────────────
+    st.markdown("#### 🔍 In-Stock Promotion Candidates")
     st.caption(
-        "Products **in stock** whose **product group** has sold in the current filter, "
-        "but this specific product has **not yet sold** here."
+        "Items with status **In Stock NS**, **Low Stock NS**, or **In Stock** "
+        "whose product group has sold in the current filter. "
+        "**Sold Here Before** = this exact SKU has moved in the current salesman/area period."
     )
 
     with st.spinner("Loading stock data…"):
-        stock_df = _load_stock_for_gap(zid)
+        final_items_df = _load_final_items_100001()
 
     gap_df = pd.DataFrame()
-    if stock_df.empty:
+    if final_items_df.empty:
         st.info("No stock data available.")
     else:
-        warehouses = sorted(stock_df["warehouse"].dropna().unique().tolist())
-        selected_wh = st.multiselect(
-            "Warehouses", warehouses, default=warehouses, key="camp_wh"
-        )
-        gap_df = build_stock_gap(
-            sales_df, stock_df,
-            warehouses=selected_wh if selected_wh else None,
-        )
+        gap_df = build_stock_gap(sales_df, final_items_df)
         if gap_df.empty:
-            st.success("No gap found — all in-stock items for matching groups have already sold here.")
+            st.info("No promotable in-stock items found for the current salesman/area filter.")
         else:
-            st.info(f"**{len(gap_df)}** products in stock not yet sold here, but their group has sold here.")
+            st.info(f"**{len(gap_df)}** promotable items — their group sells in this territory.")
             disp_gap = gap_df.copy()
-            disp_gap["stock_qty"] = disp_gap["stock_qty"].apply(
-                lambda v: f"{v:,.2f}" if pd.notna(v) else ""
-            )
+            if "stock" in disp_gap.columns:
+                disp_gap["stock"] = disp_gap["stock"].apply(
+                    lambda v: f"{v:,.2f}" if pd.notna(v) else ""
+                )
+            if "sold_here_before" in disp_gap.columns:
+                disp_gap["sold_here_before"] = disp_gap["sold_here_before"].map(
+                    {True: "Yes", False: "No"}
+                )
             disp_gap = disp_gap.rename(columns={
-                "itemcode": "Item Code", "itemname": "Item Name", "itemgroup": "Group",
-                "warehouse": "Warehouse", "stock_qty": "Stock Qty",
+                "item_id":   "Item Code", "item_name": "Item Name",
+                "item_group": "Group",    "stock":     "Stock",
+                "status":    "Status",   "sold_here_before": "Sold Here Before",
             })
             st.dataframe(disp_gap, use_container_width=True)
 
@@ -367,11 +362,15 @@ in Section B.
 The products that have driven the most revenue in the current filter over the selected period.
 Use these as the focus of your campaign message — they have proven demand here.
 
-**Section C — Stock Gap Opportunities**
-Products sitting in your warehouse whose *product group* sells in this area, but this specific
-SKU has never been ordered by anyone in the filter. These are expansion opportunities:
-- **For 100001/100009**: actual on-hand stock shown by warehouse — you have the goods ready.
-- **For 100000/100005**: the product group is known to sell here; push these SKUs to your agents.
+**Section C — In-Stock Promotion Candidates**
+Items from `final_items_view` (100001) filtered to promotable statuses:
+- **In Stock NS** — stock available, no recent sales (> 2 months of cover)
+- **Low Stock NS** — low stock with no recent movement
+- **In Stock** — normal in-stock items
+
+Only items whose *product group* has sold in the current territory are shown — so every row
+is relevant to this area. The **Sold Here Before** column tells you whether this exact SKU has
+already moved in this territory (Yes = re-engage; No = introduce for the first time).
 
 **Download → Campaign Report CSV** bundles all three sections into one file.
 Each row has a `section` column so you can filter/sort in Excel.
