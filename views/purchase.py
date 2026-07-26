@@ -231,13 +231,9 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                     default=opts["level1_options"],
                 )
 
-            revenue_adjustments = st.multiselect(
-                "Revenue Adjustments (optional) — income accounts whose negative GL values reduce overhead",
-                opts.get("revenue_options", []),
-                default=[],
-                key="ae_revenue_adjustments",
-            )
-            revenue_selections = tuple(s.split(" ", 1)[0].strip() for s in revenue_adjustments)
+            # 08020003 always included — negative GL value reduces the overhead pool
+            revenue_selections = ("08020003",)
+            st.caption("Revenue adjustment applied: `08020003` (intercompany services — negative value reduces overhead)")
 
             show_details = st.checkbox("Show daily ratio diagnostics")
 
