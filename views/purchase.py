@@ -1,8 +1,153 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from io import BytesIO
 from processing import common, purchase
 from utils.utils import timed
+
+
+def _build_sku_sim_excel(
+    calc_df: pd.DataFrame,
+    D0: float,
+    total_overhead_pool: float,
+    days_elapsed: int,
+    shipment_name: str = "shipment",
+) -> bytes:
+    """Return an Excel workbook (bytes) for the SKU Simulator scenario.
+
+    Yellow cells (Avg Price, Days to Clear) are the editable inputs.
+    All downstream columns use formulas that recalculate automatically.
+    A Totals row at the bottom sums every numeric output column.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "SKU Simulator"
+
+    def _f(bold=False, color="000000"):
+        return Font(name="Arial", size=10, bold=bold, color=color)
+
+    FILL_HDR    = PatternFill(patternType="solid", fgColor="1F3864")
+    FILL_INPUT  = PatternFill(patternType="solid", fgColor="FFFF00")
+    FILL_TOTALS = PatternFill(patternType="solid", fgColor="BDD7EE")
+    FILL_CONST  = PatternFill(patternType="solid", fgColor="DEEAF1")
+
+    FMT_INT = "#,##0"
+    FMT_DEC = "#,##0.00"
+
+    n  = len(calc_df)
+    R0 = 6           # first data row
+    RE = R0 + n - 1  # last data row
+    RT = RE + 1      # totals row
+
+    # ── Constants block (rows 1-3) — D0 lives at B1 ─────────────────────────
+    for i, (lbl, val, fmt) in enumerate([
+        ("D0 — Daily Overhead Rate", round(D0, 4),            FMT_DEC),
+        ("Total Overhead Pool",      round(total_overhead_pool, 2), FMT_DEC),
+        ("Days Active (Elapsed)",    int(days_elapsed),        FMT_INT),
+    ], start=1):
+        ws.cell(row=i, column=1, value=lbl).font = _f(bold=True)
+        c = ws.cell(row=i, column=2, value=val)
+        c.font = _f(color="000080")
+        c.fill = FILL_CONST
+        c.number_format = fmt
+
+    # ── Column spec: (header, df_col, is_input, formula_fn, do_sum, fmt) ─────
+    def _oh(r):
+        return (
+            f"=IF(SUM($N${R0}:$N${RE})=0,0,"
+            f"$B$1*POWER(0.97,M{r}/60)*M{r}"
+            f"*(N{r}/SUM($N${R0}:$N${RE})))"
+        )
+
+    COLS = [
+        ("Item Code",             "itemcode",            False, None,                       False, "@"),
+        ("Item Name",             "itemname",            False, None,                       False, "@"),
+        ("Remaining Qty",         "remaining_qty",       False, None,                       False, FMT_INT),
+        ("Unit Cost",             "unit_cost",           False, None,                       False, FMT_DEC),
+        ("Remaining Cost Value",  "remaining_cost_value",False, None,                       True,  FMT_DEC),
+        ("Sold Revenue",          "sold_revenue",        False, None,                       True,  FMT_DEC),
+        ("Realized COGS",         "realized_cogs",       False, None,                       True,  FMT_DEC),
+        ("Realized GM",           "realized_gm",         False, None,                       True,  FMT_DEC),
+        ("Overhead Realized",     "overhead_realized",   False, None,                       True,  FMT_DEC),
+        ("Net Profit Realized",   "net_profit_realized", False, None,                       True,  FMT_DEC),
+        ("Days Active",           "days_active",         False, None,                       False, FMT_INT),
+        ("Avg Price ✏",           "avg_price",           True,  None,                       False, FMT_DEC),
+        ("Days to Clear ✏",       "days_to_clear",       True,  None,                       False, FMT_INT),
+        ("Proj Remaining Rev",    None,                  False, lambda r: f"=C{r}*L{r}",    True,  FMT_DEC),
+        ("Proj Remaining GM",     None,                  False, lambda r: f"=N{r}-E{r}",    True,  FMT_DEC),
+        ("Overhead Projected",    None,                  False, _oh,                        True,  FMT_DEC),
+        ("Proj Remaining Profit", None,                  False, lambda r: f"=O{r}-P{r}",    True,  FMT_DEC),
+        ("Proj Final Profit",     None,                  False, lambda r: f"=J{r}+Q{r}",    True,  FMT_DEC),
+    ]
+
+    # ── Header row (row 5) ────────────────────────────────────────────────────
+    for ci, (hdr, *_) in enumerate(COLS, start=1):
+        c = ws.cell(row=5, column=ci, value=hdr)
+        c.font      = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+        c.fill      = FILL_HDR
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    ws.row_dimensions[5].height = 30
+
+    # ── Data rows ─────────────────────────────────────────────────────────────
+    for ri, (_, row) in enumerate(calc_df.iterrows(), start=R0):
+        for ci, (_, df_col, is_input, formula_fn, _, fmt) in enumerate(COLS, start=1):
+            c = ws.cell(row=ri, column=ci)
+            c.number_format = fmt
+            if formula_fn:
+                c.value = formula_fn(ri)
+                c.font  = _f()
+            elif is_input:
+                try:
+                    c.value = float(row[df_col]) if df_col in calc_df.columns else 0.0
+                except (ValueError, TypeError):
+                    c.value = 0.0
+                c.font = _f()
+                c.fill = FILL_INPUT
+            else:
+                raw = row[df_col] if df_col and df_col in calc_df.columns else ""
+                if fmt == "@":
+                    c.value = str(raw) if raw else ""
+                else:
+                    try:
+                        c.value = float(raw)
+                    except (ValueError, TypeError):
+                        c.value = ""
+                c.font = _f()
+
+    # ── Totals row ────────────────────────────────────────────────────────────
+    ws.cell(row=RT, column=1, value="TOTAL").font = _f(bold=True)
+    for ci, (_, _, _, _, do_sum, fmt) in enumerate(COLS, start=1):
+        c = ws.cell(row=RT, column=ci)
+        c.fill = FILL_TOTALS
+        c.font = _f(bold=True)
+        c.number_format = fmt
+        if do_sum:
+            cl = get_column_letter(ci)
+            c.value = f"=SUM({cl}{R0}:{cl}{RE})"
+
+    # ── Column widths ─────────────────────────────────────────────────────────
+    for i, w in enumerate(
+        [14, 32, 14, 12, 22, 16, 16, 14, 18, 20, 12, 12, 14, 20, 18, 20, 22, 18],
+        start=1,
+    ):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # ── Notes ─────────────────────────────────────────────────────────────────
+    note_font = Font(name="Arial", size=9, italic=True, color="888888")
+    ws.cell(row=RT + 2, column=1,
+            value="✏ Yellow cells are editable — change Avg Price or Days to Clear to recalculate.").font = note_font
+    ws.cell(row=RT + 3, column=1,
+            value=("Overhead = D0 × POWER(0.97, days_to_clear/60) × days_to_clear "
+                   "× (SKU proj rev ÷ SUM all proj rev)")).font = note_font
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 @timed
@@ -697,6 +842,20 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             st.markdown("### Scenario Worksheet Output")
             st.dataframe(final_display_df, use_container_width=True)
+
+            try:
+                _xl = _build_sku_sim_excel(
+                    calc_df, D0, total_overhead_pool, days_elapsed,
+                    shipment_name=selected_shipment,
+                )
+                st.download_button(
+                    label="📥 Download Scenario as Excel (with formulas)",
+                    data=_xl,
+                    file_name=f"sku_sim_{selected_shipment}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            except Exception as _xl_err:
+                st.caption(f"Excel export unavailable: {_xl_err}")
 
             st.session_state["last_scenario_worksheet_df"] = calc_df.copy()
 
