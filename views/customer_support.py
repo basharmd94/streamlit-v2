@@ -135,34 +135,44 @@ def _get_call_logs_cached(cusid: str) -> pd.DataFrame:
 
 def _bust_call_log_cache(cusid: str) -> None:
     st.session_state.pop(f"_calllog_{cusid}", None)
-    # also invalidate the bulk last-called cache so table columns update immediately
+    # invalidate bulk calllog cache so Outcome/Notes/Last Called update immediately
     for k in list(st.session_state.keys()):
-        if k.startswith("_lastcalled_"):
+        if k.startswith("_lastcalllog_"):
             del st.session_state[k]
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _fetch_last_called_dates(cusids_key: tuple) -> dict:
-    """Return {cusid: date_str} for a sorted, frozen tuple of customer codes."""
+def _fetch_last_calllog(cusids_key: tuple) -> dict:
+    """Return {cusid: {"last_called": date_str, "outcome": str, "notes": str}}
+    for a sorted, frozen tuple of customer codes.  Uses DISTINCT ON so only
+    the single most-recent entry per customer is returned."""
     if not cusids_key:
         return {}
     from core.db import get_data
     placeholders = ", ".join(["%s"] * len(cusids_key))
     sql = (
-        f"SELECT cusid, MAX(called_at)::date AS last_called "
-        f"FROM crm_call_log WHERE cusid IN ({placeholders}) GROUP BY cusid"
+        f"SELECT DISTINCT ON (cusid) cusid, called_at::date, outcome, notes "
+        f"FROM crm_call_log WHERE cusid IN ({placeholders}) "
+        f"ORDER BY cusid, called_at DESC"
     )
     records, _ = get_data(sql, *cusids_key)
     if not records:
         return {}
-    return {str(r[0]): str(r[1]) for r in records}
+    return {
+        str(r[0]): {
+            "last_called": str(r[1]) if r[1] is not None else None,
+            "outcome":     str(r[2]) if r[2] is not None else None,
+            "notes":       str(r[3]) if r[3] is not None else None,
+        }
+        for r in records
+    }
 
 
-def _last_called_map(cusids: "list[str]") -> dict:
+def _last_calllog_map(cusids: "list[str]") -> dict:
     """Serve from session_state so filter keystrokes skip the DB."""
-    key = "_lastcalled_" + ",".join(sorted(set(cusids)))
+    key = "_lastcalllog_" + ",".join(sorted(set(cusids)))
     if key not in st.session_state:
-        st.session_state[key] = _fetch_last_called_dates(
+        st.session_state[key] = _fetch_last_calllog(
             tuple(sorted(set(cusids)))
         )
     return st.session_state[key]
@@ -315,19 +325,18 @@ def _render_14day_activity():
     disp_cols = [c for c in _FEED_COLS if c in feed.columns]
     disp = normalize_phone_cols(feed[disp_cols].copy()).rename(columns=_FEED_RENAME)
 
-    # Inject last-called date column
-    _lc_map = _last_called_map(feed["xsub"].astype(str).unique().tolist())
-    disp.insert(
-        disp.columns.get_loc("Cust Code") + 1,
-        "Last Called",
-        disp["Cust Code"].astype(str).map(_lc_map),
-    )
+    # Inject last-called date, outcome, notes columns
+    _cl_map = _last_calllog_map(feed["xsub"].astype(str).unique().tolist())
+    insert_at = disp.columns.get_loc("Cust Code") + 1
+    disp.insert(insert_at,     "Last Called", disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("last_called")))
+    disp.insert(insert_at + 1, "Outcome",     disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("outcome")))
+    disp.insert(insert_at + 2, "Notes",       disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("notes")))
 
     st.caption(
         f"**{len(feed):,}** vouchers"
         + (f" — {sel_date_str}" if sel_date_str != "All dates" else " — last 14 days")
         + (f", type: {sel_type}" if sel_type != "All Types" else "")
-        + " · sorted latest first"
+        + " · sorted latest first · Outcome/Notes = most recent call log entry per customer"
     )
     st.dataframe(
         disp,
@@ -335,6 +344,8 @@ def _render_14day_activity():
             "Date":        st.column_config.DateColumn("Date",        format="YYYY-MM-DD"),
             "Amount":      st.column_config.NumberColumn("Amount",    format="%.0f"),
             "Last Called": st.column_config.DateColumn("Last Called", format="YYYY-MM-DD"),
+            "Outcome":     st.column_config.TextColumn("Outcome"),
+            "Notes":       st.column_config.TextColumn("Notes"),
         },
         use_container_width=True,
         hide_index=True,
@@ -507,13 +518,15 @@ def _render_merged_sc_table(
 
     df["_status"] = df["days_since_sale"].apply(_sc_status)
 
-    # Inject last-called date
-    _lc_map = _last_called_map(df["cusid"].astype(str).unique().tolist())
-    df["last_called"] = df["cusid"].astype(str).map(_lc_map)
+    # Inject last-called date, outcome, notes
+    _cl_map = _last_calllog_map(df["cusid"].astype(str).unique().tolist())
+    df["last_called"] = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("last_called"))
+    df["outcome"]     = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("outcome"))
+    df["notes"]       = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("notes"))
 
     col_order = [
-        "_status", "zid", "cusid", "customer_name", "last_called", "cusmobile",
-        "spid", "salesman_name", "city",
+        "_status", "zid", "cusid", "customer_name", "last_called", "outcome", "notes",
+        "cusmobile", "spid", "salesman_name", "city",
         "days_since_sale", "last_sale_date", "last_sale_amount",
         "days_since_coll", "last_coll_date", "last_coll_amount",
         "current_balance",
@@ -522,6 +535,7 @@ def _render_merged_sc_table(
     disp = normalize_phone_cols(df[disp_cols].copy()).rename(columns={
         "_status": "⚠", "zid": "ZID", "cusid": "Cust Code",
         "customer_name": "Customer", "last_called": "Last Called",
+        "outcome": "Outcome", "notes": "Notes",
         "cusmobile": "Mobile",
         "spid": "SP Code", "salesman_name": "Salesman", "city": "City",
         "days_since_sale": "Days Sale", "last_sale_date": "Latest Sale Date",
@@ -534,12 +548,15 @@ def _render_merged_sc_table(
     st.caption(
         f"**{len(unique_cust):,}** customers · **{len(df):,}** rows (100001+100000)"
         "  ·  >24 = 24+ days  ·  >30 = 30+ days  ·  sorted: most overdue group first"
+        "  ·  Outcome/Notes = most recent call log entry"
     )
     st.dataframe(
         disp,
         column_config={
             "⚠":               st.column_config.TextColumn("⚠", width="small"),
             "Last Called":      st.column_config.DateColumn("Last Called",      format="YYYY-MM-DD"),
+            "Outcome":          st.column_config.TextColumn("Outcome"),
+            "Notes":            st.column_config.TextColumn("Notes"),
             "Latest Sale Date": st.column_config.DateColumn("Latest Sale Date", format="YYYY-MM-DD"),
             "Latest Coll Date": st.column_config.DateColumn("Latest Coll Date", format="YYYY-MM-DD"),
             "Sale Amt":         st.column_config.NumberColumn("Sale Amt",        format="%.0f"),
@@ -594,13 +611,15 @@ def _render_sc_table_zepto(
     df = df.copy()
     df["_status"] = df["days_since_sale"].apply(_sc_status)
 
-    # Inject last-called date
-    _lc_map = _last_called_map(df["cusid"].astype(str).unique().tolist())
-    df["last_called"] = df["cusid"].astype(str).map(_lc_map)
+    # Inject last-called date, outcome, notes
+    _cl_map = _last_calllog_map(df["cusid"].astype(str).unique().tolist())
+    df["last_called"] = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("last_called"))
+    df["outcome"]     = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("outcome"))
+    df["notes"]       = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("notes"))
 
     col_order = [
-        "_status", "cusid", "customer_name", "last_called", "cusmobile",
-        "spid", "salesman_name", "city",
+        "_status", "cusid", "customer_name", "last_called", "outcome", "notes",
+        "cusmobile", "spid", "salesman_name", "city",
         "days_since_sale", "last_sale_date", "last_sale_amount",
         "days_since_coll", "last_coll_date", "last_coll_amount",
         "current_balance",
@@ -608,8 +627,8 @@ def _render_sc_table_zepto(
     disp_cols = [c for c in col_order if c in df.columns]
     disp = normalize_phone_cols(df[disp_cols].copy()).rename(columns={
         "_status": "⚠", "cusid": "Cust Code", "customer_name": "Customer",
-        "last_called": "Last Called", "cusmobile": "Mobile",
-        "spid": "SP Code", "salesman_name": "Salesman",
+        "last_called": "Last Called", "outcome": "Outcome", "notes": "Notes",
+        "cusmobile": "Mobile", "spid": "SP Code", "salesman_name": "Salesman",
         "city": "City", "days_since_sale": "Days Sale",
         "last_sale_date": "Latest Sale Date", "last_sale_amount": "Sale Amt",
         "days_since_coll": "Days Coll", "last_coll_date": "Latest Coll Date",
@@ -619,12 +638,15 @@ def _render_sc_table_zepto(
     st.caption(
         f"**{len(disp):,}** customers with outstanding balance"
         "  ·  >24 = 24+ days  ·  >30 = 30+ days"
+        "  ·  Outcome/Notes = most recent call log entry"
     )
     st.dataframe(
         disp,
         column_config={
             "⚠":               st.column_config.TextColumn("⚠", width="small"),
             "Last Called":      st.column_config.DateColumn("Last Called",      format="YYYY-MM-DD"),
+            "Outcome":          st.column_config.TextColumn("Outcome"),
+            "Notes":            st.column_config.TextColumn("Notes"),
             "Latest Sale Date": st.column_config.DateColumn("Latest Sale Date", format="YYYY-MM-DD"),
             "Latest Coll Date": st.column_config.DateColumn("Latest Coll Date", format="YYYY-MM-DD"),
             "Sale Amt":         st.column_config.NumberColumn("Sale Amt",        format="%.0f"),
