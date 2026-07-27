@@ -1156,6 +1156,42 @@ def get_final_items_view(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_inventory_overview(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """
+    Stock + pricing for the Total Inventory view in Purchase Analysis.
+    Joins final_items_view with caitem (std price, packcode) and the
+    lowest opspprc tier per item (min disc amt, min qty).
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            f.zid,
+            f.item_id,
+            f.item_name,
+            f.item_group,
+            f.stock,
+            COALESCE(ci.xstdprice, 0)   AS std_price,
+            COALESCE(ci.xdrawing, '')   AS packcode,
+            COALESCE(op.xqty, 0)        AS min_qty,
+            COALESCE(op.xdisc, 0)       AS min_disc_amt
+        FROM final_items_view f
+        LEFT JOIN caitem ci
+               ON f.item_id = ci.xitem AND f.zid = ci.zid
+        LEFT JOIN (
+            SELECT DISTINCT ON (zid, xpricecat)
+                zid,
+                xpricecat,
+                xqty,
+                xdisc
+            FROM opspprc
+            ORDER BY zid, xpricecat, xqty
+        ) op ON f.item_id = op.xpricecat AND f.zid = op.zid
+        WHERE f.zid = %s
+        ORDER BY f.item_name
+    """
+    return sql, (zid,)
+
+
 def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     project = filters.get("project")

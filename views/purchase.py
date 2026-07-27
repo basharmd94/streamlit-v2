@@ -150,15 +150,189 @@ def _build_sku_sim_excel(
     return buf.getvalue()
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_inventory_overview(zid_str: str) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("inventory_overview", zid=zid_str, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+def _render_total_inventory(zid, data_dict):
+    """
+    Total Inventory Overview — combined 100001 + 100009 stock with
+    avg monthly sales velocity and days-to-clear per item.
+    """
+    st.subheader("Total Inventory Overview")
+
+    with st.spinner("Loading inventory data…"):
+        inv_101 = _load_inventory_overview("100001")
+        inv_109 = _load_inventory_overview("100009")
+
+    if inv_101.empty and inv_109.empty:
+        st.warning("No inventory data available.")
+        return
+
+    # ── Resolve packcode for cross-ZID grouping ──────────────────────────
+    def _resolve_code(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        d = df.copy()
+        d["resolved_code"] = d.apply(
+            lambda r: (
+                r["packcode"]
+                if (
+                    r.get("packcode", "")
+                    and r["packcode"] not in ("", "NO")
+                    and not str(r["packcode"]).upper().startswith("KH")
+                )
+                else r["item_id"]
+            ),
+            axis=1,
+        )
+        return d
+
+    inv_101 = _resolve_code(inv_101)
+    inv_109 = _resolve_code(inv_109)
+
+    combined = pd.concat([inv_101, inv_109], ignore_index=True)
+
+    # ── Sum stock by resolved code; carry 100001 metadata as primary ──────
+    meta_cols = ["item_id", "item_name", "item_group", "std_price", "min_qty", "min_disc_amt"]
+    # 100001 rows preferred for metadata; 100009 rows fill gaps
+    meta_101 = inv_101[["resolved_code"] + [c for c in meta_cols if c in inv_101.columns]].drop_duplicates("resolved_code") if not inv_101.empty else pd.DataFrame()
+    meta_109 = inv_109[["resolved_code"] + [c for c in meta_cols if c in inv_109.columns]].drop_duplicates("resolved_code") if not inv_109.empty else pd.DataFrame()
+
+    stock_agg = (
+        combined.groupby("resolved_code", as_index=False)["stock"]
+        .sum()
+        .rename(columns={"stock": "total_stock"})
+    )
+
+    # Prefer 100001 metadata; fall back to 100009 for items only in 100009
+    if not meta_101.empty and not meta_109.empty:
+        meta = pd.concat([meta_101, meta_109], ignore_index=True).drop_duplicates("resolved_code", keep="first")
+    elif not meta_101.empty:
+        meta = meta_101
+    else:
+        meta = meta_109
+
+    inv_df = stock_agg.merge(meta, on="resolved_code", how="left")
+
+    # ── Avg monthly sales from sidebar-filtered sales data ────────────────
+    sales_raw = data_dict.get("sales_daily_item", pd.DataFrame())
+    if not sales_raw.empty and "itemcode" in sales_raw.columns and "quantity" in sales_raw.columns:
+        # Apply same packcode resolution to sales itemcodes using 100001 caitem map
+        code_map = {}
+        if not inv_101.empty:
+            for _, r in inv_101[["item_id", "resolved_code"]].drop_duplicates().iterrows():
+                code_map[r["item_id"]] = r["resolved_code"]
+
+        s = sales_raw.copy()
+        s["resolved_code"] = s["itemcode"].map(code_map).fillna(s["itemcode"])
+        s["date"] = pd.to_datetime(s["date"], errors="coerce")
+        s = s.dropna(subset=["date"])
+
+        num_months = max(
+            s["date"].dt.to_period("M").nunique(), 1
+        )
+        sales_agg = (
+            s.groupby("resolved_code", as_index=False)["quantity"]
+            .sum()
+            .assign(avg_monthly_sales=lambda d: d["quantity"] / num_months)
+            [["resolved_code", "avg_monthly_sales"]]
+        )
+        inv_df = inv_df.merge(sales_agg, on="resolved_code", how="left")
+    else:
+        inv_df["avg_monthly_sales"] = 0.0
+
+    inv_df["avg_monthly_sales"] = inv_df["avg_monthly_sales"].fillna(0.0)
+
+    # ── Days to clear ──────────────────────────────────────────────────────
+    inv_df["days_to_clear"] = inv_df.apply(
+        lambda r: round(r["total_stock"] / r["avg_monthly_sales"] * 30, 1)
+        if r["avg_monthly_sales"] > 0 else None,
+        axis=1,
+    )
+
+    # ── Display ────────────────────────────────────────────────────────────
+    col_map = {
+        "item_id":           "Item Code",
+        "item_name":         "Item Name",
+        "item_group":        "Item Group",
+        "total_stock":       "Stock",
+        "avg_monthly_sales": "Avg Monthly Sales",
+        "days_to_clear":     "Days to Clear",
+        "std_price":         "Std Price",
+        "min_disc_amt":      "Min Disc Amt",
+        "min_qty":           "Min Qty",
+    }
+    display_df = (
+        inv_df
+        .rename(columns=col_map)
+        [[c for c in col_map.values() if c in inv_df.rename(columns=col_map).columns]]
+        .reset_index(drop=True)
+    )
+
+    # Search filter
+    search = st.text_input("Search item name or group", "")
+    if search:
+        mask = (
+            display_df.get("Item Name", pd.Series(dtype=str)).str.contains(search, case=False, na=False)
+            | display_df.get("Item Group", pd.Series(dtype=str)).str.contains(search, case=False, na=False)
+            | display_df.get("Item Code", pd.Series(dtype=str)).str.contains(search, case=False, na=False)
+        )
+        display_df = display_df[mask]
+
+    num_months_label = 0
+    if not sales_raw.empty and "date" in sales_raw.columns:
+        s2 = sales_raw.copy()
+        s2["date"] = pd.to_datetime(s2["date"], errors="coerce")
+        num_months_label = max(s2["date"].dt.to_period("M").nunique(), 1)
+
+    st.caption(
+        f"Stock = 100001 + 100009 combined (cross-ZID packcode merge). "
+        f"Avg Monthly Sales over {num_months_label} month(s) from sidebar filter. "
+        f"Days to Clear = Stock ÷ Avg Monthly Sales × 30."
+    )
+
+    fmt = {c: "{:,.0f}" for c in ["Stock", "Avg Monthly Sales", "Std Price", "Min Disc Amt", "Min Qty"]}
+    fmt["Days to Clear"] = "{:,.1f}"
+    existing_fmt = {k: v for k, v in fmt.items() if k in display_df.columns}
+
+    st.dataframe(
+        display_df.style.format(existing_fmt, na_rep="—"),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.download_button(
+        label="📥 Download as CSV",
+        data=display_df.to_csv(index=False).encode("utf-8"),
+        file_name="total_inventory_overview.csv",
+        mime="text/csv",
+    )
+
+
 @timed
 def display_purchase_analysis_page(current_page, zid, data_dict):
 
     mode = st.radio(
         "Purchase View",
-        ["Purchase Cohort & Requisition", "Batch Profitability & Capital Engine"],
+        [
+            "Purchase Cohort & Requisition",
+            "Batch Profitability & Capital Engine",
+            "Total Inventory Overview",
+        ],
         horizontal=True,
         index=0
     )
+
+    # -----------------------------
+    # MODE 3: Total Inventory Overview
+    # -----------------------------
+    if mode == "Total Inventory Overview":
+        _render_total_inventory(zid, data_dict)
+        return
 
     # -----------------------------
     # MODE 1: Existing cohort logic (unchanged)
