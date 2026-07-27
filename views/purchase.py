@@ -218,23 +218,27 @@ def _render_total_inventory(zid, data_dict):
 
     inv_df = stock_agg.merge(meta, on="resolved_code", how="left")
 
-    # ── Avg monthly sales from sidebar-filtered sales data ────────────────
+    # ── Avg monthly sales — trailing 12-month window ──────────────────────
+    # sales_daily_item is loaded with no date filter (full history), so we
+    # cap to the last 12 months ourselves to get a meaningful velocity figure.
+    _ROLLING_MONTHS = 12
     sales_raw = data_dict.get("sales_daily_item", pd.DataFrame())
     if not sales_raw.empty and "itemcode" in sales_raw.columns and "quantity" in sales_raw.columns:
-        # Apply same packcode resolution to sales itemcodes using 100001 caitem map
         code_map = {}
         if not inv_101.empty:
             for _, r in inv_101[["item_id", "resolved_code"]].drop_duplicates().iterrows():
                 code_map[r["item_id"]] = r["resolved_code"]
 
         s = sales_raw.copy()
-        s["resolved_code"] = s["itemcode"].map(code_map).fillna(s["itemcode"])
         s["date"] = pd.to_datetime(s["date"], errors="coerce")
         s = s.dropna(subset=["date"])
+        cutoff = pd.Timestamp.today() - pd.DateOffset(months=_ROLLING_MONTHS)
+        s = s[s["date"] >= cutoff]
+        s["resolved_code"] = s["itemcode"].map(code_map).fillna(s["itemcode"])
 
-        num_months = max(
-            s["date"].dt.to_period("M").nunique(), 1
-        )
+        # Use the actual number of distinct months present (≤12), so a new
+        # product that only appeared 3 months ago isn't penalised by dividing by 12.
+        num_months = max(s["date"].dt.to_period("M").nunique(), 1)
         sales_agg = (
             s.groupby("resolved_code", as_index=False)["quantity"]
             .sum()
@@ -244,6 +248,7 @@ def _render_total_inventory(zid, data_dict):
         inv_df = inv_df.merge(sales_agg, on="resolved_code", how="left")
     else:
         inv_df["avg_monthly_sales"] = 0.0
+        num_months = 0
 
     inv_df["avg_monthly_sales"] = inv_df["avg_monthly_sales"].fillna(0.0)
 
@@ -283,15 +288,9 @@ def _render_total_inventory(zid, data_dict):
         )
         display_df = display_df[mask]
 
-    num_months_label = 0
-    if not sales_raw.empty and "date" in sales_raw.columns:
-        s2 = sales_raw.copy()
-        s2["date"] = pd.to_datetime(s2["date"], errors="coerce")
-        num_months_label = max(s2["date"].dt.to_period("M").nunique(), 1)
-
     st.caption(
         f"Stock = 100001 + 100009 combined (cross-ZID packcode merge). "
-        f"Avg Monthly Sales over {num_months_label} month(s) from sidebar filter. "
+        f"Avg Monthly Sales = trailing 12-month window ({num_months} month(s) with data). "
         f"Days to Clear = Stock ÷ Avg Monthly Sales × 30."
     )
 
