@@ -93,9 +93,9 @@ def _load_cacus(zid: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def _load_final_items_100001() -> pd.DataFrame:
-    """Load final_items_view for ZID 100001 (cross-ZID 100009 logic baked in)."""
-    df = Analytics("final_items_view", zid="100001", filters={}).data
+def _load_final_items(zid: str) -> pd.DataFrame:
+    """Load final_items_view for the given ZID."""
+    df = Analytics("final_items_view", zid=zid, filters={}).data
     return df if df is not None else pd.DataFrame()
 
 
@@ -115,10 +115,30 @@ def _load_sales_daily_alltime(zid: str, proj: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def _load_inv_overview_mkt() -> pd.DataFrame:
-    """inventory_overview for ZID 100001 — stock + std_price from caitem + opspprc."""
-    df = Analytics("inventory_overview", zid="100001", filters={}).data
+def _load_inv_overview(zid: str) -> pd.DataFrame:
+    """inventory_overview for a given ZID — stock + std_price from caitem + opspprc."""
+    df = Analytics("inventory_overview", zid=zid, filters={}).data
     return df if df is not None else pd.DataFrame()
+
+
+def _resolve_packcode(df: pd.DataFrame) -> pd.DataFrame:
+    """Add resolved_code column: packcode wins unless blank / NO / KH-prefix."""
+    if df.empty:
+        return df
+    d = df.copy()
+    d["resolved_code"] = d.apply(
+        lambda r: (
+            r["packcode"]
+            if (
+                r.get("packcode", "")
+                and r["packcode"] not in ("", "NO")
+                and not str(r["packcode"]).upper().startswith("KH")
+            )
+            else r["item_id"]
+        ),
+        axis=1,
+    )
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -498,11 +518,11 @@ def _next_img_path(folder: Path, code: str, ext: str) -> Path:
 # media library sub-view
 # ---------------------------------------------------------------------------
 
-def _show_media_library() -> None:
+def _show_media_library(zid: str) -> None:
     st.markdown("#### 🖼️ Product Media Library")
 
     with st.spinner("Loading product list…"):
-        items_df = _load_final_items_100001()
+        items_df = _load_final_items(zid)
 
     if items_df.empty:
         st.warning("No product data available.")
@@ -637,15 +657,57 @@ def _show_media_library() -> None:
 # ---------------------------------------------------------------------------
 
 def _show_high_stock_marketing(zid: str, proj: str) -> None:
-    """Items with Days to Clear > 60, plus a customer/area drill-down per product."""
+    """All items with positive stock — avg monthly sales, days to clear, std price.
+    For ZID 100001: combines 100001 + 100009 stock via packcode cross-ZID merge.
+    For other ZIDs: loads inventory directly for that entity."""
 
     with st.spinner("Loading inventory and sales velocity…"):
-        inv_df       = _load_inv_overview_mkt()
-        sales_daily  = _load_sales_daily_alltime(str(zid), proj)
+        if zid == "100001":
+            inv_001 = _resolve_packcode(_load_inv_overview("100001").copy())
+            inv_009 = _resolve_packcode(_load_inv_overview("100009").copy())
+
+            combined = pd.concat([inv_001, inv_009], ignore_index=True)
+            stock_agg = combined.groupby("resolved_code", as_index=False)["stock"].sum()
+
+            _meta_cols = ["item_name", "item_group", "std_price"]
+            m1 = (
+                inv_001[["resolved_code"] + [c for c in _meta_cols if c in inv_001.columns]]
+                .drop_duplicates("resolved_code")
+                if not inv_001.empty else pd.DataFrame()
+            )
+            m2 = (
+                inv_009[["resolved_code"] + [c for c in _meta_cols if c in inv_009.columns]]
+                .drop_duplicates("resolved_code")
+                if not inv_009.empty else pd.DataFrame()
+            )
+            if not m1.empty and not m2.empty:
+                meta = pd.concat([m1, m2]).drop_duplicates("resolved_code", keep="first")
+            elif not m1.empty:
+                meta = m1
+            else:
+                meta = m2
+
+            inv_df = stock_agg.merge(meta, on="resolved_code", how="left").rename(
+                columns={"resolved_code": "item_id"}
+            )
+
+            # Map sales itemcode → resolved_code for velocity merge
+            code_map: dict = {}
+            if not inv_001.empty:
+                for _, row in inv_001[["item_id", "resolved_code"]].drop_duplicates().iterrows():
+                    code_map[row["item_id"]] = row["resolved_code"]
+        else:
+            inv_df = _load_inv_overview(zid).copy()
+            code_map = {}
+
+        sales_daily = _load_sales_daily_alltime(zid, proj)
 
     if inv_df.empty:
         st.warning("No inventory data available.")
         return
+
+    # ── Filter to positive stock ──────────────────────────────────────────
+    inv_df = inv_df[inv_df["stock"] > 0].copy()
 
     # ── Trailing 12-month avg monthly sales ──────────────────────────────
     _ROLLING_MONTHS = 12
@@ -658,12 +720,13 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
         cutoff = pd.Timestamp.today() - pd.DateOffset(months=_ROLLING_MONTHS)
         sd = sd[sd["date"] >= cutoff]
 
+        sd["_key"] = sd["itemcode"].map(code_map).fillna(sd["itemcode"]) if code_map else sd["itemcode"]
+
         num_months = max(sd["date"].dt.to_period("M").nunique(), 1)
         vel = (
-            sd.groupby("itemcode", as_index=False)["quantity"]
-            .sum()
+            sd.groupby("_key", as_index=False)["quantity"].sum()
             .assign(avg_monthly_sales=lambda d: d["quantity"] / num_months)
-            .rename(columns={"itemcode": "item_id"})
+            .rename(columns={"_key": "item_id"})
             [["item_id", "avg_monthly_sales"]]
         )
         inv_df = inv_df.merge(vel, on="item_id", how="left")
@@ -672,32 +735,42 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
 
     inv_df["avg_monthly_sales"] = inv_df["avg_monthly_sales"].fillna(0.0)
 
-    # ── Filter: stock > 0, days_to_clear > 60 ───────────────────────────
-    inv_df = inv_df[inv_df["stock"] > 0].copy()
+    # ── Days to clear ─────────────────────────────────────────────────────
     inv_df["days_to_clear"] = inv_df.apply(
-        lambda r: r["stock"] / r["avg_monthly_sales"] * 30
+        lambda r: round(r["stock"] / r["avg_monthly_sales"] * 30, 1)
         if r["avg_monthly_sales"] > 0 else None,
         axis=1,
     )
-    inv_df = (
-        inv_df[inv_df["days_to_clear"].notna() & (inv_df["days_to_clear"] > 60)]
-        .sort_values("days_to_clear", ascending=False)
-        .reset_index(drop=True)
+
+    inv_df = inv_df.sort_values("days_to_clear", ascending=False, na_position="last").reset_index(drop=True)
+
+    # ── Caption ───────────────────────────────────────────────────────────
+    entity_label = "100001 + 100009 (cross-ZID)" if zid == "100001" else zid
+    vel_note = (
+        f"trailing {num_months} month(s) with data (≤ 12)"
+        if num_months > 0 else "no sales data in trailing 12 months"
     )
-
-    if inv_df.empty:
-        st.info("No items with Days to Clear > 60 and positive stock.")
-        return
-
     st.caption(
-        f"**{len(inv_df)}** items with Days to Clear > 60. "
-        f"Avg Monthly Sales = trailing {num_months} month(s) with data (≤ 12)."
+        f"**{len(inv_df)}** items with positive stock — {entity_label}. "
+        f"Avg Monthly Sales = {vel_note}. "
+        f"Days to Clear = Stock ÷ Avg Monthly Sales × 30 (— = no recent sales)."
     )
 
-    disp_inv = inv_df[
+    # ── Search + table ────────────────────────────────────────────────────
+    search = st.text_input("🔍 Search item", "", key="hs_search")
+    disp_df = inv_df.copy()
+    if search:
+        mask = (
+            disp_df.get("item_name", pd.Series(dtype=str)).astype(str).str.contains(search, case=False, na=False)
+            | disp_df.get("item_id", pd.Series(dtype=str)).astype(str).str.contains(search, case=False, na=False)
+            | disp_df.get("item_group", pd.Series(dtype=str)).astype(str).str.contains(search, case=False, na=False)
+        )
+        disp_df = disp_df[mask]
+
+    disp_inv = disp_df[
         [c for c in ["item_id", "item_name", "item_group", "stock",
                       "avg_monthly_sales", "days_to_clear", "std_price"]
-         if c in inv_df.columns]
+         if c in disp_df.columns]
     ].rename(columns={
         "item_id": "Item Code", "item_name": "Item Name", "item_group": "Group",
         "stock": "Stock", "avg_monthly_sales": "Avg Monthly Sales",
@@ -706,10 +779,10 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
 
     st.dataframe(
         disp_inv.style.format({
-            "Stock":              "{:,.0f}",
-            "Avg Monthly Sales":  "{:,.1f}",
-            "Days to Clear":      "{:,.0f}",
-            "Std Price":          "{:,.2f}",
+            "Stock":             "{:,.0f}",
+            "Avg Monthly Sales": "{:,.1f}",
+            "Days to Clear":     "{:,.1f}",
+            "Std Price":         "{:,.2f}",
         }, na_rep="—"),
         use_container_width=True,
         hide_index=True,
@@ -719,9 +792,12 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
     st.markdown("---")
     st.markdown("#### 🔍 Customer / Area Breakdown")
 
+    # Product selector uses the full (pre-search) list
     product_opts = (
-        inv_df.apply(lambda r: f"{r['item_id']} — {r['item_name']}", axis=1)
-        .tolist()
+        inv_df.apply(
+            lambda r: f"{r['item_id']} — {r.get('item_name', r['item_id'])}",
+            axis=1,
+        ).tolist()
     )
     sel_label = st.selectbox(
         "Select a product to see who bought it",
@@ -732,10 +808,14 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
         return
 
     sel_code = sel_label.split(" — ")[0]
-    sel_name = inv_df.loc[inv_df["item_id"] == sel_code, "item_name"].iloc[0]
+    sel_name = (
+        inv_df.loc[inv_df["item_id"] == sel_code, "item_name"].iloc[0]
+        if "item_name" in inv_df.columns and not inv_df.loc[inv_df["item_id"] == sel_code].empty
+        else sel_code
+    )
 
     with st.spinner("Loading customer history…"):
-        sales_all = _load_sales_alltime(str(zid), proj)
+        sales_all = _load_sales_alltime(zid, proj)
 
     if sales_all.empty:
         st.info("No sales history available.")
@@ -752,7 +832,6 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
 
     today = pd.Timestamp.today().normalize()
 
-    # Last order overall per customer (all products)
     last_any = (
         sales_all.dropna(subset=["date"])
         .groupby("cusid")["date"].max()
@@ -789,11 +868,11 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
         cust_agg = (
             item_sales.dropna(subset=["date"])
             .groupby("cusid", as_index=False).agg(
-                cusname         = ("cusname",   "first"),
-                cusmobile       = ("cusmobile", "first"),
-                area            = ("area",      "first"),
-                net_sales       = ("altsales",  "sum"),
-                last_item_date  = ("date",      "max"),
+                cusname        =("cusname",   "first"),
+                cusmobile      =("cusmobile", "first"),
+                area           =("area",      "first"),
+                net_sales      =("altsales",  "sum"),
+                last_item_date =("date",      "max"),
             )
         )
         cust_agg["Months Since Last Purchase (This Product)"] = (
@@ -806,11 +885,11 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
         ).sort_values("net_sales", ascending=False).reset_index(drop=True)
 
         disp_cust = normalize_phone_cols(cust_agg.copy()).rename(columns={
-            "cusid":    "Cust Code",
-            "cusname":  "Customer",
-            "cusmobile":"Mobile",
-            "area":     "Area",
-            "net_sales":"Net Sales",
+            "cusid":     "Cust Code",
+            "cusname":   "Customer",
+            "cusmobile": "Mobile",
+            "area":      "Area",
+            "net_sales": "Net Sales",
         })
 
         show_cols = [c for c in [
@@ -870,7 +949,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
     # customer scoring build — dispatch immediately and return.
     if mode in _PRODUCT_ONLY_MODES:
         if mode == "🖼️ Media Library":
-            _show_media_library()
+            _show_media_library(str(zid))
         else:
             _show_high_stock_marketing(str(zid), proj)
         return
