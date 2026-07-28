@@ -103,6 +103,21 @@ def _load_sales_alltime(zid: str, proj: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_sales_daily_alltime(zid: str, proj: str) -> pd.DataFrame:
+    """sales_daily_item (daily item aggregates) — full history, no date filter.
+    Used for trailing-12-month velocity in High Stock Marketing."""
+    df = Analytics("sales_daily_item", zid=zid, project=proj, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_inv_overview_mkt() -> pd.DataFrame:
+    """inventory_overview for ZID 100001 — stock + std_price from caitem + opspprc."""
+    df = Analytics("inventory_overview", zid="100001", filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
 # ---------------------------------------------------------------------------
 # formatting helpers — customer scoring table
 # ---------------------------------------------------------------------------
@@ -289,42 +304,6 @@ def _show_campaign_planner(
         })
         st.dataframe(disp_prod, use_container_width=True)
 
-    # ── Section C: In-stock promotion candidates ─────────────────────────────
-    st.markdown("#### 🔍 In-Stock Promotion Candidates")
-    st.caption(
-        "Items with status **In Stock NS**, **Low Stock NS**, or **In Stock** "
-        "whose product group has sold in the current filter. "
-        "**Sold Here Before** = this exact SKU has moved in the current salesman/area period."
-    )
-
-    with st.spinner("Loading stock data…"):
-        final_items_df = _load_final_items_100001()
-
-    gap_df = pd.DataFrame()
-    if final_items_df.empty:
-        st.info("No stock data available.")
-    else:
-        gap_df = build_stock_gap(sales_df, final_items_df)
-        if gap_df.empty:
-            st.info("No promotable in-stock items found for the current salesman/area filter.")
-        else:
-            st.info(f"**{len(gap_df)}** promotable items — their group sells in this territory.")
-            disp_gap = gap_df.copy()
-            if "stock" in disp_gap.columns:
-                disp_gap["stock"] = disp_gap["stock"].apply(
-                    lambda v: f"{v:,.2f}" if pd.notna(v) else ""
-                )
-            if "sold_here_before" in disp_gap.columns:
-                disp_gap["sold_here_before"] = disp_gap["sold_here_before"].map(
-                    {True: "Yes", False: "No"}
-                )
-            disp_gap = disp_gap.rename(columns={
-                "item_id":   "Item Code", "item_name": "Item Name",
-                "item_group": "Group",    "stock":     "Stock",
-                "status":    "Status",   "sold_here_before": "Sold Here Before",
-            })
-            st.dataframe(disp_gap, use_container_width=True)
-
     # ── Combined download ────────────────────────────────────────────────────
     st.markdown("---")
     frames = []
@@ -336,10 +315,6 @@ def _show_campaign_planner(
         tp = top_prod.copy()
         tp.insert(0, "section", "Top Products")
         frames.append(tp)
-    if not gap_df.empty:
-        gf = gap_df.copy()
-        gf.insert(0, "section", "Stock Gap")
-        frames.append(gf)
 
     if frames:
         combined = pd.concat(frames, ignore_index=True)
@@ -361,19 +336,6 @@ in Section B.
 **Section B — Top Products**
 The products that have driven the most revenue in the current filter over the selected period.
 Use these as the focus of your campaign message — they have proven demand here.
-
-**Section C — In-Stock Promotion Candidates**
-Items from `final_items_view` (100001) filtered to promotable statuses:
-- **In Stock NS** — stock available, no recent sales (> 2 months of cover)
-- **Low Stock NS** — low stock with no recent movement
-- **In Stock** — normal in-stock items
-
-Only items whose *product group* has sold in the current territory are shown — so every row
-is relevant to this area. The **Sold Here Before** column tells you whether this exact SKU has
-already moved in this territory (Yes = re-engage; No = introduce for the first time).
-
-**Download → Campaign Report CSV** bundles all three sections into one file.
-Each row has a `section` column so you can filter/sort in Excel.
         """)
 
 
@@ -489,6 +451,214 @@ for a broader reactivation push.
 
 
 # ---------------------------------------------------------------------------
+# high stock marketing sub-view
+# ---------------------------------------------------------------------------
+
+def _show_high_stock_marketing(zid: str, proj: str) -> None:
+    """Items with Days to Clear > 60, plus a customer/area drill-down per product."""
+
+    with st.spinner("Loading inventory and sales velocity…"):
+        inv_df       = _load_inv_overview_mkt()
+        sales_daily  = _load_sales_daily_alltime(str(zid), proj)
+
+    if inv_df.empty:
+        st.warning("No inventory data available.")
+        return
+
+    # ── Trailing 12-month avg monthly sales ──────────────────────────────
+    _ROLLING_MONTHS = 12
+    num_months = 0
+
+    if not sales_daily.empty and "itemcode" in sales_daily.columns and "quantity" in sales_daily.columns:
+        sd = sales_daily.copy()
+        sd["date"] = pd.to_datetime(sd["date"], errors="coerce")
+        sd = sd.dropna(subset=["date"])
+        cutoff = pd.Timestamp.today() - pd.DateOffset(months=_ROLLING_MONTHS)
+        sd = sd[sd["date"] >= cutoff]
+
+        num_months = max(sd["date"].dt.to_period("M").nunique(), 1)
+        vel = (
+            sd.groupby("itemcode", as_index=False)["quantity"]
+            .sum()
+            .assign(avg_monthly_sales=lambda d: d["quantity"] / num_months)
+            .rename(columns={"itemcode": "item_id"})
+            [["item_id", "avg_monthly_sales"]]
+        )
+        inv_df = inv_df.merge(vel, on="item_id", how="left")
+    else:
+        inv_df["avg_monthly_sales"] = 0.0
+
+    inv_df["avg_monthly_sales"] = inv_df["avg_monthly_sales"].fillna(0.0)
+
+    # ── Filter: stock > 0, days_to_clear > 60 ───────────────────────────
+    inv_df = inv_df[inv_df["stock"] > 0].copy()
+    inv_df["days_to_clear"] = inv_df.apply(
+        lambda r: r["stock"] / r["avg_monthly_sales"] * 30
+        if r["avg_monthly_sales"] > 0 else None,
+        axis=1,
+    )
+    inv_df = (
+        inv_df[inv_df["days_to_clear"].notna() & (inv_df["days_to_clear"] > 60)]
+        .sort_values("days_to_clear", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    if inv_df.empty:
+        st.info("No items with Days to Clear > 60 and positive stock.")
+        return
+
+    st.caption(
+        f"**{len(inv_df)}** items with Days to Clear > 60. "
+        f"Avg Monthly Sales = trailing {num_months} month(s) with data (≤ 12)."
+    )
+
+    disp_inv = inv_df[
+        [c for c in ["item_id", "item_name", "item_group", "stock",
+                      "avg_monthly_sales", "days_to_clear", "std_price"]
+         if c in inv_df.columns]
+    ].rename(columns={
+        "item_id": "Item Code", "item_name": "Item Name", "item_group": "Group",
+        "stock": "Stock", "avg_monthly_sales": "Avg Monthly Sales",
+        "days_to_clear": "Days to Clear", "std_price": "Std Price",
+    })
+
+    st.dataframe(
+        disp_inv.style.format({
+            "Stock":              "{:,.0f}",
+            "Avg Monthly Sales":  "{:,.1f}",
+            "Days to Clear":      "{:,.0f}",
+            "Std Price":          "{:,.2f}",
+        }, na_rep="—"),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # ── Product drill-down ────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 🔍 Customer / Area Breakdown")
+
+    product_opts = (
+        inv_df.apply(lambda r: f"{r['item_id']} — {r['item_name']}", axis=1)
+        .tolist()
+    )
+    sel_label = st.selectbox(
+        "Select a product to see who bought it",
+        ["— pick a product —"] + product_opts,
+        key="hs_product_sel",
+    )
+    if not sel_label or sel_label == "— pick a product —":
+        return
+
+    sel_code = sel_label.split(" — ")[0]
+    sel_name = inv_df.loc[inv_df["item_id"] == sel_code, "item_name"].iloc[0]
+
+    with st.spinner("Loading customer history…"):
+        sales_all = _load_sales_alltime(str(zid), proj)
+
+    if sales_all.empty:
+        st.info("No sales history available.")
+        return
+
+    sales_all["date"] = pd.to_datetime(sales_all["date"], errors="coerce")
+    sales_all["altsales"] = pd.to_numeric(sales_all["altsales"], errors="coerce").fillna(0)
+
+    item_sales = sales_all[sales_all["itemcode"].astype(str) == str(sel_code)].copy()
+
+    if item_sales.empty:
+        st.info(f"No historical sales found for **{sel_name}**.")
+        return
+
+    today = pd.Timestamp.today().normalize()
+
+    # Last order overall per customer (all products)
+    last_any = (
+        sales_all.dropna(subset=["date"])
+        .groupby("cusid")["date"].max()
+        .reset_index()
+        .rename(columns={"date": "_last_any"})
+    )
+    last_any["Months Since Last Order (Any)"] = (
+        (today - last_any["_last_any"]).dt.days / 30.44
+    ).round(1)
+
+    view_mode = st.radio(
+        "View by",
+        ["👤 Customer", "📍 Area"],
+        horizontal=True,
+        key="hs_view_mode",
+    )
+
+    if view_mode == "📍 Area":
+        area_agg = (
+            item_sales.groupby("area", as_index=False)["altsales"]
+            .sum()
+            .rename(columns={"area": "Area", "altsales": "Net Sales"})
+            .sort_values("Net Sales", ascending=False)
+            .reset_index(drop=True)
+        )
+        st.caption(f"**{len(area_agg)}** area(s) with sales of **{sel_name}**")
+        st.dataframe(
+            area_agg.style.format({"Net Sales": "{:,.0f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    else:
+        cust_agg = (
+            item_sales.dropna(subset=["date"])
+            .groupby("cusid", as_index=False).agg(
+                cusname         = ("cusname",   "first"),
+                cusmobile       = ("cusmobile", "first"),
+                area            = ("area",      "first"),
+                net_sales       = ("altsales",  "sum"),
+                last_item_date  = ("date",      "max"),
+            )
+        )
+        cust_agg["Months Since Last Purchase (This Product)"] = (
+            (today - cust_agg["last_item_date"]).dt.days / 30.44
+        ).round(1)
+
+        cust_agg = cust_agg.merge(
+            last_any[["cusid", "Months Since Last Order (Any)"]],
+            on="cusid", how="left",
+        ).sort_values("net_sales", ascending=False).reset_index(drop=True)
+
+        disp_cust = normalize_phone_cols(cust_agg.copy()).rename(columns={
+            "cusid":    "Cust Code",
+            "cusname":  "Customer",
+            "cusmobile":"Mobile",
+            "area":     "Area",
+            "net_sales":"Net Sales",
+        })
+
+        show_cols = [c for c in [
+            "Cust Code", "Customer", "Mobile", "Area", "Net Sales",
+            "Months Since Last Purchase (This Product)",
+            "Months Since Last Order (Any)",
+        ] if c in disp_cust.columns]
+
+        st.caption(f"**{len(disp_cust)}** customer(s) previously bought **{sel_name}**")
+        st.dataframe(
+            disp_cust[show_cols].style.format({
+                "Net Sales": "{:,.0f}",
+                "Months Since Last Purchase (This Product)": "{:.1f}",
+                "Months Since Last Order (Any)": "{:.1f}",
+            }, na_rep="—"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.download_button(
+            "⬇ Download Customer List",
+            data=normalize_phone_cols(cust_agg.copy()).drop(
+                columns=["last_item_date", "_last_any"], errors="ignore"
+            ).to_csv(index=False).encode("utf-8"),
+            file_name=f"high_stock_customers_{sel_code}.csv",
+            mime="text/csv",
+        )
+
+
+# ---------------------------------------------------------------------------
 # public entry point
 # ---------------------------------------------------------------------------
 
@@ -570,7 +740,12 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
     # ── View radio ───────────────────────────────────────────────────────────
     mode = st.radio(
         "View",
-        ["📊 Customer Scoring", "🎯 Area Campaign Planner", "📱 Inactive Outreach"],
+        [
+            "📊 Customer Scoring",
+            "🎯 Area Campaign Planner",
+            "📱 Inactive Outreach",
+            "📈 High Stock Marketing",
+        ],
         horizontal=True,
         label_visibility="collapsed",
     )
@@ -584,5 +759,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
         _show_customer_scoring(result)
     elif mode == "🎯 Area Campaign Planner":
         _show_campaign_planner(result, sales_df, str(zid))
-    else:
+    elif mode == "📱 Inactive Outreach":
         _show_inactive_outreach(str(zid), proj, cacus_df, sp_filter=sp_filter, area_filter=area_filter)
+    else:
+        _show_high_stock_marketing(str(zid), proj)
