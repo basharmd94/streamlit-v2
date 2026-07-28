@@ -135,7 +135,9 @@ def _get_call_logs_cached(cusid: str) -> pd.DataFrame:
 
 def _bust_call_log_cache(cusid: str) -> None:
     st.session_state.pop(f"_calllog_{cusid}", None)
-    # invalidate bulk calllog cache so Outcome/Notes/Last Called update immediately
+    # Clear the @st.cache_data memo so the DB is re-queried on next render,
+    # then drop session_state keys that wrap it.
+    _fetch_last_calllog.clear()
     for k in list(st.session_state.keys()):
         if k.startswith("_lastcalllog_"):
             del st.session_state[k]
