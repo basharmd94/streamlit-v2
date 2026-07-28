@@ -662,8 +662,32 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
 # public entry point
 # ---------------------------------------------------------------------------
 
+_PRODUCT_ONLY_MODES = {"📈 High Stock Marketing"}
+
+
 def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_years: list):
     st.title("Marketing Analysis")
+
+    # ── Mode radio FIRST so product-only modes skip the salesman/area filters ──
+    mode = st.radio(
+        "View",
+        [
+            "📊 Customer Scoring",
+            "🎯 Area Campaign Planner",
+            "📱 Inactive Outreach",
+            "📈 High Stock Marketing",
+        ],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    st.markdown("---")
+
+    # Product-only modes need neither salesman/area filters nor the heavy
+    # customer scoring build — dispatch immediately and return.
+    if mode in _PRODUCT_ONLY_MODES:
+        _show_high_stock_marketing(str(zid), proj)
+        return
 
     sales_raw = data_dict.get("sales")
     coll_df   = data_dict.get("collection")
@@ -737,21 +761,6 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
     filtered_cusids = set(sales_df["cusid"].dropna().astype(str).unique())
     result = result[result["cusid"].astype(str).isin(filtered_cusids)].reset_index(drop=True)
 
-    # ── View radio ───────────────────────────────────────────────────────────
-    mode = st.radio(
-        "View",
-        [
-            "📊 Customer Scoring",
-            "🎯 Area Campaign Planner",
-            "📱 Inactive Outreach",
-            "📈 High Stock Marketing",
-        ],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-
-    st.markdown("---")
-
     sp_filter   = None if sp_sel == "All Salesmen" else sp_sel
     area_filter = area_sel if area_sel else None
 
@@ -759,7 +768,5 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
         _show_customer_scoring(result)
     elif mode == "🎯 Area Campaign Planner":
         _show_campaign_planner(result, sales_df, str(zid))
-    elif mode == "📱 Inactive Outreach":
-        _show_inactive_outreach(str(zid), proj, cacus_df, sp_filter=sp_filter, area_filter=area_filter)
     else:
-        _show_high_stock_marketing(str(zid), proj)
+        _show_inactive_outreach(str(zid), proj, cacus_df, sp_filter=sp_filter, area_filter=area_filter)
