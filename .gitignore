@@ -75,5 +75,8 @@ data/crm_log.json
 data/level_p_projections.json
 data/level_p_breakeven.json
 
+# Product media library — binary image files managed via the app UI
+data/product_images/
+
 # Personal Claude Code tool permissions — local to this machine
 .claude/settings.local.json

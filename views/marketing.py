@@ -1,6 +1,9 @@
+import re
+import shutil
 import streamlit as st
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 from processing.marketing import (
     build_customer_marketing_table,
@@ -451,6 +454,185 @@ for a broader reactivation push.
 
 
 # ---------------------------------------------------------------------------
+# media library — file helpers
+# ---------------------------------------------------------------------------
+
+_IMG_BASE  = Path("data/product_images")
+_IMG_EXTS  = {".jpg", ".jpeg", ".png", ".webp"}
+_GALLERY_N = 3   # images per row
+
+
+def _img_folder(code: str) -> Path:
+    return _IMG_BASE / code
+
+
+def _img_sort_key(p: Path, code: str) -> int:
+    """Primary image (no numeric suffix) sorts first; _2, _3 … follow in order."""
+    stem = p.stem
+    if stem == code:
+        return 0
+    m = re.match(rf"^{re.escape(code)}_(\d+)$", stem)
+    return int(m.group(1)) if m else 9999
+
+
+def _scan_images(folder: Path, code: str) -> list:
+    if not folder.exists():
+        return []
+    imgs = [f for f in folder.iterdir()
+            if f.is_file() and f.suffix.lower() in _IMG_EXTS]
+    return sorted(imgs, key=lambda p: _img_sort_key(p, code))
+
+
+def _next_img_path(folder: Path, code: str, ext: str) -> Path:
+    """Return the next available path for a new image, respecting the naming convention."""
+    primary_exists = any((folder / f"{code}{e}").exists() for e in _IMG_EXTS)
+    if not primary_exists:
+        return folder / f"{code}{ext}"
+    n = 2
+    while any((folder / f"{code}_{n}{e}").exists() for e in _IMG_EXTS):
+        n += 1
+    return folder / f"{code}_{n}{ext}"
+
+
+# ---------------------------------------------------------------------------
+# media library sub-view
+# ---------------------------------------------------------------------------
+
+def _show_media_library() -> None:
+    st.markdown("#### 🖼️ Product Media Library")
+
+    with st.spinner("Loading product list…"):
+        items_df = _load_final_items_100001()
+
+    if items_df.empty:
+        st.warning("No product data available.")
+        return
+
+    # ── Product list in collapsible expander ─────────────────────────────
+    with st.expander("📋 Full Product List", expanded=False):
+        tbl = items_df.copy().rename(columns={
+            "item_id": "Item Code", "item_name": "Item Name",
+            "item_group": "Group",  "stock": "Stock",
+        })
+        tbl["Images"] = tbl["Item Code"].apply(
+            lambda c: "✓" if _scan_images(_img_folder(str(c)), str(c)) else "—"
+        )
+        show_cols = [c for c in ["Item Code", "Item Name", "Group", "Stock", "Images"]
+                     if c in tbl.columns]
+        st.dataframe(tbl[show_cols], use_container_width=True, hide_index=True)
+
+    # ── Product selector ─────────────────────────────────────────────────
+    item_opts = (
+        items_df.apply(lambda r: f"{r['item_id']} — {r['item_name']}", axis=1).tolist()
+    )
+    sel_label = st.selectbox(
+        "Select product",
+        ["— pick a product —"] + item_opts,
+        key="ml_product_sel",
+    )
+    if not sel_label or sel_label == "— pick a product —":
+        return
+
+    sel_code = sel_label.split(" — ")[0]
+    sel_name = items_df.loc[items_df["item_id"] == sel_code, "item_name"].iloc[0]
+    folder   = _img_folder(sel_code)
+    images   = _scan_images(folder, sel_code)
+
+    st.markdown(f"**{sel_name}** &nbsp;·&nbsp; `{sel_code}`", unsafe_allow_html=True)
+    st.markdown("---")
+
+    # ── Gallery ──────────────────────────────────────────────────────────
+    if not images:
+        st.markdown(
+            '<div style="display:inline-flex;width:220px;height:220px;'
+            'background:#F2F3F4;border:2px dashed #AEB6BF;border-radius:8px;'
+            'align-items:center;justify-content:center;color:#AEB6BF;font-size:13px;">'
+            'No images yet</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+    else:
+        cols = st.columns(_GALLERY_N)
+        for i, img_path in enumerate(images):
+            label = sel_code if i == 0 else f"{sel_code}_{i + 1}"
+            with cols[i % _GALLERY_N]:
+                with open(img_path, "rb") as fh:
+                    st.image(fh.read(), caption=label, use_container_width=True)
+
+    # ── Upload new images ─────────────────────────────────────────────────
+    st.markdown("#### ⬆️ Upload Images")
+    uploaded = st.file_uploader(
+        "Drag and drop or browse — JPG, PNG, WebP",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key=f"ml_upload_{sel_code}",
+        label_visibility="visible",
+    )
+    if uploaded:
+        if st.button("💾 Save to Library", key=f"ml_save_{sel_code}"):
+            folder.mkdir(parents=True, exist_ok=True)
+            saved, skipped = [], []
+            for uf in uploaded:
+                ext = Path(uf.name).suffix.lower()
+                if ext not in _IMG_EXTS:
+                    skipped.append(uf.name)
+                    continue
+                dest = _next_img_path(folder, sel_code, ext)
+                dest.write_bytes(uf.getvalue())
+                saved.append(dest.name)
+            if saved:
+                st.success(f"Saved: {', '.join(saved)}")
+            if skipped:
+                st.warning(f"Skipped (unsupported format): {', '.join(skipped)}")
+            if saved:
+                st.rerun()
+
+    # ── Series copy (only if this item already has images) ───────────────
+    if images:
+        st.markdown("#### 🔗 Copy to Related Series")
+        st.caption(
+            "Same product, different sizes or variants? "
+            "Enter the related item codes — the images above will be copied into "
+            "each code's folder with the matching file-naming convention."
+        )
+        series_input = st.text_input(
+            "Related item codes (comma-separated)",
+            placeholder="e.g. ITEM002, ITEM003, ITEM004",
+            key=f"ml_series_{sel_code}",
+        )
+        overwrite = st.checkbox(
+            "Overwrite existing images in target folders",
+            value=False,
+            key=f"ml_overwrite_{sel_code}",
+        )
+        if st.button("📋 Copy Images to Series", key=f"ml_copy_{sel_code}"):
+            if not series_input.strip():
+                st.warning("Enter at least one related item code.")
+            else:
+                dest_codes = [c.strip() for c in series_input.split(",") if c.strip()]
+                for dest_code in dest_codes:
+                    dest_folder = _img_folder(dest_code)
+                    dest_folder.mkdir(parents=True, exist_ok=True)
+                    n_copied = n_skipped = 0
+                    for i, src_img in enumerate(images):
+                        dest_name = (
+                            f"{dest_code}{src_img.suffix}"
+                            if i == 0
+                            else f"{dest_code}_{i + 1}{src_img.suffix}"
+                        )
+                        dest_path = dest_folder / dest_name
+                        if dest_path.exists() and not overwrite:
+                            n_skipped += 1
+                        else:
+                            shutil.copy2(src_img, dest_path)
+                            n_copied += 1
+                    msg = f"**{dest_code}**: {n_copied} image(s) copied"
+                    if n_skipped:
+                        msg += f", {n_skipped} skipped (already exist)"
+                    st.success(msg)
+
+
+# ---------------------------------------------------------------------------
 # high stock marketing sub-view
 # ---------------------------------------------------------------------------
 
@@ -662,7 +844,7 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
 # public entry point
 # ---------------------------------------------------------------------------
 
-_PRODUCT_ONLY_MODES = {"📈 High Stock Marketing"}
+_PRODUCT_ONLY_MODES = {"📈 High Stock Marketing", "🖼️ Media Library"}
 
 
 def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_years: list):
@@ -676,6 +858,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "🎯 Area Campaign Planner",
             "📱 Inactive Outreach",
             "📈 High Stock Marketing",
+            "🖼️ Media Library",
         ],
         horizontal=True,
         label_visibility="collapsed",
@@ -686,7 +869,10 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
     # Product-only modes need neither salesman/area filters nor the heavy
     # customer scoring build — dispatch immediately and return.
     if mode in _PRODUCT_ONLY_MODES:
-        _show_high_stock_marketing(str(zid), proj)
+        if mode == "🖼️ Media Library":
+            _show_media_library()
+        else:
+            _show_high_stock_marketing(str(zid), proj)
         return
 
     sales_raw = data_dict.get("sales")
