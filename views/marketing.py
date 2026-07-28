@@ -252,6 +252,8 @@ def _show_customer_scoring(result: pd.DataFrame):
         )
         display_df = display_df[mask]
 
+    display_df = normalize_phone_cols(display_df)
+
     total_rows = len(display_df)
     cap = 50_000
     if total_rows > cap:
