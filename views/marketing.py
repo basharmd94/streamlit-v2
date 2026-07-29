@@ -1001,7 +1001,8 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
 
     # Product-only modes need neither salesman/area filters nor the heavy
     # customer scoring build — dispatch immediately and return.
-    sales_raw = data_dict.get("sales") or pd.DataFrame()
+    _sr = data_dict.get("sales")
+    sales_raw = _sr if isinstance(_sr, pd.DataFrame) else pd.DataFrame()
     coll_df   = data_dict.get("collection")
 
     if mode in _PRODUCT_ONLY_MODES:
