@@ -2022,22 +2022,25 @@ def get_opmob_order_locations_monthly(zids: "list[int]", username: str, year: in
     placeholders, zid_params = _build_in_clause(zids)
     sql = f"""
         SELECT
-            zid::text                             AS zid,
-            xordernum                             AS order_num,
-            MIN(xlat)                             AS lat,
-            MIN(xlong)                            AS lon,
-            xcus                                  AS cusid,
-            COALESCE(MAX(xcusname), xcus)         AS cusname,
-            xstatusord                            AS status,
-            SUM(xlinetotal)                       AS total,
-            xdate
-        FROM opmob
-        WHERE zid IN ({placeholders})
-          AND username = %s
-          AND EXTRACT(YEAR  FROM xdate) = %s
-          AND EXTRACT(MONTH FROM xdate) = %s
-        GROUP BY zid, xordernum, xcus, xstatusord, xdate
-        ORDER BY xdate, xordernum
+            o.zid::text                              AS zid,
+            o.xordernum                              AS order_num,
+            MIN(o.xlat)                              AS lat,
+            MIN(o.xlong)                             AS lon,
+            o.xcus                                   AS cusid,
+            COALESCE(MAX(o.xcusname), o.xcus)        AS cusname,
+            COALESCE(MAX(c.xmobile), '')             AS cusmobile,
+            o.xstatusord                             AS status,
+            SUM(o.xlinetotal)                        AS total,
+            MIN(o.ztime)                             AS order_time,
+            o.xdate
+        FROM opmob o
+        LEFT JOIN cacus c ON c.xcus = o.xcus AND c.zid = o.zid
+        WHERE o.zid IN ({placeholders})
+          AND o.username = %s
+          AND EXTRACT(YEAR  FROM o.xdate) = %s
+          AND EXTRACT(MONTH FROM o.xdate) = %s
+        GROUP BY o.zid, o.xordernum, o.xcus, o.xstatusord, o.xdate
+        ORDER BY o.xdate, o.xordernum
     """
     return sql, zid_params + (username, int(year), int(month))
 
@@ -2052,20 +2055,23 @@ def get_opmob_order_locations(zids: "list[int]", username: str, order_date: str)
     placeholders, zid_params = _build_in_clause(zids)
     sql = f"""
         SELECT
-            xordernum                             AS order_num,
-            MIN(xlat)                             AS lat,
-            MIN(xlong)                            AS lon,
-            xcus                                  AS cusid,
-            COALESCE(MAX(xcusname), xcus)         AS cusname,
-            xstatusord                            AS status,
-            SUM(xlinetotal)                       AS total,
-            xdate
-        FROM opmob
-        WHERE zid IN ({placeholders})
-          AND username = %s
-          AND xdate = %s
-        GROUP BY xordernum, xcus, xstatusord, xdate
-        ORDER BY xordernum
+            o.xordernum                              AS order_num,
+            MIN(o.xlat)                              AS lat,
+            MIN(o.xlong)                             AS lon,
+            o.xcus                                   AS cusid,
+            COALESCE(MAX(o.xcusname), o.xcus)        AS cusname,
+            COALESCE(MAX(c.xmobile), '')             AS cusmobile,
+            o.xstatusord                             AS status,
+            SUM(o.xlinetotal)                        AS total,
+            MIN(o.ztime)                             AS order_time,
+            o.xdate
+        FROM opmob o
+        LEFT JOIN cacus c ON c.xcus = o.xcus AND c.zid = o.zid
+        WHERE o.zid IN ({placeholders})
+          AND o.username = %s
+          AND o.xdate = %s
+        GROUP BY o.xordernum, o.xcus, o.xstatusord, o.xdate
+        ORDER BY MIN(o.ztime), o.xordernum
     """
     return sql, zid_params + (username, order_date)
 
