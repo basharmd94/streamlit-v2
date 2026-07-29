@@ -369,34 +369,30 @@ Use these as the focus of your campaign message — they have proven demand here
 # inactive outreach sub-view
 # ---------------------------------------------------------------------------
 
-def _show_inactive_outreach(zid: str, proj: str) -> None:
-    # ── Salesman + area filters (owned here so reruns skip build_customer_marketing_table) ──
-    with st.spinner("Loading all-time sales…"):
-        sales_all = _load_sales_alltime(zid, proj)
+def _show_inactive_outreach(zid: str, proj: str, sales_raw: pd.DataFrame) -> None:
+    # sales_raw is year-filtered (from data_dict) — same source as Customer Scoring
+    # and Area Campaign Planner, so the salesman/area filter options match exactly.
+    # All-time sales are loaded separately below for the inactive computation itself.
 
-    if sales_all.empty:
-        st.warning("No sales data available.")
+    if sales_raw.empty:
+        st.warning("No sales data available for the selected filters.")
         return
 
-    sp_opts = sorted(sales_all["spname"].dropna().astype(str).unique().tolist())
+    # ── Salesman + area filters — built from year-filtered sales_raw ──────────
+    sp_opts = sorted(sales_raw["spname"].dropna().astype(str).unique().tolist())
     f_col1, f_col2 = st.columns(2)
     with f_col1:
         sp_sel = st.selectbox("Salesman", ["All Salesmen"] + sp_opts, key="outreach_sp")
     area_pool = (
-        sorted(sales_all["area"].dropna().astype(str).unique().tolist())
+        sorted(sales_raw["area"].dropna().astype(str).unique().tolist())
         if sp_sel == "All Salesmen"
         else sorted(
-            sales_all[sales_all["spname"].astype(str) == sp_sel]["area"]
+            sales_raw[sales_raw["spname"].astype(str) == sp_sel]["area"]
             .dropna().astype(str).unique().tolist()
         )
     )
     with f_col2:
         area_sel = st.multiselect("Area", area_pool, default=area_pool, key="outreach_area")
-
-    if sp_sel != "All Salesmen":
-        sales_all = sales_all[sales_all["spname"].astype(str) == sp_sel]
-    if area_sel:
-        sales_all = sales_all[sales_all["area"].isin(area_sel)]
 
     # ── Months slider ─────────────────────────────────────────────────────────
     months = st.slider(
@@ -409,6 +405,20 @@ def _show_inactive_outreach(zid: str, proj: str) -> None:
         f"Customers with **no orders since {cutoff.strftime('%d %b %Y')}** "
         f"({months} month{'s' if months != 1 else ''} ago)"
     )
+
+    # ── All-time sales for last-order-date computation ────────────────────────
+    with st.spinner("Loading all-time sales…"):
+        sales_all = _load_sales_alltime(zid, proj)
+
+    if sales_all.empty:
+        st.warning("No sales data available.")
+        return
+
+    # Apply the same salesman/area selection to all-time data
+    if sp_sel != "All Salesmen":
+        sales_all = sales_all[sales_all["spname"].astype(str) == sp_sel]
+    if area_sel:
+        sales_all = sales_all[sales_all["area"].isin(area_sel)]
 
     cacus_df = _load_cacus(zid)
 
@@ -991,19 +1001,19 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
 
     # Product-only modes need neither salesman/area filters nor the heavy
     # customer scoring build — dispatch immediately and return.
+    sales_raw = data_dict.get("sales") or pd.DataFrame()
+    coll_df   = data_dict.get("collection")
+
     if mode in _PRODUCT_ONLY_MODES:
         if mode == "🖼️ Media Library":
             _show_media_library(str(zid))
         elif mode == "📱 Inactive Outreach":
-            _show_inactive_outreach(str(zid), proj)
+            _show_inactive_outreach(str(zid), proj, sales_raw)
         else:
             _show_high_stock_marketing(str(zid), proj)
         return
 
-    sales_raw = data_dict.get("sales")
-    coll_df   = data_dict.get("collection")
-
-    if sales_raw is None or (isinstance(sales_raw, pd.DataFrame) and sales_raw.empty):
+    if not isinstance(sales_raw, pd.DataFrame) or sales_raw.empty:
         st.info("No sales data available for the selected filters.")
         return
 
