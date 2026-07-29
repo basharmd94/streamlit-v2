@@ -2810,12 +2810,13 @@ def _render_field_tracking(zid):
             "⚠ No GPS data on this date for: "
             + ", ".join(_no_data)
         )
-    path_data    = []
-    point_data   = []
-    order_data   = []
-    no_gps_rows  = []   # orders with missing/invalid GPS — shown in table below map
-    all_coords   = []
-    stats        = []
+    path_data        = []
+    point_data       = []
+    order_data       = []
+    no_gps_rows      = []   # orders with missing/invalid GPS — shown in table below map
+    all_coords       = []
+    stats            = []
+    _stored_ord_dfs  = {}   # sp_name -> ord_df (kept for the orders table after the map)
 
     for i, label in enumerate(sel_labels):
         username  = sp_map[label]
@@ -2864,6 +2865,7 @@ def _render_field_tracking(zid):
         # ── Order locations ───────────────────────────────────────────────────
         sql2, params2 = queries.get_opmob_order_locations(list(ft_zids), username, date_str)
         ord_df        = get_dataframe(sql2, params2)
+        _stored_ord_dfs[sp_name] = ord_df
 
         n_orders   = 0
         n_no_stock = 0
@@ -2979,6 +2981,44 @@ def _render_field_tracking(zid):
     legend_items.append("<span style='color:#00c864'>●</span> Check-in")
     st.markdown("  &nbsp;·&nbsp;  ".join(legend_items), unsafe_allow_html=True)
     st.caption("  ·  ".join(stats))
+
+    # ── Orders table (all orders this date, GPS + no-GPS combined) ───────────
+    _all_ord_rows = []
+    for sp_name, _ord_df in _stored_ord_dfs.items():
+        if _ord_df is None or _ord_df.empty:
+            continue
+        for _, row in _ord_df.iterrows():
+            try:
+                _lat = float(row["lat"] or 0)
+                _lon = float(row["lon"] or 0)
+                _loc = f"{_lat:.6f}, {_lon:.6f}" if _in_bangladesh(_lat, _lon) else "—"
+            except (TypeError, ValueError):
+                _loc = "—"
+            _t = row.get("order_time")
+            _time_str = pd.to_datetime(_t).strftime("%H:%M") if pd.notna(_t) else "—"
+            _mob = str(row.get("cusmobile") or "").strip()
+            _mob = _mob if _mob and _mob != "nan" else "—"
+            _all_ord_rows.append({
+                "Salesman":    sp_name,
+                "Cus Code":   row.get("cusid", ""),
+                "Customer":   row.get("cusname", ""),
+                "Mobile":     _mob,
+                "Status":     row.get("status", ""),
+                "Time":       _time_str,
+                "Order Value": int(row.get("total") or 0),
+                "Lat, Lon":   _loc,
+            })
+
+    if _all_ord_rows:
+        st.markdown("#### 📋 Orders — " + sel_date.strftime("%d %b %Y"))
+        _ord_tbl = pd.DataFrame(_all_ord_rows)
+        from processing.common import normalize_phone_cols
+        _ord_tbl = normalize_phone_cols(_ord_tbl, extra_cols=["Mobile"])
+        st.dataframe(
+            _ord_tbl.style.format({"Order Value": "{:,.0f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     # ── Orders without GPS ────────────────────────────────────────────────────
     if no_gps_rows:

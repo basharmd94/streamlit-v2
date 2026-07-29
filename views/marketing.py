@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
+from views.call_log_shared import render_call_log_panel as _render_call_log_panel
 from processing.marketing import (
     build_customer_marketing_table,
     build_area_campaign_top_customers,
@@ -473,6 +474,35 @@ for re-engagement.
 **Tip**: Start with 3 months to catch recently-lapsed customers, then widen to 6–9 months
 for a broader reactivation push.
         """)
+
+    # ── Call log panel — log the call and track outcome ──────────────────────
+    st.markdown("---")
+    st.markdown("#### 📞 Log a Call")
+    st.caption(
+        "Call logs are shared with Customer Support. "
+        "Every entry records who placed the call (your login username)."
+    )
+
+    # Build options from the inactive list (cusid → display label)
+    _log_opts_df = inactive[["cusid", "cusname"]].drop_duplicates("cusid")
+    _log_opts = {
+        f"{row['cusname']} ({row['cusid']})": row["cusid"]
+        for _, row in _log_opts_df.iterrows()
+    }
+    _log_sel = st.selectbox(
+        "Select customer to log",
+        ["— pick a customer —"] + list(_log_opts.keys()),
+        key="outreach_log_sel",
+    )
+    if _log_sel and _log_sel != "— pick a customer —":
+        _log_cusid = _log_opts[_log_sel]
+        _log_name  = _log_sel.split(" (")[0]
+        _render_call_log_panel(
+            cusid=_log_cusid,
+            zid=zid,
+            customer_name=_log_name,
+            key_suffix="_outreach",
+        )
 
 
 # ---------------------------------------------------------------------------
