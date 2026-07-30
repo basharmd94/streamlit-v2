@@ -782,7 +782,7 @@ def _render_metric_cards(
     # ── Row 2: MTD performance — collection, activity, % vs target, 3M avg ───
     if is_current_month:
         pct_mtd_vs_target = round(net_sales / target_val * 100, 1) if target_val > 0 else None
-        pct_coll_vs_mtd_sales = round(mtd_collection / (1.02 * mtd_sales) * 100, 1) if mtd_sales > 0 else None
+        pct_coll_vs_target = round(mtd_collection / target_val * 100, 1) if target_val > 0 else None
 
         p_cols = st.columns(6)
         with p_cols[0]:
@@ -794,9 +794,14 @@ def _render_metric_cards(
         with p_cols[3]:
             st.metric("🎯 % MTD Sales vs Target", f"{pct_mtd_vs_target:.1f}%" if pct_mtd_vs_target is not None else "—")
         with p_cols[4]:
-            st.metric("💧 % Collection vs MTD Sales", f"{pct_coll_vs_mtd_sales:.1f}%" if pct_coll_vs_mtd_sales is not None else "—")
+            st.metric("💧 % Collection vs Target", f"{pct_coll_vs_target:.1f}%" if pct_coll_vs_target is not None else "—")
         with p_cols[5]:
             st.metric("📈 Monthly Avg Sales (3M)", f"{monthly_avg_3mo:,.0f}", delta="last 3 months", delta_color="off")
+        st.caption(
+            "ℹ️ **% Collection vs Target** = MTD Collection ÷ Monthly Target "
+            "(previously MTD Collection ÷ (MTD Sales × 1.02)). "
+            "All Salesmen Overview retains the old formula (÷ MTD Sales × 1.02)."
+        )
 
     st.markdown("---")
 
@@ -1380,7 +1385,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         pct_tgt = round(net_sales / target * 100, 1) if target > 0 else None
 
         coll = round(float(coll_by_sp.get(spid, 0.0)), 0)
-        pct_coll = round(coll / (1.02 * sales) * 100, 1) if sales > 0 else None
+        pct_coll = round(coll / sales * 100, 1) if sales > 0 else None
 
         uc_mo = int(sp_mo["cusid"].nunique()) if "cusid" in sp_mo.columns else 0
         up_mo = int(sp_mo["itemcode"].nunique()) if "itemcode" in sp_mo.columns else 0
@@ -1458,7 +1463,10 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         f"{oldest_label} + {mid_label} balance, 2 pts for the {newest_label} balance. "
         f"Rows highlighted red have no target set for {sel_label} — scored 0 on that 45% component. "
         f"Balance columns are point-in-time snapshots: {newest_label} is {newest_asof}, "
-        f"{mid_label} and {oldest_label} are as of their own month-end."
+        f"{mid_label} and {oldest_label} are as of their own month-end.  \n"
+        f"ℹ️ **% Collection** (column & score component) = Collection ÷ MTD Sales — "
+        f"the 1.02 buffer has been removed (previously Collection ÷ (MTD Sales × 1.02)). "
+        f"All Salesmen Overview retains the old formula."
     )
 
     st.download_button(
