@@ -339,14 +339,23 @@ def build_callcoverage_matrix(
     if dimension == "Type":
         if "txn_type" not in df.columns:
             return pd.DataFrame()
-        grouped = (
+        df["_last_called"] = df["cusid"].map(lambda c: (cl_map.get(c) or {}).get("last_called"))
+        df["_called"] = df["_last_called"].notna()
+        total = (
             df.groupby(["days_since_sale", "txn_type"])["cusid"]
-            .nunique()
-            .reset_index(name="count")
+            .nunique().rename("total")
         )
+        called = (
+            df[df["_called"]]
+            .groupby(["days_since_sale", "txn_type"])["cusid"]
+            .nunique().rename("called")
+        )
+        grouped = pd.concat([total, called], axis=1).fillna(0).reset_index()
+        grouped["called"] = grouped["called"].astype(int)
+        grouped["value"] = grouped["called"].astype(str) + "/" + grouped["total"].astype(str)
         pivot = (
-            grouped.pivot(index="days_since_sale", columns="txn_type", values="count")
-            .fillna(0).astype(int)
+            grouped.pivot(index="days_since_sale", columns="txn_type", values="value")
+            .fillna("0/0")
         )
         pivot.index.name = "Days"
         pivot.columns.name = None

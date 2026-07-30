@@ -93,7 +93,7 @@ def _render_coverage_matrix(
         if dim in ("Salesman", "City"):
             caption = "Cells: called / total unique customers · rows = days since last sale, highest first"
         elif dim == "Type":
-            caption = "Cells: unique customers with that transaction type · rows = days since transaction"
+            caption = "Cells: called / total unique customers with that transaction type · rows = days since transaction"
         else:
             caption = "Cells: count of customers with that outcome · 'Not Called' = no log entry · rows = days since last sale"
         st.caption(caption)
