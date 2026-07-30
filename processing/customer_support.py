@@ -303,3 +303,99 @@ def build_merged_sc_table(
         .reset_index(drop=True)
     )
     return merged
+
+
+# ─── Call-coverage matrix ─────────────────────────────────────────────────────
+
+def build_callcoverage_matrix(
+    df: pd.DataFrame,
+    cl_map: dict,
+    dimension: str,
+) -> pd.DataFrame:
+    """Pivot call-coverage data for management overview.
+
+    df must have: cusid (str), days_since_sale (numeric).
+    Optional cols: salesman_name, city  (for Salesman/City dims),
+                   txn_type             (for Type dim).
+    cl_map: {cusid_str: {last_called, outcome, notes}}
+
+    Salesman / City → cells show "called/total" unique customers.
+    Outcomes        → cells show count of customers with that outcome.
+    Type            → counts unique customers per (days, txn_type); no cusid dedup
+                      (a customer with Delivery + Collection on the same day counts twice).
+    Rows sorted descending (most overdue first).
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df["cusid"] = df["cusid"].astype(str)
+    df["days_since_sale"] = pd.to_numeric(df.get("days_since_sale"), errors="coerce")
+    df = df.dropna(subset=["days_since_sale"])
+    if df.empty:
+        return pd.DataFrame()
+    df["days_since_sale"] = df["days_since_sale"].astype(int)
+
+    if dimension == "Type":
+        if "txn_type" not in df.columns:
+            return pd.DataFrame()
+        grouped = (
+            df.groupby(["days_since_sale", "txn_type"])["cusid"]
+            .nunique()
+            .reset_index(name="count")
+        )
+        pivot = (
+            grouped.pivot(index="days_since_sale", columns="txn_type", values="count")
+            .fillna(0).astype(int)
+        )
+        pivot.index.name = "Days"
+        pivot.columns.name = None
+        return pivot.sort_index(ascending=False)
+
+    # For all other dimensions: deduplicate on cusid (keep most-overdue row per customer)
+    base = (
+        df.sort_values("days_since_sale", ascending=False)
+        .drop_duplicates("cusid", keep="first")
+        .copy()
+    )
+    base["_last_called"] = base["cusid"].map(lambda c: (cl_map.get(c) or {}).get("last_called"))
+    base["_called"]      = base["_last_called"].notna()
+    base["_outcome"]     = base["cusid"].map(lambda c: (cl_map.get(c) or {}).get("outcome"))
+
+    if dimension in ("Salesman", "City"):
+        dim_col = "salesman_name" if dimension == "Salesman" else "city"
+        if dim_col not in base.columns:
+            return pd.DataFrame()
+        base[dim_col] = base[dim_col].fillna("Unknown")
+        grouped = (
+            base.groupby(["days_since_sale", dim_col])
+            .agg(total=("cusid", "count"), called=("_called", "sum"))
+            .reset_index()
+        )
+        grouped["value"] = (
+            grouped["called"].astype(int).astype(str)
+            + "/"
+            + grouped["total"].astype(str)
+        )
+        pivot = (
+            grouped.pivot(index="days_since_sale", columns=dim_col, values="value")
+            .fillna("0/0")
+        )
+        pivot.index.name = "Days"
+        pivot.columns.name = None
+        return pivot.sort_index(ascending=False)
+
+    # Outcomes
+    base["_outcome_label"] = base["_outcome"].fillna("Not Called")
+    grouped = (
+        base.groupby(["days_since_sale", "_outcome_label"])
+        .size()
+        .reset_index(name="count")
+    )
+    pivot = (
+        grouped.pivot(index="days_since_sale", columns="_outcome_label", values="count")
+        .fillna(0).astype(int)
+    )
+    pivot.index.name = "Days"
+    pivot.columns.name = None
+    return pivot.sort_index(ascending=False)

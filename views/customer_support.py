@@ -70,6 +70,36 @@ div[data-testid="stExpander"] > details > summary svg {
 </style>"""
 
 
+# ── Call-coverage matrix ───────────────────────────────────────────────────────
+
+def _render_coverage_matrix(
+    df: pd.DataFrame,
+    cl_map: dict,
+    key_suffix: str,
+    has_type: bool = False,
+) -> None:
+    """Collapsed expander — at-a-glance call-coverage pivot for owner oversight."""
+    with st.expander("📊 Call Coverage Matrix", expanded=False):
+        options = ["Salesman", "City", "Outcomes"]
+        if has_type:
+            options.append("Type")
+        dim = st.radio(
+            "Group by", options, horizontal=True, key=f"cov_dim_{key_suffix}",
+        )
+        matrix = cs.build_callcoverage_matrix(df, cl_map, dim)
+        if matrix.empty:
+            st.info("No data to build coverage matrix.")
+            return
+        if dim in ("Salesman", "City"):
+            caption = "Cells: called / total unique customers · rows = days since last sale, highest first"
+        elif dim == "Type":
+            caption = "Cells: unique customers with that transaction type · rows = days since transaction"
+        else:
+            caption = "Cells: count of customers with that outcome · 'Not Called' = no log entry · rows = days since last sale"
+        st.caption(caption)
+        st.dataframe(matrix, use_container_width=True)
+
+
 # ── Public entry point ─────────────────────────────────────────────────────────
 
 def display_customer_support(zid, project):
@@ -129,6 +159,16 @@ def _render_14day_activity():
     feed = feed.sort_values("xdate", ascending=False).reset_index(drop=True)
     _feed_full = feed.copy()
 
+    # Prepare matrix data from full unfiltered feed now — survives any date/type filter.
+    _feed_matrix = _feed_full.copy()
+    _feed_matrix["cusid"] = _feed_matrix["xsub"].astype(str)
+    _feed_matrix["days_since_sale"] = (
+        pd.Timestamp.today().normalize()
+        - pd.to_datetime(_feed_matrix["xdate"], errors="coerce")
+    ).dt.days
+    _feed_matrix = _feed_matrix.rename(columns={"xcity": "city"})
+    _cl_map_14d = _last_calllog_map(_feed_matrix["cusid"].unique().tolist())
+
     fc1, fc2 = st.columns([2, 2])
     unique_dates = sorted(feed["_xdate"].dropna().unique(), reverse=True)
     date_opts    = ["All dates"] + [d.strftime("%Y-%m-%d") for d in unique_dates]
@@ -151,36 +191,35 @@ def _render_14day_activity():
             f"No vouchers for {label}"
             + (f" of type '{sel_type}'" if sel_type != "All Types" else "") + "."
         )
-        return
+    else:
+        disp_cols = [c for c in _FEED_COLS if c in feed.columns]
+        disp = normalize_phone_cols(feed[disp_cols].copy()).rename(columns=_FEED_RENAME)
 
-    disp_cols = [c for c in _FEED_COLS if c in feed.columns]
-    disp = normalize_phone_cols(feed[disp_cols].copy()).rename(columns=_FEED_RENAME)
+        # Inject last-called date, outcome, notes columns
+        _cl_map = _last_calllog_map(feed["xsub"].astype(str).unique().tolist())
+        insert_at = disp.columns.get_loc("Cust Code") + 1
+        disp.insert(insert_at,     "Last Called", disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("last_called")))
+        disp.insert(insert_at + 1, "Outcome",     disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("outcome")))
+        disp.insert(insert_at + 2, "Notes",       disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("notes")))
 
-    # Inject last-called date, outcome, notes columns
-    _cl_map = _last_calllog_map(feed["xsub"].astype(str).unique().tolist())
-    insert_at = disp.columns.get_loc("Cust Code") + 1
-    disp.insert(insert_at,     "Last Called", disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("last_called")))
-    disp.insert(insert_at + 1, "Outcome",     disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("outcome")))
-    disp.insert(insert_at + 2, "Notes",       disp["Cust Code"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("notes")))
-
-    st.caption(
-        f"**{len(feed):,}** vouchers"
-        + (f" — {sel_date_str}" if sel_date_str != "All dates" else " — last 14 days")
-        + (f", type: {sel_type}" if sel_type != "All Types" else "")
-        + " · sorted latest first · Outcome/Notes = most recent call log entry per customer"
-    )
-    st.dataframe(
-        disp,
-        column_config={
-            "Date":        st.column_config.DateColumn("Date",        format="YYYY-MM-DD"),
-            "Amount":      st.column_config.NumberColumn("Amount",    format="%.0f"),
-            "Last Called": st.column_config.DateColumn("Last Called", format="YYYY-MM-DD"),
-            "Outcome":     st.column_config.TextColumn("Outcome"),
-            "Notes":       st.column_config.TextColumn("Notes"),
-        },
-        use_container_width=True,
-        hide_index=True,
-    )
+        st.caption(
+            f"**{len(feed):,}** vouchers"
+            + (f" — {sel_date_str}" if sel_date_str != "All dates" else " — last 14 days")
+            + (f", type: {sel_type}" if sel_type != "All Types" else "")
+            + " · sorted latest first · Outcome/Notes = most recent call log entry per customer"
+        )
+        st.dataframe(
+            disp,
+            column_config={
+                "Date":        st.column_config.DateColumn("Date",        format="YYYY-MM-DD"),
+                "Amount":      st.column_config.NumberColumn("Amount",    format="%.0f"),
+                "Last Called": st.column_config.DateColumn("Last Called", format="YYYY-MM-DD"),
+                "Outcome":     st.column_config.TextColumn("Outcome"),
+                "Notes":       st.column_config.TextColumn("Notes"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.markdown("---")
     with st.expander("📦 Customer DO Detail & Ledger", expanded=True):
@@ -253,6 +292,9 @@ def _render_14day_activity():
 
             st.markdown("---")
             _render_call_log_panel(sel_cusid, "100001", sel_name, key_suffix="_14d")
+
+    st.markdown("---")
+    _render_coverage_matrix(_feed_matrix, _cl_map_14d, key_suffix="14d", has_type=True)
 
 
 def _render_do_detail(feed: pd.DataFrame, cusid: str):
@@ -349,8 +391,9 @@ def _render_merged_sc_table(
 
     df["_status"] = df["days_since_sale"].apply(_sc_status)
 
-    # Inject last-called date, outcome, notes
-    _cl_map = _last_calllog_map(df["cusid"].astype(str).unique().tolist())
+    # Build cl_map from the full (pre-filter) df_merged so the coverage matrix
+    # below also covers customers filtered out of the display table.
+    _cl_map = _last_calllog_map(df_merged["cusid"].astype(str).unique().tolist())
     df["last_called"] = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("last_called"))
     df["outcome"]     = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("outcome"))
     df["notes"]       = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("notes"))
@@ -417,6 +460,9 @@ def _render_merged_sc_table(
         sel_name  = unique_cust.loc[unique_cust["cusid"] == sel_cusid, "customer_name"].iloc[0]
         _render_call_log_panel(sel_cusid, "100001", sel_name, key_suffix=f"_{table_key}")
 
+    st.markdown("---")
+    _render_coverage_matrix(df_merged, _cl_map, key_suffix=table_key)
+
 
 def _render_sc_table_zepto(
     df: pd.DataFrame,
@@ -426,6 +472,8 @@ def _render_sc_table_zepto(
     if df.empty:
         st.info(f"No customers with an outstanding balance for {_ZID_LABEL['100005']}.")
         return
+
+    df_full = df.copy()  # keep pre-filter copy for coverage matrix
 
     if days_min and "days_since_sale" in df.columns:
         df = df[df["days_since_sale"].fillna(0) >= days_min]
@@ -442,8 +490,8 @@ def _render_sc_table_zepto(
     df = df.copy()
     df["_status"] = df["days_since_sale"].apply(_sc_status)
 
-    # Inject last-called date, outcome, notes
-    _cl_map = _last_calllog_map(df["cusid"].astype(str).unique().tolist())
+    # Build cl_map from full pre-filter set so coverage matrix covers all customers.
+    _cl_map = _last_calllog_map(df_full["cusid"].astype(str).unique().tolist())
     df["last_called"] = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("last_called"))
     df["outcome"]     = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("outcome"))
     df["notes"]       = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("notes"))
@@ -506,6 +554,9 @@ def _render_sc_table_zepto(
         sel_cusid = sel.split(" · ")[0]
         sel_name  = df.loc[df["cusid"] == sel_cusid, "customer_name"].iloc[0]
         _render_call_log_panel(sel_cusid, "100005", sel_name, key_suffix="_zepto")
+
+    st.markdown("---")
+    _render_coverage_matrix(df_full, _cl_map, key_suffix="zepto")
 
 
 def _render_latest_sales_collection():
