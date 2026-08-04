@@ -41,18 +41,20 @@ def create_user(username, password, role):
         if conn:
             conn.close()
 
+_VALID_ROLES = ['admin', 'sales', 'finance', 'purchase', 'crm', 'SOP', 'HR', 'production']
+
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         print("Usage: python create_user.py <username> <password> <role>")
-        print("Available roles: admin, sales, finance, purchase, SOP")
+        print(f"Available roles: {', '.join(_VALID_ROLES)}")
         sys.exit(1)
-        
+
     username = sys.argv[1]
     password = sys.argv[2]
     role = sys.argv[3]
-    
-    if role not in ['admin', 'sales', 'finance', 'purchase', 'SOP']:
-        print("Invalid role. Available roles: admin, sales, finance, purchase, SOP")
+
+    if role not in _VALID_ROLES:
+        print(f"Invalid role. Available roles: {', '.join(_VALID_ROLES)}")
         sys.exit(1)
         
     create_user(username, password, role)
