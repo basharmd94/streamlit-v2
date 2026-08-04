@@ -38,35 +38,51 @@ def _load_dotenv_file(dotenv_path: Path) -> bool:
 
     return True
 
+# Roles to scan. For each prefix, setup_db looks for PREFIX_USERNAME_1,
+# PREFIX_USERNAME_2, ... until the env var is absent. Add as many numbered
+# entries as needed in .env — no code change required.
+_ROLES = [
+    ("ADMIN",      "admin"),
+    ("SALES",      "sales"),
+    ("FINANCE",    "finance"),
+    ("PURCHASE",   "purchase"),
+    ("CRM",        "crm"),
+    ("SOP",        "SOP"),
+    ("HR",         "HR"),
+    ("PRODUCTION", "production"),
+]
+
+
 def _build_default_users():
-    users_config = [
-        ("ADMIN_USERNAME", "ADMIN_PASSWORD", "admin"),
-        ("SALES_USERNAME", "SALES_PASSWORD", "sales"),
-        ("FINANCE_USERNAME", "FINANCE_PASSWORD", "finance"),
-        ("PURCHASE_USERNAME", "PURCHASE_PASSWORD", "purchase"),
-        ("CRM_USERNAME", "CRM_PASSWORD", "crm"),
-        ("SOP_USERNAME", "SOP_PASSWORD", "SOP"),
-        ("HR_USERNAME", "HR_PASSWORD", "HR"),
-    ]
-
     default_users = []
-    missing = []
 
-    for user_env, pass_env, role in users_config:
-        username = os.getenv(user_env)
-        password = os.getenv(pass_env)
-        if username is None or username == "":
-            missing.append(user_env)
-        if password is None or password == "":
-            missing.append(pass_env)
+    for prefix, role in _ROLES:
+        i = 1
+        while True:
+            user_env = f"{prefix}_USERNAME_{i}"
+            pass_env = f"{prefix}_PASSWORD_{i}"
+            username = os.getenv(user_env, "").strip()
+            password = os.getenv(pass_env, "").strip()
 
-        default_users.append((username, password, role))
+            # Stop scanning this role when both vars are absent
+            if not username and not password:
+                break
 
-    if missing:
-        missing_sorted = ", ".join(sorted(set(missing)))
+            # One present without the other is a misconfiguration
+            if not username or not password:
+                missing = user_env if not username else pass_env
+                raise ValueError(
+                    f"Incomplete entry for {role} user #{i}: {missing} is missing. "
+                    "Both USERNAME and PASSWORD must be set together."
+                )
+
+            default_users.append((username, password, role))
+            i += 1
+
+    if not default_users:
         raise ValueError(
-            "Missing required environment variables for user setup: "
-            f"{missing_sorted}. Ensure they exist in the project .env file or your environment."
+            "No users found. Add at least one entry (e.g. ADMIN_USERNAME_1 / ADMIN_PASSWORD_1) "
+            "to your .env file."
         )
 
     return default_users
@@ -120,6 +136,7 @@ def setup_auth_tables():
         print("Setting up default permissions...")
         cur.execute("""
             INSERT INTO page_permissions (role, page_name) VALUES
+            -- Admin (full access)
             ('admin', 'Home'),
             ('admin', 'Overall Sales Analysis'),
             ('admin', 'Overall Margin Analysis'),
@@ -131,44 +148,59 @@ def setup_auth_tables():
             ('admin', 'Financial Statements'),
             ('admin', 'Manufacturing Analysis'),
             ('admin', 'Accounting Analysis'),
-            ('admin','Inventory Analysis'),
-            ('admin','Customer Data View'),
-            ('admin','Daily Sales Analysis'),
-            ('admin','Target Management'),
+            ('admin', 'Inventory Analysis'),
+            ('admin', 'Customer Data View'),
+            ('admin', 'Daily Sales Analysis'),
+            ('admin', 'Target Management'),
+            ('admin', 'AR Analysis'),
+            ('admin', 'Customer Support'),
+            ('admin', 'Marketing Analysis'),
+            -- Sales
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
             ('sales', 'Daily Sales Analysis'),
-            ('sales','Collection Analysis'),
+            ('sales', 'Collection Analysis'),
             ('sales', 'Basket Analysis'),
-            ('sales','Customer Data View'),
-            ('sales','Target Management'),
-            ('SOP', 'Customer Data View'),
-            ('crm', 'Collection Analysis'),
-            ('crm', 'Overall Sales Analysis'),
-            ('crm', 'Daily Sales Analysis'),
-            ('crm', 'Customer Data View'),
-            ('crm', 'Target Management'),
+            ('sales', 'Customer Data View'),
+            ('sales', 'Target Management'),
+            ('sales', 'Customer Support'),
+            ('sales', 'Marketing Analysis'),
+            -- Finance
             ('finance', 'Home'),
             ('finance', 'Overall Margin Analysis'),
             ('finance', 'Financial Statements'),
             ('finance', 'Collection Analysis'),
             ('finance', 'Accounting Analysis'),
-            ('finance','Inventory Analysis'),
-            ('finance','Manufacturing Analysis'),
+            ('finance', 'Inventory Analysis'),
+            ('finance', 'Manufacturing Analysis'),
+            ('finance', 'AR Analysis'),
+            -- Purchase
             ('purchase', 'Home'),
             ('purchase', 'Purchase Analysis'),
             ('purchase', 'Basket Analysis'),
             ('purchase', 'Distribution & Histograms'),
-            ('purchase','Inventory Analysis'),
-            ('purchase','Manufacturing Analysis'),
-            ('admin', 'AR Analysis'),
-            ('finance', 'AR Analysis'),
-            ('admin', 'Customer Support'),
+            ('purchase', 'Inventory Analysis'),
+            ('purchase', 'Manufacturing Analysis'),
+            -- CRM
+            ('crm', 'Home'),
+            ('crm', 'Overall Sales Analysis'),
+            ('crm', 'Daily Sales Analysis'),
+            ('crm', 'Collection Analysis'),
+            ('crm', 'Customer Data View'),
+            ('crm', 'Target Management'),
             ('crm', 'Customer Support'),
-            ('sales', 'Customer Support'),
-            ('admin', 'Marketing Analysis'),
-            ('sales', 'Marketing Analysis'),
-            ('crm', 'Marketing Analysis')
+            ('crm', 'Marketing Analysis'),
+            -- SOP
+            ('SOP', 'Customer Data View'),
+            -- HR
+            ('HR', 'Home'),
+            ('HR', 'Target Management'),
+            -- Production
+            ('production', 'Home'),
+            ('production', 'Overall Sales Analysis'),
+            ('production', 'Daily Sales Analysis'),
+            ('production', 'Manufacturing Analysis'),
+            ('production', 'Inventory Analysis')
         """)
 
         default_users = _build_default_users()
