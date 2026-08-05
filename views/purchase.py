@@ -370,7 +370,12 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
         pct_cols = ["P50", "P75", "P90", "P95", "n", "flag"]
         qty_list = [c for c in (qty_cols or []) if c in df.columns]
         ordered = id_cols + qty_list + pct_cols
-        display_df = df[[c for c in ordered if c in df.columns]].rename(columns=_TTS_COL_LABELS)
+        display_df = df[[c for c in ordered if c in df.columns]].copy().rename(columns=_TTS_COL_LABELS)
+        for day_col in ["P50 (days)", "P75 (days)", "P90 (days)", "P95 (days)"]:
+            if day_col in display_df.columns:
+                display_df[day_col] = display_df[day_col].apply(
+                    lambda x: int(x) if pd.notna(x) else None
+                )
         if display_df.empty:
             st.info("No data to display.")
             return
@@ -562,6 +567,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                                 return pd.DataFrame({"days": [0], "pct_unsold": [100.0]})
                             after = after.copy()
                             after["remaining"] = (initial_qty - (after["cum_sales"] - prior_cum)).clip(lower=0.0)
+                            after["remaining"] = after["remaining"].where(after["remaining"] > initial_qty * 0.01, 0.0)
                             after["pct_unsold"] = (after["remaining"] / initial_qty * 100.0).round(2)
                             after["days"] = (after["date"] - combinedate).dt.days
                             day0 = pd.DataFrame({"days": [0], "pct_unsold": [100.0]})

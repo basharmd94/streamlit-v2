@@ -1498,7 +1498,7 @@ def build_time_to_sell_percentiles(
         # prior cumulative: last value strictly before combinedate
         idx_before = int(np.searchsorted(dates, combine_np, side="left")) - 1
         prior_cum = float(cumvals[idx_before]) if idx_before >= 0 else 0.0
-        target_cum = prior_cum + initial_qty
+        target_cum = prior_cum + initial_qty * 0.99  # 99% sell-through = depleted
 
         # slice from combinedate onwards
         idx_start = int(np.searchsorted(dates, combine_np, side="left"))
@@ -1531,7 +1531,7 @@ def build_time_to_sell_percentiles(
 
         if n == 0:
             flag = "No data"
-        elif n < 5:
+        elif n < 3:
             flag = "Low confidence"
         elif p90 is not None and p90 > 120:
             flag = "Dead stock"
