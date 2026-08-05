@@ -544,6 +544,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
     with st.spinner("Computing sell-through percentiles…"):
         pct_df, detail_df = build_time_to_sell_percentiles(purchase_df, sales_df)
 
+    inv_df = _load_tts_final_items(str(zid))
     if inv_df is None or inv_df.empty:
         st.warning("No current inventory data.")
         return
