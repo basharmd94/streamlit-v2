@@ -1413,27 +1413,32 @@ def run_batch_profitability_engine(
 def build_time_to_sell_percentiles(
     purchase_df: pd.DataFrame,
     sales_df: pd.DataFrame,
-) -> pd.DataFrame:
+    min_qty: int = 20,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Per-itemcode P50/P75/P90/P95 days-to-sell from historical closed batches.
 
     Depletion: for each closed batch (itemcode, combinedate, initial_qty), find the
     first date after combinedate where cumulative 100001 sales >= prior_cumulative +
     initial_qty.  days_to_sell = that_date - combinedate.
 
-    Uses mv_purchase_batches (purchase_df) and mv_sales_daily_item (sales_df) only —
-    no new MV or query needed.  Cross-ZID batches (100001 + 100009) for the same item
-    and date are combined into one logical arrival since their itemcodes are already
-    resolved to the same 100001-space code.
+    Batches with initial_qty < min_qty are excluded — small test orders skew percentiles.
+    Cross-ZID batches (100001 + 100009) for the same item and date are combined into one
+    logical arrival since their itemcodes resolve to the same 100001-space code.
 
-    Returns one row per itemcode with P50/P75/P90/P95 (days), n (completed batches),
-    flag: 'No data' | 'Low confidence' (n<5) | 'Dead stock' (P90>120 days).
+    Returns:
+        pct_df   — one row per itemcode: P50/P75/P90/P95 (days), n, flag
+        detail_df — one row per batch: itemcode, combinedate, initial_qty,
+                    days_to_sell (None = not yet depleted), est_end_date
     """
-    empty = pd.DataFrame(
+    empty_pct = pd.DataFrame(
         columns=["itemcode", "itemname", "itemgroup", "P50", "P75", "P90", "P95", "n", "flag"]
+    )
+    empty_detail = pd.DataFrame(
+        columns=["itemcode", "itemname", "itemgroup", "combinedate", "initial_qty", "days_to_sell", "est_end_date", "status"]
     )
 
     if purchase_df is None or purchase_df.empty:
-        return empty
+        return empty_pct, empty_detail
 
     # --- closed batches ---
     closed = purchase_df[purchase_df["status"] != "1-Open"].copy()
@@ -1443,7 +1448,7 @@ def build_time_to_sell_percentiles(
     closed = closed[closed["combinedate"].notna() & (closed["quantity"] > 0)].copy()
 
     if closed.empty:
-        return empty
+        return empty_pct, empty_detail
 
     # Aggregate cross-ZID arrivals of the same item on the same date into one batch
     agg_spec: dict = {"initial_qty": ("quantity", "sum"), "itemname": ("itemname", "first")}
@@ -1452,6 +1457,11 @@ def build_time_to_sell_percentiles(
     closed = closed.groupby(["itemcode", "combinedate"], as_index=False).agg(**agg_spec)
     if "itemgroup" not in closed.columns:
         closed["itemgroup"] = ""
+
+    # Exclude small batches — not representative of typical sell-through behaviour
+    closed = closed[closed["initial_qty"] >= min_qty].copy()
+    if closed.empty:
+        return empty_pct, empty_detail
 
     # --- cumulative sales series per itemcode (100001, already filtered at query layer) ---
     sales_lookup: dict = {}
@@ -1475,10 +1485,11 @@ def build_time_to_sell_percentiles(
         code = str(row["itemcode"])
         combinedate: pd.Timestamp = row["combinedate"]
         initial_qty: float = float(row["initial_qty"])
-        meta = {"itemcode": code, "itemname": row["itemname"], "itemgroup": row.get("itemgroup", "")}
+        meta = {"itemcode": code, "itemname": row["itemname"], "itemgroup": row.get("itemgroup", ""),
+                "combinedate": combinedate, "initial_qty": initial_qty}
 
         if code not in sales_lookup:
-            records.append({**meta, "days_to_sell": None})
+            records.append({**meta, "days_to_sell": None, "est_end_date": pd.NaT, "status": "No sales data"})
             continue
 
         dates, cumvals = sales_lookup[code]
@@ -1492,7 +1503,7 @@ def build_time_to_sell_percentiles(
         # slice from combinedate onwards
         idx_start = int(np.searchsorted(dates, combine_np, side="left"))
         if idx_start >= len(dates):
-            records.append({**meta, "days_to_sell": None})
+            records.append({**meta, "days_to_sell": None, "est_end_date": pd.NaT, "status": "Not depleted"})
             continue
 
         future_cum = cumvals[idx_start:]
@@ -1500,14 +1511,14 @@ def build_time_to_sell_percentiles(
         hit = int(np.searchsorted(future_cum, target_cum - 1e-6, side="left"))
 
         if hit < len(future_cum) and future_cum[hit] >= target_cum - 1e-6:
-            days = max(0, (pd.Timestamp(future_dates[hit]) - combinedate).days)
+            end_date = pd.Timestamp(future_dates[hit])
+            days = max(0, (end_date - combinedate).days)
+            records.append({**meta, "days_to_sell": days, "est_end_date": end_date, "status": "Depleted"})
         else:
-            days = None
-
-        records.append({**meta, "days_to_sell": days})
+            records.append({**meta, "days_to_sell": None, "est_end_date": pd.NaT, "status": "Not depleted"})
 
     if not records:
-        return empty
+        return empty_pct, empty_detail
 
     rec_df = pd.DataFrame(records)
 
@@ -1539,6 +1550,6 @@ def build_time_to_sell_percentiles(
             "flag": flag,
         })
 
-    return pd.DataFrame(out_rows).sort_values("itemcode").reset_index(drop=True)
-
-    return df0.sort_values(["is_closed", "proj_final_profit"], ascending=[True, False]).reset_index(drop=True)
+    pct_df = pd.DataFrame(out_rows).sort_values("itemcode").reset_index(drop=True)
+    detail_df = rec_df.sort_values(["itemcode", "combinedate"]).reset_index(drop=True)
+    return pct_df, detail_df

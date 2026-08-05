@@ -342,6 +342,7 @@ _TTS_FLAG_STYLE = {
 
 def _render_time_to_sell(zid: str, data_dict: dict) -> None:
     """Time to Sell percentile table — upcoming open shipments or current inventory."""
+    import plotly.express as px
     from processing.next_month_target import get_open_shipments, get_shipment_items
     from processing.purchase_batch import build_time_to_sell_percentiles
 
@@ -353,7 +354,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
         return
 
     with st.spinner("Computing sell-through percentiles…"):
-        pct_df = build_time_to_sell_percentiles(purchase_df, sales_df)
+        pct_df, detail_df = build_time_to_sell_percentiles(purchase_df, sales_df)
 
     view = st.radio(
         "Analysis scope",
@@ -364,10 +365,11 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
 
     st.divider()
 
-    def _show_table(df: pd.DataFrame, qty_col: str | None = None) -> None:
+    def _show_table(df: pd.DataFrame, qty_cols: list | None = None) -> None:
         id_cols = ["itemcode", "itemname", "itemgroup"]
         pct_cols = ["P50", "P75", "P90", "P95", "n", "flag"]
-        ordered = id_cols + ([qty_col] if qty_col and qty_col in df.columns else []) + pct_cols
+        qty_list = [c for c in (qty_cols or []) if c in df.columns]
+        ordered = id_cols + qty_list + pct_cols
         display_df = df[[c for c in ordered if c in df.columns]].rename(columns=_TTS_COL_LABELS)
         if display_df.empty:
             st.info("No data to display.")
@@ -430,8 +432,17 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
         merged["flag"] = merged["flag"].fillna("No data")
         merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
 
+        # Add current stock alongside incoming qty
+        stock_df = _load_tts_final_items(str(zid))
+        if stock_df is not None and not stock_df.empty:
+            if "item_id" in stock_df.columns:
+                stock_df = stock_df.rename(columns={"item_id": "itemcode"})
+            stock_df["itemcode"] = stock_df["itemcode"].astype(str).str.strip()
+            merged = merged.merge(stock_df[["itemcode", "stock"]], on="itemcode", how="left")
+            merged["stock"] = pd.to_numeric(merged["stock"], errors="coerce").fillna(0)
+
         st.caption(f"{len(merged)} item(s) in selected shipment(s)")
-        _show_table(merged, qty_col="incoming_qty")
+        _show_table(merged, qty_cols=["incoming_qty", "stock"])
 
     # ---- Current Inventory ----
     else:
@@ -456,7 +467,76 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
         merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
 
         st.caption(f"{len(merged)} item(s) currently in stock for ZID {zid}")
-        _show_table(merged, qty_col="stock")
+        _show_table(merged, qty_cols=["stock"])
+
+        # ---- Diagnostic expander ----
+        if detail_df is not None and not detail_df.empty:
+            items_with_data = merged[merged["n"] > 0]["itemcode"].tolist()
+            if not items_with_data:
+                return
+
+            diag_detail = detail_df[detail_df["itemcode"].isin(items_with_data)].copy()
+            if diag_detail.empty:
+                return
+
+            # Build label map: "itemcode — itemname"
+            code_to_label = {}
+            for _, row in merged[merged["itemcode"].isin(items_with_data)].iterrows():
+                code_to_label[row["itemcode"]] = f"{row['itemcode']} — {row.get('itemname', row['itemcode'])}"
+
+            label_options = [code_to_label.get(c, c) for c in items_with_data]
+            label_to_code = {v: k for k, v in code_to_label.items()}
+
+            with st.expander("🔍 Batch-level Diagnostic", expanded=False):
+                selected_label = st.selectbox(
+                    "Select a product to inspect",
+                    options=label_options,
+                    key="tts_diag_product",
+                )
+                sel_code = label_to_code.get(selected_label, selected_label)
+                prod_detail = diag_detail[diag_detail["itemcode"] == sel_code].copy()
+
+                if prod_detail.empty:
+                    st.info("No batch data for this product.")
+                else:
+                    prod_detail = prod_detail.sort_values("combinedate").reset_index(drop=True)
+                    prod_detail["combinedate"] = pd.to_datetime(prod_detail["combinedate"]).dt.strftime("%Y-%m-%d")
+                    prod_detail["est_end_date"] = pd.to_datetime(prod_detail["est_end_date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("—")
+                    prod_detail["days_to_sell"] = prod_detail["days_to_sell"].apply(
+                        lambda x: int(x) if pd.notna(x) else None
+                    )
+
+                    display_cols = {
+                        "combinedate": "Arrival Date",
+                        "initial_qty": "Batch Qty",
+                        "days_to_sell": "Days to Sell",
+                        "est_end_date": "Depletion Date",
+                        "status": "Status",
+                    }
+                    st.dataframe(
+                        prod_detail[[c for c in display_cols if c in prod_detail.columns]]
+                        .rename(columns=display_cols),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    completed_days = prod_detail["days_to_sell"].dropna().astype(float).tolist()
+                    if completed_days:
+                        fig = px.histogram(
+                            x=completed_days,
+                            nbins=max(5, len(completed_days) // 2),
+                            labels={"x": "Days to Sell"},
+                            title=f"Days-to-Sell Distribution — {selected_label}",
+                        )
+                        fig.update_layout(
+                            showlegend=False,
+                            xaxis_title="Days to Sell",
+                            yaxis_title="Batch Count",
+                            bargap=0.1,
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No completed batches to plot for this product.")
 
 
 @timed
