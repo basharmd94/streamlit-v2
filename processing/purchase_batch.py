@@ -1408,4 +1408,137 @@ def run_batch_profitability_engine(
     except Exception:
         pass
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def build_time_to_sell_percentiles(
+    purchase_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Per-itemcode P50/P75/P90/P95 days-to-sell from historical closed batches.
+
+    Depletion: for each closed batch (itemcode, combinedate, initial_qty), find the
+    first date after combinedate where cumulative 100001 sales >= prior_cumulative +
+    initial_qty.  days_to_sell = that_date - combinedate.
+
+    Uses mv_purchase_batches (purchase_df) and mv_sales_daily_item (sales_df) only —
+    no new MV or query needed.  Cross-ZID batches (100001 + 100009) for the same item
+    and date are combined into one logical arrival since their itemcodes are already
+    resolved to the same 100001-space code.
+
+    Returns one row per itemcode with P50/P75/P90/P95 (days), n (completed batches),
+    flag: 'No data' | 'Low confidence' (n<5) | 'Dead stock' (P90>120 days).
+    """
+    empty = pd.DataFrame(
+        columns=["itemcode", "itemname", "itemgroup", "P50", "P75", "P90", "P95", "n", "flag"]
+    )
+
+    if purchase_df is None or purchase_df.empty:
+        return empty
+
+    # --- closed batches ---
+    closed = purchase_df[purchase_df["status"] != "1-Open"].copy()
+    closed["itemcode"] = closed["itemcode"].astype(str).str.strip()
+    closed["combinedate"] = pd.to_datetime(closed["combinedate"], errors="coerce").dt.floor("D")
+    closed["quantity"] = pd.to_numeric(closed["quantity"], errors="coerce").fillna(0.0)
+    closed = closed[closed["combinedate"].notna() & (closed["quantity"] > 0)].copy()
+
+    if closed.empty:
+        return empty
+
+    # Aggregate cross-ZID arrivals of the same item on the same date into one batch
+    agg_spec: dict = {"initial_qty": ("quantity", "sum"), "itemname": ("itemname", "first")}
+    if "itemgroup" in closed.columns:
+        agg_spec["itemgroup"] = ("itemgroup", "first")
+    closed = closed.groupby(["itemcode", "combinedate"], as_index=False).agg(**agg_spec)
+    if "itemgroup" not in closed.columns:
+        closed["itemgroup"] = ""
+
+    # --- cumulative sales series per itemcode (100001, already filtered at query layer) ---
+    sales_lookup: dict = {}
+    if sales_df is not None and not sales_df.empty:
+        s = sales_df[["itemcode", "date", "quantity"]].copy()
+        s["itemcode"] = s["itemcode"].astype(str).str.strip()
+        s["date"] = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
+        s["quantity"] = pd.to_numeric(s["quantity"], errors="coerce").fillna(0.0).clip(lower=0.0)
+        s = s[s["date"].notna()].groupby(["itemcode", "date"], as_index=False)["quantity"].sum()
+        s = s.sort_values(["itemcode", "date"]).reset_index(drop=True)
+        s["cum_sales"] = s.groupby("itemcode")["quantity"].cumsum()
+        for code, grp in s.groupby("itemcode"):
+            sales_lookup[code] = (
+                grp["date"].values.astype("datetime64[ns]"),
+                grp["cum_sales"].values.astype(float),
+            )
+
+    # --- per-batch depletion via numpy searchsorted (O(log n) per batch) ---
+    records: list = []
+    for _, row in closed.iterrows():
+        code = str(row["itemcode"])
+        combinedate: pd.Timestamp = row["combinedate"]
+        initial_qty: float = float(row["initial_qty"])
+        meta = {"itemcode": code, "itemname": row["itemname"], "itemgroup": row.get("itemgroup", "")}
+
+        if code not in sales_lookup:
+            records.append({**meta, "days_to_sell": None})
+            continue
+
+        dates, cumvals = sales_lookup[code]
+        combine_np = np.datetime64(combinedate, "ns")
+
+        # prior cumulative: last value strictly before combinedate
+        idx_before = int(np.searchsorted(dates, combine_np, side="left")) - 1
+        prior_cum = float(cumvals[idx_before]) if idx_before >= 0 else 0.0
+        target_cum = prior_cum + initial_qty
+
+        # slice from combinedate onwards
+        idx_start = int(np.searchsorted(dates, combine_np, side="left"))
+        if idx_start >= len(dates):
+            records.append({**meta, "days_to_sell": None})
+            continue
+
+        future_cum = cumvals[idx_start:]
+        future_dates = dates[idx_start:]
+        hit = int(np.searchsorted(future_cum, target_cum - 1e-6, side="left"))
+
+        if hit < len(future_cum) and future_cum[hit] >= target_cum - 1e-6:
+            days = max(0, (pd.Timestamp(future_dates[hit]) - combinedate).days)
+        else:
+            days = None
+
+        records.append({**meta, "days_to_sell": days})
+
+    if not records:
+        return empty
+
+    rec_df = pd.DataFrame(records)
+
+    # --- percentiles per itemcode ---
+    out_rows: list = []
+    for code, grp in rec_df.groupby("itemcode"):
+        completed = grp["days_to_sell"].dropna().astype(float).values
+        n = int(len(completed))
+        p90 = float(np.percentile(completed, 90)) if n > 0 else None
+
+        if n == 0:
+            flag = "No data"
+        elif n < 5:
+            flag = "Low confidence"
+        elif p90 is not None and p90 > 120:
+            flag = "Dead stock"
+        else:
+            flag = ""
+
+        out_rows.append({
+            "itemcode": code,
+            "itemname": grp["itemname"].iloc[0],
+            "itemgroup": grp["itemgroup"].iloc[0],
+            "P50": int(round(float(np.percentile(completed, 50)))) if n > 0 else None,
+            "P75": int(round(float(np.percentile(completed, 75)))) if n > 0 else None,
+            "P90": int(round(p90)) if p90 is not None else None,
+            "P95": int(round(float(np.percentile(completed, 95)))) if n > 0 else None,
+            "n": n,
+            "flag": flag,
+        })
+
+    return pd.DataFrame(out_rows).sort_values("itemcode").reset_index(drop=True)
+
     return df0.sort_values(["is_closed", "proj_final_profit"], ascending=[True, False]).reset_index(drop=True)

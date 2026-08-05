@@ -659,13 +659,15 @@ def get_purchase_batches(filters=None):
     zids = list(filters["zid"])
     ph = ",".join(["%s"] * len(zids))
     sql = f"""
-        SELECT zid, shipmentname, itemcode, itemname, combinedate,
-               povoucher, grnvoucher,
-               initial_qty AS quantity,
-               unit_cost   AS cost,
-               status
-        FROM mv_purchase_batches
-        WHERE zid IN ({ph})
+        SELECT b.zid, b.shipmentname, b.itemcode, b.itemname, b.combinedate,
+               b.povoucher, b.grnvoucher,
+               b.initial_qty AS quantity,
+               b.unit_cost   AS cost,
+               b.status,
+               COALESCE(ci.xgitem, '')::text AS itemgroup
+        FROM mv_purchase_batches b
+        LEFT JOIN caitem ci ON ci.xitem = b.itemcode AND ci.zid = '100001'
+        WHERE b.zid IN ({ph})
     """
     return sql, tuple(zids)
 
