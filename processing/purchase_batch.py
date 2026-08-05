@@ -1536,7 +1536,7 @@ def build_time_to_sell_percentiles(
         elif p90 is not None and p90 > 120:
             flag = "Dead stock"
         else:
-            flag = ""
+            flag = "Good"
 
         out_rows.append({
             "itemcode": code,

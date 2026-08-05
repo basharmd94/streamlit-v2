@@ -334,10 +334,21 @@ _TTS_COL_LABELS = {
 }
 
 _TTS_FLAG_STYLE = {
+    "Good": "background-color: #d4edda; color: #155724;",
     "Dead stock": "background-color: #ffd6d6; color: #8b0000;",
     "Low confidence": "background-color: #fff3cd; color: #856404;",
     "No data": "background-color: #e2e3e5; color: #383d41;",
 }
+
+_TTS_TABLE_NOTE = (
+    "**P50/P75/P90/P95** — median and percentile days for a batch to sell through 99% of its stock, "
+    "computed from historical closed purchase batches (min 20 units each). "
+    "**Data Points (n)** — number of historical batches used. "
+    "**Flag**: 🟢 Good = ≥3 batches, P90 ≤120 days · "
+    "🟡 Low confidence = fewer than 3 batches · "
+    "🔴 Dead stock = P90 >120 days · "
+    "⬜ No data = no sales history found."
+)
 
 
 def _render_time_to_sell(zid: str, data_dict: dict) -> None:
@@ -396,6 +407,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
             mime="text/csv",
             key="tts_download",
         )
+        st.caption(_TTS_TABLE_NOTE)
 
     # ---- Upcoming Shipment ----
     if view == "📦 Upcoming Shipment":
@@ -434,7 +446,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
         for dup in [c for c in merged.columns if c.endswith("_pct")]:
             merged = merged.drop(columns=[dup])
         merged["itemgroup"] = merged.get("itemgroup", pd.Series([""] * len(merged))).fillna("")
-        merged["flag"] = merged["flag"].fillna("No data")
+        merged["flag"] = merged["flag"].fillna("No data").replace("", "Good")
         merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
 
         # Add current stock alongside incoming qty
@@ -468,7 +480,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
             if pct_col in merged.columns:
                 merged[col] = merged[col].where(merged[col].notna() & (merged[col] != ""), merged[pct_col])
                 merged = merged.drop(columns=[pct_col])
-        merged["flag"] = merged["flag"].fillna("No data")
+        merged["flag"] = merged["flag"].fillna("No data").replace("", "Good")
         merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
 
         st.caption(f"{len(merged)} item(s) currently in stock for ZID {zid}")
@@ -632,6 +644,97 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                             st.info("Select at least one batch to plot.")
                     elif raw_batches.empty:
                         st.info("No batch arrival data to build a survival curve.")
+
+        # ---- Working Capital Risk Matrix ----
+        st.divider()
+        st.subheader("💰 Working Capital Risk Matrix")
+
+        # Latest unit cost per itemcode from closed purchase batches
+        cost_src = purchase_df[purchase_df["status"] != "1-Open"][["itemcode", "combinedate", "cost"]].copy()
+        cost_src["itemcode"] = cost_src["itemcode"].astype(str).str.strip()
+        cost_src["combinedate"] = pd.to_datetime(cost_src["combinedate"], errors="coerce")
+        cost_src["cost"] = pd.to_numeric(cost_src["cost"], errors="coerce").fillna(0.0)
+        latest_cost = (
+            cost_src.sort_values("combinedate")
+            .groupby("itemcode", as_index=False)
+            .last()[["itemcode", "cost"]]
+        )
+
+        risk_df = merged.merge(latest_cost, on="itemcode", how="left")
+        risk_df["cost"] = pd.to_numeric(risk_df["cost"], errors="coerce").fillna(0.0)
+        risk_df["stock_value"] = (risk_df["stock"] * risk_df["cost"]).round(0)
+        risk_df["P75"] = pd.to_numeric(risk_df["P75"], errors="coerce")
+
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            exclude_low_conf = st.checkbox("Exclude Low confidence products", value=True, key="risk_excl_lowconf")
+            exclude_no_data = st.checkbox("Exclude No data products", value=True, key="risk_excl_nodata")
+        with col_f2:
+            min_stock_val = st.number_input(
+                "Min stock value to show (BDT)",
+                min_value=0,
+                value=0,
+                step=10000,
+                key="risk_min_val",
+            )
+
+        plot_df = risk_df.copy()
+        if exclude_low_conf:
+            plot_df = plot_df[plot_df["flag"] != "Low confidence"]
+        if exclude_no_data:
+            plot_df = plot_df[plot_df["flag"] != "No data"]
+        plot_df = plot_df[plot_df["stock_value"] >= min_stock_val]
+        plot_df = plot_df[plot_df["P75"].notna() & plot_df["stock_value"].notna()].copy()
+
+        if plot_df.empty:
+            st.info("No products to plot — adjust the filters above.")
+        else:
+            color_map = {
+                "Good": "#28a745",
+                "Dead stock": "#dc3545",
+                "Low confidence": "#ffc107",
+                "No data": "#6c757d",
+            }
+            plot_df["label"] = plot_df["itemcode"] + " — " + plot_df["itemname"].fillna("")
+            fig_risk = px.scatter(
+                plot_df,
+                x="P75",
+                y="stock_value",
+                color="flag",
+                color_discrete_map=color_map,
+                hover_name="label",
+                hover_data={
+                    "P75": True,
+                    "stock_value": ":,.0f",
+                    "stock": ":,.0f",
+                    "n": True,
+                    "flag": False,
+                    "label": False,
+                },
+                labels={
+                    "P75": "P75 Days to Sell (velocity →  slower)",
+                    "stock_value": "Stock Value (BDT)",
+                    "flag": "Status",
+                },
+                title="Working Capital Risk Matrix",
+            )
+            # Quadrant reference lines (medians)
+            med_x = plot_df["P75"].median()
+            med_y = plot_df["stock_value"].median()
+            fig_risk.add_vline(x=med_x, line_dash="dash", line_color="grey", opacity=0.4,
+                               annotation_text="median velocity", annotation_position="top right")
+            fig_risk.add_hline(y=med_y, line_dash="dash", line_color="grey", opacity=0.4,
+                               annotation_text="median value", annotation_position="top right")
+            fig_risk.update_traces(marker=dict(size=10, opacity=0.8))
+            fig_risk.update_layout(hovermode="closest", legend_title="Status")
+            st.plotly_chart(fig_risk, use_container_width=True)
+            st.caption(
+                "Each dot = one product currently in stock. "
+                "**Top-right quadrant**: slow-moving AND high capital tied up — highest working capital risk. "
+                "**Bottom-left**: fast-moving, low value — healthy. "
+                "Dashed lines are the median P75 and median stock value across the plotted products. "
+                "Unit cost taken from the most recent closed purchase batch for each product."
+            )
 
 
 @timed
