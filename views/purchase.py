@@ -814,8 +814,36 @@ def _render_abc_xyz(zid: str, data_dict: dict) -> None:
         st.warning("No sales data available for classification.")
         return
 
+    # ---- Timeline selector ----
+    lookback_options = {
+        "Last 6 months": 6,
+        "Last 12 months": 12,
+        "Last 24 months": 24,
+        "Last 36 months": 36,
+        "All time": None,
+    }
+    selected_window = st.selectbox(
+        "Classification window",
+        list(lookback_options.keys()),
+        index=2,
+        key="abcxyz_window",
+        help="Revenue and variability are computed only within this window. "
+             "Shorter windows reflect recent buying behaviour; longer windows smooth volatility.",
+    )
+    months_back = lookback_options[selected_window]
+
+    filtered_sales = sales_df.copy()
+    if months_back is not None:
+        filtered_sales["date"] = pd.to_datetime(filtered_sales["date"], errors="coerce")
+        cutoff = pd.Timestamp.today().normalize() - pd.DateOffset(months=months_back)
+        filtered_sales = filtered_sales[filtered_sales["date"] >= cutoff]
+
+    if filtered_sales.empty:
+        st.warning("No sales data in the selected window.")
+        return
+
     with st.spinner("Computing ABC-XYZ classification…"):
-        cls_df = build_abc_xyz(sales_df)
+        cls_df = build_abc_xyz(filtered_sales)
 
     if cls_df.empty:
         st.warning("Insufficient data for classification.")
@@ -947,11 +975,11 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
     mode = st.radio(
         "Purchase View",
         [
-            "Purchase Cohort & Requisition",
-            "Batch Profitability & Capital Engine",
-            "Total Inventory Overview",
-            "Time to Sell Analysis",
-            "📊 ABC-XYZ Classification",
+            "📋 Cohort",
+            "💰 Batch P&L",
+            "📦 Inventory",
+            "⏱ Time to Sell",
+            "📊 ABC-XYZ",
         ],
         horizontal=True,
         index=0,
@@ -960,28 +988,28 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
     # -----------------------------
     # MODE 3: Total Inventory Overview
     # -----------------------------
-    if mode == "Total Inventory Overview":
+    if mode == "📦 Inventory":
         _render_total_inventory(zid, data_dict)
         return
 
     # -----------------------------
     # MODE 4: Time to Sell Analysis
     # -----------------------------
-    if mode == "Time to Sell Analysis":
+    if mode == "⏱ Time to Sell":
         _render_time_to_sell(str(zid), data_dict)
         return
 
     # -----------------------------
     # MODE 5: ABC-XYZ Classification
     # -----------------------------
-    if mode == "📊 ABC-XYZ Classification":
+    if mode == "📊 ABC-XYZ":
         _render_abc_xyz(str(zid), data_dict)
         return
 
     # -----------------------------
     # MODE 1: Existing cohort logic (unchanged)
     # -----------------------------
-    if mode == "Purchase Cohort & Requisition":
+    if mode == "📋 Cohort":
         options = [i for i in range(10)]
         default_option = 2
         default_index = options.index(default_option)
