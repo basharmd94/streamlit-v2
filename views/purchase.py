@@ -662,6 +662,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
 
         risk_df = merged.merge(latest_cost, on="itemcode", how="left")
         risk_df["cost"] = pd.to_numeric(risk_df["cost"], errors="coerce").fillna(0.0)
+        risk_df["stock"] = pd.to_numeric(risk_df["stock"], errors="coerce").fillna(0.0)
         risk_df["stock_value"] = (risk_df["stock"] * risk_df["cost"]).round(0)
         risk_df["P75"] = pd.to_numeric(risk_df["P75"], errors="coerce")
 
