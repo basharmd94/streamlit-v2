@@ -538,6 +538,95 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                     else:
                         st.info("No completed batches to plot for this product.")
 
+                    # ---- Survival Curve ----
+                    import plotly.graph_objects as go
+
+                    raw_batches = diag_detail[diag_detail["itemcode"] == sel_code].copy()
+                    raw_batches["combinedate"] = pd.to_datetime(raw_batches["combinedate"], errors="coerce")
+                    raw_batches = raw_batches[raw_batches["combinedate"].notna()].sort_values("combinedate")
+
+                    if not raw_batches.empty and sales_df is not None and not sales_df.empty:
+                        # Prepare cumulative sales series for this item
+                        s = sales_df[sales_df["itemcode"].astype(str).str.strip() == sel_code].copy()
+                        s["date"] = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
+                        s["quantity"] = pd.to_numeric(s["quantity"], errors="coerce").fillna(0.0).clip(lower=0.0)
+                        s = s[s["date"].notna()].groupby("date", as_index=False)["quantity"].sum()
+                        s = s.sort_values("date").reset_index(drop=True)
+                        s["cum_sales"] = s["quantity"].cumsum()
+
+                        def _survival_curve(combinedate, initial_qty):
+                            before = s[s["date"] < combinedate]
+                            prior_cum = float(before["cum_sales"].iloc[-1]) if not before.empty else 0.0
+                            after = s[s["date"] >= combinedate].copy()
+                            if after.empty:
+                                return pd.DataFrame({"days": [0], "pct_unsold": [100.0]})
+                            after = after.copy()
+                            after["remaining"] = (initial_qty - (after["cum_sales"] - prior_cum)).clip(lower=0.0)
+                            after["pct_unsold"] = (after["remaining"] / initial_qty * 100.0).round(2)
+                            after["days"] = (after["date"] - combinedate).dt.days
+                            day0 = pd.DataFrame({"days": [0], "pct_unsold": [100.0]})
+                            return pd.concat([day0, after[["days", "pct_unsold"]]], ignore_index=True).drop_duplicates("days")
+
+                        batch_labels = [
+                            pd.to_datetime(r["combinedate"]).strftime("%Y-%m-%d")
+                            + f"  ({int(r['initial_qty']):,} units)"
+                            for _, r in raw_batches.iterrows()
+                        ]
+                        batch_label_map = {
+                            lbl: (pd.to_datetime(row["combinedate"]), float(row["initial_qty"]))
+                            for lbl, (_, row) in zip(batch_labels, raw_batches.iterrows())
+                        }
+
+                        st.markdown("##### 📉 Survival Curve")
+                        selected_batches = st.multiselect(
+                            "Select batch(es) to plot",
+                            options=batch_labels,
+                            default=[batch_labels[0]],
+                            key="tts_survival_batch_select",
+                        )
+
+                        if selected_batches:
+                            fig_s = go.Figure()
+                            colors = px.colors.qualitative.Plotly
+                            for i, lbl in enumerate(selected_batches):
+                                cd, iq = batch_label_map[lbl]
+                                curve = _survival_curve(cd, iq)
+                                fig_s.add_trace(go.Scatter(
+                                    x=curve["days"],
+                                    y=curve["pct_unsold"],
+                                    mode="lines",
+                                    name=lbl,
+                                    line=dict(color=colors[i % len(colors)], width=2),
+                                ))
+                            # Reference lines at key sell-through thresholds
+                            for pct, label, dash in [
+                                (50, "50% sold", "dot"),
+                                (25, "75% sold", "dash"),
+                                (10, "90% sold", "dashdot"),
+                                (5, "95% sold", "longdash"),
+                            ]:
+                                fig_s.add_hline(
+                                    y=pct,
+                                    line_dash=dash,
+                                    line_color="grey",
+                                    opacity=0.5,
+                                    annotation_text=label,
+                                    annotation_position="right",
+                                )
+                            fig_s.update_layout(
+                                title=f"Stock Survival — {selected_label}",
+                                xaxis_title="Days Since Arrival",
+                                yaxis_title="% Stock Remaining",
+                                yaxis=dict(range=[0, 105]),
+                                legend_title="Batch (arrival date)",
+                                hovermode="x unified",
+                            )
+                            st.plotly_chart(fig_s, use_container_width=True)
+                        else:
+                            st.info("Select at least one batch to plot.")
+                    elif raw_batches.empty:
+                        st.info("No batch arrival data to build a survival curve.")
+
 
 @timed
 def display_purchase_analysis_page(current_page, zid, data_dict):
