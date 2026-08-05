@@ -351,10 +351,187 @@ _TTS_TABLE_NOTE = (
 )
 
 
-def _render_time_to_sell(zid: str, data_dict: dict) -> None:
-    """Time to Sell percentile table — upcoming open shipments or current inventory."""
+def _tts_show_table(df: pd.DataFrame, qty_cols: list | None = None, dl_key: str = "tts_download") -> None:
+    """Render a styled TTS percentile table with download button."""
+    id_cols = ["itemcode", "itemname", "itemgroup"]
+    pct_cols = ["P50", "P75", "P90", "P95", "n", "flag"]
+    qty_list = [c for c in (qty_cols or []) if c in df.columns]
+    extra = [c for c in df.columns if c not in id_cols + qty_list + pct_cols
+             and c in ("Quadrant", "ABC-XYZ")]
+    ordered = id_cols + qty_list + pct_cols + extra
+    display_df = df[[c for c in ordered if c in df.columns]].copy().rename(columns=_TTS_COL_LABELS)
+    for day_col in ["P50 (days)", "P75 (days)", "P90 (days)", "P95 (days)"]:
+        if day_col in display_df.columns:
+            display_df[day_col] = display_df[day_col].apply(
+                lambda x: int(x) if pd.notna(x) else None
+            )
+    if display_df.empty:
+        st.info("No data to display.")
+        return
+
+    def _flag_style(val):
+        return _TTS_FLAG_STYLE.get(val, "")
+
+    try:
+        styled = display_df.style.applymap(_flag_style, subset=["Flag"])
+    except Exception:
+        styled = display_df.style
+
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.download_button(
+        "📥 Download CSV",
+        display_df.to_csv(index=False).encode(),
+        file_name="time_to_sell.csv",
+        mime="text/csv",
+        key=dl_key,
+    )
+    st.caption(_TTS_TABLE_NOTE)
+
+
+def _portfolio_medians(purchase_df: pd.DataFrame, inv_df: pd.DataFrame, pct_df: pd.DataFrame):
+    """Return (latest_cost_df, med_x, med_y) from the current-inventory risk matrix."""
+    cost_src = purchase_df[purchase_df["status"] != "1-Open"][["itemcode", "combinedate", "cost"]].copy()
+    cost_src["itemcode"] = cost_src["itemcode"].astype(str).str.strip()
+    cost_src["combinedate"] = pd.to_datetime(cost_src["combinedate"], errors="coerce")
+    cost_src["cost"] = pd.to_numeric(cost_src["cost"], errors="coerce").fillna(0.0)
+    latest_cost = (
+        cost_src.sort_values("combinedate")
+        .groupby("itemcode", as_index=False).last()[["itemcode", "cost"]]
+    )
+    port = inv_df.merge(pct_df[["itemcode", "P75"]], on="itemcode", how="inner")
+    port = port.merge(latest_cost, on="itemcode", how="left")
+    port["stock"] = pd.to_numeric(port.get("stock", 0), errors="coerce").fillna(0.0)
+    port["cost"] = pd.to_numeric(port.get("cost", 0), errors="coerce").fillna(0.0)
+    port["stock_value"] = port["stock"] * port["cost"]
+    port["P75"] = pd.to_numeric(port["P75"], errors="coerce")
+    port = port[port["P75"].notna() & (port["stock_value"] > 0)]
+    med_x = float(port["P75"].median()) if not port.empty else None
+    med_y = float(port["stock_value"].median()) if not port.empty else None
+    return latest_cost, med_x, med_y
+
+
+def _render_upcoming_shipment(zid: str, data_dict: dict) -> None:
+    """Upcoming open shipment analysis with TTS percentiles, portfolio quadrant, and ABC-XYZ."""
     import plotly.express as px
     from processing.next_month_target import get_open_shipments, get_shipment_items
+    from processing.purchase_batch import build_time_to_sell_percentiles, build_abc_xyz
+
+    purchase_df = data_dict.get("purchase_batches", pd.DataFrame())
+    sales_df = data_dict.get("sales_daily_item", pd.DataFrame())
+
+    if purchase_df is None or purchase_df.empty:
+        st.warning("No purchase data loaded.")
+        return
+
+    with st.spinner("Loading sell-through data…"):
+        pct_df, _ = build_time_to_sell_percentiles(purchase_df, sales_df)
+
+    # Current inventory — cached, free after first call
+    inv_df = _load_tts_final_items(str(zid))
+    if inv_df is not None and not inv_df.empty:
+        if "item_id" in inv_df.columns:
+            inv_df = inv_df.rename(columns={"item_id": "itemcode", "item_name": "itemname", "item_group": "itemgroup"})
+        inv_df["itemcode"] = inv_df["itemcode"].astype(str).str.strip()
+        latest_cost, med_x, med_y = _portfolio_medians(purchase_df, inv_df, pct_df)
+    else:
+        latest_cost, med_x, med_y = pd.DataFrame(columns=["itemcode", "cost"]), None, None
+
+    # ABC-XYZ — fixed 24-month window, cached
+    cutoff_24m = pd.Timestamp.today().normalize() - pd.DateOffset(months=24)
+    sales_24m = sales_df.copy()
+    if not sales_24m.empty:
+        sales_24m["date"] = pd.to_datetime(sales_24m["date"], errors="coerce")
+        sales_24m = sales_24m[sales_24m["date"] >= cutoff_24m]
+    cls_df = build_abc_xyz(sales_24m) if not sales_24m.empty else pd.DataFrame()
+
+    # Shipment selector
+    open_df = get_open_shipments(purchase_df)
+    if open_df.empty:
+        st.info("No open shipments found.")
+        return
+
+    open_df["label"] = (
+        open_df["shipmentname"].astype(str)
+        + "  (" + open_df["n_items"].astype(str) + " items, "
+        + open_df["total_qty"].apply(lambda x: f"{x:,.0f}") + " units)"
+    )
+    selected_labels = st.multiselect(
+        "Select shipment(s)",
+        options=open_df["label"].tolist(),
+        default=[open_df["label"].iloc[0]],
+        key="upcoming_shipment_select",
+    )
+    if not selected_labels:
+        st.info("Select at least one shipment.")
+        return
+
+    sel_rows = open_df[open_df["label"].isin(selected_labels)]
+    items_df = get_shipment_items(purchase_df, list(zip(sel_rows["zid"], sel_rows["shipmentname"])))
+    if items_df.empty:
+        st.warning("No items found for the selected shipment(s).")
+        return
+
+    items_df["itemcode"] = items_df["itemcode"].astype(str).str.strip()
+
+    # Merge TTS percentiles
+    merged = items_df.merge(pct_df, on="itemcode", how="left", suffixes=("", "_pct"))
+    for dup in [c for c in merged.columns if c.endswith("_pct")]:
+        merged = merged.drop(columns=[dup])
+    merged["itemgroup"] = merged.get("itemgroup", pd.Series([""] * len(merged))).fillna("")
+    merged["flag"] = merged["flag"].fillna("No data").replace("", "Good")
+    merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
+
+    # Current stock
+    if inv_df is not None and not inv_df.empty:
+        merged = merged.merge(inv_df[["itemcode", "stock"]], on="itemcode", how="left")
+        merged["stock"] = pd.to_numeric(merged["stock"], errors="coerce").fillna(0)
+    else:
+        merged["stock"] = 0
+
+    # Portfolio quadrant (only for items with sell-through data)
+    if med_x is not None and med_y is not None:
+        port_vals = (
+            inv_df[["itemcode", "stock"]].copy()
+            .merge(latest_cost, on="itemcode", how="left")
+        )
+        port_vals["stock"] = pd.to_numeric(port_vals["stock"], errors="coerce").fillna(0.0)
+        port_vals["cost"] = pd.to_numeric(port_vals.get("cost", 0), errors="coerce").fillna(0.0)
+        port_vals["stock_value"] = port_vals["stock"] * port_vals["cost"]
+
+        def _quad(row):
+            if row["flag"] == "No data":
+                return "—"
+            p75 = pd.to_numeric(row.get("P75"), errors="coerce")
+            sv_row = port_vals[port_vals["itemcode"] == row["itemcode"]]
+            sv = float(sv_row["stock_value"].iloc[0]) if not sv_row.empty else 0.0
+            if pd.isna(p75):
+                return "—"
+            slow = p75 > med_x
+            rich = sv > med_y
+            if slow and rich:      return "① High Risk"
+            if not slow and rich:  return "② High Value Fast"
+            if slow and not rich:  return "③ Slow Mover"
+            return "④ Low Priority"
+
+        merged["Quadrant"] = merged.apply(_quad, axis=1)
+    else:
+        merged["Quadrant"] = "—"
+
+    # ABC-XYZ class
+    if not cls_df.empty:
+        merged = merged.merge(cls_df[["itemcode", "class_combined"]], on="itemcode", how="left")
+        merged["ABC-XYZ"] = merged["class_combined"].fillna("—")
+        merged = merged.drop(columns=["class_combined"], errors="ignore")
+    else:
+        merged["ABC-XYZ"] = "—"
+
+    st.caption(f"{len(merged)} item(s) in selected shipment(s)")
+    _tts_show_table(merged, qty_cols=["incoming_qty", "stock"], dl_key="upcoming_dl")
+
+
+def _render_time_to_sell(zid: str, data_dict: dict) -> None:
+    """Current inventory Time to Sell percentile table with diagnostic and risk matrix."""
+    import plotly.express as px
     from processing.purchase_batch import build_time_to_sell_percentiles
 
     purchase_df = data_dict.get("purchase_batches", pd.DataFrame())
@@ -367,417 +544,252 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
     with st.spinner("Computing sell-through percentiles…"):
         pct_df, detail_df = build_time_to_sell_percentiles(purchase_df, sales_df)
 
-    view = st.radio(
-        "Analysis scope",
-        ["📦 Upcoming Shipment", "🏭 Current Inventory"],
-        horizontal=True,
-        key="tts_inner_radio",
-    )
+    if inv_df is None or inv_df.empty:
+        st.warning("No current inventory data.")
+        return
 
-    st.divider()
+    if "item_id" in inv_df.columns:
+        inv_df = inv_df.rename(columns={"item_id": "itemcode", "item_name": "itemname", "item_group": "itemgroup"})
 
-    def _show_table(df: pd.DataFrame, qty_cols: list | None = None) -> None:
-        id_cols = ["itemcode", "itemname", "itemgroup"]
-        pct_cols = ["P50", "P75", "P90", "P95", "n", "flag"]
-        qty_list = [c for c in (qty_cols or []) if c in df.columns]
-        ordered = id_cols + qty_list + pct_cols
-        display_df = df[[c for c in ordered if c in df.columns]].copy().rename(columns=_TTS_COL_LABELS)
-        for day_col in ["P50 (days)", "P75 (days)", "P90 (days)", "P95 (days)"]:
-            if day_col in display_df.columns:
-                display_df[day_col] = display_df[day_col].apply(
+    inv_df["itemcode"] = inv_df["itemcode"].astype(str).str.strip()
+    inv_df = inv_df[pd.to_numeric(inv_df.get("stock", 0), errors="coerce").fillna(0) > 0].copy()
+
+    merged = inv_df.merge(pct_df, on="itemcode", how="left", suffixes=("", "_pct"))
+    for col in ["itemname", "itemgroup"]:
+        pct_col = col + "_pct"
+        if pct_col in merged.columns:
+            merged[col] = merged[col].where(merged[col].notna() & (merged[col] != ""), merged[pct_col])
+            merged = merged.drop(columns=[pct_col])
+    merged["flag"] = merged["flag"].fillna("No data").replace("", "Good")
+    merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
+
+    st.caption(f"{len(merged)} item(s) currently in stock for ZID {zid}")
+    _tts_show_table(merged, qty_cols=["stock"], dl_key="tts_download")
+
+    # ---- Diagnostic expander ----
+    if detail_df is not None and not detail_df.empty:
+        items_with_data = merged[merged["n"] > 0]["itemcode"].tolist()
+        if not items_with_data:
+            return
+
+        diag_detail = detail_df[detail_df["itemcode"].isin(items_with_data)].copy()
+        if diag_detail.empty:
+            return
+
+        code_to_label = {}
+        for _, row in merged[merged["itemcode"].isin(items_with_data)].iterrows():
+            code_to_label[row["itemcode"]] = f"{row['itemcode']} — {row.get('itemname', row['itemcode'])}"
+
+        label_options = [code_to_label.get(c, c) for c in items_with_data]
+        label_to_code = {v: k for k, v in code_to_label.items()}
+
+        with st.expander("🔍 Batch-level Diagnostic", expanded=False):
+            selected_label = st.selectbox(
+                "Select a product to inspect",
+                options=label_options,
+                key="tts_diag_product",
+            )
+            sel_code = label_to_code.get(selected_label, selected_label)
+            prod_detail = diag_detail[diag_detail["itemcode"] == sel_code].copy()
+
+            if prod_detail.empty:
+                st.info("No batch data for this product.")
+            else:
+                prod_detail = prod_detail.sort_values("combinedate").reset_index(drop=True)
+                prod_detail["combinedate"] = pd.to_datetime(prod_detail["combinedate"]).dt.strftime("%Y-%m-%d")
+                prod_detail["est_end_date"] = pd.to_datetime(prod_detail["est_end_date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("—")
+                prod_detail["days_to_sell"] = prod_detail["days_to_sell"].apply(
                     lambda x: int(x) if pd.notna(x) else None
                 )
-        if display_df.empty:
-            st.info("No data to display.")
-            return
-
-        def _flag_style(val):
-            return _TTS_FLAG_STYLE.get(val, "")
-
-        try:
-            styled = display_df.style.applymap(_flag_style, subset=["Flag"])
-        except Exception:
-            styled = display_df.style
-
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-        st.download_button(
-            "📥 Download CSV",
-            display_df.to_csv(index=False).encode(),
-            file_name="time_to_sell.csv",
-            mime="text/csv",
-            key="tts_download",
-        )
-        st.caption(_TTS_TABLE_NOTE)
-
-    # ---- Upcoming Shipment ----
-    if view == "📦 Upcoming Shipment":
-        open_df = get_open_shipments(purchase_df)
-        if open_df.empty:
-            st.info("No open shipments found.")
-            return
-
-        open_df["label"] = (
-            open_df["shipmentname"].astype(str)
-            + "  ("
-            + open_df["n_items"].astype(str) + " items, "
-            + open_df["total_qty"].apply(lambda x: f"{x:,.0f}") + " units)"
-        )
-
-        selected_labels = st.multiselect(
-            "Select shipment(s)",
-            options=open_df["label"].tolist(),
-            default=[open_df["label"].iloc[0]],
-            key="tts_shipment_select",
-        )
-        if not selected_labels:
-            st.info("Select at least one shipment.")
-            return
-
-        sel_rows = open_df[open_df["label"].isin(selected_labels)]
-        selections = list(zip(sel_rows["zid"], sel_rows["shipmentname"]))
-        items_df = get_shipment_items(purchase_df, selections)
-
-        if items_df.empty:
-            st.warning("No items found for the selected shipment(s).")
-            return
-
-        items_df["itemcode"] = items_df["itemcode"].astype(str).str.strip()
-        merged = items_df.merge(pct_df, on="itemcode", how="left", suffixes=("", "_pct"))
-        for dup in [c for c in merged.columns if c.endswith("_pct")]:
-            merged = merged.drop(columns=[dup])
-        merged["itemgroup"] = merged.get("itemgroup", pd.Series([""] * len(merged))).fillna("")
-        merged["flag"] = merged["flag"].fillna("No data").replace("", "Good")
-        merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
-
-        # Add current stock alongside incoming qty
-        stock_df = _load_tts_final_items(str(zid))
-        if stock_df is not None and not stock_df.empty:
-            if "item_id" in stock_df.columns:
-                stock_df = stock_df.rename(columns={"item_id": "itemcode"})
-            stock_df["itemcode"] = stock_df["itemcode"].astype(str).str.strip()
-            merged = merged.merge(stock_df[["itemcode", "stock"]], on="itemcode", how="left")
-            merged["stock"] = pd.to_numeric(merged["stock"], errors="coerce").fillna(0)
-
-        st.caption(f"{len(merged)} item(s) in selected shipment(s)")
-        _show_table(merged, qty_cols=["incoming_qty", "stock"])
-
-    # ---- Current Inventory ----
-    else:
-        inv_df = _load_tts_final_items(str(zid))
-        if inv_df is None or inv_df.empty:
-            st.warning("No current inventory data.")
-            return
-
-        if "item_id" in inv_df.columns:
-            inv_df = inv_df.rename(columns={"item_id": "itemcode", "item_name": "itemname", "item_group": "itemgroup"})
-
-        inv_df["itemcode"] = inv_df["itemcode"].astype(str).str.strip()
-        inv_df = inv_df[pd.to_numeric(inv_df.get("stock", 0), errors="coerce").fillna(0) > 0].copy()
-
-        merged = inv_df.merge(pct_df, on="itemcode", how="left", suffixes=("", "_pct"))
-        for col in ["itemname", "itemgroup"]:
-            pct_col = col + "_pct"
-            if pct_col in merged.columns:
-                merged[col] = merged[col].where(merged[col].notna() & (merged[col] != ""), merged[pct_col])
-                merged = merged.drop(columns=[pct_col])
-        merged["flag"] = merged["flag"].fillna("No data").replace("", "Good")
-        merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
-
-        st.caption(f"{len(merged)} item(s) currently in stock for ZID {zid}")
-        _show_table(merged, qty_cols=["stock"])
-
-        # ---- Diagnostic expander ----
-        if detail_df is not None and not detail_df.empty:
-            items_with_data = merged[merged["n"] > 0]["itemcode"].tolist()
-            if not items_with_data:
-                return
-
-            diag_detail = detail_df[detail_df["itemcode"].isin(items_with_data)].copy()
-            if diag_detail.empty:
-                return
-
-            # Build label map: "itemcode — itemname"
-            code_to_label = {}
-            for _, row in merged[merged["itemcode"].isin(items_with_data)].iterrows():
-                code_to_label[row["itemcode"]] = f"{row['itemcode']} — {row.get('itemname', row['itemcode'])}"
-
-            label_options = [code_to_label.get(c, c) for c in items_with_data]
-            label_to_code = {v: k for k, v in code_to_label.items()}
-
-            with st.expander("🔍 Batch-level Diagnostic", expanded=False):
-                selected_label = st.selectbox(
-                    "Select a product to inspect",
-                    options=label_options,
-                    key="tts_diag_product",
+                display_cols = {
+                    "combinedate": "Arrival Date", "initial_qty": "Batch Qty",
+                    "days_to_sell": "Days to Sell", "est_end_date": "Depletion Date", "status": "Status",
+                }
+                st.dataframe(
+                    prod_detail[[c for c in display_cols if c in prod_detail.columns]].rename(columns=display_cols),
+                    use_container_width=True, hide_index=True,
                 )
-                sel_code = label_to_code.get(selected_label, selected_label)
-                prod_detail = diag_detail[diag_detail["itemcode"] == sel_code].copy()
 
-                if prod_detail.empty:
-                    st.info("No batch data for this product.")
+                completed_days = prod_detail["days_to_sell"].dropna().astype(float).tolist()
+                if completed_days:
+                    fig = px.histogram(
+                        x=completed_days,
+                        nbins=max(5, len(completed_days) // 2),
+                        labels={"x": "Days to Sell"},
+                        title=f"Days-to-Sell Distribution — {selected_label}",
+                    )
+                    fig.update_layout(showlegend=False, xaxis_title="Days to Sell",
+                                      yaxis_title="Batch Count", bargap=0.1)
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
-                    prod_detail = prod_detail.sort_values("combinedate").reset_index(drop=True)
-                    prod_detail["combinedate"] = pd.to_datetime(prod_detail["combinedate"]).dt.strftime("%Y-%m-%d")
-                    prod_detail["est_end_date"] = pd.to_datetime(prod_detail["est_end_date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("—")
-                    prod_detail["days_to_sell"] = prod_detail["days_to_sell"].apply(
-                        lambda x: int(x) if pd.notna(x) else None
-                    )
+                    st.info("No completed batches to plot for this product.")
 
-                    display_cols = {
-                        "combinedate": "Arrival Date",
-                        "initial_qty": "Batch Qty",
-                        "days_to_sell": "Days to Sell",
-                        "est_end_date": "Depletion Date",
-                        "status": "Status",
+                # ---- Survival Curve ----
+                import plotly.graph_objects as go
+
+                raw_batches = diag_detail[diag_detail["itemcode"] == sel_code].copy()
+                raw_batches["combinedate"] = pd.to_datetime(raw_batches["combinedate"], errors="coerce")
+                raw_batches = raw_batches[raw_batches["combinedate"].notna()].sort_values("combinedate")
+
+                if not raw_batches.empty and sales_df is not None and not sales_df.empty:
+                    s = sales_df[sales_df["itemcode"].astype(str).str.strip() == sel_code].copy()
+                    s["date"] = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
+                    s["quantity"] = pd.to_numeric(s["quantity"], errors="coerce").fillna(0.0).clip(lower=0.0)
+                    s = s[s["date"].notna()].groupby("date", as_index=False)["quantity"].sum()
+                    s = s.sort_values("date").reset_index(drop=True)
+                    s["cum_sales"] = s["quantity"].cumsum()
+
+                    def _survival_curve(combinedate, initial_qty):
+                        before = s[s["date"] < combinedate]
+                        prior_cum = float(before["cum_sales"].iloc[-1]) if not before.empty else 0.0
+                        after = s[s["date"] >= combinedate].copy()
+                        if after.empty:
+                            return pd.DataFrame({"days": [0], "pct_unsold": [100.0]})
+                        after["remaining"] = (initial_qty - (after["cum_sales"] - prior_cum)).clip(lower=0.0)
+                        after["remaining"] = after["remaining"].where(after["remaining"] > initial_qty * 0.01, 0.0)
+                        after["pct_unsold"] = (after["remaining"] / initial_qty * 100.0).round(2)
+                        after["days"] = (after["date"] - combinedate).dt.days
+                        day0 = pd.DataFrame({"days": [0], "pct_unsold": [100.0]})
+                        return pd.concat([day0, after[["days", "pct_unsold"]]], ignore_index=True).drop_duplicates("days")
+
+                    batch_labels = [
+                        pd.to_datetime(r["combinedate"]).strftime("%Y-%m-%d") + f"  ({int(r['initial_qty']):,} units)"
+                        for _, r in raw_batches.iterrows()
+                    ]
+                    batch_label_map = {
+                        lbl: (pd.to_datetime(row["combinedate"]), float(row["initial_qty"]))
+                        for lbl, (_, row) in zip(batch_labels, raw_batches.iterrows())
                     }
-                    st.dataframe(
-                        prod_detail[[c for c in display_cols if c in prod_detail.columns]]
-                        .rename(columns=display_cols),
-                        use_container_width=True,
-                        hide_index=True,
+
+                    st.markdown("##### 📉 Survival Curve")
+                    selected_batches = st.multiselect(
+                        "Select batch(es) to plot", options=batch_labels,
+                        default=[batch_labels[0]], key="tts_survival_batch_select",
                     )
 
-                    completed_days = prod_detail["days_to_sell"].dropna().astype(float).tolist()
-                    if completed_days:
-                        fig = px.histogram(
-                            x=completed_days,
-                            nbins=max(5, len(completed_days) // 2),
-                            labels={"x": "Days to Sell"},
-                            title=f"Days-to-Sell Distribution — {selected_label}",
+                    if selected_batches:
+                        fig_s = go.Figure()
+                        colors = px.colors.qualitative.Plotly
+                        x_max = 0
+                        for i, lbl in enumerate(selected_batches):
+                            cd, iq = batch_label_map[lbl]
+                            curve = _survival_curve(cd, iq)
+                            fig_s.add_trace(go.Scatter(
+                                x=curve["days"], y=curve["pct_unsold"], mode="lines", name=lbl,
+                                line=dict(color=colors[i % len(colors)], width=2),
+                            ))
+                            depleted = curve[curve["pct_unsold"] <= 0]
+                            end_day = int(depleted["days"].iloc[0]) if not depleted.empty else int(curve["days"].max())
+                            x_max = max(x_max, end_day)
+                        for pct, label, dash in [
+                            (50, "50% sold", "dot"), (25, "75% sold", "dash"),
+                            (10, "90% sold", "dashdot"), (5, "95% sold", "longdash"),
+                        ]:
+                            fig_s.add_hline(y=pct, line_dash=dash, line_color="grey", opacity=0.5,
+                                            annotation_text=label, annotation_position="right")
+                        fig_s.update_layout(
+                            title=f"Stock Survival — {selected_label}",
+                            xaxis_title="Days Since Arrival", yaxis_title="% Stock Remaining",
+                            xaxis=dict(range=[0, x_max + 10]), yaxis=dict(range=[0, 105]),
+                            legend_title="Batch (arrival date)", hovermode="x unified",
                         )
-                        fig.update_layout(
-                            showlegend=False,
-                            xaxis_title="Days to Sell",
-                            yaxis_title="Batch Count",
-                            bargap=0.1,
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig_s, use_container_width=True)
                     else:
-                        st.info("No completed batches to plot for this product.")
+                        st.info("Select at least one batch to plot.")
+                elif raw_batches.empty:
+                    st.info("No batch arrival data to build a survival curve.")
 
-                    # ---- Survival Curve ----
-                    import plotly.graph_objects as go
+    # ---- Working Capital Risk Matrix ----
+    st.divider()
+    st.subheader("💰 Working Capital Risk Matrix")
 
-                    raw_batches = diag_detail[diag_detail["itemcode"] == sel_code].copy()
-                    raw_batches["combinedate"] = pd.to_datetime(raw_batches["combinedate"], errors="coerce")
-                    raw_batches = raw_batches[raw_batches["combinedate"].notna()].sort_values("combinedate")
+    latest_cost, med_x, med_y = _portfolio_medians(purchase_df, inv_df, pct_df)
 
-                    if not raw_batches.empty and sales_df is not None and not sales_df.empty:
-                        # Prepare cumulative sales series for this item
-                        s = sales_df[sales_df["itemcode"].astype(str).str.strip() == sel_code].copy()
-                        s["date"] = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
-                        s["quantity"] = pd.to_numeric(s["quantity"], errors="coerce").fillna(0.0).clip(lower=0.0)
-                        s = s[s["date"].notna()].groupby("date", as_index=False)["quantity"].sum()
-                        s = s.sort_values("date").reset_index(drop=True)
-                        s["cum_sales"] = s["quantity"].cumsum()
+    risk_df = merged.merge(latest_cost, on="itemcode", how="left")
+    risk_df["cost"] = pd.to_numeric(risk_df["cost"], errors="coerce").fillna(0.0)
+    risk_df["stock"] = pd.to_numeric(risk_df["stock"], errors="coerce").fillna(0.0)
+    risk_df["stock_value"] = (risk_df["stock"] * risk_df["cost"]).round(0)
+    risk_df["P75"] = pd.to_numeric(risk_df["P75"], errors="coerce")
 
-                        def _survival_curve(combinedate, initial_qty):
-                            before = s[s["date"] < combinedate]
-                            prior_cum = float(before["cum_sales"].iloc[-1]) if not before.empty else 0.0
-                            after = s[s["date"] >= combinedate].copy()
-                            if after.empty:
-                                return pd.DataFrame({"days": [0], "pct_unsold": [100.0]})
-                            after = after.copy()
-                            after["remaining"] = (initial_qty - (after["cum_sales"] - prior_cum)).clip(lower=0.0)
-                            after["remaining"] = after["remaining"].where(after["remaining"] > initial_qty * 0.01, 0.0)
-                            after["pct_unsold"] = (after["remaining"] / initial_qty * 100.0).round(2)
-                            after["days"] = (after["date"] - combinedate).dt.days
-                            day0 = pd.DataFrame({"days": [0], "pct_unsold": [100.0]})
-                            return pd.concat([day0, after[["days", "pct_unsold"]]], ignore_index=True).drop_duplicates("days")
-
-                        batch_labels = [
-                            pd.to_datetime(r["combinedate"]).strftime("%Y-%m-%d")
-                            + f"  ({int(r['initial_qty']):,} units)"
-                            for _, r in raw_batches.iterrows()
-                        ]
-                        batch_label_map = {
-                            lbl: (pd.to_datetime(row["combinedate"]), float(row["initial_qty"]))
-                            for lbl, (_, row) in zip(batch_labels, raw_batches.iterrows())
-                        }
-
-                        st.markdown("##### 📉 Survival Curve")
-                        selected_batches = st.multiselect(
-                            "Select batch(es) to plot",
-                            options=batch_labels,
-                            default=[batch_labels[0]],
-                            key="tts_survival_batch_select",
-                        )
-
-                        if selected_batches:
-                            fig_s = go.Figure()
-                            colors = px.colors.qualitative.Plotly
-                            x_max = 0
-                            for i, lbl in enumerate(selected_batches):
-                                cd, iq = batch_label_map[lbl]
-                                curve = _survival_curve(cd, iq)
-                                fig_s.add_trace(go.Scatter(
-                                    x=curve["days"],
-                                    y=curve["pct_unsold"],
-                                    mode="lines",
-                                    name=lbl,
-                                    line=dict(color=colors[i % len(colors)], width=2),
-                                ))
-                                depleted = curve[curve["pct_unsold"] <= 0]
-                                end_day = int(depleted["days"].iloc[0]) if not depleted.empty else int(curve["days"].max())
-                                x_max = max(x_max, end_day)
-                            for pct, label, dash in [
-                                (50, "50% sold", "dot"),
-                                (25, "75% sold", "dash"),
-                                (10, "90% sold", "dashdot"),
-                                (5, "95% sold", "longdash"),
-                            ]:
-                                fig_s.add_hline(
-                                    y=pct,
-                                    line_dash=dash,
-                                    line_color="grey",
-                                    opacity=0.5,
-                                    annotation_text=label,
-                                    annotation_position="right",
-                                )
-                            fig_s.update_layout(
-                                title=f"Stock Survival — {selected_label}",
-                                xaxis_title="Days Since Arrival",
-                                yaxis_title="% Stock Remaining",
-                                xaxis=dict(range=[0, x_max + 10]),
-                                yaxis=dict(range=[0, 105]),
-                                legend_title="Batch (arrival date)",
-                                hovermode="x unified",
-                            )
-                            st.plotly_chart(fig_s, use_container_width=True)
-                        else:
-                            st.info("Select at least one batch to plot.")
-                    elif raw_batches.empty:
-                        st.info("No batch arrival data to build a survival curve.")
-
-        # ---- Working Capital Risk Matrix ----
-        st.divider()
-        st.subheader("💰 Working Capital Risk Matrix")
-
-        # Latest unit cost per itemcode from closed purchase batches
-        cost_src = purchase_df[purchase_df["status"] != "1-Open"][["itemcode", "combinedate", "cost"]].copy()
-        cost_src["itemcode"] = cost_src["itemcode"].astype(str).str.strip()
-        cost_src["combinedate"] = pd.to_datetime(cost_src["combinedate"], errors="coerce")
-        cost_src["cost"] = pd.to_numeric(cost_src["cost"], errors="coerce").fillna(0.0)
-        latest_cost = (
-            cost_src.sort_values("combinedate")
-            .groupby("itemcode", as_index=False)
-            .last()[["itemcode", "cost"]]
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        exclude_low_conf = st.checkbox("Exclude Low confidence products", value=True, key="risk_excl_lowconf")
+        exclude_no_data = st.checkbox("Exclude No data products", value=True, key="risk_excl_nodata")
+    with col_f2:
+        min_stock_val = st.number_input(
+            "Min stock value to show (BDT)", min_value=0, value=0, step=10000, key="risk_min_val",
         )
 
-        risk_df = merged.merge(latest_cost, on="itemcode", how="left")
-        risk_df["cost"] = pd.to_numeric(risk_df["cost"], errors="coerce").fillna(0.0)
-        risk_df["stock"] = pd.to_numeric(risk_df["stock"], errors="coerce").fillna(0.0)
-        risk_df["stock_value"] = (risk_df["stock"] * risk_df["cost"]).round(0)
-        risk_df["P75"] = pd.to_numeric(risk_df["P75"], errors="coerce")
+    plot_df = risk_df.copy()
+    if exclude_low_conf:
+        plot_df = plot_df[plot_df["flag"] != "Low confidence"]
+    if exclude_no_data:
+        plot_df = plot_df[plot_df["flag"] != "No data"]
+    plot_df = plot_df[plot_df["stock_value"] >= min_stock_val]
+    plot_df = plot_df[plot_df["P75"].notna() & plot_df["stock_value"].notna()].copy()
 
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            exclude_low_conf = st.checkbox("Exclude Low confidence products", value=True, key="risk_excl_lowconf")
-            exclude_no_data = st.checkbox("Exclude No data products", value=True, key="risk_excl_nodata")
-        with col_f2:
-            min_stock_val = st.number_input(
-                "Min stock value to show (BDT)",
-                min_value=0,
-                value=0,
-                step=10000,
-                key="risk_min_val",
-            )
+    if plot_df.empty:
+        st.info("No products to plot — adjust the filters above.")
+    else:
+        risk_med_x = plot_df["P75"].median()
+        risk_med_y = plot_df["stock_value"].median()
 
-        plot_df = risk_df.copy()
-        if exclude_low_conf:
-            plot_df = plot_df[plot_df["flag"] != "Low confidence"]
-        if exclude_no_data:
-            plot_df = plot_df[plot_df["flag"] != "No data"]
-        plot_df = plot_df[plot_df["stock_value"] >= min_stock_val]
-        plot_df = plot_df[plot_df["P75"].notna() & plot_df["stock_value"].notna()].copy()
+        def _quad(row):
+            slow = row["P75"] > risk_med_x
+            rich = row["stock_value"] > risk_med_y
+            if slow and rich:      return "① High Risk"
+            if not slow and rich:  return "② High Value Fast"
+            if slow and not rich:  return "③ Slow Mover"
+            return "④ Low Priority"
 
-        if plot_df.empty:
-            st.info("No products to plot — adjust the filters above.")
-        else:
-            # Compute quadrant labels before building the scatter
-            med_x = plot_df["P75"].median()
-            med_y = plot_df["stock_value"].median()
+        plot_df = plot_df.copy()
+        plot_df["Quadrant"] = plot_df.apply(_quad, axis=1)
+        plot_df["label"] = plot_df["itemcode"] + " — " + plot_df["itemname"].fillna("")
 
-            def _quad(row):
-                slow = row["P75"] > med_x
-                rich = row["stock_value"] > med_y
-                if slow and rich:      return "① High Risk"
-                if not slow and rich:  return "② High Value Fast"
-                if slow and not rich:  return "③ Slow Mover"
-                return "④ Low Priority"
-
-            plot_df = plot_df.copy()
-            plot_df["Quadrant"] = plot_df.apply(_quad, axis=1)
-            plot_df["label"] = plot_df["itemcode"] + " — " + plot_df["itemname"].fillna("")
-
-            color_map = {
-                "Good": "#28a745",
-                "Dead stock": "#dc3545",
-                "Low confidence": "#ffc107",
-                "No data": "#6c757d",
-            }
-            fig_risk = px.scatter(
-                plot_df,
-                x="P75",
-                y="stock_value",
-                color="flag",
-                color_discrete_map=color_map,
-                hover_name="label",
-                hover_data={
-                    "P75": True,
-                    "stock_value": ":,.0f",
-                    "stock": ":,.0f",
-                    "n": True,
-                    "Quadrant": True,
-                    "flag": False,
-                    "label": False,
-                },
-                labels={
-                    "P75": "P75 Days to Sell (velocity →  slower)",
-                    "stock_value": "Stock Value (BDT)",
-                    "flag": "Status",
-                },
-                title="Working Capital Risk Matrix",
-            )
-            fig_risk.add_vline(x=med_x, line_dash="dash", line_color="grey", opacity=0.4,
-                               annotation_text="median velocity", annotation_position="top right")
-            fig_risk.add_hline(y=med_y, line_dash="dash", line_color="grey", opacity=0.4,
-                               annotation_text="median value", annotation_position="top right")
-            fig_risk.update_traces(marker=dict(size=10, opacity=0.8))
-            fig_risk.update_layout(hovermode="closest", legend_title="Status")
-            st.plotly_chart(fig_risk, use_container_width=True)
-            st.caption(
-                "Each dot = one product currently in stock. "
-                "**① High Risk** (top-right): slow-moving AND high capital — act first. "
-                "**② High Value Fast** (top-left): healthy, keep well-stocked. "
-                "**③ Slow Mover** (bottom-right): low value but sluggish — watch. "
-                "**④ Low Priority** (bottom-left): fast and cheap. "
-                "Dashed lines are median P75 and median stock value of the plotted products."
-            )
-
-            # Sortable detail table (default sort: highest risk first)
-            st.markdown("##### Risk Matrix Detail Table")
-            tbl = plot_df[["itemcode", "itemname", "Quadrant", "stock", "stock_value", "P75", "n", "flag"]].copy()
-            tbl["stock_value"] = tbl["stock_value"].apply(lambda x: int(x) if pd.notna(x) else 0)
-            tbl["P75"] = tbl["P75"].apply(lambda x: int(x) if pd.notna(x) else None)
-            tbl["stock"] = tbl["stock"].apply(lambda x: int(x) if pd.notna(x) else 0)
-            tbl = tbl.rename(columns={
-                "itemcode": "Item Code", "itemname": "Item Name",
-                "stock": "Stock (units)", "stock_value": "Stock Value (BDT)",
-                "P75": "P75 (days)", "n": "Data Points", "flag": "Status",
-            })
-            st.dataframe(
-                tbl.sort_values("Quadrant"),
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.download_button(
-                "📥 Download Risk Table",
-                tbl.sort_values("Quadrant").to_csv(index=False).encode(),
-                file_name="working_capital_risk.csv",
-                mime="text/csv",
-                key="risk_download",
-            )
+        color_map = {
+            "Good": "#28a745", "Dead stock": "#dc3545",
+            "Low confidence": "#ffc107", "No data": "#6c757d",
+        }
+        fig_risk = px.scatter(
+            plot_df, x="P75", y="stock_value", color="flag",
+            color_discrete_map=color_map, hover_name="label",
+            hover_data={"P75": True, "stock_value": ":,.0f", "stock": ":,.0f",
+                        "n": True, "Quadrant": True, "flag": False, "label": False},
+            labels={"P75": "P75 Days to Sell (velocity →  slower)",
+                    "stock_value": "Stock Value (BDT)", "flag": "Status"},
+            title="Working Capital Risk Matrix",
+        )
+        fig_risk.add_vline(x=risk_med_x, line_dash="dash", line_color="grey", opacity=0.4,
+                           annotation_text="median velocity", annotation_position="top right")
+        fig_risk.add_hline(y=risk_med_y, line_dash="dash", line_color="grey", opacity=0.4,
+                           annotation_text="median value", annotation_position="top right")
+        fig_risk.update_traces(marker=dict(size=10, opacity=0.8))
+        fig_risk.update_layout(hovermode="closest", legend_title="Status")
+        st.plotly_chart(fig_risk, use_container_width=True)
+        st.caption(
+            "Each dot = one product currently in stock. "
+            "**① High Risk** (top-right): slow-moving AND high capital — act first. "
+            "**② High Value Fast** (top-left): healthy, keep well-stocked. "
+            "**③ Slow Mover** (bottom-right): low value but sluggish — watch. "
+            "**④ Low Priority** (bottom-left): fast and cheap. "
+            "Dashed lines are median P75 and median stock value of the plotted products."
+        )
+        st.markdown("##### Risk Matrix Detail Table")
+        tbl = plot_df[["itemcode", "itemname", "Quadrant", "stock", "stock_value", "P75", "n", "flag"]].copy()
+        tbl["stock_value"] = tbl["stock_value"].apply(lambda x: int(x) if pd.notna(x) else 0)
+        tbl["P75"] = tbl["P75"].apply(lambda x: int(x) if pd.notna(x) else None)
+        tbl["stock"] = tbl["stock"].apply(lambda x: int(x) if pd.notna(x) else 0)
+        tbl = tbl.rename(columns={
+            "itemcode": "Item Code", "itemname": "Item Name",
+            "stock": "Stock (units)", "stock_value": "Stock Value (BDT)",
+            "P75": "P75 (days)", "n": "Data Points", "flag": "Status",
+        })
+        st.dataframe(tbl.sort_values("Quadrant"), use_container_width=True, hide_index=True)
+        st.download_button(
+            "📥 Download Risk Table",
+            tbl.sort_values("Quadrant").to_csv(index=False).encode(),
+            file_name="working_capital_risk.csv", mime="text/csv", key="risk_download",
+        )
 
 
 _ABC_XYZ_GUIDANCE = {
@@ -978,6 +990,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             "📋 Cohort",
             "💰 Batch P&L",
             "📦 Inventory",
+            "🚢 Upcoming",
             "⏱ Time to Sell",
             "📊 ABC-XYZ",
         ],
@@ -990,6 +1003,13 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
     # -----------------------------
     if mode == "📦 Inventory":
         _render_total_inventory(zid, data_dict)
+        return
+
+    # -----------------------------
+    # MODE 3b: Upcoming Shipment
+    # -----------------------------
+    if mode == "🚢 Upcoming":
+        _render_upcoming_shipment(str(zid), data_dict)
         return
 
     # -----------------------------
