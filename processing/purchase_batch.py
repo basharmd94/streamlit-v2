@@ -1553,3 +1553,77 @@ def build_time_to_sell_percentiles(
     pct_df = pd.DataFrame(out_rows).sort_values("itemcode").reset_index(drop=True)
     detail_df = rec_df.sort_values(["itemcode", "combinedate"]).reset_index(drop=True)
     return pct_df, detail_df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def build_abc_xyz(sales_df: pd.DataFrame) -> pd.DataFrame:
+    """ABC-XYZ inventory classification.
+
+    ABC: cumulative revenue contribution across full sales history.
+         A = top 80%, B = next 15%, C = bottom 5%.
+    XYZ: coefficient of variation (CV) of monthly sales quantity.
+         X = CV < 0.5 (stable), Y = 0.5–1.0 (variable), Z ≥ 1.0 (erratic).
+         Products with < 6 calendar months of data → 'Insufficient'.
+
+    Returns one row per itemcode with columns:
+    itemcode, total_revenue, abc, n_months, cv, xyz, class_combined.
+    """
+    empty = pd.DataFrame(
+        columns=["itemcode", "total_revenue", "abc", "n_months", "cv", "xyz", "class_combined"]
+    )
+    if sales_df is None or sales_df.empty:
+        return empty
+
+    s = sales_df.copy()
+    s["itemcode"] = s["itemcode"].astype(str).str.strip()
+    s["date"] = pd.to_datetime(s["date"], errors="coerce")
+    s["quantity"] = pd.to_numeric(s["quantity"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    rev_col = next((c for c in ["totalsales", "sales_rev", "altsales"] if c in s.columns), None)
+    s["revenue"] = pd.to_numeric(s[rev_col], errors="coerce").fillna(0.0) if rev_col else 0.0
+    s = s[s["date"].notna()].copy()
+    if s.empty:
+        return empty
+
+    # ---- ABC: cumulative revenue rank ----
+    abc_df = s.groupby("itemcode", as_index=False)["revenue"].sum()
+    abc_df.columns = ["itemcode", "total_revenue"]
+    abc_df = abc_df.sort_values("total_revenue", ascending=False).reset_index(drop=True)
+    total_rev = abc_df["total_revenue"].sum()
+    abc_df["cum_pct"] = (abc_df["total_revenue"].cumsum() / total_rev * 100) if total_rev > 0 else 100.0
+
+    def _abc(pct: float) -> str:
+        if pct <= 80: return "A"
+        if pct <= 95: return "B"
+        return "C"
+
+    abc_df["abc"] = abc_df["cum_pct"].apply(_abc)
+
+    # ---- XYZ: monthly quantity CV ----
+    s["ym"] = s["date"].dt.to_period("M")
+    monthly = s.groupby(["itemcode", "ym"], as_index=False)["quantity"].sum()
+
+    xyz_rows: list = []
+    for code, grp in monthly.groupby("itemcode"):
+        n_months = int(grp["ym"].nunique())
+        vals = grp["quantity"].values.astype(float)
+        mean_v = float(np.mean(vals))
+        std_v = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+        if n_months < 6:
+            xyz, cv = "Insufficient", None
+        elif mean_v == 0:
+            xyz, cv = "Z", None
+        else:
+            cv = std_v / mean_v
+            if cv < 0.5:   xyz = "X"
+            elif cv < 1.0: xyz = "Y"
+            else:           xyz = "Z"
+        xyz_rows.append({"itemcode": code, "n_months": n_months,
+                         "cv": round(cv, 3) if cv is not None else None, "xyz": xyz})
+
+    xyz_df = pd.DataFrame(xyz_rows)
+    result = abc_df[["itemcode", "total_revenue", "abc"]].merge(xyz_df, on="itemcode", how="outer")
+    result["total_revenue"] = pd.to_numeric(result["total_revenue"], errors="coerce").fillna(0.0)
+    result["abc"] = result["abc"].fillna("C")
+    result["xyz"] = result["xyz"].fillna("Insufficient")
+    result["class_combined"] = result["abc"] + result["xyz"].replace("Insufficient", "?")
+    return result.sort_values(["abc", "xyz", "total_revenue"], ascending=[True, True, False]).reset_index(drop=True)
