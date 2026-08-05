@@ -606,6 +606,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                         if selected_batches:
                             fig_s = go.Figure()
                             colors = px.colors.qualitative.Plotly
+                            x_max = 0
                             for i, lbl in enumerate(selected_batches):
                                 cd, iq = batch_label_map[lbl]
                                 curve = _survival_curve(cd, iq)
@@ -616,7 +617,9 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                                     name=lbl,
                                     line=dict(color=colors[i % len(colors)], width=2),
                                 ))
-                            # Reference lines at key sell-through thresholds
+                                depleted = curve[curve["pct_unsold"] <= 0]
+                                end_day = int(depleted["days"].iloc[0]) if not depleted.empty else int(curve["days"].max())
+                                x_max = max(x_max, end_day)
                             for pct, label, dash in [
                                 (50, "50% sold", "dot"),
                                 (25, "75% sold", "dash"),
@@ -635,6 +638,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                                 title=f"Stock Survival — {selected_label}",
                                 xaxis_title="Days Since Arrival",
                                 yaxis_title="% Stock Remaining",
+                                xaxis=dict(range=[0, x_max + 10]),
                                 yaxis=dict(range=[0, 105]),
                                 legend_title="Batch (arrival date)",
                                 hovermode="x unified",
@@ -690,13 +694,28 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
         if plot_df.empty:
             st.info("No products to plot — adjust the filters above.")
         else:
+            # Compute quadrant labels before building the scatter
+            med_x = plot_df["P75"].median()
+            med_y = plot_df["stock_value"].median()
+
+            def _quad(row):
+                slow = row["P75"] > med_x
+                rich = row["stock_value"] > med_y
+                if slow and rich:      return "① High Risk"
+                if not slow and rich:  return "② High Value Fast"
+                if slow and not rich:  return "③ Slow Mover"
+                return "④ Low Priority"
+
+            plot_df = plot_df.copy()
+            plot_df["Quadrant"] = plot_df.apply(_quad, axis=1)
+            plot_df["label"] = plot_df["itemcode"] + " — " + plot_df["itemname"].fillna("")
+
             color_map = {
                 "Good": "#28a745",
                 "Dead stock": "#dc3545",
                 "Low confidence": "#ffc107",
                 "No data": "#6c757d",
             }
-            plot_df["label"] = plot_df["itemcode"] + " — " + plot_df["itemname"].fillna("")
             fig_risk = px.scatter(
                 plot_df,
                 x="P75",
@@ -709,6 +728,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                     "stock_value": ":,.0f",
                     "stock": ":,.0f",
                     "n": True,
+                    "Quadrant": True,
                     "flag": False,
                     "label": False,
                 },
@@ -719,9 +739,6 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                 },
                 title="Working Capital Risk Matrix",
             )
-            # Quadrant reference lines (medians)
-            med_x = plot_df["P75"].median()
-            med_y = plot_df["stock_value"].median()
             fig_risk.add_vline(x=med_x, line_dash="dash", line_color="grey", opacity=0.4,
                                annotation_text="median velocity", annotation_position="top right")
             fig_risk.add_hline(y=med_y, line_dash="dash", line_color="grey", opacity=0.4,
@@ -731,11 +748,197 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
             st.plotly_chart(fig_risk, use_container_width=True)
             st.caption(
                 "Each dot = one product currently in stock. "
-                "**Top-right quadrant**: slow-moving AND high capital tied up — highest working capital risk. "
-                "**Bottom-left**: fast-moving, low value — healthy. "
-                "Dashed lines are the median P75 and median stock value across the plotted products. "
-                "Unit cost taken from the most recent closed purchase batch for each product."
+                "**① High Risk** (top-right): slow-moving AND high capital — act first. "
+                "**② High Value Fast** (top-left): healthy, keep well-stocked. "
+                "**③ Slow Mover** (bottom-right): low value but sluggish — watch. "
+                "**④ Low Priority** (bottom-left): fast and cheap. "
+                "Dashed lines are median P75 and median stock value of the plotted products."
             )
+
+            # Sortable detail table (default sort: highest risk first)
+            st.markdown("##### Risk Matrix Detail Table")
+            tbl = plot_df[["itemcode", "itemname", "Quadrant", "stock", "stock_value", "P75", "n", "flag"]].copy()
+            tbl["stock_value"] = tbl["stock_value"].apply(lambda x: int(x) if pd.notna(x) else 0)
+            tbl["P75"] = tbl["P75"].apply(lambda x: int(x) if pd.notna(x) else None)
+            tbl["stock"] = tbl["stock"].apply(lambda x: int(x) if pd.notna(x) else 0)
+            tbl = tbl.rename(columns={
+                "itemcode": "Item Code", "itemname": "Item Name",
+                "stock": "Stock (units)", "stock_value": "Stock Value (BDT)",
+                "P75": "P75 (days)", "n": "Data Points", "flag": "Status",
+            })
+            st.dataframe(
+                tbl.sort_values("Quadrant"),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.download_button(
+                "📥 Download Risk Table",
+                tbl.sort_values("Quadrant").to_csv(index=False).encode(),
+                file_name="working_capital_risk.csv",
+                mime="text/csv",
+                key="risk_download",
+            )
+
+
+_ABC_XYZ_GUIDANCE = {
+    "AX": ("High revenue + stable demand",    "Always keep in stock — safest working capital deployment."),
+    "AY": ("High revenue + variable demand",  "Keep in stock with a moderate safety buffer."),
+    "AZ": ("High revenue + erratic demand",   "High value but risky — buy carefully, monitor stock closely."),
+    "BX": ("Mid value + stable demand",       "Standard replenishment — reorder on P75 lead time."),
+    "BY": ("Mid value + variable demand",     "Standard replenishment with a small buffer."),
+    "BZ": ("Mid value + erratic demand",      "Buy conservatively; avoid over-stocking."),
+    "CX": ("Low revenue + stable demand",     "Low priority — maintain minimal stock."),
+    "CY": ("Low revenue + variable demand",   "Minimal stock; review whether to continue stocking."),
+    "CZ": ("Low revenue + erratic demand",    "Highest risk buy — only on confirmed order."),
+    "A?": ("High revenue + insufficient data","Treat as AZ until more data available."),
+    "B?": ("Mid value + insufficient data",   "Treat as BY until more data available."),
+    "C?": ("Low revenue + insufficient data", "Treat as CZ until more data available."),
+}
+
+_ABC_XYZ_RISK = {
+    "AX": 1, "AY": 2, "BX": 3, "AZ": 4, "BY": 5, "BZ": 6,
+    "CX": 7, "CY": 8, "CZ": 9, "A?": 4, "B?": 5, "C?": 9,
+}
+
+
+def _render_abc_xyz(zid: str, data_dict: dict) -> None:
+    """ABC-XYZ inventory classification view."""
+    import plotly.graph_objects as go
+    import plotly.express as px
+    from processing.purchase_batch import build_abc_xyz
+
+    sales_df = data_dict.get("sales_daily_item", pd.DataFrame())
+    purchase_df = data_dict.get("purchase_batches", pd.DataFrame())
+
+    if sales_df is None or sales_df.empty:
+        st.warning("No sales data available for classification.")
+        return
+
+    with st.spinner("Computing ABC-XYZ classification…"):
+        cls_df = build_abc_xyz(sales_df)
+
+    if cls_df.empty:
+        st.warning("Insufficient data for classification.")
+        return
+
+    # Enrich with item name/group from purchase batches
+    if purchase_df is not None and not purchase_df.empty:
+        meta = (
+            purchase_df[["itemcode", "itemname", "itemgroup"]]
+            .assign(itemcode=lambda d: d["itemcode"].astype(str).str.strip())
+            .drop_duplicates("itemcode")
+        )
+        cls_df = cls_df.merge(meta, on="itemcode", how="left")
+
+    cls_df["risk_rank"] = cls_df["class_combined"].map(_ABC_XYZ_RISK).fillna(9)
+
+    # ---- 3×3 matrix heatmap ----
+    st.subheader("Classification Matrix")
+    abc_order = ["A", "B", "C"]
+    xyz_order = ["X", "Y", "Z", "Insufficient"]
+
+    # Build count + revenue pivot for the 3 main XYZ classes
+    main_cls = cls_df[cls_df["xyz"].isin(["X", "Y", "Z"])].copy()
+    count_pivot = main_cls.groupby(["abc", "xyz"]).size().unstack(fill_value=0).reindex(
+        index=abc_order, columns=["X", "Y", "Z"], fill_value=0
+    )
+    rev_pivot = main_cls.groupby(["abc", "xyz"])["total_revenue"].sum().unstack(fill_value=0).reindex(
+        index=abc_order, columns=["X", "Y", "Z"], fill_value=0
+    )
+    # Risk score grid for color
+    risk_grid = [[_ABC_XYZ_RISK.get(a + x, 9) for x in ["X", "Y", "Z"]] for a in abc_order]
+    annotations = [
+        [f"<b>{a}{x}</b><br>{count_pivot.loc[a, x]} products<br>BDT {rev_pivot.loc[a, x]:,.0f}"
+         for x in ["X", "Y", "Z"]]
+        for a in abc_order
+    ]
+
+    fig_mat = go.Figure(go.Heatmap(
+        z=risk_grid,
+        x=["X — Stable", "Y — Variable", "Z — Erratic"],
+        y=["A — High Value", "B — Mid Value", "C — Low Value"],
+        text=annotations,
+        texttemplate="%{text}",
+        colorscale=[[0, "#28a745"], [0.5, "#ffc107"], [1, "#dc3545"]],
+        showscale=False,
+        hovertemplate="%{text}<extra></extra>",
+    ))
+    fig_mat.update_layout(
+        xaxis_title="XYZ — Demand Variability",
+        yaxis_title="ABC — Revenue Class",
+        height=320,
+        margin=dict(t=30, b=40),
+    )
+    st.plotly_chart(fig_mat, use_container_width=True)
+
+    insuff = cls_df[cls_df["xyz"] == "Insufficient"]
+    if not insuff.empty:
+        st.caption(
+            f"{len(insuff)} product(s) have fewer than 6 months of sales data "
+            f"and are flagged as Insufficient for XYZ classification."
+        )
+
+    # ---- Filters ----
+    st.subheader("Product Classification Table")
+    col1, col2 = st.columns(2)
+    with col1:
+        sel_abc = st.multiselect("ABC class", ["A", "B", "C"],
+                                 default=["A", "B", "C"], key="abcxyz_abc")
+    with col2:
+        sel_xyz = st.multiselect("XYZ class", ["X", "Y", "Z", "Insufficient"],
+                                 default=["X", "Y", "Z", "Insufficient"], key="abcxyz_xyz")
+
+    show = cls_df[cls_df["abc"].isin(sel_abc) & cls_df["xyz"].isin(sel_xyz)].copy()
+    show = show.sort_values("risk_rank")
+
+    show["guidance"] = show["class_combined"].map(
+        lambda c: _ABC_XYZ_GUIDANCE.get(c, ("", ""))[1]
+    )
+    show["total_revenue"] = show["total_revenue"].apply(lambda x: int(round(x)) if pd.notna(x) else 0)
+    show["cv"] = show["cv"].apply(lambda x: round(x, 2) if pd.notna(x) else None)
+
+    col_map = {
+        "itemcode": "Item Code",
+        "itemname": "Item Name",
+        "itemgroup": "Group",
+        "class_combined": "Class",
+        "abc": "ABC",
+        "xyz": "XYZ",
+        "total_revenue": "Total Revenue (BDT)",
+        "n_months": "Months of Data",
+        "cv": "CV",
+        "guidance": "Purchasing Guidance",
+    }
+    display_df = show[[c for c in col_map if c in show.columns]].rename(columns=col_map)
+
+    def _class_style(val):
+        risk = _ABC_XYZ_RISK.get(val, 5)
+        if risk <= 2:   return "background-color: #d4edda; color: #155724;"
+        if risk <= 4:   return "background-color: #fff3cd; color: #856404;"
+        if risk <= 6:   return "background-color: #ffe5b4; color: #7d4e00;"
+        return "background-color: #ffd6d6; color: #8b0000;"
+
+    try:
+        styled = display_df.style.applymap(_class_style, subset=["Class"])
+    except Exception:
+        styled = display_df.style
+
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.download_button(
+        "📥 Download Classification",
+        display_df.to_csv(index=False).encode(),
+        file_name="abc_xyz_classification.csv",
+        mime="text/csv",
+        key="abcxyz_download",
+    )
+
+    with st.expander("📖 Purchasing Guidance Reference"):
+        guide_rows = [
+            {"Class": k, "Description": v[0], "Guidance": v[1]}
+            for k, v in _ABC_XYZ_GUIDANCE.items()
+            if "?" not in k
+        ]
+        st.dataframe(pd.DataFrame(guide_rows), use_container_width=True, hide_index=True)
 
 
 @timed
@@ -748,6 +951,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             "Batch Profitability & Capital Engine",
             "Total Inventory Overview",
             "Time to Sell Analysis",
+            "📊 ABC-XYZ Classification",
         ],
         horizontal=True,
         index=0,
@@ -765,6 +969,13 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
     # -----------------------------
     if mode == "Time to Sell Analysis":
         _render_time_to_sell(str(zid), data_dict)
+        return
+
+    # -----------------------------
+    # MODE 5: ABC-XYZ Classification
+    # -----------------------------
+    if mode == "📊 ABC-XYZ Classification":
+        _render_abc_xyz(str(zid), data_dict)
         return
 
     # -----------------------------
