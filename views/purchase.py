@@ -6,6 +6,13 @@ from processing import common, purchase
 from utils.utils import timed
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_tts_final_items(zid: str) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("final_items_view", zid=zid).data
+    return df if df is not None else pd.DataFrame()
+
+
 def _build_sku_sim_excel(
     calc_df: pd.DataFrame,
     D0: float,
@@ -312,6 +319,146 @@ def _render_total_inventory(zid, data_dict):
     )
 
 
+_TTS_COL_LABELS = {
+    "itemcode": "Item Code",
+    "itemname": "Item Name",
+    "itemgroup": "Group",
+    "incoming_qty": "Incoming Qty",
+    "stock": "Stock",
+    "P50": "P50 (days)",
+    "P75": "P75 (days)",
+    "P90": "P90 (days)",
+    "P95": "P95 (days)",
+    "n": "Data Points (n)",
+    "flag": "Flag",
+}
+
+_TTS_FLAG_STYLE = {
+    "Dead stock": "background-color: #ffd6d6; color: #8b0000;",
+    "Low confidence": "background-color: #fff3cd; color: #856404;",
+    "No data": "background-color: #e2e3e5; color: #383d41;",
+}
+
+
+def _render_time_to_sell(zid: str, data_dict: dict) -> None:
+    """Time to Sell percentile table — upcoming open shipments or current inventory."""
+    from processing.next_month_target import get_open_shipments, get_shipment_items
+    from processing.purchase_batch import build_time_to_sell_percentiles
+
+    purchase_df = data_dict.get("purchase_batches", pd.DataFrame())
+    sales_df = data_dict.get("sales_daily_item", pd.DataFrame())
+
+    if purchase_df is None or purchase_df.empty:
+        st.warning("No purchase data loaded.")
+        return
+
+    with st.spinner("Computing sell-through percentiles…"):
+        pct_df = build_time_to_sell_percentiles(purchase_df, sales_df)
+
+    view = st.radio(
+        "Analysis scope",
+        ["📦 Upcoming Shipment", "🏭 Current Inventory"],
+        horizontal=True,
+        key="tts_inner_radio",
+    )
+
+    st.divider()
+
+    def _show_table(df: pd.DataFrame, qty_col: str | None = None) -> None:
+        id_cols = ["itemcode", "itemname", "itemgroup"]
+        pct_cols = ["P50", "P75", "P90", "P95", "n", "flag"]
+        ordered = id_cols + ([qty_col] if qty_col and qty_col in df.columns else []) + pct_cols
+        display_df = df[[c for c in ordered if c in df.columns]].rename(columns=_TTS_COL_LABELS)
+        if display_df.empty:
+            st.info("No data to display.")
+            return
+
+        def _flag_style(val):
+            return _TTS_FLAG_STYLE.get(val, "")
+
+        try:
+            styled = display_df.style.applymap(_flag_style, subset=["Flag"])
+        except Exception:
+            styled = display_df.style
+
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.download_button(
+            "📥 Download CSV",
+            display_df.to_csv(index=False).encode(),
+            file_name="time_to_sell.csv",
+            mime="text/csv",
+            key="tts_download",
+        )
+
+    # ---- Upcoming Shipment ----
+    if view == "📦 Upcoming Shipment":
+        open_df = get_open_shipments(purchase_df)
+        if open_df.empty:
+            st.info("No open shipments found.")
+            return
+
+        open_df["label"] = (
+            open_df["shipmentname"].astype(str)
+            + "  ("
+            + open_df["n_items"].astype(str) + " items, "
+            + open_df["total_qty"].apply(lambda x: f"{x:,.0f}") + " units)"
+        )
+
+        selected_labels = st.multiselect(
+            "Select shipment(s)",
+            options=open_df["label"].tolist(),
+            default=[open_df["label"].iloc[0]],
+            key="tts_shipment_select",
+        )
+        if not selected_labels:
+            st.info("Select at least one shipment.")
+            return
+
+        sel_rows = open_df[open_df["label"].isin(selected_labels)]
+        selections = list(zip(sel_rows["zid"], sel_rows["shipmentname"]))
+        items_df = get_shipment_items(purchase_df, selections)
+
+        if items_df.empty:
+            st.warning("No items found for the selected shipment(s).")
+            return
+
+        items_df["itemcode"] = items_df["itemcode"].astype(str).str.strip()
+        merged = items_df.merge(pct_df, on="itemcode", how="left", suffixes=("", "_pct"))
+        for dup in [c for c in merged.columns if c.endswith("_pct")]:
+            merged = merged.drop(columns=[dup])
+        merged["itemgroup"] = merged.get("itemgroup", pd.Series([""] * len(merged))).fillna("")
+        merged["flag"] = merged["flag"].fillna("No data")
+        merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
+
+        st.caption(f"{len(merged)} item(s) in selected shipment(s)")
+        _show_table(merged, qty_col="incoming_qty")
+
+    # ---- Current Inventory ----
+    else:
+        inv_df = _load_tts_final_items(str(zid))
+        if inv_df is None or inv_df.empty:
+            st.warning("No current inventory data.")
+            return
+
+        if "item_id" in inv_df.columns:
+            inv_df = inv_df.rename(columns={"item_id": "itemcode", "item_name": "itemname", "item_group": "itemgroup"})
+
+        inv_df["itemcode"] = inv_df["itemcode"].astype(str).str.strip()
+        inv_df = inv_df[pd.to_numeric(inv_df.get("stock", 0), errors="coerce").fillna(0) > 0].copy()
+
+        merged = inv_df.merge(pct_df, on="itemcode", how="left", suffixes=("", "_pct"))
+        for col in ["itemname", "itemgroup"]:
+            pct_col = col + "_pct"
+            if pct_col in merged.columns:
+                merged[col] = merged[col].where(merged[col].notna() & (merged[col] != ""), merged[pct_col])
+                merged = merged.drop(columns=[pct_col])
+        merged["flag"] = merged["flag"].fillna("No data")
+        merged["n"] = pd.to_numeric(merged["n"], errors="coerce").fillna(0).astype(int)
+
+        st.caption(f"{len(merged)} item(s) currently in stock for ZID {zid}")
+        _show_table(merged, qty_col="stock")
+
+
 @timed
 def display_purchase_analysis_page(current_page, zid, data_dict):
 
@@ -321,9 +468,10 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             "Purchase Cohort & Requisition",
             "Batch Profitability & Capital Engine",
             "Total Inventory Overview",
+            "Time to Sell Analysis",
         ],
         horizontal=True,
-        index=0
+        index=0,
     )
 
     # -----------------------------
@@ -331,6 +479,13 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
     # -----------------------------
     if mode == "Total Inventory Overview":
         _render_total_inventory(zid, data_dict)
+        return
+
+    # -----------------------------
+    # MODE 4: Time to Sell Analysis
+    # -----------------------------
+    if mode == "Time to Sell Analysis":
+        _render_time_to_sell(str(zid), data_dict)
         return
 
     # -----------------------------
