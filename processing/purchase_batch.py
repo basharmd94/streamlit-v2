@@ -1408,6 +1408,8 @@ def run_batch_profitability_engine(
     except Exception:
         pass
 
+    return df0
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def build_time_to_sell_percentiles(
