@@ -982,6 +982,63 @@ def _render_abc_xyz(zid: str, data_dict: dict) -> None:
         st.dataframe(pd.DataFrame(guide_rows), use_container_width=True, hide_index=True)
 
 
+# ---------------------------------------------------------------------------
+# Batch Consolidation
+# ---------------------------------------------------------------------------
+
+def _render_batch_con(zid: str, data_dict: dict) -> None:
+    """Shipment-level FIFO consolidation — arrival value, month-start stock,
+    current stock (yesterday), MTD sales, and yesterday sales, all in BDT."""
+    from processing.purchase_batch import build_batch_consolidation
+
+    purchase_raw = data_dict.get("purchase_batches", pd.DataFrame())
+    sales_raw    = data_dict.get("sales_daily_item",  pd.DataFrame())
+
+    if isinstance(purchase_raw, pd.DataFrame) and purchase_raw.empty:
+        st.info("No purchase batch data available.")
+        return
+    if isinstance(sales_raw, pd.DataFrame) and sales_raw.empty:
+        st.info("No daily sales data available.")
+        return
+
+    today        = pd.Timestamp.today().normalize()
+    yesterday    = today - pd.Timedelta(days=1)
+    month_start  = today.replace(day=1)
+    window_start = pd.Timestamp(year=today.year - 3, month=1, day=1)
+
+    st.caption(
+        f"Closed shipments from **{window_start.strftime('%d %b %Y')}** · "
+        f"Month start: **{month_start.strftime('%d %b %Y')}** · "
+        f"Stock as of: **{yesterday.strftime('%d %b %Y')}** · "
+        f"All values in BDT at avg realized selling price since each batch's arrival date."
+    )
+
+    with st.spinner("Running FIFO batch consolidation…"):
+        df = build_batch_consolidation(purchase_raw, sales_raw)
+
+    if df is None or df.empty:
+        st.info("No closed shipments found in the 3-year window.")
+        return
+
+    st.metric("Shipments", f"{len(df):,}")
+
+    disp = df.copy()
+    if "Shipment Date" in disp.columns:
+        disp["Shipment Date"] = pd.to_datetime(disp["Shipment Date"]).dt.strftime("%Y-%m-%d")
+    for col in [c for c in disp.columns if "(BDT)" in c]:
+        disp[col] = disp[col].apply(lambda v: f"{int(v):,}" if pd.notna(v) else "—")
+
+    st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "⬇ Download CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=f"batch_consolidation_{zid}.csv",
+        mime="text/csv",
+        key="batch_con_dl",
+    )
+
+
 @timed
 def display_purchase_analysis_page(current_page, zid, data_dict):
 
@@ -994,6 +1051,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             "🚢 Upcoming",
             "⏱ Time to Sell",
             "📊 ABC-XYZ",
+            "📑 Batch Con",
         ],
         horizontal=True,
         index=0,
@@ -1025,6 +1083,13 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
     # -----------------------------
     if mode == "📊 ABC-XYZ":
         _render_abc_xyz(str(zid), data_dict)
+        return
+
+    # -----------------------------
+    # MODE 6: Batch Consolidation
+    # -----------------------------
+    if mode == "📑 Batch Con":
+        _render_batch_con(str(zid), data_dict)
         return
 
     # -----------------------------

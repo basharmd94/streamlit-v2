@@ -497,32 +497,90 @@ for re-engagement.
 for a broader reactivation push.
         """)
 
-    # ── Call log panel — log the call and track outcome ──────────────────────
+    # ── Shared customer selector — drives both product history and call log ──
     st.markdown("---")
-    st.markdown("#### 📞 Log a Call")
-    st.caption(
-        "Call logs are shared with Customer Support. "
-        "Every entry records who placed the call (your login username)."
+    _cus_opts_df = inactive[["cusid", "cusname"]].drop_duplicates("cusid")
+    _cus_opts = {
+        f"{row['cusname']} ({row['cusid']})": row["cusid"]
+        for _, row in _cus_opts_df.iterrows()
+    }
+    _cus_sel = st.selectbox(
+        "Select Customer",
+        ["— pick a customer —"] + list(_cus_opts.keys()),
+        key="outreach_cus_sel",
     )
 
-    # Build options from the inactive list (cusid → display label)
-    _log_opts_df = inactive[["cusid", "cusname"]].drop_duplicates("cusid")
-    _log_opts = {
-        f"{row['cusname']} ({row['cusid']})": row["cusid"]
-        for _, row in _log_opts_df.iterrows()
-    }
-    _log_sel = st.selectbox(
-        "Select customer to log",
-        ["— pick a customer —"] + list(_log_opts.keys()),
-        key="outreach_log_sel",
-    )
-    if _log_sel and _log_sel != "— pick a customer —":
-        _log_cusid = _log_opts[_log_sel]
-        _log_name  = _log_sel.split(" (")[0]
+    if _cus_sel and _cus_sel != "— pick a customer —":
+        _sel_cusid = _cus_opts[_cus_sel]
+        _sel_name  = _cus_sel.split(" (")[0]
+
+        # ── Product purchase history ─────────────────────────────────────
+        with st.expander(f"📦 Purchase History — {_sel_name}", expanded=True):
+            _cus_sales = sales_all[sales_all["cusid"].astype(str) == str(_sel_cusid)].copy()
+            if _cus_sales.empty:
+                st.info("No purchase history found for this customer.")
+            else:
+                # Resolve qty and revenue column names
+                _qty_col = "xqty" if "xqty" in _cus_sales.columns else (
+                    "quantity" if "quantity" in _cus_sales.columns else None
+                )
+                _rev_col = "altsales" if "altsales" in _cus_sales.columns else (
+                    "totalsales" if "totalsales" in _cus_sales.columns else None
+                )
+                _name_col = "itemname" if "itemname" in _cus_sales.columns else (
+                    "xdesc" if "xdesc" in _cus_sales.columns else None
+                )
+
+                _grp_cols = ["itemcode"]
+                if _name_col:
+                    _grp_cols.append(_name_col)
+
+                _agg: dict = {}
+                if _qty_col:
+                    _agg[_qty_col] = "sum"
+                if _rev_col:
+                    _agg[_rev_col] = "sum"
+
+                if _agg:
+                    _prod_df = (
+                        _cus_sales.groupby(_grp_cols, as_index=False)
+                        .agg(_agg)
+                        .sort_values(_rev_col if _rev_col else list(_agg.keys())[0], ascending=False)
+                        .reset_index(drop=True)
+                    )
+
+                    _prod_rename = {"itemcode": "Item Code"}
+                    if _name_col:
+                        _prod_rename[_name_col] = "Item Name"
+                    if _qty_col:
+                        _prod_rename[_qty_col] = "Qty"
+                    if _rev_col:
+                        _prod_rename[_rev_col] = "Total Value"
+
+                    _prod_disp = _prod_df.rename(columns=_prod_rename)
+                    if "Total Value" in _prod_disp.columns:
+                        _prod_disp["Total Value"] = _prod_disp["Total Value"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else ""
+                        )
+                    if "Qty" in _prod_disp.columns:
+                        _prod_disp["Qty"] = _prod_disp["Qty"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else ""
+                        )
+
+                    st.dataframe(_prod_disp, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Sales value columns not available in this dataset.")
+
+        # ── Call log panel — right below the purchase history ────────────
+        st.markdown("#### 📞 Log a Call")
+        st.caption(
+            "Call logs are shared with Customer Support. "
+            "Every entry records who placed the call (your login username)."
+        )
         _render_call_log_panel(
-            cusid=_log_cusid,
+            cusid=_sel_cusid,
             zid=zid,
-            customer_name=_log_name,
+            customer_name=_sel_name,
             key_suffix="_outreach",
         )
 
@@ -1023,9 +1081,11 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
 
     f_col1, f_col2 = st.columns(2)
     with f_col1:
+        _sp_default_idx = 1 if sp_opts else 0
         sp_sel = st.selectbox(
             "Salesman",
             ["All Salesmen"] + sp_opts,
+            index=_sp_default_idx,
             key="mkt_inline_sp",
         )
 

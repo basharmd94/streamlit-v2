@@ -198,3 +198,46 @@ def render_call_log_panel(
                 st.rerun()
             else:
                 st.error("Failed to save — check DB connection.")
+
+
+def render_call_log_readonly(cusid: str, customer_name: str) -> None:
+    """Read-only call log history — shows logged calls with no add/delete controls.
+    Used in Collection Analysis and anywhere a view-only audit trail is needed."""
+    logs_df = get_call_logs_cached(cusid)
+
+    if logs_df.empty:
+        entries_html = (
+            '<p style="color:#7F8C8D;font-style:italic;font-size:13px;margin:0 0 6px;">'
+            'No calls logged yet for this customer.</p>'
+        )
+    else:
+        entries_html = ""
+        for _, row in logs_df.iterrows():
+            ts = (
+                pd.to_datetime(row["called_at"]).strftime("%Y-%m-%d %H:%M")
+                if pd.notna(row.get("called_at")) else "—"
+            )
+            by      = str(row.get("called_by") or "—")
+            outcome = str(row.get("outcome") or "—")
+            notes   = str(row.get("notes") or "")
+            style, label = _OUTCOME_BADGE.get(outcome, ("background:#F2F3F4;color:#5D6D7E;", outcome))
+            badge = (
+                f'<span style="{style}padding:2px 7px;border-radius:10px;'
+                f'font-size:11px;font-weight:500;">{label}</span>'
+            )
+            note_line = (
+                f'<div style="font-size:13px;color:#2C3E50;margin:2px 0 6px 0;">{notes}</div>'
+                if notes else ""
+            )
+            entries_html += (
+                f'<div style="border-left:3px solid #2E86C1;padding:3px 0 3px 10px;margin-bottom:6px;">'
+                f'<span style="font-size:11px;color:#7F8C8D;">{ts} · <strong>{by}</strong></span>'
+                f' &nbsp;{badge}{note_line}</div>'
+            )
+
+    st.markdown(
+        blue_header(f"📞 Call Log — {customer_name} ({cusid})")
+        + entries_html
+        + BLUE_FOOTER,
+        unsafe_allow_html=True,
+    )
