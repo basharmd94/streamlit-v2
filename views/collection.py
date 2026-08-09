@@ -5,6 +5,7 @@ from datetime import datetime
 from core.analytics import Analytics
 from processing import common, collection, salesman_due
 from utils.utils import timed
+from views.call_log_shared import render_call_log_readonly as _render_call_log_readonly
 
 
 @st.cache_data(ttl=3600, show_spinner="Building Salesman Due report...")
@@ -587,6 +588,40 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                     sel_sp_code = sel_sp_label.split(" - ")[0]
                     df_sd = df_sd[df_sd["Salesman Code"].astype(str) == sel_sp_code].copy()
 
+            # ── Days-since columns for Latest Sale & Collection ───────────────
+            if sub_report == "Latest Sale & Collection":
+                df_sd = df_sd.copy()
+                _today = pd.Timestamp.today().normalize()
+
+                if "Sales Date" in df_sd.columns:
+                    df_sd["Sales Date"] = pd.to_datetime(df_sd["Sales Date"], errors="coerce")
+                    df_sd["Days Since Sale"] = (
+                        (_today - df_sd["Sales Date"]).dt.days
+                        .where(df_sd["Sales Date"].notna())
+                        .astype("Int64")
+                    )
+
+                if "Latest Collection Date" in df_sd.columns:
+                    df_sd["Latest Collection Date"] = pd.to_datetime(
+                        df_sd["Latest Collection Date"], errors="coerce"
+                    )
+                    df_sd["Days Since Collection"] = (
+                        (_today - df_sd["Latest Collection Date"]).dt.days
+                        .where(df_sd["Latest Collection Date"].notna())
+                        .astype("Int64")
+                    )
+
+                # Reorder: insert each days-since column immediately after its date column
+                _cols = list(df_sd.columns)
+                for _date_col, _days_col in [
+                    ("Sales Date", "Days Since Sale"),
+                    ("Latest Collection Date", "Days Since Collection"),
+                ]:
+                    if _days_col in _cols and _date_col in _cols:
+                        _cols.remove(_days_col)
+                        _cols.insert(_cols.index(_date_col) + 1, _days_col)
+                df_sd = df_sd[_cols]
+
             st.caption(f"{len(df_sd):,} rows")
             if len(df_sd) > 50_000:
                 st.info("Showing first 50,000 rows. Download the CSV for full data.")
@@ -601,6 +636,35 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                 mime="text/csv",
                 key=f"salesman_due_download_{report_key}",
             )
+
+            # ── Call log viewer (Latest Sale & Collection only) ───────────────
+            if sub_report == "Latest Sale & Collection" and not df_sd.empty:
+                st.markdown("---")
+                st.markdown("#### 📞 Call Log Lookup")
+                st.caption("View calls logged by customer support for any customer in this list.")
+
+                _has_name = "Customer Name" in df_sd.columns
+                _cus_opts_df = (
+                    df_sd[["Customer Code", "Customer Name"] if _has_name else ["Customer Code"]]
+                    .drop_duplicates("Customer Code")
+                )
+                _cus_labels = {
+                    (
+                        f"{row['Customer Name']} ({row['Customer Code']})"
+                        if _has_name
+                        else str(row["Customer Code"])
+                    ): str(row["Customer Code"])
+                    for _, row in _cus_opts_df.iterrows()
+                }
+                _cus_sel = st.selectbox(
+                    "Select customer",
+                    ["— pick a customer —"] + sorted(_cus_labels.keys()),
+                    key="sd_calllog_cus",
+                )
+                if _cus_sel and _cus_sel != "— pick a customer —":
+                    _cusid    = _cus_labels[_cus_sel]
+                    _cus_name = _cus_sel.split(" (")[0] if "(" in _cus_sel else _cus_sel
+                    _render_call_log_readonly(cusid=_cusid, customer_name=_cus_name)
 
     elif analysis_mode == "📈 Order Analytics":
         st.subheader("📈 Order Analytics")
