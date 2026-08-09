@@ -681,6 +681,13 @@ def get_gl_overhead_daily(filters=None):
     filters = filters or {}
     zid = filters["zid"][0]
     project = filters.get("project")
+    if project is None:
+        sql = """
+            SELECT zid, project, date, ac_code, value
+            FROM mv_gl_overhead_daily
+            WHERE zid = %s AND project IS NULL
+        """
+        return sql, (zid,)
     sql = """
         SELECT zid, project, date, ac_code, value
         FROM mv_gl_overhead_daily
@@ -701,6 +708,22 @@ def get_gl_income_overhead(filters=None):
     filters = filters or {}
     zid = filters["zid"][0]
     project = filters.get("project")
+    if project is None:
+        sql = """
+            SELECT
+                d.zid,
+                d.xproj::text          AS project,
+                h.xdate::date          AS date,
+                d.xacc::text           AS ac_code,
+                SUM(d.xprime::numeric) AS value
+            FROM gldetail d
+            JOIN glheader h ON d.xvoucher = h.xvoucher AND d.zid = h.zid
+            WHERE d.zid = %s
+              AND d.xproj IS NULL
+              AND d.xacc::text = '08020003'
+            GROUP BY d.zid, d.xproj, h.xdate::date, d.xacc
+        """
+        return sql, (zid,)
     sql = """
         SELECT
             d.zid,

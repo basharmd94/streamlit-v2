@@ -1674,9 +1674,10 @@ def build_batch_consolidation(
     p["itemcode"]     = p["itemcode"].astype(str).str.strip()
     p["shipmentname"] = p["shipmentname"].astype(str).str.strip()
     p["combinedate"]  = pd.to_datetime(p["combinedate"], errors="coerce").dt.floor("D")
-    _qty_col = "initial_qty" if "initial_qty" in p.columns else "quantity"
-    p["_qty"]      = pd.to_numeric(p[_qty_col], errors="coerce").fillna(0.0)
-    p["unit_cost"] = pd.to_numeric(p["unit_cost"], errors="coerce").fillna(0.0)
+    _qty_col  = "initial_qty" if "initial_qty" in p.columns else "quantity"
+    _cost_col = "unit_cost"   if "unit_cost"   in p.columns else "cost"
+    p["_qty"]      = pd.to_numeric(p[_qty_col],  errors="coerce").fillna(0.0)
+    p["unit_cost"] = pd.to_numeric(p[_cost_col], errors="coerce").fillna(0.0)
 
     p = p[
         (p["status"] != "1-Open") &
