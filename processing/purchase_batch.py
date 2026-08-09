@@ -1757,8 +1757,23 @@ def build_batch_consolidation(
         return max(0.0, initial - sold)
 
     # ── 4. Avg realized price per (itemcode, combinedate) ─────────────────────
-    # Price = total revenue / total qty from batch arrival (inclusive) to today.
-    # Fallback: unit_cost when no post-arrival sales exist.
+    # Price window: from batch arrival to the day BEFORE the next batch of the same
+    # item arrives.  For the most-recent batch of each item, window ends today.
+    # This ensures batch 006's price only reflects sales during its active period,
+    # and doesn't bleed into the period after batch 007 arrived.
+    # Fallback: unit_cost when no sales exist in the window.
+
+    # Build (itemcode, combinedate) -> price_window_end date
+    price_window_end: dict = {}
+    for code, item_df in p.groupby("itemcode"):
+        sorted_dates = sorted(item_df["combinedate"].unique())
+        for i, Di in enumerate(sorted_dates):
+            if i + 1 < len(sorted_dates):
+                # end = day before next batch of this item arrives
+                price_window_end[(str(code), Di)] = sorted_dates[i + 1] - pd.Timedelta(days=1)
+            else:
+                price_window_end[(str(code), Di)] = today
+
     price_cache: dict = {}
     for _, row in p.iterrows():
         code = str(row["itemcode"])
@@ -1766,11 +1781,12 @@ def build_batch_consolidation(
         key  = (code, Di)
         if key in price_cache:
             continue
+        price_to = price_window_end.get(key, today)
         if code in sales_lkp:
             dn, cq, cr = sales_lkp[code]
             Di_excl = Di - pd.Timedelta(days=1)     # exclusive lower bound → inclusive of Di
-            qty_since = max(0.0, _cum_at(dn, cq, today) - _cum_at(dn, cq, Di_excl))
-            rev_since = max(0.0, _cum_at(dn, cr, today) - _cum_at(dn, cr, Di_excl))
+            qty_since = max(0.0, _cum_at(dn, cq, price_to) - _cum_at(dn, cq, Di_excl))
+            rev_since = max(0.0, _cum_at(dn, cr, price_to) - _cum_at(dn, cr, Di_excl))
             price_cache[key] = (rev_since / qty_since) if qty_since > 1e-9 else float(row["unit_cost"])
         else:
             price_cache[key] = float(row["unit_cost"])
