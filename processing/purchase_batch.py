@@ -1629,3 +1629,233 @@ def build_abc_xyz(sales_df: pd.DataFrame) -> pd.DataFrame:
     result["xyz"] = result["xyz"].fillna("Insufficient")
     result["class_combined"] = result["abc"] + result["xyz"].replace("Insufficient", "?")
     return result.sort_values(["abc", "xyz", "total_revenue"], ascending=[True, True, False]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def build_batch_consolidation(
+    purchase_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Shipment-level consolidation with FIFO stock snapshots and MTD/yesterday sales.
+
+    Returns one row per (closed) shipment:
+      Shipment Name | Shipment Date | Arrival Value (BDT) | Month Start Stock (BDT) |
+      Current Stock Yesterday (BDT) | MTD Sales (BDT) | Yesterday Sales (BDT)
+
+    Window  : Jan 1 of (current_year − 3) through yesterday — computed dynamically.
+    Pricing : avg realized price per batch = revenue / qty from sales since batch arrival.
+              Fallback to unit_cost when an item has no post-arrival sales history.
+    FIFO    : matches run_batch_profitability_engine — sales strictly after combinedate
+              deplete the oldest-arriving batch of each item first.
+    ZIDs    : purchase_df already contains both 100001 + 100009 (analytics auto-expansion);
+              itemcodes are pre-resolved via packcode SQL CASE in the query.
+    """
+    today               = pd.Timestamp.today().normalize()
+    yesterday           = today - pd.Timedelta(days=1)
+    day_before_yest     = yesterday - pd.Timedelta(days=1)
+    month_start         = today.replace(day=1)
+    snap_ms             = month_start - pd.Timedelta(days=1)   # end of prev month = stock at month start
+    window_start        = pd.Timestamp(year=today.year - 3, month=1, day=1)
+
+    _COLS = [
+        "Shipment Name", "Shipment Date", "Arrival Value (BDT)",
+        "Month Start Stock (BDT)", "Current Stock Yesterday (BDT)",
+        "MTD Sales (BDT)", "Yesterday Sales (BDT)",
+    ]
+    EMPTY = pd.DataFrame(columns=_COLS)
+
+    if purchase_df is None or purchase_df.empty:
+        return EMPTY
+    if sales_df is None or sales_df.empty:
+        return EMPTY
+
+    # ── 1. Filter: closed batches only, within window ─────────────────────────
+    p = purchase_df.copy()
+    p["itemcode"]     = p["itemcode"].astype(str).str.strip()
+    p["shipmentname"] = p["shipmentname"].astype(str).str.strip()
+    p["combinedate"]  = pd.to_datetime(p["combinedate"], errors="coerce").dt.floor("D")
+    _qty_col = "initial_qty" if "initial_qty" in p.columns else "quantity"
+    p["_qty"]      = pd.to_numeric(p[_qty_col], errors="coerce").fillna(0.0)
+    p["unit_cost"] = pd.to_numeric(p["unit_cost"], errors="coerce").fillna(0.0)
+
+    p = p[
+        (p["status"] != "1-Open") &
+        p["combinedate"].notna() &
+        (p["_qty"] > 0) &
+        (p["combinedate"] >= window_start)
+    ].copy()
+
+    if p.empty:
+        return EMPTY
+
+    # ── 2. Cross-ZID groupby: sum qty across 100001 + 100009 per shipment/item/date ─
+    p = p.groupby(
+        ["shipmentname", "itemcode", "combinedate"], as_index=False
+    ).agg(
+        initial_qty=("_qty",      "sum"),
+        unit_cost  =("unit_cost", "first"),
+        itemname   =("itemname",  "first"),
+    )
+
+    # ── 3. Build per-itemcode cumulative sales/revenue arrays (sorted by date) ─
+    s = sales_df.copy()
+    s["itemcode"] = s["itemcode"].astype(str).str.strip()
+    s["date"]     = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
+    _qty_s = "quantity" if "quantity" in s.columns else "sales_qty"
+    _rev_s = next((c for c in ["totalsales", "sales_rev", "altsales"] if c in s.columns), None)
+    s["_qty"] = pd.to_numeric(s[_qty_s], errors="coerce").fillna(0.0).clip(lower=0.0)
+    s["_rev"] = pd.to_numeric(s[_rev_s], errors="coerce").fillna(0.0) if _rev_s else 0.0
+    s = (
+        s[s["date"].notna()]
+        .groupby(["itemcode", "date"], as_index=False)
+        .agg(qty=("_qty", "sum"), rev=("_rev", "sum"))
+        .sort_values(["itemcode", "date"])
+        .reset_index(drop=True)
+    )
+    s["cum_qty"] = s.groupby("itemcode")["qty"].cumsum()
+    s["cum_rev"] = s.groupby("itemcode")["rev"].cumsum()
+
+    # Lookup dict: itemcode -> (dates_np, cum_qty_np, cum_rev_np)
+    sales_lkp: dict = {}
+    for code, grp in s.groupby("itemcode"):
+        sales_lkp[str(code)] = (
+            grp["date"].values.astype("datetime64[ns]"),
+            grp["cum_qty"].values.astype(float),
+            grp["cum_rev"].values.astype(float),
+        )
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _cum_at(dates_np, cum_np, T: pd.Timestamp) -> float:
+        """Cumulative value for dates <= T (searchsorted right, O(log n))."""
+        if pd.isna(T):
+            return 0.0
+        idx = int(np.searchsorted(dates_np, np.datetime64(T, "ns"), side="right")) - 1
+        return float(cum_np[idx]) if idx >= 0 else 0.0
+
+    def _qty_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
+        """Qty sold in (D, T] — strictly after D, matching engine convention."""
+        if code not in sales_lkp or pd.isna(D) or pd.isna(T) or T <= D:
+            return 0.0
+        dn, cq, _ = sales_lkp[code]
+        return max(0.0, _cum_at(dn, cq, T) - _cum_at(dn, cq, D))
+
+    def _rev_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
+        """Revenue in (D, T]."""
+        if code not in sales_lkp or pd.isna(D) or pd.isna(T) or T <= D:
+            return 0.0
+        dn, _, cr = sales_lkp[code]
+        return max(0.0, _cum_at(dn, cr, T) - _cum_at(dn, cr, D))
+
+    def _rem(D_batch: pd.Timestamp, initial: float, older_open: float,
+             code: str, T: pd.Timestamp) -> float:
+        """FIFO remaining qty of one batch at date T.
+        older_open = remaining qty of all older batches of the same item AT D_batch.
+        """
+        if T < D_batch:
+            return initial        # batch not yet in warehouse
+        sold = min(initial, max(0.0, _qty_range(code, D_batch, T) - older_open))
+        return max(0.0, initial - sold)
+
+    # ── 4. Avg realized price per (itemcode, combinedate) ─────────────────────
+    # Price = total revenue / total qty from batch arrival (inclusive) to today.
+    # Fallback: unit_cost when no post-arrival sales exist.
+    price_cache: dict = {}
+    for _, row in p.iterrows():
+        code = str(row["itemcode"])
+        Di   = row["combinedate"]
+        key  = (code, Di)
+        if key in price_cache:
+            continue
+        if code in sales_lkp:
+            dn, cq, cr = sales_lkp[code]
+            Di_excl = Di - pd.Timedelta(days=1)     # exclusive lower bound → inclusive of Di
+            qty_since = max(0.0, _cum_at(dn, cq, today) - _cum_at(dn, cq, Di_excl))
+            rev_since = max(0.0, _cum_at(dn, cr, today) - _cum_at(dn, cr, Di_excl))
+            price_cache[key] = (rev_since / qty_since) if qty_since > 1e-9 else float(row["unit_cost"])
+        else:
+            price_cache[key] = float(row["unit_cost"])
+
+    # ── 5. FIFO snapshots per item, then per batch ────────────────────────────
+    # Process batches oldest→newest per item.
+    # older_open_at_Di = sum of remaining of all prior batches AT Di.
+    # Three snapshots: snap_ms (month start), yesterday, day_before_yest.
+    # MTD qty       = rem(snap_ms) − rem(yesterday)    [absorbed during current month]
+    # Yesterday qty = rem(day_before_yest) − rem(yesterday)
+    batch_rows: list = []
+
+    for code, item_df in (
+        p.sort_values(["itemcode", "combinedate"])
+         .groupby("itemcode", sort=False)
+    ):
+        code = str(code)
+        item_df = item_df.sort_values("combinedate").reset_index(drop=True)
+        processed: list = []    # (Di, initial_i, older_open_i)
+
+        for _, batch in item_df.iterrows():
+            Di        = batch["combinedate"]
+            initial_i = float(batch["initial_qty"])
+
+            # older_open_at_Di: remaining of every prior batch AT Di
+            older_open_i = float(sum(
+                _rem(Dj, init_j, oo_j, code, Di)
+                for Dj, init_j, oo_j in processed
+            ))
+            processed.append((Di, initial_i, older_open_i))
+
+            price = price_cache.get((code, Di), float(batch["unit_cost"]))
+
+            rem_ms  = _rem(Di, initial_i, older_open_i, code, snap_ms)
+            rem_y   = _rem(Di, initial_i, older_open_i, code, yesterday)
+            rem_dby = _rem(Di, initial_i, older_open_i, code, day_before_yest)
+
+            mtd_qty  = max(0.0, rem_ms  - rem_y)
+            yest_qty = max(0.0, rem_dby - rem_y)
+
+            batch_rows.append({
+                "shipmentname":  batch["shipmentname"],
+                "combinedate":   Di,
+                "arrival_val":   initial_i * price,
+                "ms_stock_val":  rem_ms    * price,
+                "cur_stock_val": rem_y     * price,
+                "mtd_val":       mtd_qty   * price,
+                "yest_val":      yest_qty  * price,
+            })
+
+    if not batch_rows:
+        return EMPTY
+
+    br = pd.DataFrame(batch_rows)
+
+    # ── 6. Aggregate to shipment level ────────────────────────────────────────
+    ship_dates = (
+        p.groupby("shipmentname")["combinedate"].min()
+        .rename("Shipment Date")
+        .reset_index()
+    )
+
+    out = (
+        br.groupby("shipmentname", as_index=False).agg(
+            arrival_val  =("arrival_val",   "sum"),
+            ms_stock_val =("ms_stock_val",  "sum"),
+            cur_stock_val=("cur_stock_val", "sum"),
+            mtd_val      =("mtd_val",       "sum"),
+            yest_val     =("yest_val",      "sum"),
+        )
+        .merge(ship_dates, on="shipmentname", how="left")
+        .sort_values("Shipment Date", ascending=False)
+        .reset_index(drop=True)
+        .rename(columns={
+            "shipmentname":   "Shipment Name",
+            "arrival_val":    "Arrival Value (BDT)",
+            "ms_stock_val":   "Month Start Stock (BDT)",
+            "cur_stock_val":  "Current Stock Yesterday (BDT)",
+            "mtd_val":        "MTD Sales (BDT)",
+            "yest_val":       "Yesterday Sales (BDT)",
+        })
+    )
+
+    for col in ["Arrival Value (BDT)", "Month Start Stock (BDT)",
+                "Current Stock Yesterday (BDT)", "MTD Sales (BDT)", "Yesterday Sales (BDT)"]:
+        out[col] = out[col].round(0).astype("Int64")
+
+    return out[_COLS]
