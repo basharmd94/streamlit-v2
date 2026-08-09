@@ -435,19 +435,19 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 
             summary_df = collection.customer_segmentation_by_collection_days(avg_days)
 
-            # Display metrics in new order:
-            # ① Customer Segmentation, ② Avg Days to Collection, ③ Avg Days Between, ④ Collection Days by Year/Month
+            # Display metrics in order:
+            # ① Avg Days to Collection, ② Avg Days Between, ③ Collection Days by Year/Month, ④ Customer Segmentation
             for title, df in [
-                ("Customer Segmentation by Days to Collection", summary_df),
                 ("Average Days to Collection", avg_days),
                 ("Average Days Between Collections", avg_days_between),
                 ("Collection Days by Year/Month", pivot_df),
+                ("Customer Segmentation by Days to Collection", summary_df),
             ]:
                 st.markdown(title)
                 st.write(df)
 
             # Timeframe / DOW / DOM comparison in expander, defaulting to Monthly
-            with st.expander("📊 Sales/Collection Comparison by Timeframe", expanded=True):
+            with st.expander("📊 Sales/Collection Comparison by Timeframe", expanded=False):
                 timeframe = st.selectbox('Select Time Range', ['Daily', 'Monthly', 'Yearly'], index=1)
                 grouped_df, grouped_df_DOM, grouped_df_DOW = collection.get_grouped_df_collection(sales_df, returns_df, collection_df, timeframe)
 
