@@ -1739,24 +1739,7 @@ def get_ar_due_ledger(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """
     zid = filters["zid"][0]
     project = filters.get("project")
-    sql = """
-        SELECT
-            zid,
-            xvoucher,
-            xdate,
-            xrow,
-            year,
-            month,
-            xsub,
-            customer_name,
-            xcity,
-            xstate,
-            xprime,
-            xsp,
-            salesman_name
-        FROM mv_ar_transactions
-        WHERE zid = %s
-          AND xproj = %s
+    voucher_filter = """
           AND (
                 xvoucher LIKE 'INOP%%'
              OR xvoucher LIKE 'RCT%%'
@@ -1776,6 +1759,27 @@ def get_ar_due_ledger(filters: Dict[str, Any]) -> Tuple[str, tuple]:
              OR xvoucher LIKE 'BTJV%%'
           )
         ORDER BY xsub, xdate, xrow, xvoucher
+    """
+    if project is None:
+        # No project restriction — used when loading the partner ZID in combined mode
+        # (the other entity's AR lives under a different xproj value)
+        sql = f"""
+            SELECT zid, xvoucher, xdate, xrow, year, month,
+                   xsub, customer_name, xcity, xstate,
+                   xprime, xsp, salesman_name
+            FROM mv_ar_transactions
+            WHERE zid = %s
+            {voucher_filter}
+        """
+        return sql, (zid,)
+    sql = f"""
+        SELECT zid, xvoucher, xdate, xrow, year, month,
+               xsub, customer_name, xcity, xstate,
+               xprime, xsp, salesman_name
+        FROM mv_ar_transactions
+        WHERE zid = %s
+          AND xproj = %s
+        {voucher_filter}
     """
     return sql, (zid, project)
 
