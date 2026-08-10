@@ -1875,4 +1875,7 @@ def build_batch_consolidation(
                 "Current Stock Yesterday (BDT)", "MTD Sales (BDT)", "Yesterday Sales (BDT)"]:
         out[col] = out[col].round(0).astype("Int64")
 
+    # Drop shipments with zero current stock (fully depleted)
+    out = out[out["Current Stock Yesterday (BDT)"] > 0].reset_index(drop=True)
+
     return out[_COLS]
