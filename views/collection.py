@@ -144,6 +144,30 @@ def _load_salesman_due_reports(zid: str, project: str) -> dict:
     return salesman_due.build_salesman_due_reports(ar_df, cacus_df, prmst_df, market_split)
 
 
+@st.cache_data(ttl=3600, show_spinner="Building Salesman Due report (partner ZID)...")
+def _load_salesman_due_reports_any(zid: str) -> dict:
+    """Like _load_salesman_due_reports but with NO project filter.
+
+    Used for the partner ZID in combined (100001 + 100000) scope — the two
+    entities use different xproj values, so filtering by the current sidebar
+    project would return zero rows for the other entity.
+    """
+    ar_df = Analytics("ar_due_ledger", zid=zid, project=None, filters={}).data
+    if ar_df is None or ar_df.empty:
+        return {}
+
+    cacus_df = Analytics("cacus_master", zid=zid, filters={}).data
+    if cacus_df is None:
+        cacus_df = pd.DataFrame(columns=["cusid", "cusname", "xcity", "xstate"])
+
+    prmst_df = Analytics("prmst_simple", zid=zid, filters={}).data
+    if prmst_df is None:
+        prmst_df = pd.DataFrame(columns=["spid", "spname"])
+
+    market_split = str(zid) in ("100000", "100001")
+    return salesman_due.build_salesman_due_reports(ar_df, cacus_df, prmst_df, market_split)
+
+
 @timed
 def display_collection_analysis_page(current_page, zid, project, data_dict):
     st.sidebar.title("Overall Collection Analysis")
@@ -685,7 +709,9 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             reports = _load_salesman_due_reports(str(zid), project)
             if _sd_scope == _SCOPE_OPTS[1]:
                 _other = _OTHER_ZID[str(zid)]
-                reports2 = _load_salesman_due_reports(_other, project)
+                # Use the no-project loader — the partner ZID stores AR under
+                # its own xproj value, not the current sidebar project.
+                reports2 = _load_salesman_due_reports_any(_other)
             else:
                 reports2 = {}
         except Exception as _sd_err:
