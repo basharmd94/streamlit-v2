@@ -41,7 +41,12 @@ BLUE_FOOTER = '</div>'
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=30, show_spinner=False)
 def load_call_logs(cusid: str) -> pd.DataFrame:
+    """Fetch all call log entries for a customer, newest first.
+    Cached with a 30-second TTL (shared across all sessions) so fresh entries
+    from any tab or user appear within 30 s, and busting via load_call_logs.clear()
+    forces an immediate re-fetch."""
     from core.queries import get_call_logs
     from core.db import get_data
     sql, params = get_call_logs(cusid)
@@ -52,11 +57,8 @@ def load_call_logs(cusid: str) -> pd.DataFrame:
 
 
 def get_call_logs_cached(cusid: str) -> pd.DataFrame:
-    """Serve per-customer call logs from session_state to avoid a DB hit on every rerun."""
-    key = f"_calllog_{cusid}"
-    if key not in st.session_state:
-        st.session_state[key] = load_call_logs(cusid)
-    return st.session_state[key]
+    """Return per-customer call logs via the shared @st.cache_data cache."""
+    return load_call_logs(cusid)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -93,10 +95,10 @@ def last_calllog_map(cusids: "list[str]") -> dict:
     return st.session_state[key]
 
 
-def bust_call_log_cache(cusid: str) -> None:
-    """Invalidate both the per-customer session_state cache and the @cache_data memo."""
-    st.session_state.pop(f"_calllog_{cusid}", None)
-    fetch_last_calllog.clear()
+def bust_call_log_cache(cusid: str) -> None:  # noqa: ARG001 (cusid kept for API compat)
+    """Invalidate the shared @cache_data memos so every session sees fresh history."""
+    load_call_logs.clear()          # clears history for all customers (small table, fine)
+    fetch_last_calllog.clear()      # clears last-calllog summary column
     for k in list(st.session_state.keys()):
         if k.startswith("_lastcalllog_"):
             del st.session_state[k]

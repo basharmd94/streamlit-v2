@@ -2225,7 +2225,7 @@ def get_call_logs(cusid: str) -> Tuple[str, tuple]:
         FROM crm_call_log
         WHERE cusid = %s
         ORDER BY called_at DESC
-        LIMIT 50
+        LIMIT 200
     """
     return sql, (cusid,)
 
