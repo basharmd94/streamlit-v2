@@ -1781,8 +1781,12 @@ def _smart_buckets_collection(series):
 
 
 def plot_collection_size_distribution(filtered_data_c, areas, salesmen, customers,
-                                       value_min, value_max, nbins):
-    """Histogram of per-voucher collection amounts with entity filters."""
+                                       value_min, value_max, nbins, zid_col=None):
+    """Histogram of per-voucher collection amounts with entity filters.
+
+    When zid_col is provided (e.g. 'zid'), bars are coloured by that column so
+    the two entities are distinguishable in combined-ZID mode.
+    """
     import plotly.express as px
 
     df_f = _apply_entity_filters_collection(filtered_data_c, areas, salesmen, customers)
@@ -1790,22 +1794,46 @@ def plot_collection_size_distribution(filtered_data_c, areas, salesmen, customer
         st.warning("No collection data after applying filters.")
         return
 
-    vouchers = df_f.groupby("glvoucher")["value"].sum()
-    series = vouchers[vouchers > 0].reset_index(drop=True)
-
-    if value_min is not None:
-        series = series[series >= value_min]
-    if value_max is not None:
-        series = series[series <= value_max]
-    if series.empty:
-        st.warning("No data in the specified value range.")
-        return
-
-    fig = px.histogram(series, nbins=int(nbins), title="Collection Size Distribution",
-                       labels={"value": "Collection Amount"})
-    fig.update_layout(xaxis_title="Collection Amount", yaxis_title="Number of Vouchers",
-                      bargap=0.05, showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    if zid_col and zid_col in df_f.columns:
+        # Keep ZID alongside value so px.histogram can colour by it
+        vouchers = (
+            df_f.groupby(["glvoucher", zid_col])["value"]
+            .sum()
+            .reset_index()
+        )
+        vouchers = vouchers[vouchers["value"] > 0].copy()
+        if value_min is not None:
+            vouchers = vouchers[vouchers["value"] >= value_min]
+        if value_max is not None:
+            vouchers = vouchers[vouchers["value"] <= value_max]
+        if vouchers.empty:
+            st.warning("No data in the specified value range.")
+            return
+        fig = px.histogram(
+            vouchers, x="value", color=zid_col, nbins=int(nbins),
+            title="Collection Size Distribution",
+            labels={"value": "Collection Amount"},
+            barmode="overlay", opacity=0.7,
+        )
+        fig.update_layout(xaxis_title="Collection Amount", yaxis_title="Number of Vouchers",
+                          bargap=0.05)
+        st.plotly_chart(fig, use_container_width=True)
+        series = vouchers["value"]
+    else:
+        vouchers = df_f.groupby("glvoucher")["value"].sum()
+        series = vouchers[vouchers > 0].reset_index(drop=True)
+        if value_min is not None:
+            series = series[series >= value_min]
+        if value_max is not None:
+            series = series[series <= value_max]
+        if series.empty:
+            st.warning("No data in the specified value range.")
+            return
+        fig = px.histogram(series, nbins=int(nbins), title="Collection Size Distribution",
+                           labels={"value": "Collection Amount"})
+        fig.update_layout(xaxis_title="Collection Amount", yaxis_title="Number of Vouchers",
+                          bargap=0.05, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Count", f"{len(series):,}")
@@ -1818,8 +1846,13 @@ def plot_collection_size_distribution(filtered_data_c, areas, salesmen, customer
     st.dataframe(_smart_buckets_collection(series), use_container_width=True, hide_index=True)
 
 
-def plot_rolling_collection_average(filtered_data_c, areas, salesmen, customers, windows):
-    """Daily bar + rolling average lines for collection amounts."""
+def plot_rolling_collection_average(filtered_data_c, areas, salesmen, customers, windows,
+                                    zid_col=None):
+    """Daily bar + rolling average lines for collection amounts.
+
+    When zid_col is provided, each ZID gets its own bar series and rolling lines
+    with a distinct colour palette so the two entities are easy to compare.
+    """
     import plotly.graph_objects as go
 
     df_f = _apply_entity_filters_collection(filtered_data_c, areas, salesmen, customers)
@@ -1827,21 +1860,47 @@ def plot_rolling_collection_average(filtered_data_c, areas, salesmen, customers,
         st.warning("No collection data after applying filters.")
         return
 
-    daily = df_f.groupby("date")["value"].sum().rename("value")
-    daily.index = pd.to_datetime(daily.index)
-    daily = daily.sort_index().reindex(
-        pd.date_range(daily.index.min(), daily.index.max(), freq="D"), fill_value=0
-    )
+    _ZID_BASE_COLORS = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728", "#9467bd"]
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=daily.index, y=daily.values, name="Daily",
-                         marker_color="lightgray", opacity=0.5))
-    colors = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728"]
-    for i, w in enumerate(sorted(windows)):
-        rolled = daily.rolling(window=w, min_periods=1).mean()
-        fig.add_trace(go.Scatter(x=daily.index, y=rolled.values, mode="lines",
-                                  name=f"{w}-day avg",
-                                  line=dict(color=colors[i % len(colors)], width=2)))
+    if zid_col and zid_col in df_f.columns:
+        zids = sorted(df_f[zid_col].dropna().unique().tolist())
+        all_dates = pd.to_datetime(df_f["date"])
+        date_range = pd.date_range(all_dates.min(), all_dates.max(), freq="D")
+        fig = go.Figure()
+        for i, z in enumerate(zids):
+            base_color = _ZID_BASE_COLORS[i % len(_ZID_BASE_COLORS)]
+            sub = df_f[df_f[zid_col] == z].copy()
+            daily = sub.groupby("date")["value"].sum()
+            daily.index = pd.to_datetime(daily.index)
+            daily = daily.reindex(date_range, fill_value=0)
+            fig.add_trace(go.Bar(
+                x=daily.index, y=daily.values, name=f"{z} Daily",
+                marker_color=base_color, opacity=0.35,
+            ))
+            for j, w in enumerate(sorted(windows)):
+                rolled = daily.rolling(window=w, min_periods=1).mean()
+                fig.add_trace(go.Scatter(
+                    x=daily.index, y=rolled.values, mode="lines",
+                    name=f"{z} {w}-day avg",
+                    line=dict(color=base_color, width=2,
+                              dash="solid" if j == 0 else "dash"),
+                ))
+    else:
+        daily = df_f.groupby("date")["value"].sum().rename("value")
+        daily.index = pd.to_datetime(daily.index)
+        daily = daily.sort_index().reindex(
+            pd.date_range(daily.index.min(), daily.index.max(), freq="D"), fill_value=0
+        )
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=daily.index, y=daily.values, name="Daily",
+                             marker_color="lightgray", opacity=0.5))
+        for i, w in enumerate(sorted(windows)):
+            rolled = daily.rolling(window=w, min_periods=1).mean()
+            fig.add_trace(go.Scatter(x=daily.index, y=rolled.values, mode="lines",
+                                      name=f"{w}-day avg",
+                                      line=dict(color=_ZID_BASE_COLORS[i % len(_ZID_BASE_COLORS)],
+                                                width=2)))
+
     fig.update_layout(title="Rolling Average — Collection",
                       xaxis_title="Date", yaxis_title="Collection Amount",
                       hovermode="x unified")

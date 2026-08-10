@@ -7,6 +7,123 @@ from processing import common, collection, salesman_due
 from utils.utils import timed
 from views.call_log_shared import render_call_log_readonly as _render_call_log_readonly
 
+# ── ZID-scope constants ────────────────────────────────────────────────────────
+# Scope toggle is shown only when the active ZID is one of the two shared-team entities.
+_DUAL_ZIDS  = frozenset({"100001", "100000"})
+_OTHER_ZID  = {"100001": "100000", "100000": "100001"}
+_SCOPE_OPTS = ["Default ZID", "100001 + 100000"]
+
+
+@st.cache_data(ttl=3600, show_spinner="Loading combined ZID data...")
+def _load_other_zid_collection(other_zid: str, project: str,
+                                years: tuple, months: tuple) -> tuple:
+    """Load sales/returns/collection/AR for the partner ZID (100001↔100000).
+
+    Returns (sales_df, return_df, collection_df, ar_df) — all may be empty DataFrames.
+    Cached per (other_zid, project, years, months) so a single DB round-trip is
+    shared across CP, Customer Ledger, and Order Analytics in the same session.
+    """
+    f: dict = {}
+    if years:
+        f["year"] = list(years)
+    if months:
+        f["month"] = list(months)
+    s  = Analytics("sales",          zid=other_zid, filters=f).data
+    r  = Analytics("return",         zid=other_zid, filters=f).data
+    c  = Analytics("collection",     zid=other_zid, filters=f).data
+    ar = Analytics("ar_due_ledger",  zid=other_zid, project=project, filters={}).data
+    return (
+        s  if s  is not None else pd.DataFrame(),
+        r  if r  is not None else pd.DataFrame(),
+        c  if c  is not None else pd.DataFrame(),
+        ar if ar is not None else pd.DataFrame(),
+    )
+
+
+def _get_combined_collection(zid, project, filtered_data_s, filtered_data_r, filtered_data_c):
+    """Concat current + partner ZID's sales/returns/collection; tag with 'zid' column.
+
+    Returns (s_combined, r_combined, c_combined, ar_other, other_zid_str).
+    Does NOT mutate the incoming DataFrames.
+    """
+    other = _OTHER_ZID[str(zid)]
+    _yrs  = tuple(sorted(filtered_data_s["year"].dropna().unique().astype(int).tolist()))  \
+            if not filtered_data_s.empty else ()
+    _mos  = tuple(sorted(filtered_data_s["month"].dropna().unique().astype(int).tolist())) \
+            if not filtered_data_s.empty else ()
+
+    s2, r2, c2, ar2 = _load_other_zid_collection(other, project, _yrs, _mos)
+
+    # Enrich partner data through the same pipeline as the primary data
+    if not (c2.empty and s2.empty):
+        c2_e, s2_e, r2_e = common.data_copy_add_columns(c2, s2, r2)
+        c2_e = common.enrich_collection_with_sales_info(c2_e, s2_e)
+    else:
+        s2_e, r2_e, c2_e = s2, r2, c2
+
+    # Tag — copy to avoid mutating top-level vars used by other sections
+    def _tag(df, tag):
+        d = df.copy(); d["zid"] = tag; return d
+
+    s_comb = pd.concat([_tag(filtered_data_s, str(zid)), _tag(s2_e, other)], ignore_index=True)
+    r_comb = pd.concat([_tag(filtered_data_r, str(zid)), _tag(r2_e, other)], ignore_index=True)
+    c_comb = pd.concat([_tag(filtered_data_c, str(zid)), _tag(c2_e, other)], ignore_index=True)
+
+    return s_comb, r_comb, c_comb, ar2, other
+
+
+def _render_cust_ledger_body(sales_df, returns_df, collection_df, ar_df, key_suffix: str = ""):
+    """Render both ledger sub-sections (Sales/Returns/Collections + AR) for one ZID."""
+    # ── Sales / Returns / Collections ledger ─────────────────────────────────
+    try:
+        _g = ["date", "year", "month", "cusid", "cusname", "DOM", "DOW"]
+        s_g  = sales_df.groupby(_g).final_sales.sum().reset_index()
+        r_g  = returns_df.groupby(_g).treturnamt.sum().reset_index()
+        c_g  = collection_df.groupby(_g).value.sum().reset_index()
+
+        _, _, _, comb = collection.average_days_to_collection(s_g, r_g, c_g)
+        comb = comb[["year", "month", "cusid", "cusname", "date",
+                     "final_sales", "treturnamt", "value"]]
+
+        cus_opts = (
+            c_g[["cusid", "cusname"]].drop_duplicates().sort_values("cusname")
+        )
+        cus_opts["label"] = cus_opts["cusid"].astype(str) + " - " + cus_opts["cusname"]
+
+        if not cus_opts.empty:
+            sel = st.selectbox(
+                "Select Customer",
+                options=cus_opts["label"].tolist(),
+                key=f"cl_src_customer_select{key_suffix}",
+            )
+            sel_cusid = sel.split(" - ")[0]
+            ledger = comb[comb["cusid"] == sel_cusid].sort_values("date")
+            st.markdown("**Customer Ledger (Sales / Returns / Collections)**")
+            st.write(ledger.drop(columns=["cusid", "cusname"]))
+    except Exception as _e:
+        st.warning("⚠️ Unable to load customer sales/collection ledger.")
+        st.caption(f"Details: {_e}")
+
+    st.divider()
+
+    # ── AR Customer Ledger ────────────────────────────────────────────────────
+    st.subheader("AR Customer Ledger")
+    if ar_df is None or ar_df.empty:
+        st.info("No AR data available.")
+        return
+    ar_opts = (
+        ar_df[["cusid", "cusname"]].drop_duplicates().sort_values("cusname")
+        .assign(option=lambda d: d["cusid"].astype(str) + " - " + d["cusname"])
+    )
+    ar_sel = st.selectbox(
+        "Select customer", ar_opts["option"].tolist(),
+        key=f"cl_ar_select{key_suffix}",
+    )
+    ar_cusid = ar_sel.split(" - ")[0]
+    ar_ledger = ar_df[ar_df["cusid"] == ar_cusid].sort_values("date").copy()
+    ar_ledger["ending_balance"] = ar_ledger["value"].cumsum()
+    st.dataframe(ar_ledger)
+
 
 @st.cache_data(ttl=3600, show_spinner="Building Salesman Due report...")
 def _load_salesman_due_reports(zid: str, project: str) -> dict:
@@ -34,7 +151,9 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
     #collection using sales, returns and collection separately
     filtered_data_c, filtered_data_s,filtered_data_r = common.data_copy_add_columns(data_dict['collection'],data_dict['sales'], data_dict['return'])
     filtered_data_c = common.enrich_collection_with_sales_info(filtered_data_c, filtered_data_s)
-    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP","CPA","Customer Ledger","Salesman Due","📈 Order Analytics"],horizontal=True)
+    analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP",
+        # "CPA",   # temporarily muted — uncomment to restore
+        "Customer Ledger","Salesman Due","📈 Order Analytics"],horizontal=True)
 
     #collection using glheader and details.
     filtered_data_ar = data_dict['ar']
@@ -402,9 +521,20 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 
     elif analysis_mode == "CP":
         st.subheader("Collection Performance")
-        sales_df = filtered_data_s
-        returns_df = filtered_data_r
-        collection_df = filtered_data_c
+
+        if str(zid) in _DUAL_ZIDS:
+            _cp_scope = st.radio("Scope", _SCOPE_OPTS, horizontal=True, key="cp_zid_scope")
+        else:
+            _cp_scope = _SCOPE_OPTS[0]
+
+        if _cp_scope == _SCOPE_OPTS[1]:
+            sales_df, returns_df, collection_df, _, _ = _get_combined_collection(
+                zid, project, filtered_data_s, filtered_data_r, filtered_data_c
+            )
+        else:
+            sales_df      = filtered_data_s
+            returns_df    = filtered_data_r
+            collection_df = filtered_data_c
 
         try:
             #filtered options for collection, - shows the filtering options for sales, returns and collections and outputs the dataset after the filter
@@ -469,75 +599,71 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             # long_df = df.melt(id_vars=[x_axis], value_vars=['final_sales', 'treturnamt', 'value_collection'], var_name='category', value_name='value')
             # common_v.plot_bar_chart(data=long_df, x_axis=x_axis, y_axis='value', color='category', title=f'{x_axis} Collection Analysis')
 
-    elif analysis_mode == "CPA":
-        st.subheader("Collection Performance Advanced")
-
-        performance_analysis_type = st.radio("Choose Analysis Type:",["Order Timeliness Metrics","Payment Timeliness","Composite Scoring"],horizontal=True)
-
-        if performance_analysis_type == "Order Timeliness Metrics":
-            order_df, avg_df, std_df = collection.compute_order_frequency_metrics(filtered_data_ar)
-
-            with st.expander("📦 Order Frequency (Count per Year)", expanded=True):
-                st.dataframe(order_df)
-
-            with st.expander("📅 Average Interval Between Orders (Days)", expanded=True):
-                st.write("Average number of days between consecutive orders.")
-                st.dataframe(avg_df)
-
-            with st.expander("📉 Std. Dev. of Interval Between Orders (Days)", expanded=True):
-                st.write("Standard deviation of inter‐order intervals (low sd ⇒ regular orders).")
-                st.dataframe(std_df)
-
-        elif performance_analysis_type == "Payment Timeliness":
-            collection.display_payment_timeliness_page(filtered_data_ar)
-
-        elif performance_analysis_type == "Composite Scoring":
-            collection.display_composite_scoring_page(filtered_data_ar)
+    # ── CPA temporarily muted ─────────────────────────────────────────────────
+    # elif analysis_mode == "CPA":
+    #     st.subheader("Collection Performance Advanced")
+    #
+    #     performance_analysis_type = st.radio(
+    #         "Choose Analysis Type:",
+    #         ["Order Timeliness Metrics", "Payment Timeliness", "Composite Scoring"],
+    #         horizontal=True,
+    #     )
+    #
+    #     if performance_analysis_type == "Order Timeliness Metrics":
+    #         order_df, avg_df, std_df = collection.compute_order_frequency_metrics(filtered_data_ar)
+    #         with st.expander("📦 Order Frequency (Count per Year)", expanded=True):
+    #             st.dataframe(order_df)
+    #         with st.expander("📅 Average Interval Between Orders (Days)", expanded=True):
+    #             st.write("Average number of days between consecutive orders.")
+    #             st.dataframe(avg_df)
+    #         with st.expander("📉 Std. Dev. of Interval Between Orders (Days)", expanded=True):
+    #             st.write("Standard deviation of inter-order intervals (low sd ⇒ regular orders).")
+    #             st.dataframe(std_df)
+    #     elif performance_analysis_type == "Payment Timeliness":
+    #         collection.display_payment_timeliness_page(filtered_data_ar)
+    #     elif performance_analysis_type == "Composite Scoring":
+    #         collection.display_composite_scoring_page(filtered_data_ar)
 
     elif analysis_mode == "Customer Ledger":
         st.subheader("Customer Ledger")
 
-        # --- Sales / Returns / Collections Ledger (moved from CP) ---
-        try:
-            sales_df_cl = filtered_data_s.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).final_sales.sum().reset_index()
-            returns_df_cl = filtered_data_r.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).treturnamt.sum().reset_index()
-            collection_df_cl = filtered_data_c.groupby(['date', 'year', 'month', 'cusid', 'cusname', 'DOM', 'DOW']).value.sum().reset_index()
+        if str(zid) in _DUAL_ZIDS:
+            _cl_scope = st.radio("Scope", _SCOPE_OPTS, horizontal=True, key="cl_zid_scope")
+        else:
+            _cl_scope = _SCOPE_OPTS[0]
 
-            _, _, _, combined_df_cl = collection.average_days_to_collection(sales_df_cl, returns_df_cl, collection_df_cl)
-            combined_df_cl = combined_df_cl[['year', 'month', 'cusid', 'cusname', 'date', 'final_sales', 'treturnamt', 'value']]
+        if _cl_scope == _SCOPE_OPTS[1]:
+            # ── Combined: two separate selectbox panels, one per ZID ─────────
+            other = _OTHER_ZID[str(zid)]
+            _yrs = tuple(sorted(filtered_data_s["year"].dropna().unique().astype(int).tolist())) \
+                   if not filtered_data_s.empty else ()
+            _mos = tuple(sorted(filtered_data_s["month"].dropna().unique().astype(int).tolist())) \
+                   if not filtered_data_s.empty else ()
+            _s2, _r2, _c2, _ar2 = _load_other_zid_collection(other, project, _yrs, _mos)
+            if not (_c2.empty and _s2.empty):
+                _c2_e, _s2_e, _r2_e = common.data_copy_add_columns(_c2, _s2, _r2)
+                _c2_e = common.enrich_collection_with_sales_info(_c2_e, _s2_e)
+            else:
+                _s2_e, _r2_e, _c2_e = _s2, _r2, _c2
 
-            customer_options_cl = (
-                collection_df_cl[['cusid', 'cusname']]
-                .drop_duplicates()
-                .sort_values(by='cusname')
+            _ar2_f = (
+                _ar2[_ar2["project"] == project].copy()
+                if (_ar2 is not None and not _ar2.empty and "project" in _ar2.columns)
+                else pd.DataFrame()
             )
-            customer_options_cl["combined"] = customer_options_cl["cusid"].astype(str) + " - " + customer_options_cl["cusname"]
 
-            if not customer_options_cl.empty:
-                selected_customer_cl = st.selectbox(
-                    "Select Customer",
-                    options=customer_options_cl["combined"].tolist(),
-                    key="cl_src_customer_select"
-                )
-                selected_cusid_cl = selected_customer_cl.split(" - ")[0]
-                ledger_src_df = combined_df_cl[combined_df_cl['cusid'] == selected_cusid_cl].sort_values(by='date')
-                display_src_df = ledger_src_df.drop(columns=['cusid', 'cusname'])
-                st.markdown("**Customer Ledger (Sales / Returns / Collections)**")
-                st.write(display_src_df)
-        except Exception as _cl_err:
-            st.warning("⚠️ Unable to load customer sales/collection ledger.")
-            st.caption(f"Details: {_cl_err}")
-
-        st.divider()
-
-        # --- AR-based Customer Ledger ---
-        st.subheader("AR Customer Ledger")
-        cust_df = (filtered_data_ar.loc[:, ['cusid', 'cusname']].drop_duplicates().sort_values('cusname').assign(option=lambda df: df['cusid'].astype(str) + " - " + df['cusname']))
-        selected = st.selectbox("Select customer", cust_df['option'].tolist(), key="cl_ar_select")
-        selected_cusid = selected.split(" - ")[0]
-        ledger_df = filtered_data_ar[filtered_data_ar['cusid'] == selected_cusid].sort_values('date').copy()
-        ledger_df["ending_balance"] = ledger_df["value"].cumsum()
-        st.dataframe(ledger_df)
+            for _lzid, _ls, _lr, _lc, _lar in [
+                (str(zid), filtered_data_s, filtered_data_r, filtered_data_c, filtered_data_ar),
+                (other,    _s2_e,           _r2_e,           _c2_e,           _ar2_f),
+            ]:
+                st.markdown(f"#### ZID {_lzid}")
+                _render_cust_ledger_body(_ls, _lr, _lc, _lar, key_suffix=f"_{_lzid}")
+                st.divider()
+        else:
+            _render_cust_ledger_body(
+                filtered_data_s, filtered_data_r, filtered_data_c,
+                filtered_data_ar, key_suffix="",
+            )
 
     elif analysis_mode == "Salesman Due":
         st.subheader("Salesman Due")
@@ -550,12 +676,23 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             key="salesman_due_sub_report",
         )
 
+        if str(zid) in _DUAL_ZIDS:
+            _sd_scope = st.radio("Scope", _SCOPE_OPTS, horizontal=True, key="sd_zid_scope")
+        else:
+            _sd_scope = _SCOPE_OPTS[0]
+
         try:
-            reports = _load_salesman_due_reports(zid, project)
+            reports = _load_salesman_due_reports(str(zid), project)
+            if _sd_scope == _SCOPE_OPTS[1]:
+                _other = _OTHER_ZID[str(zid)]
+                reports2 = _load_salesman_due_reports(_other, project)
+            else:
+                reports2 = {}
         except Exception as _sd_err:
             st.warning("⚠️ Unable to load Salesman Due report.")
             st.caption(f"Details: {_sd_err}")
             reports = {}
+            reports2 = {}
 
         if not reports:
             st.info("No AR customer due data found for this business.")
@@ -567,7 +704,45 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                 "Missing Customers": "missing_customers_df",
             }
             report_key = report_map[sub_report]
-            df_sd = reports[report_key]
+
+            if _sd_scope == _SCOPE_OPTS[1] and reports2:
+                # ── Combined mode ─────────────────────────────────────────────
+                if sub_report == "Main Due Report":
+                    _main_mode = st.radio(
+                        "Combined view",
+                        ["Stacked (by ZID)", "Merged Total"],
+                        horizontal=True,
+                        key="sd_main_combined_mode",
+                    )
+                    if _main_mode == "Stacked (by ZID)":
+                        m1 = reports["main_due_report"].copy()
+                        m2 = reports2["main_due_report"].copy()
+                        m1.insert(0, "ZID", str(zid))
+                        m2.insert(0, "ZID", _other)
+                        df_sd = pd.concat([m1, m2], ignore_index=True)
+                    else:
+                        # Merge: rebuild from combined customer-credit data
+                        try:
+                            cc_comb = pd.concat(
+                                [reports["report_cc_with_names"],
+                                 reports2["report_cc_with_names"]],
+                                ignore_index=True,
+                            )
+                            rsc = salesman_due.group_by_salesman_area_city(cc_comb)
+                            df_sd = salesman_due.build_main_due_report_market(rsc)
+                        except Exception as _merge_err:
+                            st.warning("⚠️ Could not build merged total — showing stacked instead.")
+                            st.caption(f"Details: {_merge_err}")
+                            m1 = reports["main_due_report"].copy();  m1.insert(0, "ZID", str(zid))
+                            m2 = reports2["main_due_report"].copy(); m2.insert(0, "ZID", _other)
+                            df_sd = pd.concat([m1, m2], ignore_index=True)
+                else:
+                    # For all other sub-reports: concat + prepend ZID column
+                    d1 = reports[report_key].copy();  d1.insert(0, "ZID", str(zid))
+                    d2 = reports2[report_key].copy(); d2.insert(0, "ZID", _other)
+                    df_sd = pd.concat([d1, d2], ignore_index=True)
+            else:
+                df_sd = reports[report_key]
 
             if sub_report == "Latest Sale & Collection" and "Salesman Code" in df_sd.columns:
                 sp_opts = (
@@ -670,17 +845,31 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         st.subheader("📈 Order Analytics")
         st.caption("Filters below apply across all sub-sections. Empty = no filter applied.")
 
+        if str(zid) in _DUAL_ZIDS:
+            _oa_scope = st.radio("Scope", _SCOPE_OPTS, horizontal=True, key="oa_zid_scope")
+        else:
+            _oa_scope = _SCOPE_OPTS[0]
+
+        if _oa_scope == _SCOPE_OPTS[1]:
+            _, _, _oa_c, _, _ = _get_combined_collection(
+                zid, project, filtered_data_s, filtered_data_r, filtered_data_c
+            )
+            _oa_zid_col = "zid"
+        else:
+            _oa_c       = filtered_data_c
+            _oa_zid_col = None
+
         with st.expander("🔍 Entity Filters", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
                 sel_areas = st.multiselect("Area",
-                    sorted(filtered_data_c["area"].dropna().unique().tolist()), key="coa_areas")
+                    sorted(_oa_c["area"].dropna().unique().tolist()), key="coa_areas")
             with col2:
                 sel_salesmen = st.multiselect("Salesman",
-                    sorted(filtered_data_c["spname"].dropna().unique().tolist()), key="coa_salesmen")
+                    sorted(_oa_c["spname"].dropna().unique().tolist()), key="coa_salesmen")
             with col3:
                 sel_customers = st.multiselect("Customer",
-                    sorted(filtered_data_c["cusname"].dropna().unique().tolist()), key="coa_customers")
+                    sorted(_oa_c["cusname"].dropna().unique().tolist()), key="coa_customers")
 
         sub_mode = st.radio(
             "Sub-section",
@@ -698,9 +887,10 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                 nbins = st.number_input("Number of Bins", min_value=5, max_value=500, value=50, key="coa_bins")
 
             collection.plot_collection_size_distribution(
-                filtered_data_c,
+                _oa_c,
                 sel_areas, sel_salesmen, sel_customers,
                 value_min, value_max, nbins,
+                zid_col=_oa_zid_col,
             )
             with st.expander("📖 How to read this chart"):
                 st.markdown("""
@@ -719,9 +909,10 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                                         default=[10, 30], key="coa_ra_windows")
             if ra_windows:
                 collection.plot_rolling_collection_average(
-                    filtered_data_c,
+                    _oa_c,
                     sel_areas, sel_salesmen, sel_customers,
                     ra_windows,
+                    zid_col=_oa_zid_col,
                 )
                 with st.expander("📖 How to read this chart"):
                     st.markdown("""
