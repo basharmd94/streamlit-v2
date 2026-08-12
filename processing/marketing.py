@@ -573,7 +573,7 @@ def build_inactive_customers(
     if sales_df is None or sales_df.empty:
         return pd.DataFrame()
 
-    s = _ensure_date(sales_df, "date").copy()
+    s = _ensure_date(sales_df, "date").copy().sort_values("date")
     s["altsales"] = pd.to_numeric(s["altsales"], errors="coerce").fillna(0)
 
     cutoff = pd.Timestamp.today().normalize() - pd.DateOffset(months=months)
@@ -583,9 +583,9 @@ def build_inactive_customers(
         .agg(
             last_order_date=("date",     "max"),
             total_lifetime_sales=("altsales", "sum"),
-            cusname=("cusname", "first"),
-            area=("area",     "first"),
-            spname=("spname",   "first"),
+            cusname=("cusname", "last"),   # most recent name on record
+            area=("area",     "last"),     # most recent area (view overrides spname when filtered)
+            spname=("spname",   "last"),   # most recent salesman; view pins to selected name
         )
         .reset_index()
     )

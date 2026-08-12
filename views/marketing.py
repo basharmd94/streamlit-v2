@@ -414,15 +414,25 @@ def _show_inactive_outreach(zid: str, proj: str, sales_raw: pd.DataFrame) -> Non
         st.warning("No sales data available.")
         return
 
-    # Apply the same salesman/area selection to all-time data
-    if sp_sel != "All Salesmen":
-        sales_all = sales_all[sales_all["spname"].astype(str) == sp_sel]
+    # Scope customers by area (the salesman's territory) but check inactivity
+    # against company-wide purchases — if they ordered from ANY salesman within
+    # the window they are not inactive, regardless of who took the order.
+    # The salesman dropdown only controls which areas are shown; it never
+    # filters the transaction history used for the last-order-date check.
     if area_sel:
-        sales_all = sales_all[sales_all["area"].isin(area_sel)]
+        _area_cusids = set(sales_all[sales_all["area"].isin(area_sel)]["cusid"].unique())
+        sales_for_inactive = sales_all[sales_all["cusid"].isin(_area_cusids)]
+    else:
+        sales_for_inactive = sales_all.copy()
 
     cacus_df = _load_cacus(zid)
 
-    inactive = build_inactive_customers(sales_all, cacus_df=cacus_df, months=months)
+    inactive = build_inactive_customers(sales_for_inactive, cacus_df=cacus_df, months=months)
+
+    # Pin the salesman column to the selected name so every row reads as
+    # the calling salesman's responsibility.
+    if sp_sel != "All Salesmen" and not inactive.empty and "spname" in inactive.columns:
+        inactive["spname"] = sp_sel
 
     if inactive.empty:
         st.success(f"No customers inactive for more than {months} months — great retention!")
