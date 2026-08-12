@@ -170,7 +170,7 @@ def render_call_log_panel(
         unsafe_allow_html=True,
     )
 
-    if not logs_df.empty:
+    if not logs_df.empty and st.session_state.get("user_role") == "admin":
         del_options = {
             f"{pd.to_datetime(r['called_at']).strftime('%Y-%m-%d %H:%M')} · "
             f"{r.get('outcome','—')} · {str(r.get('notes',''))[:40]}": int(r["id"])
