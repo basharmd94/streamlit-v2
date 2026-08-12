@@ -1692,6 +1692,7 @@ def build_abc_xyz(sales_df: pd.DataFrame) -> pd.DataFrame:
 def build_batch_consolidation(
     purchase_df: pd.DataFrame,
     sales_df: pd.DataFrame,
+    movements_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Shipment-level consolidation with FIFO stock snapshots and MTD/yesterday sales.
 
@@ -1782,6 +1783,35 @@ def build_batch_consolidation(
             grp["cum_rev"].values.astype(float),
         )
 
+    # ── Depletion lookup: sales + internal issues ─────────────────────────────
+    # sales_lkp is kept for revenue/price only.
+    # depletion_lkp includes ISS (txn_type="issue") so the FIFO correctly sees
+    # stock consumed by internal issues and doesn't inflate remaining_qty.
+    depletion_lkp: dict = {}
+    if movements_df is not None and isinstance(movements_df, pd.DataFrame) and not movements_df.empty:
+        mv = movements_df.copy()
+        mv["itemcode"] = mv["itemcode"].astype(str).str.strip()
+        mv["date"]     = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
+        mv = mv[mv["date"].notna()].copy()
+        dep = mv[mv["txn_type"].isin(["sale", "issue"])].copy()
+        dep["_qty"] = pd.to_numeric(dep.get("xqty", 0), errors="coerce").fillna(0.0)
+        dep_daily = (
+            dep.groupby(["itemcode", "date"], as_index=False)
+            .agg(qty=("_qty", "sum"))
+            .sort_values(["itemcode", "date"])
+            .reset_index(drop=True)
+        )
+        dep_daily["cum_qty"] = dep_daily.groupby("itemcode")["qty"].cumsum()
+        for code, grp in dep_daily.groupby("itemcode"):
+            depletion_lkp[str(code)] = (
+                grp["date"].values.astype("datetime64[ns]"),
+                grp["cum_qty"].values.astype(float),
+            )
+    else:
+        # Fallback: no movements available — use customer sales only (old behaviour)
+        for code, (dn, cq, _) in sales_lkp.items():
+            depletion_lkp[code] = (dn, cq)
+
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _cum_at(dates_np, cum_np, T: pd.Timestamp) -> float:
         """Cumulative value for dates <= T (searchsorted right, O(log n))."""
@@ -1791,10 +1821,10 @@ def build_batch_consolidation(
         return float(cum_np[idx]) if idx >= 0 else 0.0
 
     def _qty_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
-        """Qty sold in (D, T] — strictly after D, matching engine convention."""
-        if code not in sales_lkp or pd.isna(D) or pd.isna(T) or T <= D:
+        """Physical depletion in (D, T] — customer sales + internal issues."""
+        if code not in depletion_lkp or pd.isna(D) or pd.isna(T) or T <= D:
             return 0.0
-        dn, cq, _ = sales_lkp[code]
+        dn, cq = depletion_lkp[code]
         return max(0.0, _cum_at(dn, cq, T) - _cum_at(dn, cq, D))
 
     def _rev_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
