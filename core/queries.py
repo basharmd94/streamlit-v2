@@ -1030,6 +1030,25 @@ def get_stock_movement_data(filters=None) -> Tuple[str, tuple]:
     sql = "SELECT * FROM mv_stock_movement WHERE zid = %s"
     return sql, (zid,)
 
+
+def get_imtrn_movements(filters=None) -> Tuple[str, tuple]:
+    """Queries mv_imtrn_movements — all imtrn rows with classified txn_type.
+
+    Columns: zid, ximtrnnum, xdocnum, itemcode, warehouse, txn_date, year, month,
+             xqty, xval, xsign, net_qty, net_val, txn_type
+
+    txn_type values: 'purchase', 'sale', 'cust_return', 'issue', 'transfer',
+                     'purch_return', 'adjustment'
+
+    Used by Purchase Analysis FIFO engine instead of mv_stock_movement +
+    mv_returns_daily_item. Captures all physical stock movements including
+    DO-- delivery orders missed by the sales-order pipeline.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = "SELECT * FROM mv_imtrn_movements WHERE zid = %s"
+    return sql, (zid,)
+
     # ── ORIGINAL base-table version (preserved for reference) ────────────────
     # filters = filters or {}
     # zid = filters["zid"][0]

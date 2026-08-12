@@ -1242,9 +1242,8 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             tables = purchase.build_shipment_inventory_tables(
                 purchase_df=data_dict["purchase_batches"],
-                stock_movement_df=data_dict["stock_movement"],
+                movements_df=data_dict["imtrn_movements"],
                 sales_df=data_dict["sales_daily_item"],
-                returns_df=data_dict["returns_daily_item"],
                 shipmentname=selected_shipment,
                 project=st.session_state.proj,
                 zid_deplete="100001",
@@ -1469,8 +1468,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             result_df = purchase.run_batch_profitability_engine(
                 purchase_df=data_dict["purchase_batches"],
                 sales_df=data_dict["sales_daily_item"],
-                returns_df=data_dict["returns_daily_item"],
-                stock_movement_df=data_dict["stock_movement"],
+                movements_df=data_dict["imtrn_movements"],
                 hierarchy_path="data/hierarchy.json",
                 shipmentname=selected_shipment,
                 discount_pct=0.0,
@@ -1724,6 +1722,19 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             calc_df["overhead_projected"] = D0 * decay_factor * dclear * share_rem
             calc_df["Proj_remaining_profit"] = calc_df["proj_remaining_gm"] - calc_df["overhead_projected"]
             calc_df["proj_final_profit"] = calc_df["net_profit_realized"] + calc_df["Proj_remaining_profit"]
+
+            # Round all numeric columns to 0 dp for display
+            _sim_round_cols = [
+                "onhand_before", "initial_qty", "sold_qty", "remaining_qty", "threshold_qty",
+                "unit_cost", "sold_revenue", "realized_cogs", "realized_gm",
+                "overhead_realized", "net_profit_realized",
+                "remaining_cost_value", "proj_remaining_revenue", "proj_remaining_gm",
+                "overhead_projected", "Proj_remaining_profit", "proj_final_profit",
+                "avg_price", "scenario_price", "velocity", "days_to_clear",
+            ]
+            for _c in _sim_round_cols:
+                if _c in calc_df.columns:
+                    calc_df[_c] = pd.to_numeric(calc_df[_c], errors="coerce").round(0).fillna(0.0)
 
             # ---------------------------------------------
             # Totals row

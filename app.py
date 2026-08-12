@@ -195,7 +195,8 @@ def _load_mv_refresh_times() -> pd.DataFrame:
             'mv_purchase_batches',
             'mv_gl_overhead_daily',
             'mv_sales_daily_item',
-            'mv_returns_daily_item'
+            'mv_returns_daily_item',
+            'mv_imtrn_movements'
         )
         ORDER BY c.relname
     """
@@ -268,7 +269,7 @@ def load_purchase_data(zid: str, project: str, mv_version: str = "") -> dict:
     data anyway (the overhead/profitability pools are always sourced from trading),
     so fetching them here for a different zid would just be discarded unused.
     """
-    purchase_tables = ["sales_daily_item", "returns_daily_item", "purchase_batches", "stock_movement"]
+    purchase_tables = ["sales_daily_item", "purchase_batches", "stock_movement", "imtrn_movements"]
     if str(zid) == "100001":
         purchase_tables += ["gl_overhead_daily", "glmst_simple"]
 
@@ -792,6 +793,25 @@ class BaseApp:
         else:
             # non-linked zids: just use base
             data_dict["stock_movement"] = base_sm
+
+        # --- Ensure imtrn_movements contains BOTH 100001 + 100009 ---
+        # Same dual-ZID logic as stock_movement: packcode-linked items span both entities.
+        base_mv = data_dict.get("imtrn_movements")
+        if base_mv is None or (isinstance(base_mv, pd.DataFrame) and base_mv.empty) or (not isinstance(base_mv, pd.DataFrame)):
+            base_mv = Analytics("imtrn_movements", zid=zid_str, filters={}).data
+            if base_mv is None:
+                base_mv = pd.DataFrame()
+
+        if zid_str in ("100001", "100009"):
+            other_mv = Analytics("imtrn_movements", zid=other_zid, filters={}).data
+            if other_mv is None:
+                other_mv = pd.DataFrame()
+            data_dict["imtrn_movements"] = (
+                pd.concat([base_mv, other_mv], ignore_index=True)
+                .drop_duplicates(subset=["ximtrnnum", "zid"])
+            ) if not other_mv.empty else base_mv
+        else:
+            data_dict["imtrn_movements"] = base_mv
 
         # NOTE: we are intentionally NOT loading/using data_dict["stock"] anymore
 
