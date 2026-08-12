@@ -974,8 +974,11 @@ def run_batch_profitability_engine(
             mv["d"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
             mv = mv[mv["d"].notna()].copy()
 
-            # sales qty: DO-- delivery orders — xqty is the absolute quantity (always positive)
-            sale_mv = mv[mv["txn_type"] == "sale"].copy()
+            # sales qty: DO-- delivery orders + ISS-- internal issues.
+            # Both are physical outflows that deplete batch inventory; excluding issues
+            # causes the FIFO allocator to over-estimate older open stock and therefore
+            # under-deplete the current batch (remaining_qty inflated by issue qty).
+            sale_mv = mv[mv["txn_type"].isin(["sale", "issue"])].copy()
             sale_mv["_qty"] = pd.to_numeric(sale_mv.get("xqty", 0), errors="coerce").fillna(0.0)
             s_qty_daily = (
                 sale_mv.groupby(["itemcode", "d"], as_index=False)
