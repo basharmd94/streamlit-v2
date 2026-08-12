@@ -195,7 +195,8 @@ def _load_mv_refresh_times() -> pd.DataFrame:
             'mv_purchase_batches',
             'mv_gl_overhead_daily',
             'mv_sales_daily_item',
-            'mv_returns_daily_item'
+            'mv_returns_daily_item',
+            'mv_imtrn_movements'
         )
         ORDER BY c.relname
     """
@@ -268,7 +269,7 @@ def load_purchase_data(zid: str, project: str, mv_version: str = "") -> dict:
     data anyway (the overhead/profitability pools are always sourced from trading),
     so fetching them here for a different zid would just be discarded unused.
     """
-    purchase_tables = ["sales_daily_item", "returns_daily_item", "purchase_batches", "stock_movement"]
+    purchase_tables = ["sales_daily_item", "purchase_batches", "imtrn_movements", "caitem"]
     if str(zid) == "100001":
         purchase_tables += ["gl_overhead_daily", "glmst_simple"]
 
@@ -768,30 +769,60 @@ class BaseApp:
             data_dict["gl_overhead_daily"] = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
             data_dict["glmst_simple"]      = gm_100001 if gm_100001 is not None else pd.DataFrame()
 
-        # --- Ensure stock_movement exists (load base zid if missing/empty) ---
         zid_str = str(st.session_state.zid)
 
-        base_sm = data_dict.get("stock_movement")
-        if base_sm is None or (isinstance(base_sm, pd.DataFrame) and base_sm.empty) or (not isinstance(base_sm, pd.DataFrame)):
-            base_sm = Analytics("stock_movement", zid=zid_str, filters={}).data
-            if base_sm is None:
-                base_sm = pd.DataFrame()
+        # --- Ensure imtrn_movements contains BOTH 100001 + 100009 ---
+        # mv_stock_movement has been dropped; imtrn_movements is the source of truth.
+        base_mv = data_dict.get("imtrn_movements")
+        if base_mv is None or (isinstance(base_mv, pd.DataFrame) and base_mv.empty) or (not isinstance(base_mv, pd.DataFrame)):
+            base_mv = Analytics("imtrn_movements", zid=zid_str, filters={}).data
+            if base_mv is None:
+                base_mv = pd.DataFrame()
 
-        # --- Ensure stock_movement contains BOTH 100001 + 100009 for packcode-linked items ---
         if zid_str in ("100001", "100009"):
             other_zid = "100009" if zid_str == "100001" else "100001"
-
-            other_sm = Analytics("stock_movement", zid=other_zid, filters={}).data
-            if other_sm is None:
-                other_sm = pd.DataFrame()
-
-            data_dict["stock_movement"] = (
-                pd.concat([base_sm, other_sm], ignore_index=True)
-                .drop_duplicates()
-            )
+            other_mv = Analytics("imtrn_movements", zid=other_zid, filters={}).data
+            if other_mv is None:
+                other_mv = pd.DataFrame()
+            data_dict["imtrn_movements"] = (
+                pd.concat([base_mv, other_mv], ignore_index=True)
+                .drop_duplicates(subset=["ximtrnnum", "zid"])
+            ) if not other_mv.empty else base_mv
         else:
-            # non-linked zids: just use base
-            data_dict["stock_movement"] = base_sm
+            data_dict["imtrn_movements"] = base_mv
+
+        # --- Build stock_movement compat df from imtrn_movements + caitem ---
+        # mv_stock_movement has been dropped. Legacy functions (generate_cohort,
+        # get_all_warehouse_options, build_accounts_overhead_summary,
+        # build_warehouse_total_value_table) still expect a df with:
+        #   date, stockqty, stockvalue, warehouse, itemname, itemgroup.
+        # We derive this from imtrn_movements and join caitem for names/groups —
+        # restoring exactly the columns mv_stock_movement used to provide.
+        mv_all = data_dict.get("imtrn_movements", pd.DataFrame())
+        if isinstance(mv_all, pd.DataFrame) and not mv_all.empty:
+            _sm = mv_all.copy()
+            _sm["date"]       = pd.to_datetime(_sm["txn_date"], errors="coerce")
+            _sm["stockqty"]   = pd.to_numeric(_sm.get("net_qty", 0),  errors="coerce").fillna(0.0)
+            _sm["stockvalue"] = pd.to_numeric(_sm.get("net_val", 0),  errors="coerce").fillna(0.0)
+
+            # join caitem for itemname + itemgroup (both ZIDs loaded in purchase_analysis)
+            _caitem = data_dict.get("caitem", pd.DataFrame())
+            if zid_str in ("100001", "100009"):
+                _caitem_other = Analytics("caitem", zid=other_zid, filters={}).data
+                if _caitem_other is not None and not _caitem_other.empty:
+                    _caitem = pd.concat([_caitem, _caitem_other], ignore_index=True).drop_duplicates(subset=["itemcode"])
+            if isinstance(_caitem, pd.DataFrame) and not _caitem.empty:
+                _caitem = _caitem[["itemcode", "itemname", "itemgroup"]].drop_duplicates(subset=["itemcode"])
+                _sm = _sm.merge(_caitem, on="itemcode", how="left")
+                _sm["itemname"]  = _sm["itemname"].fillna("").astype(str)
+                _sm["itemgroup"] = _sm["itemgroup"].fillna("").astype(str)
+            else:
+                _sm["itemname"]  = ""
+                _sm["itemgroup"] = ""
+
+            data_dict["stock_movement"] = _sm
+        else:
+            data_dict["stock_movement"] = pd.DataFrame()
 
         # NOTE: we are intentionally NOT loading/using data_dict["stock"] anymore
 

@@ -438,9 +438,8 @@ def _sales_revenue_for_period(sales_df: pd.DataFrame, itemcode: str, start: pd.T
 @st.cache_data(show_spinner=False, ttl=86400)
 def build_shipment_inventory_tables(
     purchase_df: pd.DataFrame,
-    stock_movement_df: pd.DataFrame,
+    movements_df: pd.DataFrame,
     sales_df: pd.DataFrame,
-    returns_df: pd.DataFrame,
     shipmentname: str,
     project: str = None,
     zid_deplete: str = "100001",) -> Dict[str, pd.DataFrame]:
@@ -513,9 +512,9 @@ def build_shipment_inventory_tables(
     )
 
     # ----------------------------
-    # 1) Stock movement prep (ledger deltas)
+    # 1) Stock movement prep — from mv_imtrn_movements (net daily per item)
     # ----------------------------
-    sm = stock_movement_df.copy() if isinstance(stock_movement_df, pd.DataFrame) else pd.DataFrame()
+    sm = movements_df.copy() if isinstance(movements_df, pd.DataFrame) else pd.DataFrame()
     if sm.empty:
         # Return tables with purchase only (inventory unknown)
         arrival_100001_only = p_sum[p_sum["purchased_qty_100009"] <= 0].copy()
@@ -546,21 +545,22 @@ def build_shipment_inventory_tables(
     sm["zid"] = sm["zid"].astype(str).str.strip()
     sm = sm[sm["zid"].isin(["100001", "100009"])].copy()
     sm["itemcode"] = sm["itemcode"].apply(_norm_code).astype(str).str.strip()
-    sm["date"] = pd.to_datetime(sm["date"], errors="coerce").dt.floor("D")
+    # mv_imtrn_movements uses txn_date; net_qty = xqty * xsign (signed stock delta)
+    sm["date"] = pd.to_datetime(sm["txn_date"], errors="coerce").dt.floor("D")
     sm = sm[sm["date"].notna()].copy()
-    sm["stockqty"] = pd.to_numeric(sm.get("stockqty", 0), errors="coerce").fillna(0.0)
-    sm["warehouse"] = sm.get("warehouse", "").astype(str).fillna("").str.strip()
+    sm["net_qty"] = pd.to_numeric(sm.get("net_qty", 0), errors="coerce").fillna(0.0)
 
     def _build_daily_onhand(sm_in: pd.DataFrame) -> pd.DataFrame:
+        """Cumulative onhand from mv_imtrn_movements net daily movements."""
         d = (
-            sm_in.groupby(["date", "itemcode"], as_index=False)["stockqty"]
+            sm_in.groupby(["date", "itemcode"], as_index=False)["net_qty"]
             .sum()
             .copy()
         )
         d["date"] = pd.to_datetime(d["date"], errors="coerce").dt.floor("D")
         d = d[d["date"].notna()].copy()
         d = d.sort_values(["date", "itemcode"]).reset_index(drop=True)
-        d["onhand_qty"] = d.groupby("itemcode")["stockqty"].cumsum()
+        d["onhand_qty"] = d.groupby("itemcode")["net_qty"].cumsum()
         return d[["date", "itemcode", "onhand_qty"]]
 
     daily_total = _build_daily_onhand(sm)                         # 100001+100009
@@ -724,8 +724,19 @@ def build_shipment_inventory_tables(
 
         return (c1 - c0).astype(float)
 
-    base["sales_qty_window"] = _window_qty(sales_df, "quantity")
-    base["return_qty_window"] = _window_qty(returns_df, "returnqty")
+    # Derive DO-- sales qty and cust_return qty from mv_imtrn_movements
+    # for the reconcile window — captures all physical movements, not just sales orders.
+    _do_rows = sm[sm["txn_type"] == "sale"].copy() if "txn_type" in sm.columns else pd.DataFrame()
+    if not _do_rows.empty:
+        _do_rows = _do_rows.copy()
+        _do_rows["quantity"] = pd.to_numeric(_do_rows.get("xqty", 0), errors="coerce").fillna(0.0)
+    _ret_rows = sm[sm["txn_type"] == "cust_return"].copy() if "txn_type" in sm.columns else pd.DataFrame()
+    if not _ret_rows.empty:
+        _ret_rows = _ret_rows.copy()
+        _ret_rows["returnqty"] = pd.to_numeric(_ret_rows.get("xqty", 0), errors="coerce").fillna(0.0)
+
+    base["sales_qty_window"] = _window_qty(_do_rows if not _do_rows.empty else sales_df, "quantity")
+    base["return_qty_window"] = _window_qty(_ret_rows, "returnqty")
 
     base["expected_onhand_today_salesmodel"] = (
         base["onhand_before_total(100001+100009)"]
@@ -790,8 +801,7 @@ def build_shipment_inventory_tables(
 def run_batch_profitability_engine(
     purchase_df: pd.DataFrame,
     sales_df: pd.DataFrame,
-    returns_df: pd.DataFrame,
-    stock_movement_df: pd.DataFrame,
+    movements_df: pd.DataFrame,
     hierarchy_path: str,
     shipmentname: str,
     discount_pct: float = 0.0,
@@ -870,28 +880,34 @@ def run_batch_profitability_engine(
         grp = grp.sort_values(["itemcode", "combinedate", "shipmentname"]).reset_index(drop=True)
         return grp
 
-    def _build_onhand_before_for_selected(stock_mv_df: pd.DataFrame, selected_batches: pd.DataFrame) -> pd.Series:
-        if stock_mv_df is None or stock_mv_df.empty or selected_batches.empty:
+    def _build_onhand_before_for_selected(mv_df: pd.DataFrame, selected_batches: pd.DataFrame) -> pd.Series:
+        """Compute onhand stock just before each batch arrived using mv_imtrn_movements.
+
+        mv_imtrn_movements has net_qty = xqty * xsign per transaction row.
+        Summing net_qty by (itemcode, date) gives the daily signed delta; cumsum = running balance.
+        This is identical to the old stock_movement approach but uses the ground-truth imtrn table.
+        """
+        if mv_df is None or (isinstance(mv_df, pd.DataFrame) and mv_df.empty) or selected_batches.empty:
             return pd.Series([0.0] * len(selected_batches), index=selected_batches.index)
 
-        sm = stock_mv_df.copy()
-        sm["zid"] = sm["zid"].astype(str).str.strip()
-        sm = sm[sm["zid"].isin(["100001", "100009"])].copy()
-        if sm.empty:
+        mv = mv_df.copy()
+        mv["zid"] = mv["zid"].astype(str).str.strip()
+        mv = mv[mv["zid"].isin(["100001", "100009"])].copy()
+        if mv.empty:
             return pd.Series([0.0] * len(selected_batches), index=selected_batches.index)
 
-        sm["itemcode"] = sm["itemcode"].apply(_norm_code).astype(str).str.strip()
-        sm["date"] = pd.to_datetime(sm["date"], errors="coerce").dt.floor("D")
-        sm = sm[sm["date"].notna()].copy()
-        sm["stockqty"] = pd.to_numeric(sm.get("stockqty", 0), errors="coerce").fillna(0.0)
+        mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
+        mv["date"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
+        mv = mv[mv["date"].notna()].copy()
+        mv["net_qty"] = pd.to_numeric(mv.get("net_qty", 0), errors="coerce").fillna(0.0)
 
         daily = (
-            sm.groupby(["date", "itemcode"], as_index=False)["stockqty"]
+            mv.groupby(["date", "itemcode"], as_index=False)["net_qty"]
             .sum()
             .sort_values(["date", "itemcode"])
             .reset_index(drop=True)
         )
-        daily["onhand_qty"] = daily.groupby("itemcode")["stockqty"].cumsum()
+        daily["onhand_qty"] = daily.groupby("itemcode")["net_qty"].cumsum()
 
         q = selected_batches[["itemcode", "combinedate"]].copy()
         q["qdate"] = q["combinedate"] - pd.Timedelta(nanoseconds=1)
@@ -929,8 +945,47 @@ def run_batch_profitability_engine(
             return "altsales"
         return ""
 
-    def _build_daily_events(s_df: pd.DataFrame, r_df: pd.DataFrame, target_zid: str) -> pd.DataFrame:
-        # ---- sales daily
+    def _build_daily_events(mv_df: pd.DataFrame, s_df: pd.DataFrame, target_zid: str) -> pd.DataFrame:
+        """Build daily (itemcode, date) FIFO events from mv_imtrn_movements.
+
+        sales_qty: DO-- rows from imtrn — captures ALL physical deliveries to customers,
+                   including cases where the sales-order pipeline (opddt) is incomplete.
+        return_qty: cust_return rows from imtrn (SR--, RECA, RECT, REC-, DSR-, RE--, SRE-).
+        sales_rev: from sales MV (mv_sales_daily_item) — needed for avg price computation.
+                   May not cover every DO-- exactly, but provides the best revenue proxy.
+        net_qty = sales_qty - return_qty: net stock consumed, used by FIFO allocator.
+        """
+        # ---- qty events from mv_imtrn_movements ----
+        mv = mv_df.copy() if isinstance(mv_df, pd.DataFrame) else pd.DataFrame()
+        if not mv.empty:
+            mv["zid"] = mv["zid"].astype(str).str.strip()
+            mv = mv[mv["zid"] == str(target_zid).strip()].copy()
+            mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
+            mv["d"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
+            mv = mv[mv["d"].notna()].copy()
+
+            # sales qty: DO-- delivery orders — xqty is the absolute quantity (always positive)
+            sale_mv = mv[mv["txn_type"] == "sale"].copy()
+            sale_mv["_qty"] = pd.to_numeric(sale_mv.get("xqty", 0), errors="coerce").fillna(0.0)
+            s_qty_daily = (
+                sale_mv.groupby(["itemcode", "d"], as_index=False)
+                .agg(sales_qty=("_qty", "sum"))
+            )
+
+            # return qty: cust_return rows — xqty is the absolute quantity (always positive)
+            ret_mv = mv[mv["txn_type"] == "cust_return"].copy()
+            ret_mv["_qty"] = pd.to_numeric(ret_mv.get("xqty", 0), errors="coerce").fillna(0.0)
+            r_qty_daily = (
+                ret_mv.groupby(["itemcode", "d"], as_index=False)
+                .agg(return_qty=("_qty", "sum"))
+            )
+        else:
+            s_qty_daily = pd.DataFrame(columns=["itemcode", "d", "sales_qty"])
+            r_qty_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
+
+        # ---- revenue from sales MV (mv_sales_daily_item via sales_df) ----
+        # Still needed for avg price. May differ slightly from imtrn DO-- qty,
+        # but provides the most reliable selling-price proxy.
         s = s_df.copy() if isinstance(s_df, pd.DataFrame) else pd.DataFrame()
         if not s.empty:
             s["zid"] = s["zid"].astype(str).str.strip()
@@ -938,58 +993,33 @@ def run_batch_profitability_engine(
             s["itemcode"] = s["itemcode"].apply(_norm_code).astype(str).str.strip()
             s["d"] = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
             s = s[s["d"].notna()].copy()
-            s["quantity"] = pd.to_numeric(s.get("quantity", 0), errors="coerce").fillna(0.0)
 
             val_col = _resolve_sales_value_col(s)
-            if val_col == "totalsales":
-                s["totalsales"] = pd.to_numeric(s.get("totalsales", 0), errors="coerce").fillna(0.0)
-                s["_rev"] = s["totalsales"]
-            elif val_col == "altsales":
-                s["altsales"] = pd.to_numeric(s.get("altsales", 0), errors="coerce").fillna(0.0)
-                s["_rev"] = s["altsales"]
+            if val_col:
+                s["_rev"] = pd.to_numeric(s.get(val_col, 0), errors="coerce").fillna(0.0)
             else:
                 s["_rev"] = 0.0
 
-            s_daily = (
+            rev_daily = (
                 s.groupby(["itemcode", "d"], as_index=False)
-                .agg(
-                    sales_qty=("quantity", "sum"),
-                    sales_rev=("_rev", "sum"),
-                )
+                .agg(sales_rev=("_rev", "sum"))
             )
         else:
-            s_daily = pd.DataFrame(columns=["itemcode", "d", "sales_qty", "sales_rev"])
+            rev_daily = pd.DataFrame(columns=["itemcode", "d", "sales_rev"])
 
-        # ---- returns daily
-        r = r_df.copy() if isinstance(r_df, pd.DataFrame) else pd.DataFrame()
-        if not r.empty:
-            r["zid"] = r["zid"].astype(str).str.strip()
-            r = r[r["zid"] == str(target_zid).strip()].copy()
-            r["itemcode"] = r["itemcode"].apply(_norm_code).astype(str).str.strip()
-            r_dcol = "date" if "date" in r.columns else ("xdate" if "xdate" in r.columns else None)
-
-            if r_dcol is not None:
-                r["d"] = pd.to_datetime(r[r_dcol], errors="coerce").dt.floor("D")
-                r = r[r["d"].notna()].copy()
-                r["returnqty"] = pd.to_numeric(r.get("returnqty", 0), errors="coerce").fillna(0.0)
-
-                r_daily = (
-                    r.groupby(["itemcode", "d"], as_index=False)
-                    .agg(return_qty=("returnqty", "sum"))
-                )
-            else:
-                r_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
-        else:
-            r_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
-
-        ev = pd.merge(s_daily, r_daily, on=["itemcode", "d"], how="outer").fillna(0.0)
+        # merge: qty events (from imtrn) + revenue (from sales MV)
+        ev = (
+            s_qty_daily
+            .merge(r_qty_daily, on=["itemcode", "d"], how="outer")
+            .merge(rev_daily,   on=["itemcode", "d"], how="outer")
+            .fillna(0.0)
+        )
         if ev.empty:
             return ev
 
-        ev["sales_qty"] = pd.to_numeric(ev["sales_qty"], errors="coerce").fillna(0.0)
-        ev["sales_rev"] = pd.to_numeric(ev["sales_rev"], errors="coerce").fillna(0.0)
+        ev["sales_qty"]  = pd.to_numeric(ev["sales_qty"],  errors="coerce").fillna(0.0)
+        ev["sales_rev"]  = pd.to_numeric(ev["sales_rev"],  errors="coerce").fillna(0.0)
         ev["return_qty"] = pd.to_numeric(ev["return_qty"], errors="coerce").fillna(0.0)
-
         ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
         return ev
 
@@ -1006,8 +1036,8 @@ def run_batch_profitability_engine(
 
     selected_batches = selected_batches.sort_values(["itemcode", "combinedate", "shipmentname"]).reset_index(drop=True)
 
-    # display threshold / baseline from stock ledger
-    selected_batches["onhand_before"] = _build_onhand_before_for_selected(stock_movement_df, selected_batches).astype(float)
+    # display threshold / baseline from imtrn movements ledger
+    selected_batches["onhand_before"] = _build_onhand_before_for_selected(movements_df, selected_batches).astype(float)
     selected_batches["threshold_qty"] = selected_batches["onhand_before"].astype(float)
 
     # ----------------------------------------------------------
@@ -1169,7 +1199,7 @@ def run_batch_profitability_engine(
 
         return batches
 
-    events = _build_daily_events(sales_df, returns_df, zid_deplete)
+    events = _build_daily_events(movements_df, sales_df, zid_deplete)
     if not events.empty:
         events = events[events["itemcode"].astype(str).isin(target_itemcodes)].copy()
         events = events.sort_values(["itemcode", "d"]).reset_index(drop=True)
@@ -1407,6 +1437,20 @@ def run_batch_profitability_engine(
         df0 = common.decimal_to_float(df0)
     except Exception:
         pass
+
+    # ---- Round all numeric display columns to whole numbers (0 dp) ----
+    _numeric_round_cols = [
+        "onhand_before", "initial_qty", "sold_qty", "remaining_qty", "threshold_qty",
+        "unit_cost", "sold_revenue", "realized_cogs", "realized_gm",
+        "overhead_realized", "net_profit_realized",
+        "remaining_cost_value", "proj_remaining_revenue", "proj_remaining_gm",
+        "overhead_projected", "Proj_remaining_profit", "proj_final_profit",
+        "avg_price", "scenario_price",
+        "velocity", "days_to_clear",
+    ]
+    for _c in _numeric_round_cols:
+        if _c in df0.columns:
+            df0[_c] = pd.to_numeric(df0[_c], errors="coerce").round(0).fillna(0.0)
 
     return df0
 

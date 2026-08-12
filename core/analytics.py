@@ -75,6 +75,7 @@ class Analytics:
             "glmst_simple":     queries.get_glmst_simple,
             "casup_simple":     queries.get_casup_simple,
             "stock_movement":   queries.get_stock_movement_data,
+            "imtrn_movements":  queries.get_imtrn_movements,
             "caitem":           queries.get_caitem_data,
             "opmob_pending":    queries.get_opmob_pending,
             "opmob_all":        queries.get_opmob_all_data,
