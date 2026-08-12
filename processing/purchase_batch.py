@@ -379,11 +379,20 @@ def _compute_batch_end_and_sold_remaining(
     sku_before = sku[sku["date"] <= before_date]
     baseline = float(sku_before["onhand_qty"].iloc[-1]) if not sku_before.empty else 0.0
 
+    # When baseline < 0, pre-existing backorders were filled the moment this shipment
+    # arrived — those units were immediately consumed. Reduce the effective bin size by
+    # the backorder depth so remaining_qty can't be inflated by a negative subtrahend.
+    # We keep original_ship_qty for sold_eff so that backorder-fill is counted as sold.
+    original_ship_qty = ship_qty
+    if baseline < 0.0:
+        ship_qty = max(0.0, ship_qty + baseline)  # units available for forward tracking
+        baseline = 0.0
+
     # slice after start
     sku_after = sku[(sku["date"] >= start) & (sku["date"] <= as_of)].copy()
     if sku_after.empty:
         # no movements after start, assume still open
-        return (pd.NaT, 0.0, ship_qty, baseline, baseline)
+        return (pd.NaT, 0.0, original_ship_qty, baseline, baseline)
 
     # compute shipment remaining series
     rem = (sku_after["onhand_qty"] - baseline).clip(lower=0.0).clip(upper=ship_qty)
@@ -407,8 +416,9 @@ def _compute_batch_end_and_sold_remaining(
     sku_end = sku_after[sku_after["date"] <= end_eff]
     remaining_eff = float(sku_end["ship_remaining"].iloc[-1]) if not sku_end.empty else ship_qty
 
-    sold_eff = ship_qty - remaining_eff
-    sold_eff = max(0.0, min(ship_qty, sold_eff))
+    # sold = original purchased qty minus what's still remaining (includes backorder fill)
+    sold_eff = original_ship_qty - remaining_eff
+    sold_eff = max(0.0, min(original_ship_qty, sold_eff))
 
     # onhand at end_eff (debugging)
     sku_onhand_end = sku_after[sku_after["date"] <= end_eff]

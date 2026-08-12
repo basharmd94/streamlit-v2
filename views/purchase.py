@@ -1115,6 +1115,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
         st.markdown("Product-Based Purchase Cohort")
         st.write(cohort_df, use_container_width=True)
         st.write(common.create_download_link(cohort_df, "purchase_cohort.xlsx"), unsafe_allow_html=True)
+        st.caption("ℹ️ Stock figures cover all warehouses across both ZIDs (100001 + 100009) — no warehouse filter is applied.")
 
         if st.button("Generate Purchase Requirement"):
             result_df = purchase.generate_cohort(
