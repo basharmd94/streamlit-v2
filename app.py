@@ -820,6 +820,10 @@ class BaseApp:
                 _sm["itemname"]  = ""
                 _sm["itemgroup"] = ""
 
+            # Map xdocnum -> docnum so _prep_stock_movement finds the column it expects
+            if "docnum" not in _sm.columns:
+                _sm["docnum"] = _sm["xdocnum"].fillna("").astype(str).str.strip() if "xdocnum" in _sm.columns else ""
+
             data_dict["stock_movement"] = _sm
         else:
             data_dict["stock_movement"] = pd.DataFrame()
