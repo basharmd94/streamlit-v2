@@ -578,15 +578,20 @@ def build_inactive_customers(
 
     cutoff = pd.Timestamp.today().normalize() - pd.DateOffset(months=months)
 
+    _has_zid = "zid" in s.columns
+    agg_spec = {
+        "last_order_date":    ("date",     "max"),
+        "total_lifetime_sales":("altsales", "sum"),
+        "cusname":            ("cusname",  "last"),   # most recent name on record
+        "area":               ("area",     "last"),   # most recent area
+        "spname":             ("spname",   "last"),   # view pins to selected salesman when filtered
+    }
+    if _has_zid:
+        agg_spec["zid"] = ("zid", "last")            # ZID of the customer's last order
+
     summary = (
         s.groupby("cusid")
-        .agg(
-            last_order_date=("date",     "max"),
-            total_lifetime_sales=("altsales", "sum"),
-            cusname=("cusname", "last"),   # most recent name on record
-            area=("area",     "last"),     # most recent area (view overrides spname when filtered)
-            spname=("spname",   "last"),   # most recent salesman; view pins to selected name
-        )
+        .agg(**agg_spec)
         .reset_index()
     )
 
@@ -599,7 +604,7 @@ def build_inactive_customers(
             inactive = inactive.merge(mob, on="cusid", how="left")
 
     col_order = [c for c in [
-        "cusid", "cusname", "cusmobile", "whatsapp",
+        "cusid", "zid", "cusname", "cusmobile", "whatsapp",
         "area", "spname", "last_order_date", "total_lifetime_sales",
     ] if c in inactive.columns]
     inactive = inactive[col_order]
