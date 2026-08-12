@@ -1014,7 +1014,10 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
     )
 
     with st.spinner("Running FIFO batch consolidation…"):
-        df = build_batch_consolidation(purchase_raw, sales_raw)
+        df = build_batch_consolidation(
+            purchase_raw, sales_raw,
+            movements_df=data_dict.get("imtrn_movements", pd.DataFrame()),
+        )
 
     if df is None or df.empty:
         st.info("No closed shipments found in the 3-year window.")
