@@ -18,6 +18,12 @@ from core.analytics import Analytics
 
 
 # ---------------------------------------------------------------------------
+# dual-ZID constants (100001 + 100000 share the same field sales team)
+# ---------------------------------------------------------------------------
+_DUAL_ZIDS = frozenset({"100001", "100000"})
+_OTHER_ZID  = {"100001": "100000", "100000": "100001"}
+
+# ---------------------------------------------------------------------------
 # column display config — customer scoring table
 # ---------------------------------------------------------------------------
 
@@ -406,19 +412,29 @@ def _show_inactive_outreach(zid: str, proj: str, sales_raw: pd.DataFrame) -> Non
         f"({months} month{'s' if months != 1 else ''} ago)"
     )
 
-    # ── All-time sales for last-order-date computation ────────────────────────
+    # ── All-time sales: both ZIDs when 100001/100000 (shared sales team) ────
+    _is_dual = zid in _DUAL_ZIDS
     with st.spinner("Loading all-time sales…"):
         sales_all = _load_sales_alltime(zid, proj)
+        if "zid" not in sales_all.columns:
+            sales_all = sales_all.copy()
+            sales_all["zid"] = zid
+        if _is_dual:
+            _other_zid = _OTHER_ZID[zid]
+            _other_all = _load_sales_alltime(_other_zid, proj)
+            if not _other_all.empty:
+                if "zid" not in _other_all.columns:
+                    _other_all = _other_all.copy()
+                    _other_all["zid"] = _other_zid
+                sales_all = pd.concat([sales_all, _other_all], ignore_index=True)
 
     if sales_all.empty:
         st.warning("No sales data available.")
         return
 
     # Scope customers by area (the salesman's territory) but check inactivity
-    # against company-wide purchases — if they ordered from ANY salesman within
-    # the window they are not inactive, regardless of who took the order.
-    # The salesman dropdown only controls which areas are shown; it never
-    # filters the transaction history used for the last-order-date check.
+    # against company-wide purchases — any order from any salesman within
+    # the window removes the customer, regardless of which ZID took the order.
     if area_sel:
         _area_cusids = set(sales_all[sales_all["area"].isin(area_sel)]["cusid"].unique())
         sales_for_inactive = sales_all[sales_all["cusid"].isin(_area_cusids)]
@@ -426,6 +442,10 @@ def _show_inactive_outreach(zid: str, proj: str, sales_raw: pd.DataFrame) -> Non
         sales_for_inactive = sales_all.copy()
 
     cacus_df = _load_cacus(zid)
+    if _is_dual:
+        _other_cacus = _load_cacus(_OTHER_ZID[zid])
+        if not _other_cacus.empty:
+            cacus_df = pd.concat([cacus_df, _other_cacus], ignore_index=True)
 
     inactive = build_inactive_customers(sales_for_inactive, cacus_df=cacus_df, months=months)
 
@@ -457,6 +477,7 @@ def _show_inactive_outreach(zid: str, proj: str, sales_raw: pd.DataFrame) -> Non
 
     rename_map = {
         "cusid":               "Customer ID",
+        "zid":                 "ZID",
         "cusname":             "Customer Name",
         "cusmobile":           "Mobile",
         "whatsapp":            "WhatsApp",
