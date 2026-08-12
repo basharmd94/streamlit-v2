@@ -48,10 +48,12 @@ def _prep_stock_movement(stock_mv_df: pd.DataFrame, zids: List[str]) -> pd.DataF
     s["stockqty"] = pd.to_numeric(s["stockqty"], errors="coerce").fillna(0.0)
     s["stockvalue"] = pd.to_numeric(s["stockvalue"], errors="coerce").fillna(0.0)
 
-    s["docnum"] = s.get("docnum", "").astype(str).fillna("").str.strip()
+    s["docnum"] = (s["docnum"].astype(str).fillna("").str.strip()
+                   if "docnum" in s.columns else "")
     s["prefix"] = s["docnum"].str.slice(0, 4)
 
-    s["warehouse"] = s.get("warehouse", "").astype(str).fillna("").str.strip()
+    s["warehouse"] = (s["warehouse"].astype(str).fillna("").str.strip()
+                      if "warehouse" in s.columns else "")
 
     return s
 
