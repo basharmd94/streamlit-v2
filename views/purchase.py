@@ -1218,16 +1218,22 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
         # ---------------------------------------------------
         wh_opts = purchase.get_all_warehouse_options(data_dict["stock_movement"])
 
+        def _default_wh(options: list, keywords: list[str]) -> list:
+            """Return options whose names contain any of the keywords (case-insensitive).
+            Falls back to all options if no keyword matches."""
+            matched = [w for w in options if any(k.lower() in w.lower() for k in keywords)]
+            return matched if matched else options
+
         sel_wh_100001 = st.multiselect(
             "Warehouses (100001)",
             options=wh_opts.get("100001", []),
-            default=wh_opts.get("100001", []),
+            default=_default_wh(wh_opts.get("100001", []), ["main store", "w5"]),
         )
 
         sel_wh_100009 = st.multiselect(
             "Warehouses (100009)",
             options=wh_opts.get("100009", []),
-            default=wh_opts.get("100009", []),
+            default=_default_wh(wh_opts.get("100009", []), ["finished goods", "raw material"]),
         )
 
         override_wh = {
