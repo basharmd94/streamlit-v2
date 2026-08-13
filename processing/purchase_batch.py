@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import pandas as pd
 import numpy as np
 from processing import common
@@ -7,6 +8,8 @@ from datetime import datetime
 import streamlit as st
 from datetime import date as _date
 from typing import Dict, List, Tuple, Optional, Any
+
+_log = logging.getLogger(__name__)
 
 
 def generate_cohort(purchase_data,year_ago,inventory_data,sales_df,cohort_df):
@@ -978,8 +981,8 @@ def run_batch_profitability_engine(
             else:
                 mv = mv[mv["zid"] == str(target_zid).strip()].copy()
             # Diagnostic — remove once confirmed correct
-            print(f"[_build_daily_events] target_zid={target_zid} mv rows={len(mv)} "
-                  f"zids={sorted(mv['zid'].unique().tolist())}")
+            _log.info("[_build_daily_events] target_zid=%s mv_rows=%d zids=%s",
+                      target_zid, len(mv), sorted(mv["zid"].unique().tolist()))
             mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
             mv["d"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
             mv = mv[mv["d"].notna()].copy()
@@ -1227,9 +1230,10 @@ def run_batch_profitability_engine(
         events = events[events["itemcode"].astype(str).isin(target_itemcodes)].copy()
         events = events.sort_values(["itemcode", "d"]).reset_index(drop=True)
 
-    print("Events rows:", len(events))
-    print("Event SKUs:", events["itemcode"].unique()[:10])
-    print("Batch SKUs:", list(target_itemcodes)[:10])
+    _log.info("[BatchPL] events_rows=%d event_skus=%s batch_skus=%s",
+              len(events),
+              list(events["itemcode"].unique()[:10]),
+              list(target_itemcodes)[:10])
     alloc_src_batches = _fifo_allocate_batches(alloc_src_batches, events)
 
     alloc_src_batches["batch_end_date"] = pd.to_datetime(alloc_src_batches["batch_end_date"], errors="coerce")
@@ -1822,13 +1826,13 @@ def build_batch_consolidation(
         for code, (dn, cq, _) in sales_lkp.items():
             depletion_lkp[code] = (dn, cq)
 
-    # Diagnostic — visible in server terminal; remove once confirmed correct
-    print(f"[BatchCon] depletion_lkp: {len(depletion_lkp)} codes "
-          f"(fallback={'yes' if not (movements_df is not None and isinstance(movements_df, pd.DataFrame) and not movements_df.empty) else 'no'})")
+    # Diagnostic — remove once confirmed correct
+    _mv_ok = movements_df is not None and isinstance(movements_df, pd.DataFrame) and not movements_df.empty
+    _log.info("[BatchCon] depletion_lkp codes=%d fallback=%s", len(depletion_lkp), "no" if _mv_ok else "yes")
     for _dbg in ["2145", "1222"]:
         if _dbg in depletion_lkp:
             _dn, _cq = depletion_lkp[_dbg]
-            print(f"  [{_dbg}] {len(_dn)} events, cumulative_total={_cq[-1] if len(_cq) else 0:.0f}")
+            _log.info("[BatchCon] item=%s events=%d cum_total=%.0f", _dbg, len(_dn), float(_cq[-1]) if len(_cq) else 0)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _cum_at(dates_np, cum_np, T: pd.Timestamp) -> float:
