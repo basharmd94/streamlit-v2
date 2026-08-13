@@ -977,6 +977,9 @@ def run_batch_profitability_engine(
                 mv = mv[mv["zid"].isin(["100001", "100009"])].copy()
             else:
                 mv = mv[mv["zid"] == str(target_zid).strip()].copy()
+            # Diagnostic — remove once confirmed correct
+            print(f"[_build_daily_events] target_zid={target_zid} mv rows={len(mv)} "
+                  f"zids={sorted(mv['zid'].unique().tolist())}")
             mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
             mv["d"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
             mv = mv[mv["d"].notna()].copy()
@@ -1818,6 +1821,14 @@ def build_batch_consolidation(
         # Fallback: no movements available — use customer sales only (old behaviour)
         for code, (dn, cq, _) in sales_lkp.items():
             depletion_lkp[code] = (dn, cq)
+
+    # Diagnostic — visible in server terminal; remove once confirmed correct
+    print(f"[BatchCon] depletion_lkp: {len(depletion_lkp)} codes "
+          f"(fallback={'yes' if not (movements_df is not None and isinstance(movements_df, pd.DataFrame) and not movements_df.empty) else 'no'})")
+    for _dbg in ["2145", "1222"]:
+        if _dbg in depletion_lkp:
+            _dn, _cq = depletion_lkp[_dbg]
+            print(f"  [{_dbg}] {len(_dn)} events, cumulative_total={_cq[-1] if len(_cq) else 0:.0f}")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _cum_at(dates_np, cum_np, T: pd.Timestamp) -> float:
