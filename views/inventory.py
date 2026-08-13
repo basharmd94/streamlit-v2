@@ -222,9 +222,9 @@ def display_inventory_analysis_main(current_page, zid: str):
                 f"Showing first {_DISPLAY_LIMIT:,} of {len(ledger):,} rows. "
                 f"Use the download button below for the full dataset."
             )
-            st.dataframe(ledger.head(_DISPLAY_LIMIT), use_container_width=True, height=420)
+            st.dataframe(ledger.head(_DISPLAY_LIMIT), width="stretch", height=420)
         else:
-            st.dataframe(ledger, use_container_width=True, height=420)
+            st.dataframe(ledger, width="stretch", height=420)
 
         st.download_button(
             label=f"⬇ Download Ledger CSV ({len(ledger):,} rows)",
@@ -323,7 +323,7 @@ def display_inventory_analysis_main(current_page, zid: str):
     _tot["final_qty"]   = final_display["final_qty"].sum()
     _tot["final_value"] = final_display["final_value"].sum()
     final_with_total = pd.concat([final_display, pd.DataFrame([_tot])], ignore_index=True)
-    st.dataframe(final_with_total, use_container_width=True, height=420)
+    st.dataframe(final_with_total, width="stretch", height=420)
     st.download_button(
         label=f"⬇ Download Final Stock CSV ({len(final_display):,} rows)",
         data=final_display.to_csv(index=False).encode("utf-8"),
@@ -344,7 +344,7 @@ def display_inventory_analysis_main(current_page, zid: str):
                 .sort_values("warehouse")
                 .reset_index(drop=True)
         )
-        st.dataframe(warehouse_ending, use_container_width=True, height=300)
+        st.dataframe(warehouse_ending, width="stretch", height=300)
         st.download_button(
             label=f"⬇ Download Warehouse Ending Value CSV ({len(warehouse_ending):,} rows)",
             data=warehouse_ending.to_csv(index=False).encode("utf-8"),
@@ -397,7 +397,7 @@ def display_inventory_analysis_main(current_page, zid: str):
                 movement = movement[out_cols].sort_values(
                     ["warehouse","movement_class","abs_qty_K"], ascending=[True, True, False]
                 )
-                st.dataframe(movement, use_container_width=True, height=420)
+                st.dataframe(movement, width="stretch", height=420)
                 st.download_button(
                     label=f"⬇ Download Movement Analysis CSV ({len(movement):,} rows)",
                     data=movement.to_csv(index=False).encode("utf-8"),
@@ -472,7 +472,7 @@ def display_inventory_analysis_main(current_page, zid: str):
                 movement = agg[out_cols].sort_values(
                     ["warehouse","movement_class","abs_qty_K"], ascending=[True, True, False]
                 )
-                st.dataframe(movement, use_container_width=True, height=420)
+                st.dataframe(movement, width="stretch", height=420)
                 st.download_button(
                     label=f"⬇ Download Movement Analysis CSV ({len(movement):,} rows)",
                     data=movement.to_csv(index=False).encode("utf-8"),

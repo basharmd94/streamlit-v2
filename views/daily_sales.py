@@ -119,7 +119,7 @@ def display_daily_sales_page(current_page, zid, data_dict):
                     labels={"date_label": "Date", "value": selected_plot},
                 )
                 fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
         except Exception:
             st.warning("⚠️ Unable to generate report. Please reselect your options — the current combination may lack sufficient data for valid reporting.")
 
@@ -178,7 +178,7 @@ def display_daily_sales_page(current_page, zid, data_dict):
                 st.info("No data available for the selected combination.")
             else:
                 pivot_capped = _cap_dataframe(pivot_df, key="pivot_cap")
-                st.dataframe(pivot_capped, use_container_width=True)
+                st.dataframe(pivot_capped, width="stretch")
                 _make_download_button(pivot_df, "⬇ Download Pivot", "daily_pivot.xlsx", "dl_daily_pivot")
         except Exception:
             st.warning("⚠️ Unable to generate report. Please reselect your options — the current combination may lack sufficient data for valid reporting.")
@@ -212,7 +212,7 @@ def display_daily_sales_page(current_page, zid, data_dict):
             if ma_df.empty:
                 st.info("No data available for the selected combination.")
             else:
-                st.dataframe(ma_df, use_container_width=True)
+                st.dataframe(ma_df, width="stretch")
                 _make_download_button(ma_df, "⬇ Download MA Table", "daily_ma.xlsx", "dl_daily_ma")
         except Exception:
             st.warning("⚠️ Unable to generate report. Please reselect your options — the current combination may lack sufficient data for valid reporting.")
@@ -302,7 +302,7 @@ def display_daily_sales_page(current_page, zid, data_dict):
                     )
                     # Force categorical axis so Plotly doesn't reinterpret MM-DD strings as dates
                     fig.update_xaxes(type="category", tickangle=-45)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                     st.markdown("### 📋 Corresponding Data")
                     yoy_pivot = (
@@ -312,7 +312,7 @@ def display_daily_sales_page(current_page, zid, data_dict):
                         .fillna(0)
                         .round(2)
                     )
-                    st.dataframe(_cap_dataframe(yoy_pivot, key="yoy_cap"), use_container_width=True)
+                    st.dataframe(_cap_dataframe(yoy_pivot, key="yoy_cap"), width="stretch")
                     _make_download_button(yoy_pivot, "⬇ Download YOY Data", "yoy_daily.xlsx", "dl_yoy_daily")
 
             # ---- Month vs Month ----
@@ -404,7 +404,7 @@ def display_daily_sales_page(current_page, zid, data_dict):
                                 "month_label": "Month",
                             },
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
 
                         st.markdown("### 📋 Corresponding Data")
                         mom_pivot = (
@@ -414,7 +414,7 @@ def display_daily_sales_page(current_page, zid, data_dict):
                             .fillna(0)
                             .round(2)
                         )
-                        st.dataframe(_cap_dataframe(mom_pivot, key="mom_cap"), use_container_width=True)
+                        st.dataframe(_cap_dataframe(mom_pivot, key="mom_cap"), width="stretch")
                         _make_download_button(
                             mom_pivot, "⬇ Download MoM Data", "mom_daily.xlsx", "dl_mom_daily"
                         )

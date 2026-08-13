@@ -382,9 +382,9 @@ def _render_overview(sales_df: pd.DataFrame, returns_df: pd.DataFrame, opmob_all
             return styled
 
         try:
-            st.dataframe(_style_t1(t1), use_container_width=True, hide_index=True)
+            st.dataframe(_style_t1(t1), width="stretch", hide_index=True)
         except Exception:
-            st.dataframe(t1, use_container_width=True, hide_index=True)
+            st.dataframe(t1, width="stretch", hide_index=True)
 
         _3m_period = f"{mo_start_3mo.strftime('%b %Y')} – {end_3mo.strftime('%b %Y')}"
         st.caption(
@@ -575,9 +575,9 @@ def _render_prior_month_section(
             return styled
 
         try:
-            st.dataframe(_style_prior(t), use_container_width=True, hide_index=True)
+            st.dataframe(_style_prior(t), width="stretch", hide_index=True)
         except Exception:
-            st.dataframe(t, use_container_width=True, hide_index=True)
+            st.dataframe(t, width="stretch", hide_index=True)
 
         st.download_button(
             f"⬇ Download {mo_label} CSV",
@@ -678,9 +678,9 @@ def _render_three_month_averages(sales_df: pd.DataFrame, returns_df: pd.DataFram
             "Avg Daily Products (3M)":  "{:.1f}",
             "ZID Unique Products (3M)": "{:,.0f}",
         }, na_rep="—")
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, width="stretch", hide_index=True)
     except Exception:
-        st.dataframe(t, use_container_width=True, hide_index=True)
+        st.dataframe(t, width="stretch", hide_index=True)
 
     st.download_button(
         "⬇ Download 3 Month Averages CSV",
@@ -719,7 +719,7 @@ def _render_three_month_averages(sales_df: pd.DataFrame, returns_df: pd.DataFram
             collection_df=None,
         )
         if ma_df is not None and not ma_df.empty:
-            st.dataframe(ma_df, use_container_width=True)
+            st.dataframe(ma_df, width="stretch")
         else:
             st.info("No moving average data available for the selected filters.")
     except Exception as _ma_err:
@@ -801,12 +801,12 @@ def _render_sp_daily_breakdown(
                 "Uniq Cust":  "{:,.0f}",
                 "Uniq Prods": "{:,.0f}",
             }, na_rep="—"),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             height=min(35 * len(t) + 60, 520),
         )
     except Exception:
-        st.dataframe(t, use_container_width=True, hide_index=True)
+        st.dataframe(t, width="stretch", hide_index=True)
 
     st.download_button(
         "⬇ Download Daily Breakdown CSV",
@@ -887,10 +887,10 @@ def _render_collection_details_tab(
         try:
             st.dataframe(
                 t.style.format({"Date": "{:%Y-%m-%d}", "Amount": "{:,.0f}"}, na_rep="—"),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
             )
         except Exception:
-            st.dataframe(t, use_container_width=True, hide_index=True)
+            st.dataframe(t, width="stretch", hide_index=True)
 
         st.download_button(
             "⬇ Download Collection CSV",
@@ -985,11 +985,11 @@ def _render_collection_details_tab(
                  "Collection": "{:,.0f}", "Mobile Order": "{:,.0f}"},
                 na_rep="—",
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     except Exception:
-        st.dataframe(txn, use_container_width=True, hide_index=True)
+        st.dataframe(txn, width="stretch", hide_index=True)
 
     st.download_button(
         "⬇ Download All Transactions CSV",
@@ -1160,7 +1160,7 @@ def display_target_management_page(current_page, zid, data_dict):
                 fmt["WH Price"] = "{:,.2f}"
             st.dataframe(
                 disp.style.format(fmt, na_rep="—"),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
             st.download_button(
@@ -1311,10 +1311,10 @@ def display_target_management_page(current_page, zid, data_dict):
                 try:
                     st.dataframe(
                         detail_display.style.format({"Line Total": "{:,.2f}"}, na_rep="-"),
-                        use_container_width=True,
+                        width="stretch",
                     )
                 except Exception:
-                    st.dataframe(detail_display, use_container_width=True)
+                    st.dataframe(detail_display, width="stretch")
                 st.download_button(
                     label=f"⬇ Download CSV ({len(detail_display):,} rows)",
                     data=detail_display.to_csv(index=False).encode("utf-8"),
@@ -1412,7 +1412,7 @@ def display_target_management_page(current_page, zid, data_dict):
             if no_sales_display.empty:
                 st.success("All customers in the selected area(s) have sales in this period.")
             else:
-                st.dataframe(no_sales_display, use_container_width=True)
+                st.dataframe(no_sales_display, width="stretch")
                 st.download_button(
                     label=f"⬇ Download CSV ({len(no_sales_display):,} rows)",
                     data=no_sales_display.to_csv(index=False).encode("utf-8"),

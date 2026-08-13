@@ -559,7 +559,7 @@ def display_composite_scoring_page(filtered_data_ar):
                 .loc[:, ['cusid','cusname','area',
                            'Days_to_Pay','DSO','Total_Sales','Total_Collection',
                            'Composite_Score']],
-                use_container_width=True
+                width="stretch"
             )
 
     hist_metric = st.selectbox("Histogram Metric", ["Days_to_Pay", "DSO", "Total_Sales", "Total_Collection", "Ending_Balance"])
@@ -635,10 +635,10 @@ def display_composite_scoring_page(filtered_data_ar):
     )
 
     with st.expander("📋 Segment Summary Table", expanded=True):
-        st.dataframe(summary_table, use_container_width=True)
+        st.dataframe(summary_table, width="stretch")
 
     with st.expander("📄 Full Composite Score List", expanded=True):
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width="stretch")
 
 
 def make_dynamic_bins(scores: pd.Series,seed_width: float = 0.1,top_n: int = 3,split_pcts: list = [0.25, 0.5, 0.75, 0.99]) -> list:
@@ -867,7 +867,7 @@ def plot_net(data1,data2,xaxis,yaxis1,yaxis2,bartitle,current_page):
     fig = px.bar(grouped_data, x='xaxis', y=yaxis, title=bartitle, labels={'xaxis': 'Month-Year', yaxis: 'Net Value'})
     fig.update_layout(xaxis_tickangle=-45)  # better readability
     # Display the plot in Streamlit
-    st.plotly_chart(fig,use_container_width=True)
+    st.plotly_chart(fig,width="stretch")
 
 @timed
 def plot_total_returns(filtered_data_r, current_page):
@@ -883,7 +883,7 @@ def plot_total_returns(filtered_data_r, current_page):
         labels={"x_label": "Year-Month", "treturnamt": "Total Returns"}
     )
     fig.update_layout(xaxis_tickangle=-45)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 @timed
 def plot_total_discounts(filtered_data, current_page):
@@ -899,7 +899,7 @@ def plot_total_discounts(filtered_data, current_page):
         labels={"x_label": "Year-Month", "proddiscount": "Total Discounts"}
     )
     fig.update_layout(xaxis_tickangle=-45)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 @timed
 def plot_collection(filtered_data_c, current_page):
@@ -936,7 +936,7 @@ def plot_collection(filtered_data_c, current_page):
         yaxis_title="Collection Amount"
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 @timed
 def plot_yoy_monthly_comparison(filtered_data_c,filtered_data_s,filtered_data_r,code_col,selected_codes,metric,selected_years,selected_month_names):
@@ -1005,11 +1005,11 @@ def plot_yoy_monthly_comparison(filtered_data_c,filtered_data_s,filtered_data_r,
             labels={"value": metric, "month_name": "Month"}
         )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Show Table
     with st.expander("📋 Corresponding Data", expanded=False):
-        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}"), width="stretch")
 
 @timed
 def plot_yoy_daily_comparison(filtered_data_c,filtered_data_s, filtered_data_r, code_col, selected_codes, metric, selected_years, start_date, end_date):
@@ -1088,10 +1088,10 @@ def plot_yoy_daily_comparison(filtered_data_c,filtered_data_s, filtered_data_r, 
         labels={"value": metric, "day_month_label": "Date"}
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     with st.expander("📋 Corresponding Data", expanded=False):
-        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}"), width="stretch")
 
 @timed
 def plot_yoy_dow_comparison(filtered_data_c, filtered_data_s, filtered_data_r, code_col, selected_codes, metric, selected_years, average_or_total):
@@ -1172,10 +1172,10 @@ def plot_yoy_dow_comparison(filtered_data_c, filtered_data_s, filtered_data_r, c
         labels={"value": metric, "weekday": "Day of Week"}
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     with st.expander("📋 Corresponding Data", expanded=False):
-        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}"), width="stretch")
 
 @timed
 def plot_yoy_dom_comparison(filtered_data_c, filtered_data_s, filtered_data_r, code_col, selected_codes, metric, selected_years, selected_month_names, average_or_total):
@@ -1249,10 +1249,10 @@ def plot_yoy_dom_comparison(filtered_data_c, filtered_data_s, filtered_data_r, c
         title=f"{metric} by Day of Month (YOY)",
         labels={"value": metric, "day": "Day of Month"}
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     with st.expander("📋 Corresponding Data", expanded=False):
-        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}"), width="stretch")
 
 @timed
 def plot_month_vs_month_comparison(filtered_data_c,filtered_data_s,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months):
@@ -1327,12 +1327,12 @@ def plot_month_vs_month_comparison(filtered_data_c,filtered_data_s,filtered_data
         labels={"month_label": "Month", "value": metric, "entity_label": "Entity"}
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Data Table
     pivot = df.pivot(index="month_label", columns="entity_label", values="value").fillna(0)
     with st.expander("📋 Corresponding Data", expanded=False):
-        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}"), width="stretch")
 
 @timed
 def plot_month_vs_month_dow_comparison(filtered_data_c,filtered_data_s,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months,aggregation_type):
@@ -1420,12 +1420,12 @@ def plot_month_vs_month_dow_comparison(filtered_data_c,filtered_data_s,filtered_
         labels={"value": metric, "DOW": "Day", "entity_label": "Entity"}
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Data Table
     pivot = df.pivot_table(index=["DOW"], columns=["entity_label", "month_label"], values="value", aggfunc="sum").fillna(0)
     with st.expander("📋 Corresponding Data", expanded=False):
-        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}"), width="stretch")
 
 @timed
 def plot_month_vs_month_dom_comparison(filtered_data_c,filtered_data_s,filtered_data_r,code_col,name_col,selected_codes,metric,selected_months,aggregation_type,selected_days=None):
@@ -1517,12 +1517,12 @@ def plot_month_vs_month_dom_comparison(filtered_data_c,filtered_data_s,filtered_
         title=f"{metric} Comparison across Months (Day of Month Aggregation: {aggregation_type})",
         labels={"month_label": "Month", "value": metric, "entity_label": "Entity"}
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Table
     pivot = agg_df.pivot(index="month_label", columns="entity_label", values="value").fillna(0)
     with st.expander("📋 Corresponding Data", expanded=False):
-        st.dataframe(pivot.style.format("{:.2f}"), use_container_width=True)
+        st.dataframe(pivot.style.format("{:.2f}"), width="stretch")
 
 @timed
 def plot_metric_comparison_monthly(filtered_data_c, filtered_data_s, filtered_data_r, code_col, selected_codes, metric_x, metric_y, selected_years, selected_month_names):
@@ -1606,10 +1606,10 @@ def plot_metric_comparison_monthly(filtered_data_c, filtered_data_s, filtered_da
                 font=dict(color="black", size=10),
                 yshift=10
             )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     with st.expander("📋 Comparison Table", expanded=False):
-        st.dataframe(merged.style.format({"Metric_X": "{:,.0f}", "Metric_Y": "{:,.0f}", "% B / A": "{:.1f}%"}), use_container_width=True)
+        st.dataframe(merged.style.format({"Metric_X": "{:,.0f}", "Metric_Y": "{:,.0f}", "% B / A": "{:.1f}%"}), width="stretch")
 
 @timed
 def plot_distribution_analysis(filtered_data_s, filtered_data_r, filtered_data_c, metric, group_by, value_min=None, value_max=None, nbins=100):
@@ -1678,13 +1678,13 @@ def plot_distribution_analysis(filtered_data_s, filtered_data_r, filtered_data_c
             labels={"value": metric}
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Step 5: Show Binned Frequency Table
         st.markdown("### 📋 Binned Frequency Table")
         bin_table = pd.cut(agg_df["value"], bins=nbins).value_counts().sort_index().reset_index()
         bin_table.columns = ["Range", "Count"]
-        st.dataframe(bin_table, use_container_width=True)
+        st.dataframe(bin_table, width="stretch")
 
     except Exception as e:
         st.error(f"Error generating distribution: {e}")
@@ -1817,7 +1817,7 @@ def plot_collection_size_distribution(filtered_data_c, areas, salesmen, customer
         )
         fig.update_layout(xaxis_title="Collection Amount", yaxis_title="Number of Vouchers",
                           bargap=0.05)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         series = vouchers["value"]
     else:
         vouchers = df_f.groupby("glvoucher")["value"].sum()
@@ -1833,7 +1833,7 @@ def plot_collection_size_distribution(filtered_data_c, areas, salesmen, customer
                            labels={"value": "Collection Amount"})
         fig.update_layout(xaxis_title="Collection Amount", yaxis_title="Number of Vouchers",
                           bargap=0.05, showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Count", f"{len(series):,}")
@@ -1843,7 +1843,7 @@ def plot_collection_size_distribution(filtered_data_c, areas, salesmen, customer
     c5.metric("Max", f"{series.max():,.0f}")
 
     st.markdown("#### Bucket Breakdown")
-    st.dataframe(_smart_buckets_collection(series), use_container_width=True, hide_index=True)
+    st.dataframe(_smart_buckets_collection(series), width="stretch", hide_index=True)
 
 
 def plot_rolling_collection_average(filtered_data_c, areas, salesmen, customers, windows,
@@ -1904,7 +1904,7 @@ def plot_rolling_collection_average(filtered_data_c, areas, salesmen, customers,
     fig.update_layout(title="Rolling Average — Collection",
                       xaxis_title="Date", yaxis_title="Collection Amount",
                       hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
     # The way this works is: first we find the invoices (sales) and then we find the balance before this 

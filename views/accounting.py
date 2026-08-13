@@ -266,7 +266,7 @@ def display_accounting_analysis_main(current_page, zid: str):
                     f"AR balances as of selected month-end — OB vouchers (OB--) are ignored in all calculations and trails. "
                     f"Total closing: **{total_ar:,.2f}**"
                 )
-                st.dataframe(summary, use_container_width=True, height=440)
+                st.dataframe(summary, width="stretch", height=440)
                 st.write(common.create_download_link(summary,"ar_balances.xlsx"), unsafe_allow_html=True)
 
                 # Drill-down for a single customer (up to month-end)
@@ -283,7 +283,7 @@ def display_accounting_analysis_main(current_page, zid: str):
                     else:
                         trail_display = cust_trail[["date","voucher","ac_code","ac_name","value"]].reset_index(drop=True).copy()
                         trail_display["ending_balance"] = trail_display["value"].cumsum()
-                        st.dataframe(trail_display, use_container_width=True, height=420)
+                        st.dataframe(trail_display, width="stretch", height=420)
                         st.write(common.create_download_link(cust_trail,"ar_trail.xlsx"), unsafe_allow_html=True)
 
     # ───────────────────────────── AP Analysis (placeholder) ──────────────────
@@ -310,7 +310,7 @@ def display_accounting_analysis_main(current_page, zid: str):
                     f"AP balances as of selected month-end — OB vouchers (OB--) are ignored in all calculations and trails. "
                     f"Total closing: **{total_ap:,.2f}**"
                 )
-                st.dataframe(ap_summary, use_container_width=True, height=440)
+                st.dataframe(ap_summary, width="stretch", height=440)
                 st.write(common.create_download_link(ap_summary,"ap_balances.xlsx"), unsafe_allow_html=True)
 
                 st.markdown("### Supplier Trail (up to selected month)")
@@ -327,7 +327,7 @@ def display_accounting_analysis_main(current_page, zid: str):
                         st.dataframe(
                             sup_trail[["date","voucher","ac_code","ac_name","value"]]
                             .reset_index(drop=True),
-                            use_container_width=True, height=420
+                            width="stretch", height=420
                         )
                         st.write(common.create_download_link(sup_trail,"ap_trail.xlsx"), unsafe_allow_html=True)
 
@@ -374,5 +374,5 @@ def display_accounting_analysis_main(current_page, zid: str):
                 st.info("No postings for the selected filters.")
             else:
                 st.caption("Line entries (no narration)")
-                st.dataframe(lines, use_container_width=True, height=420)
+                st.dataframe(lines, width="stretch", height=420)
                 st.write(common.create_download_link(lines,"ledger_lines.xlsx"), unsafe_allow_html=True)

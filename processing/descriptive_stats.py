@@ -84,6 +84,6 @@ def process_and_visualize_v3(data, pective, metric, metric2, timing, stats):
     # Visualize data
     common_v.plot_bar_chart(grouped_data, aggregation_group_mapping[pective][-1], metric, aggregation_group_mapping[pective][0] if len(aggregation_group_mapping[pective]) > 1 else None, f'Analysis of {metric2}, on a {timing} basis,{pective},{stats}')
     st.markdown(f"Analysis of {metric2}, on a {timing} basis,{pective},{stats}")
-    st.write(grouped_data, use_container_width=True)
+    st.write(grouped_data, width="stretch")
 
     show_stats(variance,std_dev,minimum,maximum,IQR,skew,kurt)

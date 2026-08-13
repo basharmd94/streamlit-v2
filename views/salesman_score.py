@@ -281,9 +281,9 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
 
     try:
         styled = t.style.format(fmt, na_rep="—").apply(_row_style, axis=1)
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, width="stretch", hide_index=True)
     except Exception:
-        st.dataframe(t, use_container_width=True, hide_index=True)
+        st.dataframe(t, width="stretch", hide_index=True)
 
     newest_asof = "as of today" if is_current else f"as of {mo_end_full.strftime('%b %d')}"
     st.caption(

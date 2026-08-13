@@ -117,7 +117,7 @@ def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, 
             "Avg Material Cost/Unit": "{:,.2f}", "Latest Material Cost/Unit": "{:,.2f}",
             "Total Material Cost": "{:,.0f}",
         }),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
     st.download_button(
         "⬇ Download FG Costing CSV", fg_summary.to_csv(index=False).encode("utf-8"),
@@ -178,7 +178,7 @@ def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, 
         ddisp = drivers.rename(columns=d_col_map)[[c for c in d_col_map.values() if c in drivers.rename(columns=d_col_map).columns]]
         st.dataframe(
             _fmt(ddisp, {"Total Qty": "{:,.2f}", "Avg Rate": "{:,.2f}", "Total Cost": "{:,.0f}", "% of Total Cost": "{:,.1f}%"}),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
     st.markdown("**Admin (06) cost allocation, by month**")
@@ -197,7 +197,7 @@ def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, 
                 "FG Material Cost": "{:,.0f}", "Qty Produced": "{:,.0f}", "Zid Total Material Cost": "{:,.0f}",
                 "Total 06 Expense": "{:,.0f}", "FG Share": "{:.2%}", "Allocated Admin": "{:,.0f}", "Admin Cost/Unit": "{:,.2f}",
             }),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
 
@@ -227,7 +227,7 @@ def _render_fg_cost_history(zid: str, mo_cost: pd.DataFrame, mo_header: pd.DataF
     disp = hist_disp.rename(columns=col_map)[[c for c in col_map.values() if c in hist_disp.rename(columns=col_map).columns]]
     st.dataframe(
         _fmt(disp, {"Qty Produced": "{:,.0f}", "Batches": "{:,.0f}", "Total Material Cost": "{:,.0f}", "Avg Material Cost/Unit": "{:,.2f}"}),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
     st.download_button(
         "⬇ Download Cost History CSV", hist.to_csv(index=False).encode("utf-8"),
@@ -259,7 +259,7 @@ def _render_rm_rate_trend(zid: str, mo_lines: pd.DataFrame, mo_detail: pd.DataFr
             st.dataframe(
                 _fmt(m.rename(columns={"avg_rate": "Avg Rate", "total_qty": "Total Qty"})[["Period", "Avg Rate", "Total Qty"]],
                      {"Avg Rate": "{:,.2f}", "Total Qty": "{:,.2f}"}),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
             )
             st.download_button(
                 "⬇ Download Rate History CSV", detail.to_csv(index=False).encode("utf-8"),
@@ -279,7 +279,7 @@ def _render_rm_rate_trend(zid: str, mo_lines: pd.DataFrame, mo_detail: pd.DataFr
     mvdisp = movers.rename(columns=mv_col_map)[[c for c in mv_col_map.values() if c in movers.rename(columns=mv_col_map).columns]]
     st.dataframe(
         _fmt(mvdisp, {"First Rate": "{:,.2f}", "Last Rate": "{:,.2f}", "% Change": "{:+,.1f}%", "BOM Lines": "{:,.0f}"}),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
     st.download_button(
         "⬇ Download Price Movers CSV", movers.to_csv(index=False).encode("utf-8"),
@@ -320,7 +320,7 @@ def _render_rm_requirement(zid: str, mo_lines: pd.DataFrame):
     disp = req_sorted.rename(columns=col_map)[[c for c in col_map.values() if c in req_sorted.rename(columns=col_map).columns]]
     st.dataframe(
         _fmt(disp, {"Total Qty": "{:,.2f}", "Total Value": "{:,.0f}", "BOM Lines": "{:,.0f}"}),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
     st.download_button(
         "⬇ Download RM Requirement CSV", req_sorted.to_csv(index=False).encode("utf-8"),
@@ -376,9 +376,9 @@ def _render_rm_stock_coverage(zid: str, mo_header: pd.DataFrame, mo_lines: pd.Da
             {"Projected Monthly Need": "{:,.2f}", "Current Stock": "{:,.2f}", "Coverage (Months)": "{:,.2f}"},
             na_rep="—",
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, width="stretch", hide_index=True)
     except Exception:
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        st.dataframe(disp, width="stretch", hide_index=True)
 
     st.download_button(
         "⬇ Download Stock Coverage CSV", coverage.to_csv(index=False).encode("utf-8"),
@@ -426,9 +426,9 @@ def _render_bom_variance(zid: str, mo_lines: pd.DataFrame):
             {"Actual Qty": "{:,.2f}", "Standard Qty": "{:,.2f}", "Variance Qty": "{:+,.2f}", "Variance %": "{:+,.1f}%"},
             na_rep="—",
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, width="stretch", hide_index=True)
     except Exception:
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        st.dataframe(disp, width="stretch", hide_index=True)
 
     st.download_button(
         "⬇ Download BOM Variance CSV", variance.to_csv(index=False).encode("utf-8"),
@@ -526,7 +526,7 @@ def _render_mo_detail(zid: str, mo_header: pd.DataFrame, mo_lines: pd.DataFrame)
             "Rate":         "{:,.2f}",
             "Line Cost":    "{:,.0f}",
         }),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 

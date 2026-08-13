@@ -165,7 +165,7 @@ def _render_next_month_target(zid):
             "Est. Low Qty": "{:,.0f}", "Est. Median Qty": "{:,.0f}", "Est. High Qty": "{:,.0f}",
             "Est. Low Amt": "{:,.0f}", "Est. Median Amt": "{:,.0f}", "Est. High Amt": "{:,.0f}",
         }, na_rep="—"),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
 
     # ── Salesman × Area performance ───────────────────────────────────────────
@@ -223,7 +223,7 @@ def _render_next_month_target(zid):
             sp_area_view.style.format({
                 "Low Amount": "{:,.0f}", "Median Amount": "{:,.0f}", "High Amount": "{:,.0f}",
             }, na_rep="—"),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
         # ── Per-salesman product breakdown ─────────────────────────────────────
@@ -295,7 +295,7 @@ def _render_next_month_target(zid):
                         "Avg Price": "{:,.2f}",
                         "Est. Low Amt": "{:,.0f}", "Est. Median Amt": "{:,.0f}", "Est. High Amt": "{:,.0f}",
                     }, na_rep="—"),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
 
     # ── Notes ──────────────────────────────────────────────────────────────────

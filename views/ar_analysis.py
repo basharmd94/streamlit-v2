@@ -100,7 +100,7 @@ def display_ar_analysis_page(current_page, zid, data_dict):
             report_df["Salesman Code"].nunique(),
         )
 
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        st.dataframe(report_df, width="stretch", hide_index=True)
 
     # ────────────────────────────────────────────────────────────────────────
     # Report: FIFO Trickle-Down Balances
@@ -135,7 +135,7 @@ def display_ar_analysis_page(current_page, zid, data_dict):
             col2.metric("Total Due", f"{display_cc['total_due'].sum():,.0f}")
         col3.metric("Unique Salesmen", display_cc["xsp"].nunique() if "xsp" in display_cc.columns else 0)
 
-        st.dataframe(display_cc, use_container_width=True, hide_index=True)
+        st.dataframe(display_cc, width="stretch", hide_index=True)
 
     # ────────────────────────────────────────────────────────────────────────
     # Report: Salesman Due Summary
@@ -185,7 +185,7 @@ def display_ar_analysis_page(current_page, zid, data_dict):
                 f"{grand_row['Total Due'].values[0]:,.0f}",
             )
 
-        st.dataframe(display_summary, use_container_width=True, hide_index=True)
+        st.dataframe(display_summary, width="stretch", hide_index=True)
 
     # ────────────────────────────────────────────────────────────────────────
     # Report: Missing Customers
@@ -207,4 +207,4 @@ def display_ar_analysis_page(current_page, zid, data_dict):
             st.success("No missing customers found.")
         else:
             st.metric("Missing Customers", len(missing_df))
-            st.dataframe(missing_df, use_container_width=True, hide_index=True)
+            st.dataframe(missing_df, width="stretch", hide_index=True)

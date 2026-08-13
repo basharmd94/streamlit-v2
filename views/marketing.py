@@ -267,7 +267,7 @@ def _show_customer_scoring(result: pd.DataFrame):
         st.info(f"Showing first {cap:,} of {total_rows:,} rows. Use Download for full data.")
         display_df = display_df.head(cap)
 
-    st.dataframe(display_df, use_container_width=True)
+    st.dataframe(display_df, width="stretch")
 
     dl_df = result.drop(columns=[c for c in _HELPER_COLS if c in result.columns])
     for col in dl_df.select_dtypes(include=[float]).columns:
@@ -318,7 +318,7 @@ def _show_campaign_planner(
             "composite_score": "Score", "total_sales": "Total Sales",
             "total_collection": "Total Collection",
         })
-        st.dataframe(disp_cus, use_container_width=True)
+        st.dataframe(disp_cus, width="stretch")
 
     # ── Section B: Top 10 products by sales value ────────────────────────────
     st.markdown("#### 📦 Top Products (by Sales Value)")
@@ -334,7 +334,7 @@ def _show_campaign_planner(
             "itemcode": "Item Code", "itemname": "Item Name", "itemgroup": "Group",
             "total_sales": "Total Sales", "transaction_count": "# Lines",
         })
-        st.dataframe(disp_prod, use_container_width=True)
+        st.dataframe(disp_prod, width="stretch")
 
     # ── Combined download ────────────────────────────────────────────────────
     st.markdown("---")
@@ -495,7 +495,7 @@ def _show_inactive_outreach(zid: str, proj: str, sales_raw: pd.DataFrame) -> Non
         st.info(f"Showing first {cap:,} of {len(disp):,} rows. Use Download for full list.")
         disp = disp.head(cap)
 
-    st.dataframe(disp, use_container_width=True)
+    st.dataframe(disp, width="stretch")
 
     # Download — mobile numbers as strings (comma check applied by normalize_phone_cols)
     dl = normalize_phone_cols(inactive.copy())
@@ -598,7 +598,7 @@ for a broader reactivation push.
                             lambda v: f"{v:,.0f}" if pd.notna(v) else ""
                         )
 
-                    st.dataframe(_prod_disp, use_container_width=True, hide_index=True)
+                    st.dataframe(_prod_disp, width="stretch", hide_index=True)
                 else:
                     st.info("Sales value columns not available in this dataset.")
 
@@ -682,7 +682,7 @@ def _show_media_library(zid: str) -> None:
         )
         show_cols = [c for c in ["Item Code", "Item Name", "Group", "Stock", "Images"]
                      if c in tbl.columns]
-        st.dataframe(tbl[show_cols], use_container_width=True, hide_index=True)
+        st.dataframe(tbl[show_cols], width="stretch", hide_index=True)
 
     # ── Product selector ─────────────────────────────────────────────────
     item_opts = (
@@ -720,7 +720,7 @@ def _show_media_library(zid: str) -> None:
             label = sel_code if i == 0 else f"{sel_code}_{i + 1}"
             with cols[i % _GALLERY_N]:
                 with open(img_path, "rb") as fh:
-                    st.image(fh.read(), caption=label, use_container_width=True)
+                    st.image(fh.read(), caption=label, width="stretch")
 
     # ── Upload new images ─────────────────────────────────────────────────
     st.markdown("#### ⬆️ Upload Images")
@@ -927,7 +927,7 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
             "Days to Clear":     "{:,.1f}",
             "Std Price":         "{:,.2f}",
         }, na_rep="—"),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1003,7 +1003,7 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
         st.caption(f"**{len(area_agg)}** area(s) with sales of **{sel_name}**")
         st.dataframe(
             area_agg.style.format({"Net Sales": "{:,.0f}"}),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1048,7 +1048,7 @@ def _show_high_stock_marketing(zid: str, proj: str) -> None:
                 "Months Since Last Purchase (This Product)": "{:.1f}",
                 "Months Since Last Order (Any)": "{:.1f}",
             }, na_rep="—"),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
