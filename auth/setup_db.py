@@ -173,6 +173,7 @@ def setup_auth_tables():
             ('finance', 'Accounting Analysis'),
             ('finance', 'Inventory Analysis'),
             ('finance', 'Manufacturing Analysis'),
+            ('finance', 'Customer Support'),
             ('finance', 'AR Analysis'),
             -- Purchase
             ('purchase', 'Home'),
