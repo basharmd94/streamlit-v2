@@ -1042,10 +1042,30 @@ def run_batch_profitability_engine(
         else:
             rev_daily = pd.DataFrame(columns=["itemcode", "d", "sales_rev"])
 
+        # transfer net_qty (signed: negative = outflow, positive = inflow).
+        # Internal warehouse transfers cancel (out + in = 0); genuine outflows
+        # (e.g. cross-ZID or inter-company) reduce net stock and must count as
+        # depletion so the FIFO doesn't leave phantom remaining on older batches.
+        if not mv.empty:
+            transfer_mv = mv[mv["txn_type"] == "transfer"].copy()
+            if not transfer_mv.empty:
+                transfer_mv["_net_qty"] = pd.to_numeric(
+                    transfer_mv.get("net_qty", 0), errors="coerce"
+                ).fillna(0.0)
+                t_qty_daily = (
+                    transfer_mv.groupby(["itemcode", "d"], as_index=False)
+                    .agg(transfer_net_qty=("_net_qty", "sum"))
+                )
+            else:
+                t_qty_daily = pd.DataFrame(columns=["itemcode", "d", "transfer_net_qty"])
+        else:
+            t_qty_daily = pd.DataFrame(columns=["itemcode", "d", "transfer_net_qty"])
+
         # merge: qty events (from imtrn) + revenue (from sales MV)
         ev = (
             s_qty_daily
             .merge(r_qty_daily, on=["itemcode", "d"], how="outer")
+            .merge(t_qty_daily, on=["itemcode", "d"], how="outer")
             .merge(rev_daily,   on=["itemcode", "d"], how="outer")
             .fillna(0.0)
         )
@@ -1117,10 +1137,17 @@ def run_batch_profitability_engine(
         ev["d"] = pd.to_datetime(ev["d"], errors="coerce").dt.floor("D")
         ev = ev[ev["d"].notna()].copy()
 
-        ev["sales_qty"] = pd.to_numeric(ev.get("sales_qty", 0), errors="coerce").fillna(0.0)
-        ev["sales_rev"] = pd.to_numeric(ev.get("sales_rev", 0), errors="coerce").fillna(0.0)
-        ev["return_qty"] = pd.to_numeric(ev.get("return_qty", 0), errors="coerce").fillna(0.0)
-        ev["net_qty"] = ev["sales_qty"] - ev["return_qty"]
+        ev["sales_qty"]        = pd.to_numeric(ev.get("sales_qty",        0), errors="coerce").fillna(0.0)
+        ev["sales_rev"]        = pd.to_numeric(ev.get("sales_rev",        0), errors="coerce").fillna(0.0)
+        ev["return_qty"]       = pd.to_numeric(ev.get("return_qty",       0), errors="coerce").fillna(0.0)
+        ev["transfer_net_qty"] = pd.to_numeric(ev.get("transfer_net_qty", 0), errors="coerce").fillna(0.0)
+        # net depletion = (sales + issues) − customer_returns − transfer_net_qty
+        # transfer_net_qty is MV-signed (negative = outflow, positive = inflow).
+        # Subtracting it converts outflows to positive depletion and inflows to
+        # negative depletion (i.e. stock added back). Internal warehouse transfers
+        # cancel (out + in = 0); genuine outflows (cross-ZID, inter-company) correctly
+        # contribute to depletion so phantom remaining is eliminated.
+        ev["net_qty"] = ev["sales_qty"] - ev["return_qty"] - ev["transfer_net_qty"]
 
         ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
 
@@ -1138,6 +1165,11 @@ def run_batch_profitability_engine(
 
             batch_positions = bgrp.sort_values(["combinedate", "shipmentname"]).index.tolist()
 
+            # Earliest batch date for this item. net_sales_before is counted only
+            # from this date onwards so that backdated return entries before the
+            # first purchase batch don't inflate older_open_at_batch.
+            first_batch_date = bgrp["combinedate"].min()
+
             for pos in batch_positions:
                 batch_qty = float(batches.at[pos, "initial_qty"])
                 batch_date = pd.Timestamp(batches.at[pos, "combinedate"]).floor("D")
@@ -1150,8 +1182,13 @@ def run_batch_profitability_engine(
 
                 older_purchase_qty = float(older_batches["initial_qty"].sum()) if not older_batches.empty else 0.0
 
-                # net sales strictly before this batch date
-                sales_before = sales[sales["d"] < batch_date].copy()
+                # net sales strictly before this batch date, counted only from
+                # first_batch_date onwards. Backdated return entries before any
+                # purchase batch arrived produce negative net_sales which inflate
+                # older_open_at_batch for every subsequent batch (phantom cascade).
+                sales_before = sales[
+                    (sales["d"] >= first_batch_date) & (sales["d"] < batch_date)
+                ].copy()
                 net_sales_before = float(sales_before["net_qty"].sum()) if not sales_before.empty else 0.0
 
                 # older stock still open when this batch arrives
@@ -1159,17 +1196,15 @@ def run_batch_profitability_engine(
 
                 # sales only after this batch arrived
                 sales_after_batch = sales[sales["d"] >= batch_date].copy()
-                if sales_after_batch.empty:
-                    continue
 
-                total_sales_after_batch = float(sales_after_batch["net_qty"].sum())
+                total_sales_after_batch = float(sales_after_batch["net_qty"].sum()) if not sales_after_batch.empty else 0.0
 
                 # this batch can only consume sales beyond older stock still open
                 available_for_batch = max(0.0, total_sales_after_batch - older_open_at_batch)
 
                 sold = max(0.0, min(batch_qty, available_for_batch))
 
-                # ── Diagnostic for item 1222 ──────────────────────────────────
+                # ── Diagnostic for item 1222 (all batches, incl. mini-batches) ─
                 if str(code).strip() == "1222":
                     _log.info(
                         "[BatchPL] item=1222 batch=%s date=%s"
@@ -1184,7 +1219,7 @@ def run_batch_profitability_engine(
                     )
                 # ─────────────────────────────────────────────────────────────
 
-                if sold <= EPS:
+                if sales_after_batch.empty or sold <= EPS:
                     continue
 
                 # average realized price using sales after batch date
