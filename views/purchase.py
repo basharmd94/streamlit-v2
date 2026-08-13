@@ -307,7 +307,7 @@ def _render_total_inventory(zid, data_dict):
 
     st.dataframe(
         display_df.style.format(existing_fmt, na_rep="—"),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -377,7 +377,7 @@ def _tts_show_table(df: pd.DataFrame, qty_cols: list | None = None, dl_key: str 
     except Exception:
         styled = display_df.style
 
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(styled, width="stretch", hide_index=True)
     st.download_button(
         "📥 Download CSV",
         display_df.to_csv(index=False).encode(),
@@ -608,7 +608,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                 }
                 st.dataframe(
                     prod_detail[[c for c in display_cols if c in prod_detail.columns]].rename(columns=display_cols),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
 
                 completed_days = prod_detail["days_to_sell"].dropna().astype(float).tolist()
@@ -621,7 +621,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                     )
                     fig.update_layout(showlegend=False, xaxis_title="Days to Sell",
                                       yaxis_title="Batch Count", bargap=0.1)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.info("No completed batches to plot for this product.")
 
@@ -694,7 +694,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                             xaxis=dict(range=[0, x_max + 10]), yaxis=dict(range=[0, 105]),
                             legend_title="Batch (arrival date)", hovermode="x unified",
                         )
-                        st.plotly_chart(fig_s, use_container_width=True)
+                        st.plotly_chart(fig_s, width="stretch")
                     else:
                         st.info("Select at least one batch to plot.")
                 elif raw_batches.empty:
@@ -766,7 +766,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
                            annotation_text="median value", annotation_position="top right")
         fig_risk.update_traces(marker=dict(size=10, opacity=0.8))
         fig_risk.update_layout(hovermode="closest", legend_title="Status")
-        st.plotly_chart(fig_risk, use_container_width=True)
+        st.plotly_chart(fig_risk, width="stretch")
         st.caption(
             "Each dot = one product currently in stock. "
             "**① High Risk** (top-right): slow-moving AND high capital — act first. "
@@ -785,7 +785,7 @@ def _render_time_to_sell(zid: str, data_dict: dict) -> None:
             "stock": "Stock (units)", "stock_value": "Stock Value (BDT)",
             "P75": "P75 (days)", "n": "Data Points", "flag": "Status",
         })
-        st.dataframe(tbl.sort_values("Quadrant"), use_container_width=True, hide_index=True)
+        st.dataframe(tbl.sort_values("Quadrant"), width="stretch", hide_index=True)
         st.download_button(
             "📥 Download Risk Table",
             tbl.sort_values("Quadrant").to_csv(index=False).encode(),
@@ -910,7 +910,7 @@ def _render_abc_xyz(zid: str, data_dict: dict) -> None:
         height=320,
         margin=dict(t=30, b=40),
     )
-    st.plotly_chart(fig_mat, use_container_width=True)
+    st.plotly_chart(fig_mat, width="stretch")
 
     insuff = cls_df[cls_df["xyz"] == "Insufficient"]
     if not insuff.empty:
@@ -964,7 +964,7 @@ def _render_abc_xyz(zid: str, data_dict: dict) -> None:
     except Exception:
         styled = display_df.style
 
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.dataframe(styled, width="stretch", hide_index=True)
     st.download_button(
         "📥 Download Classification",
         display_df.to_csv(index=False).encode(),
@@ -979,7 +979,7 @@ def _render_abc_xyz(zid: str, data_dict: dict) -> None:
             for k, v in _ABC_XYZ_GUIDANCE.items()
             if "?" not in k
         ]
-        st.dataframe(pd.DataFrame(guide_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(guide_rows), width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1031,7 +1031,7 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
     for col in [c for c in disp.columns if "(BDT)" in c]:
         disp[col] = disp[col].apply(lambda v: f"{int(v):,}" if pd.notna(v) else "—")
 
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    st.dataframe(disp, width="stretch", hide_index=True)
 
     st.download_button(
         "⬇ Download CSV",
@@ -1116,7 +1116,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
         cohort_df = cohort_df.applymap(common.handle_infinity_and_round).fillna(0)
         st.markdown("Product-Based Purchase Cohort")
-        st.write(cohort_df, use_container_width=True)
+        st.write(cohort_df, width="stretch")
         st.write(common.create_download_link(cohort_df, "purchase_cohort.xlsx"), unsafe_allow_html=True)
         st.caption("ℹ️ Stock figures cover all warehouses across both ZIDs (100001 + 100009) — no warehouse filter is applied.")
 
@@ -1129,7 +1129,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 cohort_df
             )
             st.markdown("Generated Purchase Requisition")
-            st.write(result_df, use_container_width=True)
+            st.write(result_df, width="stretch")
             st.write(common.create_download_link(result_df, "purchase_requisition.xlsx"), unsafe_allow_html=True)
 
         return
@@ -1267,16 +1267,16 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             with st.expander("Inventory Check Tables", expanded=True):
                 st.subheader("Arrival Check — 100001")
-                st.dataframe(tables["arrival_check_100001_only"], use_container_width=True)
+                st.dataframe(tables["arrival_check_100001_only"], width="stretch")
 
                 st.subheader("Arrival Check — 100009 Items")
-                st.dataframe(tables["arrival_check_100009_items"], use_container_width=True)
+                st.dataframe(tables["arrival_check_100009_items"], width="stretch")
 
                 st.subheader("Sales vs Stock Reconciliation")
-                st.dataframe(tables["reconcile_sales_vs_stock"], use_container_width=True)
+                st.dataframe(tables["reconcile_sales_vs_stock"], width="stretch")
 
                 # st.subheader("Warehouse Breakdown")
-                # st.dataframe(tables["warehouse_breakdown"], use_container_width=True)
+                # st.dataframe(tables["warehouse_breakdown"], width="stretch")
 
             return
 
@@ -1363,23 +1363,23 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             # ── Per-entity tables ──────────────────────────────────────────────
             st.markdown("#### 🏢 HMBR Tools & Chemicals — 100001")
             if not out_100001["summary_df"].empty:
-                st.dataframe(out_100001["summary_df"], use_container_width=True)
+                st.dataframe(out_100001["summary_df"], width="stretch")
             else:
                 st.info("No overhead data for 100001 in this shipment window.")
 
             if show_details and out_100001["details_df"] is not None and not out_100001["details_df"].empty:
                 with st.expander("Daily Diagnostics — 100001", expanded=False):
-                    st.dataframe(out_100001["details_df"], use_container_width=True)
+                    st.dataframe(out_100001["details_df"], width="stretch")
 
             st.markdown("#### 📦 Gulshan Packaging — 100009")
             if not out_100009["summary_df"].empty:
-                st.dataframe(out_100009["summary_df"], use_container_width=True)
+                st.dataframe(out_100009["summary_df"], width="stretch")
             else:
                 st.info("No overhead data for 100009 in this shipment window.")
 
             if show_details and out_100009["details_df"] is not None and not out_100009["details_df"].empty:
                 with st.expander("Daily Diagnostics — 100009", expanded=False):
-                    st.dataframe(out_100009["details_df"], use_container_width=True)
+                    st.dataframe(out_100009["details_df"], width="stretch")
 
             # ── Totals breakdown ───────────────────────────────────────────────
             st.markdown("#### 📊 Overhead Totals")
@@ -1492,7 +1492,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             st.session_state["last_batch_df"] = result_df.copy()
             st.session_state["last_shipment_realized_revenue"] = float(result_df["sold_revenue"].sum()) if not result_df.empty else 0.0
 
-            st.dataframe(result_df, use_container_width=True)
+            st.dataframe(result_df, width="stretch")
 
             if result_df is not None and not result_df.empty:
                 sum_cols = [
@@ -1600,7 +1600,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 warehouse_json_path="data/warehouse_filters.json",
             )
 
-            st.dataframe(wh_value_df, use_container_width=True)
+            st.dataframe(wh_value_df, width="stretch")
 
             st.metric("Total Inventory Value",
                     round(wh_value_df["totalvalue"].sum(), 2))
@@ -1629,7 +1629,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             editable_df = st.data_editor(
                 work_df,
-                use_container_width=True,
+                width="stretch",
                 num_rows="fixed",
                 hide_index=True,
                 column_config={
@@ -1794,7 +1794,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             )
 
             st.markdown("### Scenario Worksheet Output")
-            st.dataframe(final_display_df, use_container_width=True)
+            st.dataframe(final_display_df, width="stretch")
 
             try:
                 _xl = _build_sku_sim_excel(

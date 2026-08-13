@@ -59,7 +59,7 @@ def visualize_histogram(data, selected_column, selected_metric):
                       xaxis_title=f"{selected_column}",
                       yaxis_title="Frequency")
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     
     # Segment processed_data into these bins and count the occurrences
     bin_counts = pd.cut(processed_data, bins=bins, right=False, include_lowest=True).value_counts().sort_index()
@@ -78,5 +78,5 @@ def visualize_histogram(data, selected_column, selected_metric):
     bin_counts_df = bin_counts_df[['Start', 'End', 'Count']]
 
     # Display the DataFrame using st.dataframe instead of st.write
-    st.dataframe(bin_counts_df, use_container_width=True)
+    st.dataframe(bin_counts_df, width="stretch")
     st.markdown(common.create_download_link(bin_counts_df), unsafe_allow_html=True)

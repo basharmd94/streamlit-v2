@@ -295,7 +295,7 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
         _apply_layout(fig_a, 340, "Revenue, Gross Profit & EBITDA (৳ Cr)",
                       extra=dict(barmode="group",
                                  yaxis=dict(title="৳ Crore", gridcolor="rgba(0,0,0,0.06)")))
-        st.plotly_chart(fig_a, use_container_width=True)
+        st.plotly_chart(fig_a, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Revenue, Gross Profit & EBITDA** — Bars show annual top-line revenue "
@@ -335,7 +335,7 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
         ))
         _apply_layout(fig_b, 220, "Margin Evolution (%)",
                       extra=dict(yaxis=dict(ticksuffix="%", gridcolor="rgba(0,0,0,0.06)")))
-        st.plotly_chart(fig_b, use_container_width=True)
+        st.plotly_chart(fig_b, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Margin Evolution** — Shows three profitability rates as a percentage of revenue over time. "
@@ -376,7 +376,7 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
         _apply_layout(fig_c, 220, "Revenue Decomposition by Cost Layer",
                       extra=dict(barmode="stack",
                                  xaxis=dict(title="৳ Crore", gridcolor="rgba(0,0,0,0.06)")))
-        st.plotly_chart(fig_c, use_container_width=True)
+        st.plotly_chart(fig_c, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Revenue Decomposition** — Each horizontal bar represents one year's revenue split into "
@@ -418,10 +418,10 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
                 try:
                     st.dataframe(
                         is_year.style.apply(_hl_is, axis=1).format({"৳ Lakh": "{:.2f}"}),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
                 except Exception:
-                    st.dataframe(is_year, use_container_width=True, hide_index=True)
+                    st.dataframe(is_year, width="stretch", hide_index=True)
 
         with d2:
             st.markdown(f"**Cost Composition — {drill_y}**")
@@ -444,7 +444,7 @@ def _tab1_pl(is_df: pd.DataFrame, bs_df: pd.DataFrame, years: list, entity_zid: 
                 marker=dict(colors=clrs),
             ))
             _apply_layout(fig_d, 340, f"Cost Composition {drill_y}")
-            st.plotly_chart(fig_d, use_container_width=True)
+            st.plotly_chart(fig_d, width="stretch")
             with st.expander("ℹ️ How to read this chart", expanded=False):
                 st.caption(
                     f"**Cost Composition — {drill_y}** — Donut chart showing what share of revenue "
@@ -526,7 +526,7 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
         _apply_layout(fig_d, 340, "Cash Conversion Cycle — DSO + DIO − DPO (days)",
                       extra=dict(barmode="relative",
                                  yaxis=dict(title="Days", gridcolor="rgba(0,0,0,0.06)")))
-        st.plotly_chart(fig_d, use_container_width=True)
+        st.plotly_chart(fig_d, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Cash Conversion Cycle (CCC)** — Measures how many days it takes to convert "
@@ -573,7 +573,7 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
             yaxis2=dict(title="NWC % Revenue", overlaying="y", side="right",
                         showgrid=False, ticksuffix="%"),
         ))
-        st.plotly_chart(fig_e, use_container_width=True)
+        st.plotly_chart(fig_e, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Net Working Capital Composition** — Stacked bars show the balance sheet components "
@@ -616,7 +616,7 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
             yaxis2=dict(title="Closing Cash (৳ Cr)", overlaying="y", side="right",
                         showgrid=False),
         ))
-        st.plotly_chart(fig_f, use_container_width=True)
+        st.plotly_chart(fig_f, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Cash Flow Summary** — Three grouped bars per year show where cash came from and went. "
@@ -661,7 +661,7 @@ def _tab2_wc(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
         ))
         _apply_layout(fig_wc, 220, f"Working Capital Breakdown — {wc_year} (৳ Lakh)",
                       extra=dict(xaxis=dict(title="৳ Lakh", gridcolor="rgba(0,0,0,0.06)")))
-        st.plotly_chart(fig_wc, use_container_width=True)
+        st.plotly_chart(fig_wc, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 f"**Working Capital Breakdown — {wc_year}** — Horizontal bars show the four components "
@@ -745,7 +745,7 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
         _apply_layout(fig_g, 340, "Balance Sheet Structure — Assets vs Funding (৳ Cr)",
                       extra=dict(barmode="relative",
                                  yaxis=dict(title="৳ Crore", gridcolor="rgba(0,0,0,0.06)")))
-        st.plotly_chart(fig_g, use_container_width=True)
+        st.plotly_chart(fig_g, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Balance Sheet Structure** — A mirrored chart where assets (positive, above zero) "
@@ -786,7 +786,7 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
             yaxis2=dict(title="৳ Crore (Interest)", overlaying="y", side="right",
                         showgrid=False),
         ))
-        st.plotly_chart(fig_h, use_container_width=True)
+        st.plotly_chart(fig_h, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Debt Profile & Interest Burden** — Grouped bars show outstanding debt broken into "
@@ -823,7 +823,7 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
             yaxis2=dict(title="৳ Crore (Net Income)", overlaying="y", side="right",
                         showgrid=False),
         ))
-        st.plotly_chart(fig_i, use_container_width=True)
+        st.plotly_chart(fig_i, width="stretch")
         with st.expander("ℹ️ How to read this chart", expanded=False):
             st.caption(
                 "**Equity & Net Income** — Bars show total equity at year-end (green = grew vs prior year, "
@@ -881,19 +881,19 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                 try:
                     st.dataframe(
                         asset_df.style.apply(_hl_bs, axis=1).format({"৳ Lakh": "{:.2f}"}),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
                 except Exception:
-                    st.dataframe(asset_df, use_container_width=True, hide_index=True)
+                    st.dataframe(asset_df, width="stretch", hide_index=True)
             with b2:
                 st.markdown(f"**Liabilities & Equity — {bs_year}** *(৳ Lakh)*")
                 try:
                     st.dataframe(
                         liab_df.style.apply(_hl_bs, axis=1).format({"৳ Lakh": "{:.2f}"}),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
                 except Exception:
-                    st.dataframe(liab_df, use_container_width=True, hide_index=True)
+                    st.dataframe(liab_df, width="stretch", hide_index=True)
 
             # Asset mix donut
             ca_d  = abs(get_val(bs_df, "01-Total Current Assets (A)", bs_year))
@@ -906,7 +906,7 @@ def _tab3_bs(is_df: pd.DataFrame, bs_df: pd.DataFrame, cfs_df: pd.DataFrame,
                     marker=dict(colors=[_BLUE, f"rgba(55,138,221,0.45)", _PURPLE]),
                 ))
                 _apply_layout(fig_am, 260, f"Asset Mix — {bs_year}")
-                st.plotly_chart(fig_am, use_container_width=True)
+                st.plotly_chart(fig_am, width="stretch")
                 with st.expander("ℹ️ How to read this chart", expanded=False):
                     st.caption(
                         f"**Asset Mix — {bs_year}** — Donut showing how total assets are distributed "

@@ -97,7 +97,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
         performance_ratios = overall_sales.prepare_sales_performance_ratios(
             filtered_data, filtered_data_r
         )
-        st.write(performance_ratios, use_container_width=True)
+        st.write(performance_ratios, width="stretch")
 
         # Summary stats
         summary_stats = overall_sales.calculate_summary_statistics(filtered_data, filtered_data_r)
@@ -292,7 +292,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
             # Compute and display
             stats_df = overall_sales.generate_descriptive_statistics(filtered_data_d, filtered_data_r_d, group_by)
             st.markdown("### 📋 Summary Table")
-            st.dataframe(stats_df, use_container_width=True)
+            st.dataframe(stats_df, width="stretch")
 
     elif analysis_mode == "📈 Order Analytics":
         st.subheader("📈 Order Analytics")
@@ -532,7 +532,7 @@ def _render_customer_cycles(df_sales, partner_df=None, zid_str=None):
             margin=dict(l=10, r=10, t=40, b=10),
             xaxis_title="", yaxis_title="",
         )
-        st.plotly_chart(fig_heat, use_container_width=True)
+        st.plotly_chart(fig_heat, width="stretch")
 
         # ── Trend line chart ──
         others_avail = [g for g in pivot_df.index.tolist() if g != "National"]
@@ -563,7 +563,7 @@ def _render_customer_cycles(df_sales, partner_df=None, zid_str=None):
             height=420, legend=dict(orientation="h", y=-0.3),
             margin=dict(l=10, r=10, t=40, b=10),
         )
-        st.plotly_chart(fig_line, use_container_width=True)
+        st.plotly_chart(fig_line, width="stretch")
 
         with st.expander("📖 How to read this analysis"):
             st.markdown(f"""
@@ -707,7 +707,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             height=480,
             margin=dict(l=10, r=10, t=40, b=10),
         )
-        st.plotly_chart(fig_stack, use_container_width=True)
+        st.plotly_chart(fig_stack, width="stretch")
 
         # ── Summary table ─────────────────────────────────────────────────────
         display_cols = {
@@ -717,7 +717,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
         }
         st.dataframe(
             sub[list(display_cols.keys())].rename(columns=display_cols).reset_index(drop=True),
-            use_container_width=True,
+            width="stretch",
         )
 
         # ── Individual metric bar chart ───────────────────────────────────────
@@ -758,7 +758,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             legend=dict(orientation="h", y=-0.3),
             margin=dict(l=10, r=10, t=40, b=60),
         )
-        st.plotly_chart(fig_ind, use_container_width=True)
+        st.plotly_chart(fig_ind, width="stretch")
 
         with st.expander("📖 How to read this analysis"):
             st.markdown("""
@@ -829,7 +829,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
         ))
         fig_pie.update_layout(title="National — Customer Distribution", height=350,
                                margin=dict(l=10, r=10, t=40, b=10))
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
 
         # Class distribution chart — by Area or Salesman
         _dist_grp = st.radio(
@@ -858,7 +858,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
                 legend=dict(orientation="h", y=-0.35),
                 margin=dict(l=10, r=10, t=40, b=10),
             )
-            st.plotly_chart(fig_ab, use_container_width=True)
+            st.plotly_chart(fig_ab, width="stretch")
 
         # Filterable detail table
         st.markdown("**Customer detail**")
@@ -895,7 +895,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
         }
         st.dataframe(
             disp[_present].rename(columns=show_cols).reset_index(drop=True),
-            use_container_width=True,
+            width="stretch",
         )
         st.caption(f"{len(disp):,} customers shown · {n_win}-month window")
 
@@ -1018,7 +1018,7 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             legend=dict(orientation="h", y=-0.3),
             margin=dict(l=10, r=10, t=40, b=10),
         )
-        st.plotly_chart(fig_range, use_container_width=True)
+        st.plotly_chart(fig_range, width="stretch")
 
         # ── Sales projection chart ──
         fig_sales = go.Figure()
@@ -1044,11 +1044,11 @@ Each cell = unique customers who placed ≥1 order for that {grp_display.lower()
             legend=dict(orientation="h", y=-0.3),
             margin=dict(l=10, r=10, t=40, b=10),
         )
-        st.plotly_chart(fig_sales, use_container_width=True)
+        st.plotly_chart(fig_sales, width="stretch")
 
         # ── Detail table (National included for reference) ──
         st.markdown("**Projection detail**")
-        st.dataframe(proj_df.reset_index(drop=True), use_container_width=True)
+        st.dataframe(proj_df.reset_index(drop=True), width="stretch")
         st.caption(
             "Projection = Last Month Active × Retention Rate + Returns + Avg New Customers. "
             "Sales Projection = Projected Active × Avg Order Value. "
@@ -1240,4 +1240,4 @@ def display_customer_data_view_page(current_page, zid, data_dict):
     # -----------------------------
     # Display
     # -----------------------------
-    st.dataframe(txn, use_container_width=True)
+    st.dataframe(txn, width="stretch")

@@ -13,7 +13,7 @@ def plot_histogram(data_dict, y_axis_title):
                       xaxis_title='Timeline',
                       yaxis_title=y_axis_title)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 def plot_bar_chart(data, x_axis, y_axis, color=None, title=""):
     """
@@ -43,4 +43,4 @@ def plot_bar_chart(data, x_axis, y_axis, color=None, title=""):
         fig.update_layout(title_text=title)
 
     # Display the chart
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")

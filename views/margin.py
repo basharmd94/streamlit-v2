@@ -190,7 +190,7 @@ def display_margin_analysis_page(current_page, zid, data_dict):
             # Compute and display
             stats_df = overall_margin.generate_descriptive_statistics(filtered_data_d, filtered_data_r_d, group_by)
             st.markdown("### 📋 Summary Table")
-            st.dataframe(stats_df, use_container_width=True)
+            st.dataframe(stats_df, width="stretch")
 
     elif analysis_mode == "Metric Comparison":
         st.subheader("Compare Metrics")

@@ -256,7 +256,7 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
         ),
         map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
         tooltip={"text": "{tooltip}"},
-    ), use_container_width=True)
+    ), width="stretch")
 
     # ── Legend ────────────────────────────────────────────────────────────────
     if use_gradient and all_dates:
@@ -345,7 +345,7 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
         tbl = pd.DataFrame(rows)
         st.dataframe(
             tbl.style.format({"Order Total": "{:,.0f}"}),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -358,7 +358,7 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
                 "Status":   r["status"],
                 "Total":    int(r["total"] or 0),
             } for r in no_gps_orders_mo])
-            st.dataframe(no_gps_tbl, use_container_width=True, hide_index=True)
+            st.dataframe(no_gps_tbl, width="stretch", hide_index=True)
 
         # ── All orders this month (GPS + no-GPS, full detail) ─────────────────
         if all_order_dfs:
@@ -381,7 +381,7 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
                 st.markdown("**All orders this month:**")
                 st.dataframe(
                     pd.DataFrame(all_ord_rows).style.format({"Order Value": "{:,.0f}"}),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -606,7 +606,7 @@ def _render_field_tracking(zid):
         map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
         tooltip={"text": "{tooltip}"},
     )
-    st.pydeck_chart(deck, use_container_width=True)
+    st.pydeck_chart(deck, width="stretch")
 
     # ── Legend ────────────────────────────────────────────────────────────────
     legend_items = []
@@ -653,7 +653,7 @@ def _render_field_tracking(zid):
         _ord_tbl = normalize_phone_cols(_ord_tbl, extra_cols=["Mobile"])
         st.dataframe(
             _ord_tbl.style.format({"Order Value": "{:,.0f}"}),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -662,7 +662,7 @@ def _render_field_tracking(zid):
         with st.expander(f"📋 {len(no_gps_rows)} order(s) without GPS — not shown on map", expanded=False):
             st.dataframe(
                 pd.DataFrame(no_gps_rows),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 

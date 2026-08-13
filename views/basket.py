@@ -493,7 +493,7 @@ def _display_basket_analysis_page_disabled(current_page, zid: str, data_dict: di
 
                         st.markdown("### By Month")
                         month_tbl = top_products("month")
-                        st.dataframe(month_tbl, use_container_width=True)
+                        st.dataframe(month_tbl, width="stretch")
                         _table_writeup(
                             "Customer Pattern — By Month",
                             columns={
@@ -509,7 +509,7 @@ def _display_basket_analysis_page_disabled(current_page, zid: str, data_dict: di
 
                         st.markdown("### By Day of Week")
                         dow_tbl = top_products("dow")
-                        st.dataframe(dow_tbl, use_container_width=True)
+                        st.dataframe(dow_tbl, width="stretch")
                         _table_writeup(
                             "Customer Pattern — By Day of Week",
                             columns={
@@ -525,7 +525,7 @@ def _display_basket_analysis_page_disabled(current_page, zid: str, data_dict: di
 
                         st.markdown("### By Day-of-Month Bucket")
                         dom_tbl = top_products("dom_bucket")
-                        st.dataframe(dom_tbl, use_container_width=True)
+                        st.dataframe(dom_tbl, width="stretch")
                         _table_writeup(
                             "Customer Pattern — By Day-of-Month Bucket",
                             columns={
@@ -850,7 +850,7 @@ def _display_basket_analysis_page_disabled(current_page, zid: str, data_dict: di
             ship_tbl = ship_tbl.sort_values("delta_value", ascending=False)
 
             st.markdown("**Shipment items (before vs after)**")
-            st.dataframe(ship_tbl, use_container_width=True)
+            st.dataframe(ship_tbl, width="stretch")
 
 
             # Non-shipment uplift table

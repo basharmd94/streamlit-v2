@@ -97,7 +97,7 @@ def _render_coverage_matrix(
         else:
             caption = "Cells: count of customers with that outcome · 'Not Called' = no log entry · rows = days since last sale"
         st.caption(caption)
-        st.dataframe(matrix, use_container_width=True)
+        st.dataframe(matrix, width="stretch")
 
 
 # ── Public entry point ─────────────────────────────────────────────────────────
@@ -217,7 +217,7 @@ def _render_14day_activity():
                 "Outcome":     st.column_config.TextColumn("Outcome"),
                 "Notes":       st.column_config.TextColumn("Notes"),
             },
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -340,11 +340,11 @@ def _render_do_detail(feed: pd.DataFrame, cusid: str):
                 {"Date": "{:%Y-%m-%d}", "Qty": "{:,.0f}", "Amount": "{:,.0f}"},
                 na_rep="—",
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     except Exception:
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        st.dataframe(disp, width="stretch", hide_index=True)
 
 
 # ── Radio 2: Latest Sales & Collection ────────────────────────────────────────
@@ -439,7 +439,7 @@ def _render_merged_sc_table(
             "Days Sale":        st.column_config.NumberColumn("Days Sale",        format="%d"),
             "Days Coll":        st.column_config.NumberColumn("Days Coll",        format="%d"),
         },
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -534,7 +534,7 @@ def _render_sc_table_zepto(
             "Days Sale":        st.column_config.NumberColumn("Days Sale",        format="%d"),
             "Days Coll":        st.column_config.NumberColumn("Days Coll",        format="%d"),
         },
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -635,11 +635,11 @@ def _render_ledger(ar_df: pd.DataFrame, zid: str, cusid: str, key_suffix: str = 
                 {"Date": "{:%Y-%m-%d}", "Amount": "{:,.0f}", "Balance": "{:,.0f}"},
                 na_rep="—",
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     except Exception:
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        st.dataframe(disp, width="stretch", hide_index=True)
 
     st.download_button(
         "⬇ Download Ledger CSV",

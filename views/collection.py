@@ -474,7 +474,7 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             # Compute and display
             stats_df = collection.generate_descriptive_statistics(filtered_data_d, filtered_data_r_d, filtered_data_c_d, group_by)
             st.markdown("### 📋 Summary Table")
-            st.dataframe(stats_df, use_container_width=True)
+            st.dataframe(stats_df, width="stretch")
 
     elif analysis_mode == "Metric Comparison":
         st.subheader("Compare Metrics")

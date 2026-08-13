@@ -373,7 +373,7 @@ def _render_mtd_dashboard(pl_s: pd.DataFrame, mtd: dict) -> None:
             "Discount Paid and S&D always reflect MTD actuals."
         )
 
-    st.dataframe(styler, use_container_width=True)
+    st.dataframe(styler, width="stretch")
 
     # ── Breakdown expanders ────────────────────────────────────────────────
     def _render_breakdown(title: str, df: pd.DataFrame,
@@ -393,7 +393,7 @@ def _render_mtd_dashboard(pl_s: pd.DataFrame, mtd: dict) -> None:
             st.dataframe(
                 df.set_index("ac_code")
                   .style.format(fmt_bd, na_rep="—"),
-                use_container_width=True,
+                width="stretch",
             )
 
     _render_breakdown(
@@ -723,7 +723,7 @@ def _render_zid_contribution_breakdown(
     # ── Table ─────────────────────────────────────────────────────────────────
     st.dataframe(
         _brkdn_df.style.format({"Value": "{:,.1f}"}),
-        use_container_width=True,
+        width="stretch",
     )
 
     # ── Pie chart (sized by absolute value; note in title if values are mixed) ─
@@ -745,7 +745,7 @@ def _render_zid_contribution_breakdown(
         )
         _fig.update_traces(textposition="inside", textinfo="percent+label")
         _fig.update_layout(margin=dict(t=60, b=20, l=20, r=20))
-        st.plotly_chart(_fig, use_container_width=True)
+        st.plotly_chart(_fig, width="stretch")
 
 
 def _sanity_checks(
@@ -825,13 +825,13 @@ def _sanity_checks(
     cols = st.columns(3)
     with cols[0]:
         st.markdown("**Net Profit / Net Income**")
-        st.dataframe(np_check, use_container_width=True)
+        st.dataframe(np_check, width="stretch")
     with cols[1]:
         st.markdown("**BS Balance Check** *(should be ~0)*")
-        st.dataframe(bs_check, use_container_width=True)
+        st.dataframe(bs_check, width="stretch")
     with cols[2]:
         st.markdown("**CFS Cash-flow Check** *(should be ~0)*")
-        st.dataframe(cfs_check, use_container_width=True)
+        st.dataframe(cfs_check, width="stretch")
 
 
 def _level_p_sanity_checks(pl_p: pd.DataFrame, pl_s: pd.DataFrame, name_col: str = "ac_name"):
@@ -897,7 +897,7 @@ def _level_p_sanity_checks(pl_p: pd.DataFrame, pl_s: pd.DataFrame, name_col: str
         ]
         arith_df = pd.DataFrame(arith_rows).set_index("Check")
         st.markdown("**IS Arithmetic Verification** *(difference shown; should be 0)*")
-        st.dataframe(arith_df, use_container_width=True)
+        st.dataframe(arith_df, width="stretch")
 
         # Cross-level NI comparison (Level P NI vs Level S NI)
         ni_p_row = {"Level": "Level P"}
@@ -906,7 +906,7 @@ def _level_p_sanity_checks(pl_p: pd.DataFrame, pl_s: pd.DataFrame, name_col: str
         ni_s_row.update({c: _fmt_val(v) for c, v in zip(_lbl_s, _ni_s.values)})
         ni_cross_df = pd.DataFrame([ni_p_row, ni_s_row]).set_index("Level")
         st.markdown("**Level P vs Level S — Net Income** *(should be identical)*")
-        st.dataframe(ni_cross_df, use_container_width=True)
+        st.dataframe(ni_cross_df, width="stretch")
 
 
 def _render_expense_changes(pl_sorted: pd.DataFrame) -> None:
@@ -968,7 +968,7 @@ def _render_expense_changes(pl_sorted: pd.DataFrame) -> None:
 
         st.dataframe(
             diff_df.style.format({c: _sign_fmt for c in diff_labels}),
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -1211,15 +1211,15 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
     # ── Dispatch to selected level ────────────────────────────────────────────
     def _expanders(pl_df, bs_df, cfs_df_=None, summary_df_=None, fmt_fn=_fmt_qtr):
         with st.expander("Income Statement", expanded=True):
-            st.dataframe(fmt_fn(pl_df), use_container_width=True)
+            st.dataframe(fmt_fn(pl_df), width="stretch")
         with st.expander("Balance Sheet", expanded=True):
-            st.dataframe(fmt_fn(bs_df), use_container_width=True)
+            st.dataframe(fmt_fn(bs_df), width="stretch")
         if cfs_df_ is not None:
             with st.expander("Cash Flow Statement", expanded=True):
-                st.dataframe(fmt_fn(cfs_df_), use_container_width=True)
+                st.dataframe(fmt_fn(cfs_df_), width="stretch")
         if summary_df_ is not None:
             with st.expander("Cash Flow Summary", expanded=False):
-                st.dataframe(fmt_fn(summary_df_), use_container_width=True)
+                st.dataframe(fmt_fn(summary_df_), width="stretch")
 
     def _qtr_to_yearly(pl_q, bs_q, cfs_q=None):
         """Collapse quarterly (year,q) tuple columns to integer year columns.
@@ -1268,7 +1268,7 @@ def _render_quarterly_view(businesses, income_label_df, balance_label_df,
             _ratio_df_q = None
         with st.expander("📊 Financial Ratios", expanded=False):
             if _ratio_df_q is not None:
-                st.dataframe(_ratio_df_q.set_index("Ratio"), use_container_width=True)
+                st.dataframe(_ratio_df_q.set_index("Ratio"), width="stretch")
             else:
                 st.warning("Could not compute ratios.")
 
@@ -1481,16 +1481,16 @@ def _render_daily_view(income_label_df, balance_label_df, end_year, end_month, g
 
     # ── Main statements ───────────────────────────────────────────────────────
     with st.expander("Income Statement (per-day movements)", expanded=True):
-        st.dataframe(_fmt_daily(pl_s_d), use_container_width=True)
+        st.dataframe(_fmt_daily(pl_s_d), width="stretch")
 
     with st.expander("Balance Sheet (daily running balance)", expanded=True):
-        st.dataframe(_fmt_daily(bs_s_d), use_container_width=True)
+        st.dataframe(_fmt_daily(bs_s_d), width="stretch")
 
     if _cfs_d_available:
         with st.expander("Cash Flow Statement (day-on-day changes)", expanded=True):
-            st.dataframe(_fmt_daily(cfs_s_d), use_container_width=True)
+            st.dataframe(_fmt_daily(cfs_s_d), width="stretch")
         with st.expander("Cash Flow Summary", expanded=False):
-            st.dataframe(_fmt_daily(summary_s_d), use_container_width=True)
+            st.dataframe(_fmt_daily(summary_s_d), width="stretch")
     else:
         st.info("Cash flow statement requires ≥ 2 days of data.")
 
@@ -1510,7 +1510,7 @@ def _render_daily_view(income_label_df, balance_label_df, end_year, end_month, g
                         columns={c: ("Opening" if c[2]==0 else f"{_cal.month_abbr[c[1]]} {c[2]:02d}")
                                  for c in _bs_bal_row.index if isinstance(c, tuple) and len(c)==3}
                     )
-                ), use_container_width=True)
+                ), width="stretch")
 
             # 2. Month-end IS total vs prior monthly view
             _last_col = _day_cols[-1]
@@ -1529,7 +1529,7 @@ def _render_daily_view(income_label_df, balance_label_df, end_year, end_month, g
             _chk_rows = [{"Month": f"{_cal.month_name[m]} {y}", "Daily IS Net Income Sum": v}
                          for (y, m), v in sorted(_month_ni.items())]
             st.markdown("**Per-Month IS Sum** (each row = sum of daily NI for that month)")
-            st.dataframe(pd.DataFrame(_chk_rows), use_container_width=True)
+            st.dataframe(pd.DataFrame(_chk_rows), width="stretch")
 
     # ── Download ──────────────────────────────────────────────────────────────
     _dl_d = common.create_combined_ls_download_link(
@@ -1846,14 +1846,14 @@ def display_financial_statements(current_page, zid):
                 _lc_cfs_ok = False
                 _lc_cfs = _lc_summary = pd.DataFrame()
             with st.expander("Income Statement (Level C)", expanded=True):
-                st.dataframe(_fmt(_lc_is_disp), use_container_width=True)
+                st.dataframe(_fmt(_lc_is_disp), width="stretch")
             with st.expander("Balance Sheet (Level C)", expanded=True):
-                st.dataframe(_fmt(_lc_bs_disp), use_container_width=True)
+                st.dataframe(_fmt(_lc_bs_disp), width="stretch")
             if _lc_cfs_ok:
                 with st.expander("Cash Flow Statement (Level C)", expanded=True):
-                    st.dataframe(_fmt(_lc_cfs), use_container_width=True)
+                    st.dataframe(_fmt(_lc_cfs), width="stretch")
                 with st.expander("Cash Flow Summary", expanded=False):
-                    st.dataframe(_fmt(_lc_summary), use_container_width=True)
+                    st.dataframe(_fmt(_lc_summary), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=_lc_is_disp, bs_s=_lc_bs_disp,
@@ -1866,13 +1866,13 @@ def display_financial_statements(current_page, zid):
 
         elif selected_level in ("Level 0 - Most Detail", "Level C2 - Consolidated Detail"):
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_sorted), use_container_width=True)
+                st.dataframe(_fmt(pl_sorted), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_lv0), use_container_width=True)
+                st.dataframe(_fmt(bs_lv0), width="stretch")
             with st.expander("Cash Flow Statement", expanded=True):
-                st.dataframe(_fmt(cfs_df), use_container_width=True)
+                st.dataframe(_fmt(cfs_df), width="stretch")
             with st.expander("Cash Flow Summary", expanded=False):
-                st.dataframe(_fmt(summary_df), use_container_width=True)
+                st.dataframe(_fmt(summary_df), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_sorted, bs_s=bs_lv0, cfs_s=cfs_df,
@@ -1888,13 +1888,13 @@ def display_financial_statements(current_page, zid):
 
         elif selected_level == "Level 1 - Moderate Detail":
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_lv1), use_container_width=True)
+                st.dataframe(_fmt(pl_lv1), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_lv1), use_container_width=True)
+                st.dataframe(_fmt(bs_lv1), width="stretch")
             with st.expander("Cash Flow Statement", expanded=True):
-                st.dataframe(_fmt(cfs_lv1), use_container_width=True)
+                st.dataframe(_fmt(cfs_lv1), width="stretch")
             with st.expander("Cash Flow Summary", expanded=False):
-                st.dataframe(_fmt(summary_df1), use_container_width=True)
+                st.dataframe(_fmt(summary_df1), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_lv1, bs_s=bs_lv1, cfs_s=cfs_lv1,
@@ -1906,13 +1906,13 @@ def display_financial_statements(current_page, zid):
 
         elif selected_level == "Level 2 - Least Detail":
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_lv2), use_container_width=True)
+                st.dataframe(_fmt(pl_lv2), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_lv2), use_container_width=True)
+                st.dataframe(_fmt(bs_lv2), width="stretch")
             with st.expander("Cash Flow Statement", expanded=True):
-                st.dataframe(_fmt(cfs_lv2), use_container_width=True)
+                st.dataframe(_fmt(cfs_lv2), width="stretch")
             with st.expander("Cash Flow Summary", expanded=False):
-                st.dataframe(_fmt(summary_df2), use_container_width=True)
+                st.dataframe(_fmt(summary_df2), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_lv2, bs_s=bs_lv2, cfs_s=cfs_lv2,
@@ -1973,13 +1973,13 @@ def display_financial_statements(current_page, zid):
             )
 
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_s), use_container_width=True)
+                st.dataframe(_fmt(pl_s), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_s), use_container_width=True)
+                st.dataframe(_fmt(bs_s), width="stretch")
             with st.expander("Cash Flow Statement", expanded=True):
-                st.dataframe(_fmt(cfs_s), use_container_width=True)
+                st.dataframe(_fmt(cfs_s), width="stretch")
             with st.expander("Cash Flow Summary", expanded=False):
-                st.dataframe(_fmt(summary_s), use_container_width=True)
+                st.dataframe(_fmt(summary_s), width="stretch")
 
             # Compute ratios once — reused by dashboard and expander
             _partial_months = ytd_month if _is_lt_persp else 12
@@ -2003,7 +2003,7 @@ def display_financial_statements(current_page, zid):
             # ── Financial Ratios ──────────────────────────────────────────────
             with st.expander("📊 Financial Ratios", expanded=False):
                 if _ratio_df is not None:
-                    st.dataframe(_ratio_df.set_index("Ratio"), use_container_width=True)
+                    st.dataframe(_ratio_df.set_index("Ratio"), width="stretch")
                 else:
                     st.warning("Could not compute ratios.")
 
@@ -2109,11 +2109,11 @@ def display_financial_statements(current_page, zid):
             pl_p_y, bs_p_y = financial.build_condensed_view(pl_s_p, bs_s_p)
 
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_p_y), use_container_width=True)
+                st.dataframe(_fmt(pl_p_y), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_p_y), use_container_width=True)
+                st.dataframe(_fmt(bs_p_y), width="stretch")
             with st.expander("Cash Flow Summary", expanded=True):
-                st.dataframe(_fmt(summary_s_p), use_container_width=True)
+                st.dataframe(_fmt(summary_s_p), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_p_y, bs_s=bs_p_y, cfs_s=summary_s_p,
@@ -2263,7 +2263,7 @@ def display_financial_statements(current_page, zid):
 
                     st.dataframe(
                         _proj_df.style.format(_proj_fmt),
-                        use_container_width=True,
+                        width="stretch",
                     )
 
                     # ── Save Projection Snapshot ──────────────────────────────
@@ -2354,7 +2354,7 @@ def display_financial_statements(current_page, zid):
                                             [{"Input": k, "%": v}
                                              for k, v in _snap["inputs"].items()]
                                         ).set_index("Input"),
-                                        use_container_width=True,
+                                        width="stretch",
                                     )
                                 if _snap.get("projection"):
                                     st.markdown("**Projected Income Statement**")
@@ -2366,7 +2366,7 @@ def display_financial_statements(current_page, zid):
                                         _snap_proj_df.style.format(
                                             {"Projected Value": lambda v: f"{v:,.0f}"}
                                         ),
-                                        use_container_width=True,
+                                        width="stretch",
                                     )
 
         elif selected_level == "Level T - Trading Adjustments":
@@ -2451,13 +2451,13 @@ def display_financial_statements(current_page, zid):
 
             # ── Step 4: Display ───────────────────────────────────────────────
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_t), use_container_width=True)
+                st.dataframe(_fmt(pl_t), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_t), use_container_width=True)
+                st.dataframe(_fmt(bs_t), width="stretch")
             with st.expander("Cash Flow Statement", expanded=True):
-                st.dataframe(_fmt(cfs_t), use_container_width=True)
+                st.dataframe(_fmt(cfs_t), width="stretch")
             with st.expander("Cash Flow Summary", expanded=False):
-                st.dataframe(_fmt(summary_t), use_container_width=True)
+                st.dataframe(_fmt(summary_t), width="stretch")
 
             _dl_link_t = common.create_combined_ls_download_link(
                 pl_s=pl_t, bs_s=bs_t, cfs_s=cfs_t,
@@ -2513,7 +2513,7 @@ def display_financial_statements(current_page, zid):
             _summary_df = pd.DataFrame(_summary_data, index=_yr_labels).T
             _summary_df.index.name = "Adjustment"
             with st.expander("Level T — Adjustment Breakdown", expanded=True):
-                st.dataframe(_fmt(_summary_df.reset_index()), use_container_width=True)
+                st.dataframe(_fmt(_summary_df.reset_index()), width="stretch")
 
             # ── Notes ─────────────────────────────────────────────────────────
             st.info(
@@ -2816,13 +2816,13 @@ def display_financial_statements(current_page, zid):
 
             # ── Step 4: Display statements ────────────────────────────────────
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_gi_t), use_container_width=True)
+                st.dataframe(_fmt(pl_gi_t), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_gi_t), use_container_width=True)
+                st.dataframe(_fmt(bs_gi_t), width="stretch")
             with st.expander("Cash Flow Statement", expanded=True):
-                st.dataframe(_fmt(cfs_gi_t), use_container_width=True)
+                st.dataframe(_fmt(cfs_gi_t), width="stretch")
             with st.expander("Cash Flow Summary", expanded=False):
-                st.dataframe(_fmt(summary_gi_t), use_container_width=True)
+                st.dataframe(_fmt(summary_gi_t), width="stretch")
 
             _dl_link_gi = common.create_combined_ls_download_link(
                 pl_s=pl_gi_t, bs_s=bs_gi_t, cfs_s=cfs_gi_t,
@@ -2851,7 +2851,7 @@ def display_financial_statements(current_page, zid):
                     "GI Level T — Adjustment Breakdown",
                     expanded=True,
                 ):
-                    st.dataframe(_fmt(_gi_bkdn_df.reset_index()), use_container_width=True)
+                    st.dataframe(_fmt(_gi_bkdn_df.reset_index()), width="stretch")
 
             # ── Notes ─────────────────────────────────────────────────────────
             st.info(
@@ -3088,14 +3088,14 @@ def display_financial_statements(current_page, zid):
                 _lc_cfs_ok_m = False
                 _lc_cfs_m = _lc_summary_m = pd.DataFrame()
             with st.expander("Income Statement (Level C)", expanded=True):
-                st.dataframe(_fmt(_lc_is_disp_m), use_container_width=True)
+                st.dataframe(_fmt(_lc_is_disp_m), width="stretch")
             with st.expander("Balance Sheet (Level C)", expanded=True):
-                st.dataframe(_fmt(_lc_bs_disp_m), use_container_width=True)
+                st.dataframe(_fmt(_lc_bs_disp_m), width="stretch")
             if _lc_cfs_ok_m:
                 with st.expander("Cash Flow Statement (Level C)", expanded=True):
-                    st.dataframe(_fmt(_lc_cfs_m), use_container_width=True)
+                    st.dataframe(_fmt(_lc_cfs_m), width="stretch")
                 with st.expander("Cash Flow Summary", expanded=False):
-                    st.dataframe(_fmt(_lc_summary_m), use_container_width=True)
+                    st.dataframe(_fmt(_lc_summary_m), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=_lc_is_disp_m, bs_s=_lc_bs_disp_m,
@@ -3108,14 +3108,14 @@ def display_financial_statements(current_page, zid):
 
         elif selected_level in ("Level 0 - Most Detail", "Level C2 - Consolidated Detail"):
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_sorted), use_container_width=True)
+                st.dataframe(_fmt(pl_sorted), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_lv0), use_container_width=True)
+                st.dataframe(_fmt(bs_lv0), width="stretch")
             if _cfs_monthly_available:
                 with st.expander("Cash Flow Statement", expanded=True):
-                    st.dataframe(_fmt(cfs_df), use_container_width=True)
+                    st.dataframe(_fmt(cfs_df), width="stretch")
                 with st.expander("Cash Flow Summary", expanded=False):
-                    st.dataframe(_fmt(summary_df), use_container_width=True)
+                    st.dataframe(_fmt(summary_df), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_sorted, bs_s=bs_lv0,
@@ -3132,14 +3132,14 @@ def display_financial_statements(current_page, zid):
 
         elif selected_level == "Level 1 - Moderate Detail":
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_lv1), use_container_width=True)
+                st.dataframe(_fmt(pl_lv1), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_lv1), use_container_width=True)
+                st.dataframe(_fmt(bs_lv1), width="stretch")
             if _cfs_monthly_available:
                 with st.expander("Cash Flow Statement", expanded=True):
-                    st.dataframe(_fmt(cfs_lv1), use_container_width=True)
+                    st.dataframe(_fmt(cfs_lv1), width="stretch")
                 with st.expander("Cash Flow Summary", expanded=False):
-                    st.dataframe(_fmt(summary_df1), use_container_width=True)
+                    st.dataframe(_fmt(summary_df1), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_lv1, bs_s=bs_lv1,
@@ -3152,14 +3152,14 @@ def display_financial_statements(current_page, zid):
 
         elif selected_level == "Level 2 - Least Detail":
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_lv2), use_container_width=True)
+                st.dataframe(_fmt(pl_lv2), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_lv2), use_container_width=True)
+                st.dataframe(_fmt(bs_lv2), width="stretch")
             if _cfs_monthly_available:
                 with st.expander("Cash Flow Statement", expanded=True):
-                    st.dataframe(_fmt(cfs_lv2), use_container_width=True)
+                    st.dataframe(_fmt(cfs_lv2), width="stretch")
                 with st.expander("Cash Flow Summary", expanded=False):
-                    st.dataframe(_fmt(summary_df2), use_container_width=True)
+                    st.dataframe(_fmt(summary_df2), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_lv2, bs_s=bs_lv2,
@@ -3227,20 +3227,20 @@ def display_financial_statements(current_page, zid):
             )
 
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_s), use_container_width=True)
+                st.dataframe(_fmt(pl_s), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_s), use_container_width=True)
+                st.dataframe(_fmt(bs_s), width="stretch")
             with st.expander("Cash Flow Statement", expanded=True):
-                st.dataframe(_fmt(cfs_s), use_container_width=True)
+                st.dataframe(_fmt(cfs_s), width="stretch")
             with st.expander("Cash Flow Summary", expanded=False):
-                st.dataframe(_fmt(summary_s), use_container_width=True)
+                st.dataframe(_fmt(summary_s), width="stretch")
 
             # ── Financial Ratios ──────────────────────────────────────────────
             with st.expander("📊 Financial Ratios", expanded=False):
                 try:
                     _ratio_df_m = _build_ls_ratios(pl_s, bs_s, cfs_s, perspective="Monthly")
                     st.caption("Monthly working-capital days are approximated using 30 days/period.")
-                    st.dataframe(_ratio_df_m.set_index("Ratio"), use_container_width=True)
+                    st.dataframe(_ratio_df_m.set_index("Ratio"), width="stretch")
                 except Exception as _re:
                     st.warning(f"Could not compute ratios: {_re}")
 
@@ -3351,11 +3351,11 @@ def display_financial_statements(current_page, zid):
             )
             pl_p_m, bs_p_m = financial.build_condensed_view(pl_s_pm, bs_s_pm)
             with st.expander("Income Statement", expanded=True):
-                st.dataframe(_fmt(pl_p_m), use_container_width=True)
+                st.dataframe(_fmt(pl_p_m), width="stretch")
             with st.expander("Balance Sheet", expanded=True):
-                st.dataframe(_fmt(bs_p_m), use_container_width=True)
+                st.dataframe(_fmt(bs_p_m), width="stretch")
             with st.expander("Cash Flow Summary", expanded=True):
-                st.dataframe(_fmt(summary_s_pm), use_container_width=True)
+                st.dataframe(_fmt(summary_s_pm), width="stretch")
             st.markdown(
                 common.create_combined_ls_download_link(
                     pl_s=pl_p_m, bs_s=bs_p_m, cfs_s=summary_s_pm,
@@ -3516,7 +3516,7 @@ def display_financial_statements(current_page, zid):
                           "Straight-line": _f(b), "Manual Projection": _f(c)}
                          for r, a, b, c in _be_table_rows]
                     ).set_index("Row")
-                    st.dataframe(_be_df, use_container_width=True)
+                    st.dataframe(_be_df, width="stretch")
 
                     # ── Save / Delete snapshots ───────────────────────────────
                     with st.expander("💾 Break-even Snapshots", expanded=False):
@@ -3604,7 +3604,7 @@ def display_financial_statements(current_page, zid):
                                         ]
                                         st.dataframe(
                                             pd.DataFrame(_snap_rows).set_index("Row"),
-                                            use_container_width=True,
+                                            width="stretch",
                                         )
 
                 except Exception as _be_err:

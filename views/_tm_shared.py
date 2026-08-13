@@ -216,9 +216,9 @@ def _render_table(
     show_df = _with_totals_row(df, id_cols)
     st.caption(f"{row_count:,} rows")
     try:
-        st.dataframe(_styled(show_df, id_cols, current_col), use_container_width=True, height=480)
+        st.dataframe(_styled(show_df, id_cols, current_col), width="stretch", height=480)
     except Exception:
-        st.dataframe(show_df, use_container_width=True, height=480)
+        st.dataframe(show_df, width="stretch", height=480)
     st.download_button(
         label=f"⬇ Download CSV ({row_count:,} rows)",
         data=df.to_csv(index=False).encode("utf-8"),
@@ -267,11 +267,11 @@ def _render_not_ordered_table(
     try:
         st.dataframe(
             show_df.style.apply(_style_func, axis=None).format(fmt, na_rep="-"),
-            use_container_width=True,
+            width="stretch",
             height=480,
         )
     except Exception:
-        st.dataframe(show_df, use_container_width=True, height=480)
+        st.dataframe(show_df, width="stretch", height=480)
 
     st.download_button(
         label=f"⬇ Download CSV ({row_count:,} rows)",
@@ -604,9 +604,9 @@ def _render_buying_pattern(bp_df: pd.DataFrame, is_any_filter: bool):
         st.caption(f"{len(display_df):,} customers")
 
         try:
-            st.dataframe(_bp_styled(display_df), use_container_width=True, height=520)
+            st.dataframe(_bp_styled(display_df), width="stretch", height=520)
         except Exception:
-            st.dataframe(display_df, use_container_width=True, height=520)
+            st.dataframe(display_df, width="stretch", height=520)
 
         st.download_button(
             label=f"⬇ Download CSV ({len(display_df):,} rows)",
@@ -795,9 +795,9 @@ def _render_inventory_coverage(sp_sales: pd.DataFrame, zid: str):
 
     try:
         styled = result.style.apply(_colour, axis=1).format(fmt, na_rep="—")
-        st.dataframe(styled, use_container_width=True, height=520, hide_index=True)
+        st.dataframe(styled, width="stretch", height=520, hide_index=True)
     except Exception:
-        st.dataframe(result, use_container_width=True, height=520, hide_index=True)
+        st.dataframe(result, width="stretch", height=520, hide_index=True)
 
     st.download_button(
         label=f"⬇ Download Coverage CSV ({len(result):,} rows)",
