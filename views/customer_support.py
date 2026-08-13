@@ -364,7 +364,7 @@ def _sc_status(days) -> str:
 def _render_merged_sc_table(
     df_merged: pd.DataFrame,
     days_min: int | None,
-    cust_filter: str | None,
+    salesman_filter: str | None,
     table_key: str,
 ) -> None:
     """Render the combined 100001+100000 SC table with call log panel below."""
@@ -372,18 +372,17 @@ def _render_merged_sc_table(
         st.info("No customers with an outstanding balance.")
         return
 
-    df = df_merged.copy()
+    # Apply salesman filter first — restricts to one salesman's customers.
+    # Keep a salesman-scoped copy for the coverage matrix below.
+    df_for_matrix = df_merged.copy()
+    if salesman_filter and "salesman_name" in df_for_matrix.columns:
+        df_for_matrix = df_for_matrix[df_for_matrix["salesman_name"] == salesman_filter]
+
+    df = df_for_matrix.copy()
 
     if days_min and "days_since_sale" in df.columns:
         qualifying = df[df["days_since_sale"].fillna(0) >= days_min]["cusid"].unique()
         df = df[df["cusid"].isin(qualifying)]
-
-    if cust_filter and "customer_name" in df.columns:
-        mask = (
-            df["customer_name"].str.contains(cust_filter, case=False, na=False)
-            | df["cusid"].astype(str).str.contains(cust_filter, case=False, na=False)
-        )
-        df = df[df["cusid"].isin(df[mask]["cusid"].unique())]
 
     if df.empty:
         st.info("No customers match the current filters.")
@@ -391,9 +390,10 @@ def _render_merged_sc_table(
 
     df["_status"] = df["days_since_sale"].apply(_sc_status)
 
-    # Build cl_map from the full (pre-filter) df_merged so the coverage matrix
-    # below also covers customers filtered out of the display table.
-    _cl_map = _last_calllog_map(df_merged["cusid"].astype(str).unique().tolist())
+    # Build cl_map from the salesman-scoped (pre-days-filter) set so the
+    # coverage matrix shows all of that salesman's customers, not just the
+    # days-filtered subset.
+    _cl_map = _last_calllog_map(df_for_matrix["cusid"].astype(str).unique().tolist())
     df["last_called"] = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("last_called"))
     df["outcome"]     = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("outcome"))
     df["notes"]       = df["cusid"].astype(str).map(lambda c: (_cl_map.get(c) or {}).get("notes"))
@@ -419,9 +419,11 @@ def _render_merged_sc_table(
     })
 
     unique_cust = df[["cusid", "customer_name"]].drop_duplicates("cusid")
+    sm_label = f" · Salesman: **{salesman_filter}**" if salesman_filter else ""
     st.caption(
         f"**{len(unique_cust):,}** customers · **{len(df):,}** rows (100001+100000)"
-        "  ·  >24 = 24+ days  ·  >30 = 30+ days  ·  sorted: most overdue group first"
+        + sm_label
+        + "  ·  >24 = 24+ days  ·  >30 = 30+ days  ·  sorted: most overdue group first"
         "  ·  Outcome/Notes = most recent call log entry"
     )
     st.dataframe(
@@ -461,27 +463,27 @@ def _render_merged_sc_table(
         _render_call_log_panel(sel_cusid, "100001", sel_name, key_suffix=f"_{table_key}")
 
     st.markdown("---")
-    _render_coverage_matrix(df_merged, _cl_map, key_suffix=table_key)
+    _render_coverage_matrix(df_for_matrix, _cl_map, key_suffix=table_key)
 
 
 def _render_sc_table_zepto(
     df: pd.DataFrame,
     days_min: int | None,
-    cust_filter: str | None,
+    salesman_filter: str | None,
 ) -> None:
     if df.empty:
         st.info(f"No customers with an outstanding balance for {_ZID_LABEL['100005']}.")
         return
 
-    df_full = df.copy()  # keep pre-filter copy for coverage matrix
+    # Apply salesman filter first; keep salesman-scoped copy for coverage matrix.
+    df_full = df.copy()
+    if salesman_filter and "salesman_name" in df_full.columns:
+        df_full = df_full[df_full["salesman_name"] == salesman_filter]
+
+    df = df_full.copy()
 
     if days_min and "days_since_sale" in df.columns:
         df = df[df["days_since_sale"].fillna(0) >= days_min]
-    if cust_filter and "customer_name" in df.columns:
-        df = df[
-            df["customer_name"].str.contains(cust_filter, case=False, na=False)
-            | df["cusid"].astype(str).str.contains(cust_filter, case=False, na=False)
-        ]
 
     if df.empty:
         st.info("No customers match the current filters.")
@@ -514,9 +516,11 @@ def _render_sc_table_zepto(
         "last_coll_amount": "Last Coll Amt", "current_balance": "Balance",
     })
 
+    sm_label_z = f" · Salesman: **{salesman_filter}**" if salesman_filter else ""
     st.caption(
         f"**{len(disp):,}** customers with outstanding balance"
-        "  ·  >24 = 24+ days  ·  >30 = 30+ days"
+        + sm_label_z
+        + "  ·  >24 = 24+ days  ·  >30 = 30+ days"
         "  ·  Outcome/Notes = most recent call log entry"
     )
     st.dataframe(
@@ -570,35 +574,50 @@ def _render_latest_sales_collection():
 
     days_opts = {"All Days": None, "7+ days": 7, "14+ days": 14, "24+ days": 24, "30+ days": 30}
 
+    # ── HMBR + GI ──────────────────────────────────────────────────────────────
     st.markdown("#### HMBR Tools (100001) + GI Corporation (100000)")
-    fc1, fc2 = st.columns(2)
-    sel_days_ab = days_opts[fc1.selectbox(
-        "Days since sale", list(days_opts.keys()), index=0, key="cs_sc_days_ab",
-    )]
-    sel_cust_ab = (fc2.text_input(
-        "Customer filter", placeholder="name or code…", key="cs_sc_cust_ab",
-    ).strip() or None)
 
     df_merged = cs.build_merged_sc_table(
         df_100001 if df_100001 is not None else pd.DataFrame(),
         df_100000 if df_100000 is not None else pd.DataFrame(),
     )
-    _render_merged_sc_table(df_merged, sel_days_ab, sel_cust_ab, table_key="ab")
 
+    # Build salesman list from merged data so the selectbox is always populated.
+    sm_names_ab = sorted(
+        df_merged["salesman_name"].dropna().astype(str).unique().tolist()
+    ) if not df_merged.empty and "salesman_name" in df_merged.columns else []
+
+    fc1, fc2 = st.columns(2)
+    sel_days_ab = days_opts[fc1.selectbox(
+        "Days since sale", list(days_opts.keys()), index=0, key="cs_sc_days_ab",
+    )]
+    sel_sm_raw_ab = fc2.selectbox(
+        "Salesman", ["All Salesmen"] + sm_names_ab, index=0, key="cs_sc_sm_ab",
+    )
+    sel_sm_ab = None if sel_sm_raw_ab == "All Salesmen" else sel_sm_raw_ab
+
+    _render_merged_sc_table(df_merged, sel_days_ab, sel_sm_ab, table_key="ab")
+
+    # ── Zepto ──────────────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("#### Zepto Chemicals (100005)")
+
+    df_z = df_100005 if df_100005 is not None else pd.DataFrame()
+
+    sm_names_z = sorted(
+        df_z["salesman_name"].dropna().astype(str).unique().tolist()
+    ) if not df_z.empty and "salesman_name" in df_z.columns else []
+
     fz1, fz2 = st.columns(2)
     sel_days_z = days_opts[fz1.selectbox(
         "Days since sale (100005)", list(days_opts.keys()), index=0, key="cs_sc_days_z",
     )]
-    sel_cust_z = (fz2.text_input(
-        "Customer filter (100005)", placeholder="name or code…", key="cs_sc_cust_z",
-    ).strip() or None)
-
-    _render_sc_table_zepto(
-        df_100005 if df_100005 is not None else pd.DataFrame(),
-        sel_days_z, sel_cust_z,
+    sel_sm_raw_z = fz2.selectbox(
+        "Salesman (100005)", ["All Salesmen"] + sm_names_z, index=0, key="cs_sc_sm_z",
     )
+    sel_sm_z = None if sel_sm_raw_z == "All Salesmen" else sel_sm_raw_z
+
+    _render_sc_table_zepto(df_z, sel_days_z, sel_sm_z)
 
 
 # ── Ledger helper ──────────────────────────────────────────────────────────────
