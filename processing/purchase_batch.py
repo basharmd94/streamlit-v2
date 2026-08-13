@@ -1908,6 +1908,7 @@ def build_batch_consolidation(
     # MTD qty       = rem(snap_ms) − rem(yesterday)    [absorbed during current month]
     # Yesterday qty = rem(day_before_yest) − rem(yesterday)
     batch_rows: list = []
+    debug_rows: list = []   # item-level detail for the debug breakdown expander
 
     for code, item_df in (
         p.sort_values(["itemcode", "combinedate"])
@@ -1947,8 +1948,24 @@ def build_batch_consolidation(
                 "yest_val":      yest_qty  * price,
             })
 
+            # ── Debug: capture item-level FIFO detail ─────────────────────────
+            dep_seen = _qty_range(code, Di, yesterday)
+            debug_rows.append({
+                "Shipment":      batch["shipmentname"],
+                "Item Code":     code,
+                "Item Name":     batch.get("itemname", ""),
+                "Batch Date":    Di,
+                "Initial Qty":   round(initial_i),
+                "Older Open":    round(older_open_i),
+                "Depletion Seen":round(dep_seen),
+                "Sold (FIFO)":   round(max(0.0, initial_i - rem_y)),
+                "Remaining Qty": round(rem_y),
+                "Price":         round(price, 2),
+                "Stock Val":     round(rem_y * price),
+            })
+
     if not batch_rows:
-        return EMPTY
+        return EMPTY, pd.DataFrame(debug_rows)
 
     br = pd.DataFrame(batch_rows)
 
@@ -1987,4 +2004,4 @@ def build_batch_consolidation(
     # Drop shipments with zero current stock (fully depleted)
     out = out[out["Current Stock Yesterday (BDT)"] > 0].reset_index(drop=True)
 
-    return out[_COLS]
+    return out[_COLS], pd.DataFrame(debug_rows)

@@ -1014,10 +1014,12 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
     )
 
     with st.spinner("Running FIFO batch consolidation…"):
-        df = build_batch_consolidation(
+        result = build_batch_consolidation(
             purchase_raw, sales_raw,
             movements_df=data_dict.get("imtrn_movements", pd.DataFrame()),
         )
+    # build_batch_consolidation returns (summary_df, debug_df)
+    df, debug_df = result if isinstance(result, tuple) else (result, pd.DataFrame())
 
     if df is None or df.empty:
         st.info("No closed shipments found in the 3-year window.")
@@ -1040,6 +1042,52 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
         mime="text/csv",
         key="batch_con_dl",
     )
+
+    # ── Item-level debug breakdown ─────────────────────────────────────────────
+    if not debug_df.empty:
+        with st.expander("🔍 Item-Level FIFO Debug", expanded=False):
+            st.caption(
+                "**Depletion Seen** = total sales+issues the FIFO can see for this item "
+                "from its batch date to yesterday.  If this is near zero for a large batch, "
+                "the MV rebuild has not been run on the server yet (or cross-ZID mapping is "
+                "missing).  **Older Open** = stock from prior batches of the same item "
+                "present when this batch arrived — FIFO absorbs those first."
+            )
+            shipments = sorted(debug_df["Shipment"].dropna().unique().tolist())
+            sel_ship  = st.selectbox(
+                "Filter by shipment", ["— all —"] + shipments, key="bc_debug_ship",
+            )
+            show_zero = st.checkbox("Hide fully-depleted items", value=True, key="bc_debug_zero")
+
+            ddbg = debug_df.copy()
+            if sel_ship != "— all —":
+                ddbg = ddbg[ddbg["Shipment"] == sel_ship]
+            if show_zero:
+                ddbg = ddbg[ddbg["Remaining Qty"] > 0]
+
+            ddbg = ddbg.sort_values(["Shipment", "Stock Val"], ascending=[True, False])
+            st.dataframe(
+                ddbg,
+                column_config={
+                    "Batch Date":     st.column_config.DateColumn("Batch Date",     format="YYYY-MM-DD"),
+                    "Initial Qty":    st.column_config.NumberColumn("Initial Qty",  format="%d"),
+                    "Older Open":     st.column_config.NumberColumn("Older Open",   format="%d"),
+                    "Depletion Seen": st.column_config.NumberColumn("Depletion Seen", format="%d"),
+                    "Sold (FIFO)":    st.column_config.NumberColumn("Sold (FIFO)",  format="%d"),
+                    "Remaining Qty":  st.column_config.NumberColumn("Remaining Qty",format="%d"),
+                    "Price":          st.column_config.NumberColumn("Price",        format="%.2f"),
+                    "Stock Val":      st.column_config.NumberColumn("Stock Val",    format="%d"),
+                },
+                width="stretch",
+                hide_index=True,
+            )
+            st.download_button(
+                "⬇ Download debug CSV",
+                data=debug_df.to_csv(index=False).encode("utf-8"),
+                file_name=f"batch_con_debug_{zid}.csv",
+                mime="text/csv",
+                key="bc_debug_dl",
+            )
 
 
 @timed
