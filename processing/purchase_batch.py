@@ -969,7 +969,14 @@ def run_batch_profitability_engine(
         mv = mv_df.copy() if isinstance(mv_df, pd.DataFrame) else pd.DataFrame()
         if not mv.empty:
             mv["zid"] = mv["zid"].astype(str).str.strip()
-            mv = mv[mv["zid"] == str(target_zid).strip()].copy()
+            # Cross-ZID inventory: 100001 and 100009 share stock (xdrawing in caitem).
+            # Physical depletion events must include BOTH ZIDs so that depletions that
+            # happen in 100009 (ISS or sales) are not invisible to the FIFO allocator.
+            # Revenue stays target_zid-only (100009 has no customer sales).
+            if str(target_zid).strip() == "100001":
+                mv = mv[mv["zid"].isin(["100001", "100009"])].copy()
+            else:
+                mv = mv[mv["zid"] == str(target_zid).strip()].copy()
             mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
             mv["d"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
             mv = mv[mv["d"].notna()].copy()
