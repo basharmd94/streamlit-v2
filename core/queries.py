@@ -1058,9 +1058,21 @@ def get_imtrn_movements(filters=None) -> Tuple[str, tuple]:
                        which was inflating return_qty and suppressing FIFO depletion)
 
     MV definition: db_sync/sql/mv_imtrn_movements.sql
+
+    Cross-ZID auto-expansion (Aug 2026):
+      When zid='100001', ZID 100009 rows are included automatically.
+      100001 and 100009 share physical inventory; the MV maps 100009 item codes
+      to their 100001 equivalents (via caitem.xdrawing) so FIFO depletion_lkp
+      must include both ZIDs to avoid inflated remaining quantities.
+      Same auto-expansion pattern as 'purchase' and 'stock_movement' queries.
     """
     filters = filters or {}
-    zid = filters["zid"][0]
+    zid = str(filters["zid"][0]).strip()
+    if zid == "100001":
+        # 100001 and 100009 share inventory; include 100009 so that depletion
+        # events for cross-ZID items (e.g. HPI000115 → '2145') are visible.
+        sql = "SELECT * FROM mv_imtrn_movements WHERE zid IN (%s, %s)"
+        return sql, ("100001", "100009")
     sql = "SELECT * FROM mv_imtrn_movements WHERE zid = %s"
     return sql, (zid,)
 
