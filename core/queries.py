@@ -1040,9 +1040,24 @@ def get_imtrn_movements(filters=None) -> Tuple[str, tuple]:
     txn_type values: 'purchase', 'sale', 'cust_return', 'issue', 'transfer',
                      'purch_return', 'adjustment'
 
-    Used by Purchase Analysis FIFO engine instead of mv_stock_movement +
-    mv_returns_daily_item. Captures all physical stock movements including
-    DO-- delivery orders missed by the sales-order pipeline.
+    Cross-ZID mapping (added in MV rebuild Aug 2026):
+      - 100009 items are translated to their 100001 equivalent via caitem.xdrawing.
+        e.g. 100009 item HPI000115 → itemcode '2145' (Combination Plier-7 Inch).
+        This makes 100009 depletion events visible when FIFO runs for ZID 100001.
+
+    txn_type classification (corrected in MV rebuild Aug 2026):
+      - 'purchase':    xdoctype='IGRN'  (import GRN)
+                       ximtrnnum LIKE 'RE--%' AND xdocnum LIKE 'GRN%'  (local GRN)
+      - 'sale':        xdoctype='DO--'  (delivery orders)
+      - 'cust_return': xdoctype IN ('SR--','SRE-','RECA','RECT','REC-','DSR-')
+      - 'issue':       xdoctype IN ('IS--','ISS-')
+      - 'transfer':    xdoctype='TO--'
+      - 'purch_return':xdoctype='PRE-'
+      - 'adjustment':  everything else, including xdoctype='RE--' (manufacturing
+                       output / MO-- receipts — previously wrongly 'cust_return',
+                       which was inflating return_qty and suppressing FIFO depletion)
+
+    MV definition: db_sync/sql/mv_imtrn_movements.sql
     """
     filters = filters or {}
     zid = filters["zid"][0]
