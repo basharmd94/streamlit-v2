@@ -1865,6 +1865,12 @@ def build_batch_consolidation(
             _log.warning("[BatchCon] depletion_lkp item=%s NOT FOUND", _dbg)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+    # _unabsorbed[(code, Di)] stores same-day depletion events at Di that
+    # prior batches of `code` could NOT absorb (prior batches exhausted).
+    # These overflow units are credited to the new batch Di so the FIFO doesn't
+    # silently drop stock that was received-and-issued on the same calendar day.
+    _unabsorbed: dict = {}
+
     def _cum_at(dates_np, cum_np, T: pd.Timestamp) -> float:
         """Cumulative value for dates <= T (searchsorted right, O(log n))."""
         if pd.isna(T):
@@ -1890,10 +1896,13 @@ def build_batch_consolidation(
              code: str, T: pd.Timestamp) -> float:
         """FIFO remaining qty of one batch at date T.
         older_open = remaining qty of all older batches of the same item AT D_batch.
+        extra      = same-day events at D_batch that prior batches couldn't absorb
+                     (pre-computed in _unabsorbed by the FIFO loop).
         """
         if T < D_batch:
             return initial        # batch not yet in warehouse
-        sold = min(initial, max(0.0, _qty_range(code, D_batch, T) - older_open))
+        extra = _unabsorbed.get((code, D_batch), 0.0)
+        sold = min(initial, max(0.0, _qty_range(code, D_batch, T) + extra - older_open))
         return max(0.0, initial - sold)
 
     # ── Spot-check _qty_range for item 2145 (MDKF005/23 batch) ──────────────
@@ -1978,6 +1987,24 @@ def build_batch_consolidation(
             Di        = batch["combinedate"]
             initial_i = float(batch["initial_qty"])
 
+            # ── Same-day overflow correction ──────────────────────────────────
+            # Events that fall exactly ON Di are excluded from this batch's
+            # (Di, T] depletion window but should also be absorbed by prior
+            # batches first. If prior batches are exhausted, those units must
+            # overflow into the new batch — otherwise they vanish from the FIFO.
+            _Di_m1 = Di - pd.Timedelta(days=1)
+            older_open_before_i = float(sum(
+                _rem(Dj, init_j, oo_j, code, _Di_m1)
+                for Dj, init_j, oo_j in processed
+            ))
+            if code in depletion_lkp:
+                _dn_c, _cq_c = depletion_lkp[code]
+                _di_events = max(0.0, _cum_at(_dn_c, _cq_c, Di) - _cum_at(_dn_c, _cq_c, _Di_m1))
+            else:
+                _di_events = 0.0
+            _unabsorbed[(code, Di)] = max(0.0, _di_events - older_open_before_i)
+            # ─────────────────────────────────────────────────────────────────
+
             # older_open_at_Di: remaining of every prior batch AT Di
             older_open_i = float(sum(
                 _rem(Dj, init_j, oo_j, code, Di)
@@ -2005,16 +2032,17 @@ def build_batch_consolidation(
             })
 
             # ── Debug: capture item-level FIFO detail ─────────────────────────
-            dep_seen = _qty_range(code, Di, yesterday)
+            dep_seen   = _qty_range(code, Di, yesterday)
+            _overflow  = _unabsorbed.get((code, Di), 0.0)
             debug_rows.append({
-                "Shipment":      batch["shipmentname"],
-                "Item Code":     code,
-                "Item Name":     batch.get("itemname", ""),
-                "Batch Date":    Di,
-                "Initial Qty":   round(initial_i),
-                "Older Open":    round(older_open_i),
-                "Depletion Seen":round(dep_seen),
-                "Sold (FIFO)":   round(max(0.0, initial_i - rem_y)),
+                "Shipment":        batch["shipmentname"],
+                "Item Code":       code,
+                "Item Name":       batch.get("itemname", ""),
+                "Batch Date":      Di,
+                "Initial Qty":     round(initial_i),
+                "Older Open":      round(older_open_i),
+                "Depletion Seen":  round(dep_seen + _overflow),  # post-Di + same-day overflow
+                "Sold (FIFO)":     round(max(0.0, initial_i - rem_y)),
                 "Remaining Qty": round(rem_y),
                 "Price":         round(price, 2),
                 "Stock Val":     round(rem_y * price),
