@@ -19,7 +19,10 @@
 #   stock_value: derived — imtrn GROUP BY year/month/warehouse
 #   stock_flow:  derived — imtrn GROUP BY year/month/item/warehouse with in/out CASE
 
+import logging
 from typing import Iterable, Tuple, Dict, Any
+
+_log = logging.getLogger(__name__)
 
 
 def _build_in_clause(id_iterable: Iterable[int]) -> Tuple[str, Tuple[int, ...]]:
@@ -1071,8 +1074,10 @@ def get_imtrn_movements(filters=None) -> Tuple[str, tuple]:
     if zid == "100001":
         # 100001 and 100009 share inventory; include 100009 so that depletion
         # events for cross-ZID items (e.g. HPI000115 → '2145') are visible.
+        _log.info("[get_imtrn_movements] zid_in=%s → SQL: WHERE zid IN ('100001','100009')", zid)
         sql = "SELECT * FROM mv_imtrn_movements WHERE zid IN (%s, %s)"
         return sql, ("100001", "100009")
+    _log.info("[get_imtrn_movements] zid_in=%s → SQL: WHERE zid = '%s'", zid, zid)
     sql = "SELECT * FROM mv_imtrn_movements WHERE zid = %s"
     return sql, (zid,)
 
