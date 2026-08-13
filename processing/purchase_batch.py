@@ -986,6 +986,15 @@ def run_batch_profitability_engine(
             mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
             mv["d"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
             mv = mv[mv["d"].notna()].copy()
+            _mv_1222 = mv[mv["itemcode"] == "1222"]
+            if not _mv_1222.empty:
+                _pre = _mv_1222[_mv_1222["d"] < pd.Timestamp("2023-10-17")]
+                _log.info(
+                    "[_build_daily_events] item=1222 total_rows=%d types=%s"
+                    " pre_Oct17_rows=%d pre_Oct17_types=%s",
+                    len(_mv_1222), _mv_1222["txn_type"].value_counts().to_dict(),
+                    len(_pre), _pre["txn_type"].value_counts().to_dict() if not _pre.empty else {},
+                )
 
             # sales qty: DO-- delivery orders + ISS-- internal issues.
             # Both are physical outflows that deplete batch inventory; excluding issues
@@ -1159,6 +1168,21 @@ def run_batch_profitability_engine(
                 available_for_batch = max(0.0, total_sales_after_batch - older_open_at_batch)
 
                 sold = max(0.0, min(batch_qty, available_for_batch))
+
+                # ── Diagnostic for item 1222 ──────────────────────────────────
+                if str(code).strip() == "1222":
+                    _log.info(
+                        "[BatchPL] item=1222 batch=%s date=%s"
+                        " older_purchase_qty=%.0f net_sales_before=%.0f"
+                        " older_open_at_batch=%.0f total_sales_after=%.0f"
+                        " available=%.0f batch_qty=%.0f sold=%.0f remaining=%.0f",
+                        batches.at[pos, "shipmentname"], batch_date.date(),
+                        older_purchase_qty, net_sales_before,
+                        older_open_at_batch, total_sales_after_batch,
+                        available_for_batch, batch_qty, sold,
+                        max(0.0, batch_qty - sold),
+                    )
+                # ─────────────────────────────────────────────────────────────
 
                 if sold <= EPS:
                     continue
