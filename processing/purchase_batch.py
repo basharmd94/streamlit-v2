@@ -1826,13 +1826,43 @@ def build_batch_consolidation(
         for code, (dn, cq, _) in sales_lkp.items():
             depletion_lkp[code] = (dn, cq)
 
-    # Diagnostic — remove once confirmed correct
+    # ── Diagnostic — remove once root cause confirmed ────────────────────────
     _mv_ok = movements_df is not None and isinstance(movements_df, pd.DataFrame) and not movements_df.empty
+    _log.info("[BatchCon] movements_df present=%s", _mv_ok)
+    if _mv_ok:
+        _zid_dist = movements_df["zid"].astype(str).value_counts().to_dict()
+        _log.info("[BatchCon] movements_df rows=%d zid_dist=%s", len(movements_df), _zid_dist)
+        # Raw rows for item 2145 in movements_df (before txn_type filter)
+        _raw_2145 = movements_df[movements_df["itemcode"].astype(str).str.strip() == "2145"]
+        if not _raw_2145.empty:
+            _log.info(
+                "[BatchCon] item=2145 RAW in movements_df: rows=%d zids=%s types=%s",
+                len(_raw_2145),
+                _raw_2145["zid"].astype(str).value_counts().to_dict(),
+                _raw_2145["txn_type"].value_counts().to_dict(),
+            )
+            # Post-Oct-17-2023 issue rows specifically
+            _post_oct17 = _raw_2145[
+                (_raw_2145["txn_type"] == "issue") &
+                (pd.to_datetime(_raw_2145["txn_date"], errors="coerce") > pd.Timestamp("2023-10-17"))
+            ]
+            _log.info(
+                "[BatchCon] item=2145 post-Oct-17 issues: rows=%d qty_sum=%.0f",
+                len(_post_oct17),
+                pd.to_numeric(_post_oct17["xqty"], errors="coerce").fillna(0).sum(),
+            )
+        else:
+            _log.warning("[BatchCon] item=2145 NOT FOUND in raw movements_df at all")
     _log.info("[BatchCon] depletion_lkp codes=%d fallback=%s", len(depletion_lkp), "no" if _mv_ok else "yes")
     for _dbg in ["2145", "1222"]:
         if _dbg in depletion_lkp:
             _dn, _cq = depletion_lkp[_dbg]
-            _log.info("[BatchCon] item=%s events=%d cum_total=%.0f", _dbg, len(_dn), float(_cq[-1]) if len(_cq) else 0)
+            _log.info(
+                "[BatchCon] depletion_lkp item=%s events=%d cum_total=%.0f",
+                _dbg, len(_dn), float(_cq[-1]) if len(_cq) else 0,
+            )
+        else:
+            _log.warning("[BatchCon] depletion_lkp item=%s NOT FOUND", _dbg)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _cum_at(dates_np, cum_np, T: pd.Timestamp) -> float:
@@ -1865,6 +1895,32 @@ def build_batch_consolidation(
             return initial        # batch not yet in warehouse
         sold = min(initial, max(0.0, _qty_range(code, D_batch, T) - older_open))
         return max(0.0, initial - sold)
+
+    # ── Spot-check _qty_range for item 2145 (MDKF005/23 batch) ──────────────
+    _sp_code = "2145"
+    _sp_Di   = pd.Timestamp("2023-10-17")
+    if _sp_code in depletion_lkp:
+        _dn_sp, _cq_sp = depletion_lkp[_sp_code]
+        _log.info(
+            "[BatchCon] spot-check item=%s Di=%s cum_at_Di=%.0f cum_at_yest=%.0f"
+            " qty_range(Di,yest)=%.0f",
+            _sp_code, _sp_Di.date(),
+            _cum_at(_dn_sp, _cq_sp, _sp_Di),
+            _cum_at(_dn_sp, _cq_sp, yesterday),
+            _qty_range(_sp_code, _sp_Di, yesterday),
+        )
+        # Also log the individual depletion events for 2145 around the batch date
+        _dn_sp_ts = pd.to_datetime(_dn_sp)
+        _cq_sp_arr = _cq_sp
+        _post_events = [(str(d.date()), round(float(q))) for d, q in zip(_dn_sp_ts, _cq_sp_arr)
+                        if d > _sp_Di]
+        _log.info(
+            "[BatchCon] spot-check item=%s post-Di depletion events (date, cum_qty): %s",
+            _sp_code, _post_events[:20],  # cap at 20 events to avoid log spam
+        )
+    else:
+        _log.warning("[BatchCon] spot-check item=%s NOT in depletion_lkp — cannot compute qty_range", _sp_code)
+    # ─────────────────────────────────────────────────────────────────────────
 
     # ── 4. Avg realized price per (itemcode, combinedate) ─────────────────────
     # Price window: from batch arrival to the day BEFORE the next batch of the same
