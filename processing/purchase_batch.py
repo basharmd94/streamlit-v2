@@ -811,6 +811,96 @@ def build_shipment_inventory_tables(
         # "warehouse_breakdown": warehouse_breakdown,
     }
 
+def _compute_fifo_start_dates(
+    batches_df: pd.DataFrame,
+    movements_df,
+) -> pd.Series:
+    """
+    Compute the effective FIFO depletion-start date for each batch row.
+
+    Background
+    ----------
+    A single shipment may group multiple IGRN receipts with different
+    ``txn_date`` values in imtrn under a single ``combinedate``.  For example,
+    MDKF008/23 may post 14,000 units on 2024-01-06 and another 14,000 on
+    2024-02-10 but both carry ``combinedate = 2024-02-10``.  The FIFO engine
+    normally starts its depletion window at ``combinedate``, so the 8,187 units
+    sold between 2024-01-06 and 2024-02-09 are invisible and inflate
+    ``remaining_qty`` by that amount (phantom remaining).
+
+    Fix
+    ---
+    For each batch, search ``mv_imtrn_movements`` for purchase events that are:
+      1. strictly before this batch's ``combinedate`` (gap before arrival date),
+      2. strictly after the *previous* batch's ``combinedate`` (in THIS batch's
+         inter-batch window, not a prior one's), and
+      3. NOT coinciding with another batch's ``combinedate`` (not already
+         claimed by a different batch row for this item).
+
+    The earliest qualifying date becomes the effective FIFO start
+    (``fifo_start_date``).  If none is found, ``combinedate`` is used as-is.
+
+    Returns
+    -------
+    pd.Series of pd.Timestamp, same index as batches_df.
+    """
+    result = pd.to_datetime(
+        batches_df["combinedate"], errors="coerce"
+    ).dt.floor("D").copy()
+
+    if (
+        movements_df is None
+        or not isinstance(movements_df, pd.DataFrame)
+        or movements_df.empty
+        or "txn_type" not in movements_df.columns
+    ):
+        return result
+
+    mv = movements_df.copy()
+    mv["_code"] = mv["itemcode"].astype(str).str.strip()
+    mv["_pdate"] = pd.to_datetime(
+        mv.get("txn_date", pd.Series(dtype="object")), errors="coerce"
+    ).dt.floor("D")
+    purch = mv[(mv["txn_type"] == "purchase") & mv["_pdate"].notna()].copy()
+
+    # code → sorted list of purchase Timestamps seen in movements
+    purch_dates_by_code: dict = {}
+    for code_p, grp_p in purch.groupby("_code"):
+        purch_dates_by_code[str(code_p)] = sorted(
+            pd.Timestamp(d) for d in grp_p["_pdate"].unique()
+        )
+
+    batch_combs = pd.to_datetime(
+        batches_df["combinedate"], errors="coerce"
+    ).dt.floor("D")
+
+    for code_b, item_idx in batches_df.groupby("itemcode").groups.items():
+        code_str = str(code_b)
+        pdates = purch_dates_by_code.get(code_str, [])
+        if not pdates:
+            continue
+
+        item_combs = batch_combs.loc[item_idx].sort_values()
+        item_batch_dates: set = set(item_combs.dropna().tolist())
+        prev_Di = pd.Timestamp.min
+
+        for idx in item_combs.index:
+            Di = item_combs.at[idx]
+            if pd.isna(Di):
+                continue
+            # Dates "claimed" by other batch rows of this item
+            other_batch_dates: set = item_batch_dates - {Di}
+            candidates = [
+                d for d in pdates
+                if prev_Di < d < Di and d not in other_batch_dates
+            ]
+            Di_eff = min(candidates) if candidates else Di
+            result.at[idx] = Di_eff
+            prev_Di = Di   # next batch's window starts after this combinedate
+
+    return result
+
+
 def run_batch_profitability_engine(
     purchase_df: pd.DataFrame,
     sales_df: pd.DataFrame,
@@ -1094,6 +1184,12 @@ def run_batch_profitability_engine(
     alloc_src_batches = all_batches[all_batches["itemcode"].astype(str).isin(target_itemcodes)].copy()
     alloc_src_batches = alloc_src_batches.sort_values(["itemcode", "combinedate", "shipmentname"]).reset_index(drop=True)
 
+    # Effective FIFO depletion-start date: earlier than combinedate when a
+    # shipment has imtrn receipts that predate the batch's combinedate.
+    alloc_src_batches["fifo_start_date"] = _compute_fifo_start_dates(
+        alloc_src_batches, movements_df
+    )
+
     def _fifo_allocate_batches(all_batches: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
         """
         FIFO allocation across repeated shipments of the same SKU.
@@ -1162,37 +1258,55 @@ def run_batch_profitability_engine(
 
             batch_positions = bgrp.sort_values(["combinedate", "shipmentname"]).index.tolist()
 
-            # Earliest batch date for this item. net_sales_before is counted only
-            # from this date onwards so that backdated return entries before the
-            # first purchase batch don't inflate older_open_at_batch.
-            first_batch_date = bgrp["combinedate"].min()
+            # Earliest effective start across all batches for this item.
+            # Uses fifo_start_date (which may predate combinedate when a shipment
+            # has imtrn receipts earlier than its combinedate) so that sales in
+            # the gap between first receipt and combinedate are not missed.
+            first_batch_date = (
+                bgrp["fifo_start_date"].min()
+                if "fifo_start_date" in bgrp.columns
+                else bgrp["combinedate"].min()
+            )
 
             for pos in batch_positions:
                 batch_qty = float(batches.at[pos, "initial_qty"])
                 batch_date = pd.Timestamp(batches.at[pos, "combinedate"]).floor("D")
+                # Effective FIFO window start — may predate combinedate when a
+                # shipment groups multiple receipts with the later date.
+                batch_fifo_start = (
+                    pd.Timestamp(batches.at[pos, "fifo_start_date"]).floor("D")
+                    if "fifo_start_date" in batches.columns
+                    else batch_date
+                )
 
-                # older purchase qty strictly before this batch
+                # older purchase qty: batches whose first receipt (fifo_start_date)
+                # preceded this batch's first receipt. Prevents the Jan-06 portion
+                # of a Feb-10 combinedate batch from being counted as "older stock".
                 older_batches = batches[
                     (batches["itemcode"] == code) &
-                    (batches["combinedate"] < batch_date)
+                    (
+                        batches["fifo_start_date"] < batch_fifo_start
+                        if "fifo_start_date" in batches.columns
+                        else batches["combinedate"] < batch_fifo_start
+                    )
                 ].copy()
 
                 older_purchase_qty = float(older_batches["initial_qty"].sum()) if not older_batches.empty else 0.0
 
-                # net sales strictly before this batch date, counted only from
+                # net sales strictly before this batch's first receipt, counted from
                 # first_batch_date onwards. Backdated return entries before any
                 # purchase batch arrived produce negative net_sales which inflate
                 # older_open_at_batch for every subsequent batch (phantom cascade).
                 sales_before = sales[
-                    (sales["d"] >= first_batch_date) & (sales["d"] < batch_date)
+                    (sales["d"] >= first_batch_date) & (sales["d"] < batch_fifo_start)
                 ].copy()
                 net_sales_before = float(sales_before["net_qty"].sum()) if not sales_before.empty else 0.0
 
-                # older stock still open when this batch arrives
+                # older stock still open when this batch's first receipt arrives
                 older_open_at_batch = max(0.0, older_purchase_qty - net_sales_before)
 
-                # sales only after this batch arrived
-                sales_after_batch = sales[sales["d"] >= batch_date].copy()
+                # sales from this batch's first receipt onwards
+                sales_after_batch = sales[sales["d"] >= batch_fifo_start].copy()
 
                 total_sales_after_batch = float(sales_after_batch["net_qty"].sum()) if not sales_after_batch.empty else 0.0
 
@@ -1235,7 +1349,7 @@ def run_batch_profitability_engine(
 
                     if not hit.empty:
                         close_dt = pd.Timestamp(hit.iloc[0]["d"]).floor("D")
-                        if close_dt >= batch_date:
+                        if close_dt >= batch_fifo_start:
                             batches.at[pos, "batch_end_date"] = close_dt
                     else:
                         batches.at[pos, "batch_end_date"] = pd.NaT
@@ -1257,8 +1371,16 @@ def run_batch_profitability_engine(
 
         batches["batch_end_date"] = pd.to_datetime(batches["batch_end_date"], errors="coerce")
 
+        # Nullify end-dates before the effective start (fifo_start_date).
+        # For batches whose receipts predate combinedate, the end-date may
+        # legitimately fall between fifo_start_date and combinedate.
+        _end_floor = (
+            batches["fifo_start_date"]
+            if "fifo_start_date" in batches.columns
+            else batches["combinedate"]
+        )
         batches.loc[
-            batches["batch_end_date"].notna() & (batches["batch_end_date"] < batches["combinedate"]),
+            batches["batch_end_date"].notna() & (batches["batch_end_date"] < _end_floor),
             "batch_end_date"
         ] = pd.NaT
 
@@ -1278,8 +1400,13 @@ def run_batch_profitability_engine(
     alloc_src_batches = _fifo_allocate_batches(alloc_src_batches, events)
 
     alloc_src_batches["batch_end_date"] = pd.to_datetime(alloc_src_batches["batch_end_date"], errors="coerce")
+    _asc_floor = (
+        alloc_src_batches["fifo_start_date"]
+        if "fifo_start_date" in alloc_src_batches.columns
+        else alloc_src_batches["combinedate"]
+    )
     alloc_src_batches.loc[
-        alloc_src_batches["batch_end_date"] < alloc_src_batches["combinedate"],
+        alloc_src_batches["batch_end_date"] < _asc_floor,
         "batch_end_date"
     ] = pd.NaT
 
@@ -1811,6 +1938,8 @@ def build_batch_consolidation(
         itemname   =("itemname",  "first"),
     )
 
+    p["fifo_start_date"] = _compute_fifo_start_dates(p, movements_df)
+
     # ── 3. Build per-itemcode cumulative sales/revenue arrays (sorted by date) ─
     s = sales_df.copy()
     s["itemcode"] = s["itemcode"].astype(str).str.strip()
@@ -1962,38 +2091,39 @@ def build_batch_consolidation(
 
         for _, batch in item_df.iterrows():
             Di        = batch["combinedate"]
+            Di_eff    = pd.Timestamp(batch["fifo_start_date"]).floor("D") if "fifo_start_date" in batch.index else Di
             initial_i = float(batch["initial_qty"])
 
             # ── Same-day overflow correction ──────────────────────────────────
-            # Events that fall exactly ON Di are excluded from this batch's
-            # (Di, T] depletion window but should also be absorbed by prior
+            # Events that fall exactly ON Di_eff are excluded from this batch's
+            # (Di_eff, T] depletion window but should also be absorbed by prior
             # batches first. If prior batches are exhausted, those units must
             # overflow into the new batch — otherwise they vanish from the FIFO.
-            _Di_m1 = Di - pd.Timedelta(days=1)
+            _Di_m1 = Di_eff - pd.Timedelta(days=1)
             older_open_before_i = float(sum(
                 _rem(Dj, init_j, oo_j, code, _Di_m1)
                 for Dj, init_j, oo_j in processed
             ))
             if code in depletion_lkp:
                 _dn_c, _cq_c = depletion_lkp[code]
-                _di_events = max(0.0, _cum_at(_dn_c, _cq_c, Di) - _cum_at(_dn_c, _cq_c, _Di_m1))
+                _di_events = max(0.0, _cum_at(_dn_c, _cq_c, Di_eff) - _cum_at(_dn_c, _cq_c, _Di_m1))
             else:
                 _di_events = 0.0
-            _unabsorbed[(code, Di)] = max(0.0, _di_events - older_open_before_i)
+            _unabsorbed[(code, Di_eff)] = max(0.0, _di_events - older_open_before_i)
             # ─────────────────────────────────────────────────────────────────
 
-            # older_open_at_Di: remaining of every prior batch AT Di
+            # older_open_at_Di_eff: remaining of every prior batch AT Di_eff
             older_open_i = float(sum(
-                _rem(Dj, init_j, oo_j, code, Di)
+                _rem(Dj, init_j, oo_j, code, Di_eff)
                 for Dj, init_j, oo_j in processed
             ))
-            processed.append((Di, initial_i, older_open_i))
+            processed.append((Di_eff, initial_i, older_open_i))
 
             price = price_cache.get((code, Di), float(batch["unit_cost"]))
 
-            rem_ms  = _rem(Di, initial_i, older_open_i, code, snap_ms)
-            rem_y   = _rem(Di, initial_i, older_open_i, code, yesterday)
-            rem_dby = _rem(Di, initial_i, older_open_i, code, day_before_yest)
+            rem_ms  = _rem(Di_eff, initial_i, older_open_i, code, snap_ms)
+            rem_y   = _rem(Di_eff, initial_i, older_open_i, code, yesterday)
+            rem_dby = _rem(Di_eff, initial_i, older_open_i, code, day_before_yest)
 
             mtd_qty  = max(0.0, rem_ms  - rem_y)
             yest_qty = max(0.0, rem_dby - rem_y)
@@ -2009,8 +2139,8 @@ def build_batch_consolidation(
             })
 
             # ── Debug: capture item-level FIFO detail ─────────────────────────
-            dep_seen   = _qty_range(code, Di, yesterday)
-            _overflow  = _unabsorbed.get((code, Di), 0.0)
+            dep_seen   = _qty_range(code, Di_eff, yesterday)
+            _overflow  = _unabsorbed.get((code, Di_eff), 0.0)
             debug_rows.append({
                 "Shipment":        batch["shipmentname"],
                 "Item Code":       code,
@@ -2018,7 +2148,7 @@ def build_batch_consolidation(
                 "Batch Date":      Di,
                 "Initial Qty":     round(initial_i),
                 "Older Open":      round(older_open_i),
-                "Depletion Seen":  round(dep_seen + _overflow),  # post-Di + same-day overflow
+                "Depletion Seen":  round(dep_seen + _overflow),  # post-Di_eff + same-day overflow
                 "Sold (FIFO)":     round(max(0.0, initial_i - rem_y)),
                 "Remaining Qty": round(rem_y),
                 "Price":         round(price, 2),
