@@ -1131,13 +1131,20 @@ def run_batch_profitability_engine(
         ev["sales_rev"]        = pd.to_numeric(ev.get("sales_rev",        0), errors="coerce").fillna(0.0)
         ev["return_qty"]       = pd.to_numeric(ev.get("return_qty",       0), errors="coerce").fillna(0.0)
         ev["transfer_net_qty"] = pd.to_numeric(ev.get("transfer_net_qty", 0), errors="coerce").fillna(0.0)
-        # net depletion = (sales + issues) − customer_returns − transfer_net_qty
+        # net depletion = (sales + issues) − transfer_net_qty
+        # Returns are intentionally excluded from the FIFO depletion count.
+        # Subtracting return_qty causes phantom remaining whenever cust_return
+        # events are inflated by RE-- accounting reversals in the MV (RE-- xqty
+        # mirrors the original delivery, making return_qty ≈ sales_qty and
+        # collapsing net_qty to ~0). Batch Con's depletion_lkp also ignores
+        # cust_return and consistently produces correct remaining quantities.
+        # Revenue/COGS accuracy is unaffected — avg_price uses sales_qty and
+        # sales_rev directly, not net_qty.
+        #
         # transfer_net_qty is MV-signed (negative = outflow, positive = inflow).
-        # Subtracting it converts outflows to positive depletion and inflows to
-        # negative depletion (i.e. stock added back). Internal warehouse transfers
-        # cancel (out + in = 0); genuine outflows (cross-ZID, inter-company) correctly
-        # contribute to depletion so phantom remaining is eliminated.
-        ev["net_qty"] = ev["sales_qty"] - ev["return_qty"] - ev["transfer_net_qty"]
+        # Internal transfers cancel (out + in = 0); genuine cross-ZID outflows
+        # correctly add to depletion so phantom remaining is eliminated.
+        ev["net_qty"] = ev["sales_qty"] - ev["transfer_net_qty"]
 
         ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
 
