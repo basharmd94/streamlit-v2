@@ -1060,9 +1060,16 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
                     "Filter by shipment", ["— all —"] + shipments, key="bc_debug_ship",
                 )
             with _fc2:
-                _prod_opts = sorted(debug_df["Item Name"].dropna().unique().tolist())
+                _prod_lkp = (
+                    debug_df[["Item Code", "Item Name"]]
+                    .dropna(subset=["Item Code"])
+                    .drop_duplicates("Item Code")
+                    .assign(_label=lambda d: d["Item Code"].astype(str) + " — " + d["Item Name"].fillna("").astype(str))
+                    .sort_values("_label")
+                )
+                _prod_label_to_code = dict(zip(_prod_lkp["_label"], _prod_lkp["Item Code"].astype(str)))
                 sel_prods = st.multiselect(
-                    "Filter by product", _prod_opts, key="bc_debug_prod",
+                    "Filter by product", list(_prod_label_to_code), key="bc_debug_prod",
                 )
             with _fc3:
                 show_zero = st.checkbox("Hide fully-depleted", value=True, key="bc_debug_zero")
@@ -1071,7 +1078,8 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
             if sel_ship != "— all —":
                 ddbg = ddbg[ddbg["Shipment"] == sel_ship]
             if sel_prods:
-                ddbg = ddbg[ddbg["Item Name"].isin(sel_prods)]
+                _sel_codes = [_prod_label_to_code[l] for l in sel_prods]
+                ddbg = ddbg[ddbg["Item Code"].astype(str).isin(_sel_codes)]
             if show_zero:
                 ddbg = ddbg[ddbg["Remaining Qty"] > 0]
 
