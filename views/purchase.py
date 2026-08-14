@@ -1080,7 +1080,8 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
             if not _inv_fi.empty and "item_id" in _inv_fi.columns and "stock" in _inv_fi.columns:
                 _inv_map = _inv_fi.set_index("item_id")["stock"].to_dict()
                 ddbg["Current Inventory"] = (
-                    ddbg["Item Code"].map(_inv_map).fillna(0).round(0).astype(int)
+                    pd.to_numeric(ddbg["Item Code"].map(_inv_map), errors="coerce")
+                    .fillna(0).round(0).astype(int)
                 )
             else:
                 ddbg["Current Inventory"] = 0
@@ -1569,7 +1570,8 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             if not _inv_fi_bpl.empty and "item_id" in _inv_fi_bpl.columns and "stock" in _inv_fi_bpl.columns:
                 _inv_map_bpl = _inv_fi_bpl.set_index("item_id")["stock"].to_dict()
                 disp_bpl["current_inventory"] = (
-                    disp_bpl["itemcode"].astype(str).map(_inv_map_bpl).fillna(0).round(0).astype(int)
+                    pd.to_numeric(disp_bpl["itemcode"].astype(str).map(_inv_map_bpl), errors="coerce")
+                    .fillna(0).round(0).astype(int)
                 )
             else:
                 disp_bpl["current_inventory"] = 0
