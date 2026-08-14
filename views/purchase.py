@@ -1054,29 +1054,50 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
                 "present when this batch arrived — FIFO absorbs those first."
             )
             shipments = sorted(debug_df["Shipment"].dropna().unique().tolist())
-            sel_ship  = st.selectbox(
-                "Filter by shipment", ["— all —"] + shipments, key="bc_debug_ship",
-            )
-            show_zero = st.checkbox("Hide fully-depleted items", value=True, key="bc_debug_zero")
+            _fc1, _fc2, _fc3 = st.columns([2, 3, 1])
+            with _fc1:
+                sel_ship = st.selectbox(
+                    "Filter by shipment", ["— all —"] + shipments, key="bc_debug_ship",
+                )
+            with _fc2:
+                _prod_opts = sorted(debug_df["Item Name"].dropna().unique().tolist())
+                sel_prods = st.multiselect(
+                    "Filter by product", _prod_opts, key="bc_debug_prod",
+                )
+            with _fc3:
+                show_zero = st.checkbox("Hide fully-depleted", value=True, key="bc_debug_zero")
 
             ddbg = debug_df.copy()
             if sel_ship != "— all —":
                 ddbg = ddbg[ddbg["Shipment"] == sel_ship]
+            if sel_prods:
+                ddbg = ddbg[ddbg["Item Name"].isin(sel_prods)]
             if show_zero:
                 ddbg = ddbg[ddbg["Remaining Qty"] > 0]
+
+            # Attach current live inventory
+            _inv_fi = _load_tts_final_items(zid)
+            if not _inv_fi.empty and "item_id" in _inv_fi.columns and "stock" in _inv_fi.columns:
+                _inv_map = _inv_fi.set_index("item_id")["stock"].to_dict()
+                ddbg["Current Inventory"] = (
+                    ddbg["Item Code"].map(_inv_map).fillna(0).round(0).astype(int)
+                )
+            else:
+                ddbg["Current Inventory"] = 0
 
             ddbg = ddbg.sort_values(["Shipment", "Stock Val"], ascending=[True, False])
             st.dataframe(
                 ddbg,
                 column_config={
-                    "Batch Date":     st.column_config.DateColumn("Batch Date",     format="YYYY-MM-DD"),
-                    "Initial Qty":    st.column_config.NumberColumn("Initial Qty",  format="%d"),
-                    "Older Open":     st.column_config.NumberColumn("Older Open",   format="%d"),
-                    "Depletion Seen": st.column_config.NumberColumn("Depletion Seen", format="%d"),
-                    "Sold (FIFO)":    st.column_config.NumberColumn("Sold (FIFO)",  format="%d"),
-                    "Remaining Qty":  st.column_config.NumberColumn("Remaining Qty",format="%d"),
-                    "Price":          st.column_config.NumberColumn("Price",        format="%.2f"),
-                    "Stock Val":      st.column_config.NumberColumn("Stock Val",    format="%d"),
+                    "Batch Date":        st.column_config.DateColumn("Batch Date",        format="YYYY-MM-DD"),
+                    "Initial Qty":       st.column_config.NumberColumn("Initial Qty",     format="%d"),
+                    "Older Open":        st.column_config.NumberColumn("Older Open",      format="%d"),
+                    "Depletion Seen":    st.column_config.NumberColumn("Depletion Seen",  format="%d"),
+                    "Sold (FIFO)":       st.column_config.NumberColumn("Sold (FIFO)",     format="%d"),
+                    "Remaining Qty":     st.column_config.NumberColumn("Remaining Qty",   format="%d"),
+                    "Price":             st.column_config.NumberColumn("Price",           format="%.2f"),
+                    "Stock Val":         st.column_config.NumberColumn("Stock Val",       format="%d"),
+                    "Current Inventory": st.column_config.NumberColumn("Current Inventory", format="%d"),
                 },
                 width="stretch",
                 hide_index=True,
@@ -1540,7 +1561,41 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             st.session_state["last_batch_df"] = result_df.copy()
             st.session_state["last_shipment_realized_revenue"] = float(result_df["sold_revenue"].sum()) if not result_df.empty else 0.0
 
-            st.dataframe(result_df, width="stretch")
+            # ── Build display copy: inject current inventory + product filter ──
+            disp_bpl = result_df.copy()
+
+            # Current live stock from final_items_view
+            _inv_fi_bpl = _load_tts_final_items(str(zid))
+            if not _inv_fi_bpl.empty and "item_id" in _inv_fi_bpl.columns and "stock" in _inv_fi_bpl.columns:
+                _inv_map_bpl = _inv_fi_bpl.set_index("item_id")["stock"].to_dict()
+                disp_bpl["current_inventory"] = (
+                    disp_bpl["itemcode"].astype(str).map(_inv_map_bpl).fillna(0).round(0).astype(int)
+                )
+            else:
+                disp_bpl["current_inventory"] = 0
+
+            # Place current_inventory immediately after threshold_qty
+            if "threshold_qty" in disp_bpl.columns:
+                _cols = list(disp_bpl.columns)
+                _cols = [c for c in _cols if c != "current_inventory"]
+                _thr_idx = _cols.index("threshold_qty")
+                _cols.insert(_thr_idx + 1, "current_inventory")
+                disp_bpl = disp_bpl[_cols]
+
+            # Product filter (multiselect on item name)
+            if not disp_bpl.empty and "itemname" in disp_bpl.columns:
+                _prod_opts_bpl = sorted(
+                    disp_bpl["itemname"].dropna().astype(str).unique().tolist()
+                )
+                sel_prods_bpl = st.multiselect(
+                    "Filter by product",
+                    _prod_opts_bpl,
+                    key="bpl_prod_filter",
+                )
+                if sel_prods_bpl:
+                    disp_bpl = disp_bpl[disp_bpl["itemname"].isin(sel_prods_bpl)]
+
+            st.dataframe(disp_bpl, width="stretch")
 
             if result_df is not None and not result_df.empty:
                 sum_cols = [
