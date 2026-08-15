@@ -269,14 +269,34 @@ def load_purchase_data(zid: str, project: str, mv_version: str = "") -> dict:
     data anyway (the overhead/profitability pools are always sourced from trading),
     so fetching them here for a different zid would just be discarded unused.
     """
-    purchase_tables = ["sales_daily_item", "purchase_batches", "imtrn_movements", "caitem"]
-    if str(zid) == "100001":
-        purchase_tables += ["gl_overhead_daily", "glmst_simple"]
-
     data_dict = {}
-    for table in purchase_tables:
+
+    # ── 1. purchase_batches first: its earliest combinedate is the lower bound
+    #       for the mv_imtrn_movements query (avoids loading all of imtrn history).
+    pb = Analytics("purchase_batches", zid=zid, project=project, filters={}).data
+    data_dict["purchase_batches"] = pb if pb is not None else pd.DataFrame()
+
+    # ── 2. Derive earliest date filter for movements
+    mv_from_date = None
+    if pb is not None and not pb.empty and "combinedate" in pb.columns:
+        _min_cd = pd.to_datetime(pb["combinedate"], errors="coerce").min()
+        if pd.notna(_min_cd):
+            mv_from_date = _min_cd.date()   # Python date → passed as SQL param
+
+    # ── 3. imtrn_movements with the date filter (can halve or more the row count)
+    _mv_filters = {"from_date": mv_from_date} if mv_from_date else {}
+    mv = Analytics("imtrn_movements", zid=zid, project=project, filters=_mv_filters).data
+    data_dict["imtrn_movements"] = mv if mv is not None else pd.DataFrame()
+
+    # ── 4. Remaining tables (no date filter needed)
+    for table in ["sales_daily_item", "caitem"]:
         df = Analytics(table, zid=zid, project=project, filters={}).data
         data_dict[table] = df if df is not None else pd.DataFrame()
+
+    if str(zid) == "100001":
+        for table in ["gl_overhead_daily", "glmst_simple"]:
+            df = Analytics(table, zid=zid, project=project, filters={}).data
+            data_dict[table] = df if df is not None else pd.DataFrame()
 
     if str(zid) == "100001":
         # Append 100009 expenses (MV now covers both ZIDs after the May-2024 MV update)

@@ -1025,7 +1025,9 @@ def run_batch_profitability_engine(
     shipment_overhead_total: float = 0.0,
     vat_pct: float = 0.0,
     manual_overhead_value: float = 0.0,
-    inventory_tables: Optional[Dict[str, pd.DataFrame]] = None,) -> pd.DataFrame:
+    inventory_tables: Optional[Dict[str, pd.DataFrame]] = None,
+    live_inv_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
     """Batch profitability using raw-ledger FIFO across repeated shipments.
 
     Each individual IGRN receipt in mv_imtrn_movements becomes one FIFO lot
@@ -1162,6 +1164,53 @@ def run_batch_profitability_engine(
 
     df0["onhand_before"] = _build_onhand_before(movements_df, df0).astype(float)
     df0["threshold_qty"] = df0["onhand_before"].astype(float)
+
+    # ── 5b. Inventory correction ──────────────────────────────────────────────
+    # When FIFO remaining_qty > live stock (caused by missing depletions in MV):
+    #   • Later shipment exists for this item → batch must already be fully
+    #     depleted (FIFO oldest-first; next batch only arrived after this ran out).
+    #     → remaining = 0, sold = initial_qty
+    #   • No later shipment → this is the current active batch.
+    #     → cap remaining at live stock, sold = initial - remaining
+    if live_inv_df is not None and not live_inv_df.empty and "stock" in live_inv_df.columns:
+        _id_col  = "item_id" if "item_id" in live_inv_df.columns else "itemcode"
+        _live_map = {
+            str(k): float(v)
+            for k, v in pd.to_numeric(
+                live_inv_df.set_index(_id_col)["stock"], errors="coerce"
+            ).fillna(0.0).items()
+        }
+        # Latest lot_date per item in this shipment (= when inventory arrived)
+        _ship_lots   = all_lots[all_lots["shipmentname"] == target_shipment]
+        _item_maxdate = _ship_lots.groupby("itemcode")["lot_date"].max()
+
+        for _i, _row in df0.iterrows():
+            _code = str(_row["itemcode"])
+            _rem  = float(_row["remaining_qty"])
+            _live = _live_map.get(_code, 0.0)
+            if _rem <= _live + 1.0:          # within 1-unit tolerance → FIFO OK
+                continue
+
+            _mdate = _item_maxdate.get(_code, pd.NaT)
+            _later_exists = (
+                not all_lots[
+                    (all_lots["itemcode"]    == _code) &
+                    (all_lots["shipmentname"] != target_shipment) &
+                    (all_lots["lot_date"]     >  _mdate)
+                ].empty
+            ) if pd.notna(_mdate) else False
+
+            if _later_exists:
+                # A newer shipment arrived → this batch is fully gone
+                df0.at[_i, "remaining_qty"] = 0.0
+                df0.at[_i, "sold_qty"]      = float(_row["initial_qty"])
+                df0.at[_i, "is_closed"]     = True
+            else:
+                # Last/only batch for this item → cap at live stock
+                _new_rem = max(0.0, _live)
+                df0.at[_i, "remaining_qty"] = _new_rem
+                df0.at[_i, "sold_qty"]      = max(0.0, float(_row["initial_qty"]) - _new_rem)
+                df0.at[_i, "is_closed"]     = _new_rem < EPS
 
     # ── 6. Revenue / avg price ────────────────────────────────────────────────
     # Build per-item cumulative (qty, rev) arrays from sales_df for price lookup
@@ -1571,6 +1620,7 @@ def build_batch_consolidation(
     purchase_df: pd.DataFrame,
     sales_df: pd.DataFrame,
     movements_df: pd.DataFrame | None = None,
+    live_inv_df: pd.DataFrame | None = None,
 ) -> tuple:
     """Shipment-level consolidation using raw-ledger FIFO stock snapshots.
 
@@ -1741,6 +1791,45 @@ def build_batch_consolidation(
     base = _merge_rem(base, snap_ms_r,  "rem_ms")
     base = _merge_rem(base, snap_y_r,   "rem_y")
     base = _merge_rem(base, snap_dby_r, "rem_dby")
+
+    # ── Post-FIFO inventory correction ───────────────────────────────────────
+    # Fixes rem_y (current stock) when FIFO overstates remaining due to missing
+    # depletions in mv_imtrn_movements.  Rule per item:
+    #   • Lots older than the last lot for this item → must be fully depleted.
+    #   • The last lot for this item → cap rem_y at live stock.
+    # rem_ms / rem_dby snapshots are left as-is; their relative differences
+    # still give meaningful MTD / yesterday sales estimates.
+    if live_inv_df is not None and not live_inv_df.empty and "stock" in live_inv_df.columns:
+        _id_col  = "item_id" if "item_id" in live_inv_df.columns else "itemcode"
+        _live_s  = pd.to_numeric(
+            live_inv_df.set_index(_id_col)["stock"], errors="coerce"
+        ).fillna(0.0)
+        _live_map = {str(k): float(v) for k, v in _live_s.items()}
+
+        # Latest lot_date per item across ALL lots in the analysis
+        _global_max = all_lots.groupby("itemcode")["lot_date"].max()
+
+        for _code_c, _item_rows in base.groupby("itemcode"):
+            _code_s      = str(_code_c)
+            _live        = _live_map.get(_code_s, 0.0)
+            _total_rem_y = float(_item_rows["rem_y"].sum())
+            if _total_rem_y <= _live + 1.0:
+                continue          # FIFO already correct for this item
+
+            _global_last = _global_max.get(_code_c, pd.NaT)
+            _sorted_idx  = _item_rows.sort_values("lot_date").index.tolist()
+            _allocated   = 0.0
+
+            for _idx in _sorted_idx:
+                _lot_date = base.at[_idx, "lot_date"]
+                _is_last  = (pd.notna(_lot_date) and pd.notna(_global_last)
+                             and pd.Timestamp(_lot_date) >= pd.Timestamp(_global_last))
+                if _is_last:
+                    # Last (or tied-last) lot → give it the remaining live stock
+                    base.at[_idx, "rem_y"] = max(0.0, _live - _allocated)
+                else:
+                    # Older lot with a newer one arriving → fully depleted
+                    base.at[_idx, "rem_y"] = 0.0
 
     base["arrival_val"]   = base["lot_qty"]  * base["price"]
     base["ms_stock_val"]  = base["rem_ms"]   * base["price"]

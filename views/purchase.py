@@ -1017,6 +1017,7 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
         result = build_batch_consolidation(
             purchase_raw, sales_raw,
             movements_df=data_dict.get("imtrn_movements", pd.DataFrame()),
+            live_inv_df=_load_tts_final_items(str(zid)),
         )
     # build_batch_consolidation returns (summary_df, debug_df)
     df, debug_df = result if isinstance(result, tuple) else (result, pd.DataFrame())
@@ -1565,6 +1566,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 vat_pct=vat_pct,
                 manual_overhead_value=manual_overhead_value,
                 inventory_tables=st.session_state.get("invcheck_tables"),
+                live_inv_df=_load_tts_final_items(str(zid)),
             )
 
             st.session_state["last_batch_df"] = result_df.copy()
