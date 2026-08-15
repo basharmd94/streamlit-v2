@@ -1620,8 +1620,9 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 _pb = data_dict.get("purchase_batches")
                 if _mv is not None and not _mv.empty and _pb is not None and not _pb.empty:
                     try:
-                        _all_lots = purchase._build_raw_lots(_mv, _pb)
-                        _dep_all  = purchase._build_dep_daily(_mv, dep_zid="100001")
+                        import processing.purchase_batch as _pbatch
+                        _all_lots = _pbatch._build_raw_lots(_mv, _pb)
+                        _dep_all  = _pbatch._build_dep_daily(_mv, dep_zid="100001")
 
                         # Items in this shipment only
                         _ship_items = set(result_df["itemcode"].astype(str).tolist()) if not result_df.empty else set()
