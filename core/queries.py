@@ -1069,14 +1069,26 @@ def get_imtrn_movements(filters=None) -> Tuple[str, tuple]:
       must include both ZIDs to avoid inflated remaining quantities.
       Same auto-expansion pattern as 'purchase' and 'stock_movement' queries.
     """
-    filters = filters or {}
-    zid = str(filters["zid"][0]).strip()
+    filters   = filters or {}
+    zid       = str(filters["zid"][0]).strip()
+    from_date = filters.get("from_date")   # optional earliest txn_date (date / str)
+
     if zid == "100001":
         # 100001 and 100009 share inventory; include 100009 so that depletion
         # events for cross-ZID items (e.g. HPI000115 → '2145') are visible.
+        if from_date:
+            _log.info("[get_imtrn_movements] zid=100001 from_date=%s", from_date)
+            sql = ("SELECT * FROM mv_imtrn_movements "
+                   "WHERE zid IN (%s, %s) AND txn_date >= %s")
+            return sql, ("100001", "100009", str(from_date))
         _log.info("[get_imtrn_movements] zid_in=%s → SQL: WHERE zid IN ('100001','100009')", zid)
         sql = "SELECT * FROM mv_imtrn_movements WHERE zid IN (%s, %s)"
         return sql, ("100001", "100009")
+
+    if from_date:
+        _log.info("[get_imtrn_movements] zid=%s from_date=%s", zid, from_date)
+        sql = "SELECT * FROM mv_imtrn_movements WHERE zid = %s AND txn_date >= %s"
+        return sql, (zid, str(from_date))
     _log.info("[get_imtrn_movements] zid_in=%s → SQL: WHERE zid = '%s'", zid, zid)
     sql = "SELECT * FROM mv_imtrn_movements WHERE zid = %s"
     return sql, (zid,)
