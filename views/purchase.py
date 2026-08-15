@@ -1661,7 +1661,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                             )
                             _diag["total_lots_qty"] = pd.to_numeric(_diag["total_lots_qty"], errors="coerce").fillna(0)
                             _diag["total_dep_qty"]  = pd.to_numeric(_diag["total_dep_qty"],  errors="coerce").fillna(0)
-                            _diag["live_stock"]     = _diag["itemcode"].astype(str).map(_live_map).fillna(0)
+                            _diag["live_stock"]     = pd.to_numeric(_diag["itemcode"].astype(str).map(_live_map), errors="coerce").fillna(0.0)
                             _diag["expected_dep"]   = (_diag["total_lots_qty"] - _diag["live_stock"]).clip(lower=0)
                             _diag["dep_gap"]        = (_diag["expected_dep"] - _diag["total_dep_qty"]).round(0)
 
