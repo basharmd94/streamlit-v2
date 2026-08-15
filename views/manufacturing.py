@@ -51,6 +51,13 @@ def _load_opspprc(zid: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
+def _load_crosszid_mapping() -> pd.DataFrame:
+    """Cross-ZID item mapping — fixed 100001/100009 join, ZID-agnostic."""
+    df = Analytics("crosszid_item_mapping", zid="100001", filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def _load_stock_raw(zid: str) -> pd.DataFrame:
     """Raw imtrn-based 'stock' table (year/month movement buckets) — summed
     with no cutoff in compute_current_stock_from_imtrn() to get the current
@@ -539,11 +546,107 @@ def _render_mo_detail(zid: str, mo_header: pd.DataFrame, mo_lines: pd.DataFrame)
     )
 
 
+# ── Cross-ZID Item Mapping ────────────────────────────────────────────────────────
+
+def _render_crosszid_mapping():
+    st.subheader("🔗 Cross-ZID Item Mapping")
+    st.caption(
+        "Every Gulshan Packaging (100009) item whose `caitem.xdrawing` resolves to a "
+        "HMBR (100001) item code — names shown side by side. "
+        "Rows where the names differ are highlighted in amber."
+    )
+
+    df = _load_crosszid_mapping()
+    if df.empty:
+        st.info("No cross-ZID mappings found (no 100009 items with a matching xdrawing in 100001 caitem).")
+        return
+
+    df = df.copy()
+    for col in ["name_100001", "name_100009"]:
+        df[col] = df[col].fillna("").astype(str).str.strip()
+
+    df["names_match"] = df["name_100001"].str.lower() == df["name_100009"].str.lower()
+
+    n_total    = len(df)
+    n_mismatch = int((~df["names_match"]).sum())
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Mapped Items",    f"{n_total:,}")
+    c2.metric("Names Match",     f"{n_total - n_mismatch:,}")
+    c3.metric("⚠️ Name Mismatch", f"{n_mismatch:,}")
+
+    show_only = st.checkbox("Show mismatches only", value=False, key="crosszid_mismatch_only")
+    search    = st.text_input("Search item code or name", placeholder="e.g. 2145 or plier", key="crosszid_search")
+
+    disp = df.copy()
+    if show_only:
+        disp = disp[~disp["names_match"]]
+    if search.strip():
+        q = search.strip().lower()
+        mask = (
+            disp["itemcode"].astype(str).str.lower().str.contains(q, na=False) |
+            disp["name_100001"].str.lower().str.contains(q, na=False) |
+            disp["name_100009"].str.lower().str.contains(q, na=False) |
+            disp["item_100009"].astype(str).str.lower().str.contains(q, na=False)
+        )
+        disp = disp[mask]
+
+    disp = disp.rename(columns={
+        "itemcode":    "Item Code (100001)",
+        "name_100001": "Name — HMBR (100001)",
+        "name_100009": "Name — Gulshan (100009)",
+        "item_100009": "Item Code (100009)",
+        "group_100009":"Group (100009)",
+        "xabc_100001": "Group (100001)",
+    })
+    display_cols = [
+        "Item Code (100001)", "Name — HMBR (100001)",
+        "Name — Gulshan (100009)", "Item Code (100009)",
+        "Group (100009)", "Group (100001)",
+    ]
+    disp = disp[[c for c in display_cols if c in disp.columns]].reset_index(drop=True)
+
+    def _highlight_mismatch(row):
+        # Re-derive match from the display data
+        n1 = str(row.get("Name — HMBR (100001)",    "")).strip().lower()
+        n2 = str(row.get("Name — Gulshan (100009)", "")).strip().lower()
+        if n1 != n2:
+            return ["background-color: #FFF3CD; color: #856404"] * len(row)
+        return [""] * len(row)
+
+    try:
+        styled = disp.style.apply(_highlight_mismatch, axis=1)
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+    except Exception:
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "⬇ Download CSV",
+        disp.to_csv(index=False).encode("utf-8"),
+        file_name="crosszid_item_mapping.csv",
+        mime="text/csv",
+        key="dl_crosszid_mapping",
+    )
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────────
 
 @timed
 def display_manufacturing_analysis_page(current_page, zid: str):
     st.title("🏭 Manufacturing Analysis")
+
+    view_mode = st.radio(
+        "View",
+        ["🏭 FG Costing", "📈 FG Cost History", "📉 RM Rate Trend", "📦 RM Requirement",
+         "⚠️ RM Stock Coverage", "🔍 BOM Variance / Wastage", "📋 MO Detail",
+         "🔗 Cross-ZID Item Mapping"],
+        horizontal=True, key="mfg_view_mode",
+    )
+
+    # Cross-ZID mapping is a reference report available for all ZIDs
+    if view_mode == "🔗 Cross-ZID Item Mapping":
+        _render_crosszid_mapping()
+        return
 
     if str(zid) not in _MANUFACTURING_ZIDS:
         st.warning(
@@ -566,13 +669,6 @@ def display_manufacturing_analysis_page(current_page, zid: str):
     mo_lines = mfg.merge_mo_lines(mo_header, mo_detail)
     mo_cost = mfg.compute_mo_cost(mo_lines)
     opspprc_df = _load_opspprc(str(zid))
-
-    view_mode = st.radio(
-        "View",
-        ["🏭 FG Costing", "📈 FG Cost History", "📉 RM Rate Trend", "📦 RM Requirement",
-         "⚠️ RM Stock Coverage", "🔍 BOM Variance / Wastage", "📋 MO Detail"],
-        horizontal=True, key="mfg_view_mode",
-    )
 
     if view_mode == "🏭 FG Costing":
         _render_fg_costing(zid, mo_cost, mo_lines, admin_expense, opspprc_df)

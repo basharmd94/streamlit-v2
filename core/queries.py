@@ -2294,3 +2294,30 @@ def insert_call_log(
 def delete_call_log(log_id: int) -> Tuple[str, tuple]:
     sql = "DELETE FROM crm_call_log WHERE id = %s"
     return sql, (log_id,)
+
+
+def get_crosszid_item_mapping(filters=None) -> Tuple[str, tuple]:
+    """Cross-ZID item name mapping: caitem 100001 joined to caitem 100009 via xdrawing.
+
+    Returns every 100009 item whose xdrawing resolves to a 100001 item code,
+    with both names side by side so discrepancies can be spotted easily.
+
+    Columns: itemcode, name_100001, name_100009, item_100009,
+             group_100009, xabc_100001
+    """
+    sql = """
+        SELECT
+            a1.xitem    AS itemcode,
+            a1.xdesc    AS name_100001,
+            a9.xdesc    AS name_100009,
+            a9.xitem    AS item_100009,
+            a9.xabc     AS group_100009,
+            a1.xabc     AS xabc_100001
+        FROM caitem a1
+        JOIN caitem a9
+            ON  a9.xdrawing = a1.xitem
+            AND a9.zid      = '100009'
+        WHERE a1.zid = '100001'
+        ORDER BY a1.xitem
+    """
+    return sql, ()
