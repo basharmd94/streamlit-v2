@@ -9,7 +9,42 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from views.call_log_shared import OUTCOMES, _OUTCOME_BADGE, blue_header, BLUE_FOOTER
+from views.call_log_shared import blue_header, BLUE_FOOTER
+
+
+# ── Lead-specific outcomes ───────────────────────────────────────────────────
+# Distinct from Customer Support's OUTCOMES (Paid/Delivered/Returned are
+# order-fulfilment states — meaningless before a lead has become a customer).
+# Roughly ordered along a qualify -> sample -> close funnel. "Follow-up
+# Requested" and "Promised to Order" are additions beyond what was asked for,
+# to cover an answered-but-undecided call and a soft pre-close commitment —
+# both fill real gaps in the funnel and pair naturally with the next_visit_date
+# field already on this form.
+LEAD_OUTCOMES = [
+    "Not Answered",
+    "Not Interested",
+    "B2C",
+    "Wrong Lead",
+    "Asked to Submit Sample",
+    "Sample Submitted",
+    "Still Using Sample – Will Contact After",
+    "Follow-up Requested",
+    "Promised to Order",
+    "Deal Completed",
+]
+
+_LEAD_OUTCOME_BADGE = {
+    "Deal Completed":                          ("background:#D5F5E3;color:#1E8449;", "Deal Completed"),
+    "Sample Submitted":                        ("background:#D5F5E3;color:#1E8449;", "Sample Submitted"),
+    "Promised to Order":                       ("background:#FDEBD0;color:#A04000;", "Promised to Order"),
+    "Asked to Submit Sample":                  ("background:#FDEBD0;color:#A04000;", "Asked to Submit Sample"),
+    "Still Using Sample – Will Contact After": ("background:#FCF3CF;color:#7D6608;", "Using Sample – Follow Up Later"),
+    "Follow-up Requested":                     ("background:#FCF3CF;color:#7D6608;", "Follow-up Requested"),
+    "Not Answered":                            ("background:#F2F3F4;color:#5D6D7E;", "Not Answered"),
+    "Not Interested":                          ("background:#FADBD8;color:#A93226;", "Not Interested"),
+    "Wrong Lead":                              ("background:#FADBD8;color:#A93226;", "Wrong Lead"),
+    "B2C":                                     ("background:#FADBD8;color:#A93226;", "B2C"),
+}
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
@@ -102,7 +137,7 @@ def render_lead_call_log_panel(
                 pd.to_datetime(nvd).strftime("%Y-%m-%d")
                 if pd.notna(nvd) else None
             )
-            style, label = _OUTCOME_BADGE.get(outcome, ("background:#F2F3F4;color:#5D6D7E;", outcome))
+            style, label = _LEAD_OUTCOME_BADGE.get(outcome, ("background:#F2F3F4;color:#5D6D7E;", outcome))
             badge = (
                 f'<span style="{style}padding:2px 7px;border-radius:10px;'
                 f'font-size:11px;font-weight:500;">{label}</span>'
@@ -150,7 +185,7 @@ def render_lead_call_log_panel(
 
     with st.form(f"lead_call_log_form_{lead_id}{key_suffix}", clear_on_submit=True):
         fc1, fc2, fc3, fc4 = st.columns([2, 2, 3, 1])
-        outcome = fc1.selectbox("Outcome", OUTCOMES, key=f"lead_outcome_{lead_id}{key_suffix}")
+        outcome = fc1.selectbox("Outcome", LEAD_OUTCOMES, key=f"lead_outcome_{lead_id}{key_suffix}")
         next_visit = fc2.date_input(
             "Next visit", value=None, key=f"lead_nvd_{lead_id}{key_suffix}",
         )
