@@ -1,6 +1,7 @@
 import calendar
 import streamlit as st
 import pandas as pd
+import numpy as np
 from processing import common, overall_sales
 from utils.utils import timed
 
@@ -1223,11 +1224,14 @@ def display_customer_data_view_page(current_page, zid, data_dict):
 
     txn = pd.concat([sales_txn, return_txn], ignore_index=True)
 
-    # Replace 0 with '-' for display clarity (credit / debit style)
+    # Credit/debit style: blank out the non-applicable side (0) instead of
+    # showing it as a literal zero. Uses NaN + Styler na_rep rather than the
+    # string "-" so these columns stay numeric — mixing str/float in a column
+    # crashes Streamlit's Arrow serialization (ArrowInvalid: could not convert
+    # '-' with type str ... tried to convert to double).
     display_cols = ["Qty Sold", "Qty Returned", "Sales Value", "Return Value"]
-
     for col in display_cols:
-        txn[col] = txn[col].apply(lambda x: "-" if x == 0 else x)
+        txn[col] = pd.to_numeric(txn[col], errors="coerce").replace(0, np.nan)
 
     # Consistent column order
     txn = txn[
@@ -1240,4 +1244,10 @@ def display_customer_data_view_page(current_page, zid, data_dict):
     # -----------------------------
     # Display
     # -----------------------------
-    st.dataframe(txn, width="stretch")
+    st.dataframe(
+        txn.style.format(
+            {c: "{:,.0f}" for c in display_cols},
+            na_rep="-",
+        ),
+        width="stretch",
+    )

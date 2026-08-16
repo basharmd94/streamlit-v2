@@ -1115,8 +1115,11 @@ def _bulk_insert_leads(parsed_df: pd.DataFrame, zid: str, uploaded_by: str) -> i
         (zid,) + tuple(r) + (uploaded_by,)
         for r in df.itertuples(index=False, name=None)
     ]
-    n = execute_values_insert(insert_marketing_leads_sql(), rows)
-    return max(n, 0)
+    # Do NOT clamp to 0 here — execute_values_insert returns -1 on a DB error,
+    # and callers rely on that negative sentinel to show "Upload failed" instead
+    # of silently reporting "0 new leads saved" for a real failure (e.g. the
+    # tables not existing yet on this server).
+    return execute_values_insert(insert_marketing_leads_sql(), rows)
 
 
 def _show_lead_upload(zid: str) -> None:
@@ -1159,7 +1162,12 @@ def _show_lead_upload(zid: str) -> None:
     if st.button("💾 Save to Leads Table", key="leads_upload_save"):
         n_new = _bulk_insert_leads(parsed_df, zid, st.session_state.get("username", ""))
         if n_new < 0:
-            st.error("Upload failed — check DB connection.")
+            st.error(
+                "Upload failed — no rows were saved. Check the server logs for an "
+                "'execute_values_insert error' line (usually means the marketing_leads "
+                "tables haven't been created on this DB yet — see "
+                "db/sql_scripts/create_marketing_leads_tables.sql)."
+            )
         else:
             n_dupe = len(parsed_df) - n_new
             msg = f"**{n_new:,}** new lead(s) saved."
@@ -1205,7 +1213,11 @@ def _show_manual_lead_entry(zid: str) -> None:
         _load_marketing_leads.clear()
         st.rerun()
     else:
-        st.error("Failed to save — check DB connection.")
+        st.error(
+            "Failed to save — check the server logs for an 'execute_values_insert error' "
+            "line (usually means the marketing_leads tables haven't been created on this "
+            "DB yet — see db/sql_scripts/create_marketing_leads_tables.sql)."
+        )
 
 
 def _show_leads(zid: str) -> None:
