@@ -51,9 +51,9 @@ CREATE TABLE IF NOT EXISTS marketing_leads (
     UNIQUE (zid, fb_lead_id)
 );
 
-CREATE INDEX IF NOT EXISTS marketing_leads_zid_created_idx ON marketing_leads (zid, created_time DESC);
-CREATE INDEX IF NOT EXISTS marketing_leads_fb_lead_id_idx  ON marketing_leads (fb_lead_id);
-CREATE INDEX IF NOT EXISTS marketing_leads_zid_stage_idx   ON marketing_leads (zid, lead_stage);
+CREATE INDEX marketing_leads_zid_created_idx ON marketing_leads (zid, created_time DESC);
+CREATE INDEX marketing_leads_fb_lead_id_idx  ON marketing_leads (fb_lead_id);
+CREATE INDEX marketing_leads_zid_stage_idx   ON marketing_leads (zid, lead_stage);
 
 
 -- ── marketing_lead_call_log ─────────────────────────────────────────────────
@@ -71,6 +71,6 @@ CREATE TABLE IF NOT EXISTS marketing_lead_call_log (
     notes            TEXT
 );
 
-CREATE INDEX IF NOT EXISTS marketing_lead_call_log_lead_idx ON marketing_lead_call_log (lead_id, called_at DESC);
-CREATE INDEX IF NOT EXISTS marketing_lead_call_log_zid_idx  ON marketing_lead_call_log (zid, called_at DESC);
-CREATE INDEX IF NOT EXISTS marketing_lead_call_log_nvd_idx  ON marketing_lead_call_log (next_visit_date);
+CREATE INDEX marketing_lead_call_log_lead_idx ON marketing_lead_call_log (lead_id, called_at DESC);
+CREATE INDEX marketing_lead_call_log_zid_idx  ON marketing_lead_call_log (zid, called_at DESC);
+CREATE INDEX marketing_lead_call_log_nvd_idx  ON marketing_lead_call_log (next_visit_date);
