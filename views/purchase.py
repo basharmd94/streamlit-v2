@@ -991,8 +991,10 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
     current stock (yesterday), MTD sales, and yesterday sales, all in BDT."""
     from processing.purchase_batch import build_batch_consolidation
 
-    purchase_raw = data_dict.get("purchase_batches", pd.DataFrame())
+    purchase_raw = data_dict.get("purchase_batches",  pd.DataFrame())
     sales_raw    = data_dict.get("sales_daily_item",  pd.DataFrame())
+    returns_raw  = data_dict.get("returns_daily_item", pd.DataFrame())
+    issues_raw   = data_dict.get("issues_daily_item",  pd.DataFrame())
 
     if isinstance(purchase_raw, pd.DataFrame) and purchase_raw.empty:
         st.info("No purchase batch data available.")
@@ -1016,6 +1018,8 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
     with st.spinner("Running FIFO batch consolidation…"):
         result = build_batch_consolidation(
             purchase_raw, sales_raw,
+            returns_df=returns_raw,
+            issues_df=issues_raw,
         )
     # build_batch_consolidation returns (summary_df, debug_df)
     df, debug_df = result if isinstance(result, tuple) else (result, pd.DataFrame())
@@ -1046,17 +1050,21 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
     if not debug_df.empty:
         with st.expander("🔍 Item-Level FIFO Debug", expanded=False):
             st.caption(
-                "**Depletion Seen** = total sales+issues the FIFO can see for this item "
+                "**Depletion Seen** = total sales+issues−returns the FIFO can see for this item "
                 "from its batch date to yesterday.  If this is near zero for a large batch, "
                 "the MV rebuild has not been run on the server yet (or cross-ZID mapping is "
                 "missing).  **Older Open** = stock from prior batches of the same item "
                 "present when this batch arrived — FIFO absorbs those first."
             )
             shipments = sorted(debug_df["Shipment"].dropna().unique().tolist())
+            # Default to the first (most recent) shipment — avoids rendering thousands of rows
+            _default_ship_idx = 1 if shipments else 0   # index 0 = "— all —", 1 = first shipment
             _fc1, _fc2, _fc3 = st.columns([2, 3, 1])
             with _fc1:
                 sel_ship = st.selectbox(
-                    "Filter by shipment", ["— all —"] + shipments, key="bc_debug_ship",
+                    "Filter by shipment", ["— all —"] + shipments,
+                    index=_default_ship_idx,
+                    key="bc_debug_ship",
                 )
             with _fc2:
                 _prod_lkp = (
