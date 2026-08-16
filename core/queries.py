@@ -761,6 +761,23 @@ def get_returns_daily_item(filters=None):
     return sql, (zid,)
 
 
+def get_issues_daily_item(filters=None):
+    """Queries mv_issues_daily_item — daily internal-issue quantities per (zid, itemcode, date).
+
+    Covers IS-- and ISS- document types (internal draw-downs, manufacturing issues).
+    Used by _build_daily_events in the FIFO engine as additional depletion events
+    alongside sales.  issue_qty is stored positive (outflow implied by doc type).
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT zid, itemcode, date, issue_qty, issue_val
+        FROM mv_issues_daily_item
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
 def get_sales_daily_item(filters=None):
     """Queries mv_sales_daily_item — daily (itemcode, date) aggregates.
 

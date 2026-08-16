@@ -196,7 +196,7 @@ def _load_mv_refresh_times() -> pd.DataFrame:
             'mv_gl_overhead_daily',
             'mv_sales_daily_item',
             'mv_returns_daily_item',
-            'mv_imtrn_movements'
+            'mv_issues_daily_item'
         )
         ORDER BY c.relname
     """
@@ -261,60 +261,61 @@ def process_data(zid: str, filters: dict, tables: tuple[str], page: str = None, 
 @timed
 @st.cache_data(show_spinner=False, ttl=86400)
 def load_purchase_data(zid: str, project: str, mv_version: str = "") -> dict:
-    """Cached loader for Purchase Analysis (same caching pattern as process_data —
-    previously this loop had no caching at all, re-pulling everything on every click).
+    """Cached loader for Purchase Analysis.
 
-    GL tables are only fetched here when the selected zid is 100001. For any other
-    zid, purchase_analysis() always overrides glheader/gldetail/glmst with 100001's
-    data anyway (the overhead/profitability pools are always sourced from trading),
-    so fetching them here for a different zid would just be discarded unused.
+    Loads: sales_daily_item, returns_daily_item, issues_daily_item,
+           purchase_batches, stock_movement (+ GL tables for 100001).
+
+    issues_daily_item is loaded for both 100001 and 100009 when zid=100001;
+    mv_issues_daily_item maps 100009 items to their 100001 codes via xdrawing,
+    so the FIFO engine sees all depletions under 100001 item codes.
     """
+    purchase_tables = [
+        "sales_daily_item", "returns_daily_item",
+        "purchase_batches", "stock_movement",
+    ]
+    if str(zid) == "100001":
+        purchase_tables += ["gl_overhead_daily", "glmst_simple"]
+
     data_dict = {}
-
-    # ── 1. purchase_batches first: its earliest combinedate is the lower bound
-    #       for the mv_imtrn_movements query (avoids loading all of imtrn history).
-    pb = Analytics("purchase_batches", zid=zid, project=project, filters={}).data
-    data_dict["purchase_batches"] = pb if pb is not None else pd.DataFrame()
-
-    # ── 2. Derive earliest date filter for movements
-    mv_from_date = None
-    if pb is not None and not pb.empty and "combinedate" in pb.columns:
-        _min_cd = pd.to_datetime(pb["combinedate"], errors="coerce").min()
-        if pd.notna(_min_cd):
-            mv_from_date = _min_cd.date()   # Python date → passed as SQL param
-
-    # ── 3. imtrn_movements with the date filter (can halve or more the row count)
-    _mv_filters = {"from_date": mv_from_date} if mv_from_date else {}
-    mv = Analytics("imtrn_movements", zid=zid, project=project, filters=_mv_filters).data
-    data_dict["imtrn_movements"] = mv if mv is not None else pd.DataFrame()
-
-    # ── 4. Remaining tables (no date filter needed)
-    for table in ["sales_daily_item", "caitem"]:
+    for table in purchase_tables:
         df = Analytics(table, zid=zid, project=project, filters={}).data
         data_dict[table] = df if df is not None else pd.DataFrame()
 
+    # ── issues_daily_item: load both ZIDs for 100001 ─────────────────────────
+    # 100009 manufacturing issues (ISS-) are mapped to 100001 item codes via
+    # xdrawing in mv_issues_daily_item — combine both ZIDs here so the FIFO
+    # engine sees all outflows without needing a separate cross-ZID pass.
+    iss_parts = []
+    iss_base = Analytics("issues_daily_item", zid=zid, project=project, filters={}).data
+    if iss_base is not None and not iss_base.empty:
+        iss_parts.append(iss_base)
     if str(zid) == "100001":
-        for table in ["gl_overhead_daily", "glmst_simple"]:
-            df = Analytics(table, zid=zid, project=project, filters={}).data
-            data_dict[table] = df if df is not None else pd.DataFrame()
+        iss_100009 = Analytics("issues_daily_item", zid="100009", project="Gulshan Packaging", filters={}).data
+        if iss_100009 is not None and not iss_100009.empty:
+            iss_parts.append(iss_100009)
+    data_dict["issues_daily_item"] = (
+        pd.concat(iss_parts, ignore_index=True) if iss_parts else pd.DataFrame()
+    )
 
     if str(zid) == "100001":
-        # Append 100009 expenses (MV now covers both ZIDs after the May-2024 MV update)
+        # 100009 expenses
         glo_100009 = Analytics("gl_overhead_daily", zid="100009", project="Gulshan Packaging", filters={}).data
         if glo_100009 is not None and not glo_100009.empty:
             existing = data_dict.get("gl_overhead_daily", pd.DataFrame())
-            data_dict["gl_overhead_daily"] = pd.concat(
-                [existing, glo_100009], ignore_index=True
-            ) if not existing.empty else glo_100009
+            data_dict["gl_overhead_daily"] = (
+                pd.concat([existing, glo_100009], ignore_index=True)
+                if not existing.empty else glo_100009
+            )
 
-        # Append 08020003 revenue adjustment — done here (cached) so it never
-        # accumulates across renders when purchase_analysis() is called each time.
+        # 08020003 revenue adjustment
         gli_100001 = Analytics("gl_income_overhead", zid="100001", project="GULSHAN TRADING", filters={}).data
         if gli_100001 is not None and not gli_100001.empty:
             existing = data_dict.get("gl_overhead_daily", pd.DataFrame())
-            data_dict["gl_overhead_daily"] = pd.concat(
-                [existing, gli_100001], ignore_index=True
-            ) if not existing.empty else gli_100001
+            data_dict["gl_overhead_daily"] = (
+                pd.concat([existing, gli_100001], ignore_index=True)
+                if not existing.empty else gli_100001
+            )
 
     return data_dict
 
@@ -791,62 +792,27 @@ class BaseApp:
 
         zid_str = str(st.session_state.zid)
 
-        # --- Ensure imtrn_movements contains BOTH 100001 + 100009 ---
-        # mv_stock_movement has been dropped; imtrn_movements is the source of truth.
-        base_mv = data_dict.get("imtrn_movements")
-        if base_mv is None or (isinstance(base_mv, pd.DataFrame) and base_mv.empty) or (not isinstance(base_mv, pd.DataFrame)):
-            base_mv = Analytics("imtrn_movements", zid=zid_str, filters={}).data
-            if base_mv is None:
-                base_mv = pd.DataFrame()
+        # --- Ensure stock_movement exists (load base zid if missing/empty) ---
+        base_sm = data_dict.get("stock_movement")
+        if base_sm is None or (isinstance(base_sm, pd.DataFrame) and base_sm.empty) or (not isinstance(base_sm, pd.DataFrame)):
+            base_sm = Analytics("stock_movement", zid=zid_str, filters={}).data
+            if base_sm is None:
+                base_sm = pd.DataFrame()
 
+        # --- Ensure stock_movement contains BOTH 100001 + 100009 ---
+        # mv_stock_movement maps 100009 items to 100001 codes via xdrawing so the
+        # FIFO and onhand calculations work correctly for cross-ZID shared items.
         if zid_str in ("100001", "100009"):
             other_zid = "100009" if zid_str == "100001" else "100001"
-            other_mv = Analytics("imtrn_movements", zid=other_zid, filters={}).data
-            if other_mv is None:
-                other_mv = pd.DataFrame()
-            data_dict["imtrn_movements"] = (
-                pd.concat([base_mv, other_mv], ignore_index=True)
-                .drop_duplicates(subset=["ximtrnnum", "zid"])
-            ) if not other_mv.empty else base_mv
+            other_sm = Analytics("stock_movement", zid=other_zid, filters={}).data
+            if other_sm is None:
+                other_sm = pd.DataFrame()
+            data_dict["stock_movement"] = (
+                pd.concat([base_sm, other_sm], ignore_index=True)
+                .drop_duplicates()
+            )
         else:
-            data_dict["imtrn_movements"] = base_mv
-
-        # --- Build stock_movement compat df from imtrn_movements + caitem ---
-        # mv_stock_movement has been dropped. Legacy functions (generate_cohort,
-        # get_all_warehouse_options, build_accounts_overhead_summary,
-        # build_warehouse_total_value_table) still expect a df with:
-        #   date, stockqty, stockvalue, warehouse, itemname, itemgroup.
-        # We derive this from imtrn_movements and join caitem for names/groups —
-        # restoring exactly the columns mv_stock_movement used to provide.
-        mv_all = data_dict.get("imtrn_movements", pd.DataFrame())
-        if isinstance(mv_all, pd.DataFrame) and not mv_all.empty:
-            _sm = mv_all.copy()
-            _sm["date"]       = pd.to_datetime(_sm["txn_date"], errors="coerce")
-            _sm["stockqty"]   = pd.to_numeric(_sm.get("net_qty", 0),  errors="coerce").fillna(0.0)
-            _sm["stockvalue"] = pd.to_numeric(_sm.get("net_val", 0),  errors="coerce").fillna(0.0)
-
-            # join caitem for itemname + itemgroup (both ZIDs loaded in purchase_analysis)
-            _caitem = data_dict.get("caitem", pd.DataFrame())
-            if zid_str in ("100001", "100009"):
-                _caitem_other = Analytics("caitem", zid=other_zid, filters={}).data
-                if _caitem_other is not None and not _caitem_other.empty:
-                    _caitem = pd.concat([_caitem, _caitem_other], ignore_index=True).drop_duplicates(subset=["itemcode"])
-            if isinstance(_caitem, pd.DataFrame) and not _caitem.empty:
-                _caitem = _caitem[["itemcode", "itemname", "itemgroup"]].drop_duplicates(subset=["itemcode"])
-                _sm = _sm.merge(_caitem, on="itemcode", how="left")
-                _sm["itemname"]  = _sm["itemname"].fillna("").astype(str)
-                _sm["itemgroup"] = _sm["itemgroup"].fillna("").astype(str)
-            else:
-                _sm["itemname"]  = ""
-                _sm["itemgroup"] = ""
-
-            # Map xdocnum -> docnum so _prep_stock_movement finds the column it expects
-            if "docnum" not in _sm.columns:
-                _sm["docnum"] = _sm["xdocnum"].fillna("").astype(str).str.strip() if "xdocnum" in _sm.columns else ""
-
-            data_dict["stock_movement"] = _sm
-        else:
-            data_dict["stock_movement"] = pd.DataFrame()
+            data_dict["stock_movement"] = base_sm
 
         # NOTE: we are intentionally NOT loading/using data_dict["stock"] anymore
 
