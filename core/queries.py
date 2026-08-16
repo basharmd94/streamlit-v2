@@ -2348,18 +2348,27 @@ def get_marketing_leads(zid: str) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_existing_lead_fb_ids(zid: str) -> Tuple[str, tuple]:
+    """fb_lead_ids already saved for this ZID — used to pre-filter duplicates
+    in Python before insert. ON CONFLICT DO NOTHING (Postgres 9.5+) isn't
+    available on this server, so dedup happens at the application layer instead."""
+    sql = "SELECT fb_lead_id FROM marketing_leads WHERE zid = %s"
+    return sql, (zid,)
+
+
 def insert_marketing_leads_sql() -> str:
-    """execute_values template — one call inserts a whole uploaded batch.
-    ON CONFLICT (zid, fb_lead_id) DO NOTHING so re-uploading the same export
-    is a safe no-op; cur.rowcount then reports exactly how many were new."""
-    return f"""
+    """execute_values template — one call inserts a whole (pre-deduped) batch.
+    No ON CONFLICT clause (Postgres 9.5+ only, unavailable on this server) —
+    callers must filter out rows whose (zid, fb_lead_id) already exists via
+    get_existing_lead_fb_ids before calling this, or the UNIQUE constraint
+    will raise and abort the whole batch."""
+    return """
         INSERT INTO marketing_leads (
             zid, fb_lead_id, created_time, ad_id, ad_name, adset_id, adset_name,
             campaign_id, campaign_name, form_id, form_name, is_organic, platform,
             full_name, work_phone_number, company_name, street_address, job_title,
             inbox_url, lead_status, extra_fields, uploaded_by
         ) VALUES %s
-        ON CONFLICT (zid, fb_lead_id) DO NOTHING
     """
 
 

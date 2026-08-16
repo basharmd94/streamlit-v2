@@ -1095,16 +1095,31 @@ def _load_cacus_lead_links(zid: str) -> pd.DataFrame:
 
 
 def _bulk_insert_leads(parsed_df: pd.DataFrame, zid: str, uploaded_by: str) -> int:
-    """Insert a parsed upload batch in one round trip. Returns the number of
-    NEW leads inserted (ON CONFLICT (zid, fb_lead_id) DO NOTHING means a
-    re-uploaded export is a safe no-op — this count excludes duplicates)."""
-    from core.db import execute_values_insert
-    from core.queries import insert_marketing_leads_sql
+    """Insert a parsed upload batch. Returns the number of NEW leads inserted.
+
+    Dedup happens here in Python, not via ON CONFLICT DO NOTHING — that clause
+    needs Postgres 9.5+ and this server predates it (confirmed: it errors with
+    'syntax error at or near "ON"'). So existing fb_lead_ids for this ZID are
+    fetched first and matching rows are dropped before the insert; a
+    re-uploaded export still ends up a safe no-op, just decided here instead
+    of at the DB.
+    """
+    from core.db import get_data, execute_values_insert
+    from core.queries import get_existing_lead_fb_ids, insert_marketing_leads_sql
 
     if parsed_df.empty:
         return 0
 
-    df = parsed_df.copy()
+    sql, params = get_existing_lead_fb_ids(zid)
+    records, _ = get_data(sql, *params)
+    if records is None:
+        return -1  # DB error fetching existing ids — surface as a failure, not "0 new"
+    existing_ids = {str(r[0]) for r in records}
+
+    df = parsed_df[~parsed_df["fb_lead_id"].astype(str).isin(existing_ids)].copy()
+    if df.empty:
+        return 0
+
     # Native Python datetime — safest for the psycopg2 adapter (avoid passing
     # pandas Timestamp objects straight through execute_values).
     df["created_time"] = df["created_time"].apply(
