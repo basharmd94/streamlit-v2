@@ -1020,6 +1020,7 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
             purchase_raw, sales_raw,
             returns_df=returns_raw,
             issues_df=issues_raw,
+            zid_deplete="100001",
         )
     # build_batch_consolidation returns (summary_df, debug_df)
     df, debug_df = result if isinstance(result, tuple) else (result, pd.DataFrame())
