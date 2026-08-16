@@ -14,9 +14,10 @@
 -- The FIFO engine treats it the same way it treats returnqty — a quantity
 -- that is subtracted from cumulative stock at that date.
 --
--- Packcode resolution: items whose caitem.packcode is non-null and not 'NO'
--- or 'KH*' are mapped to their consolidated code, consistent with the CLAUDE.md
--- SQL rule and with mv_sales_daily_item / mv_stock_movement.
+-- Item code resolution uses caitem.xdrawing (NOT packcode — that column does
+-- not exist on caitem). Same CASE as mv_stock_movement: this is what remaps
+-- 100009 issue events onto their 100001-equivalent item codes so the FIFO
+-- engine sees them without needing an explicit ZID filter.
 --
 -- Run: DROP + CREATE (structure change) OR REFRESH (data-only refresh).
 -- Add to programmatic MV refresh list alongside mv_sales_daily_item.
@@ -26,41 +27,39 @@ DROP MATERIALIZED VIEW IF EXISTS mv_issues_daily_item;
 
 CREATE MATERIALIZED VIEW mv_issues_daily_item AS
 SELECT
-    i.zid::TEXT                                                AS zid,
+    i.zid::text AS zid,
 
-    -- ── Packcode resolution ───────────────────────────────────────────────
-    -- Same CASE as mv_stock_movement and mv_sales_daily_item.
+    -- ── xdrawing resolution ─────────────────────────────────────────────────
+    -- Same CASE as mv_stock_movement.
     CASE
-        WHEN c.packcode IS NOT NULL
-         AND TRIM(c.packcode) <> ''
-         AND c.packcode <> 'NO'
-         AND LEFT(c.packcode, 2) <> 'KH'
-        THEN c.packcode
-        ELSE i.xitem
-    END                                                        AS itemcode,
+        WHEN ci.xdrawing IS NOT NULL
+         AND ci.xdrawing::text <> ''::text
+         AND ci.xdrawing::text <> 'NO'::text
+         AND LEFT(ci.xdrawing::text, 2) <> 'KH'::text
+        THEN ci.xdrawing::text
+        ELSE i.xitem::text
+    END AS itemcode,
 
-    i.xdate::date                                              AS date,
-    i.xyear                                                    AS year,
-    i.xper                                                     AS month,
+    i.xdate::date AS date,
+    i.xyear AS year,
+    i.xper  AS month,
 
     -- Positive quantity (outflow implied by IS-- / ISS- doctype)
-    SUM(i.xqty)                                                AS issue_qty,
-    SUM(i.xval)                                                AS issue_val
+    SUM(i.xqty) AS issue_qty,
+    SUM(i.xval) AS issue_val
 
 FROM imtrn i
-LEFT JOIN caitem c
-    ON  i.xitem = c.xitem
-    AND i.zid   = c.zid
+JOIN caitem ci ON i.xitem::text = ci.xitem::text AND i.zid = ci.zid
 WHERE i.xdoctype IN ('IS--', 'ISS-')
 GROUP BY
     i.zid,
     CASE
-        WHEN c.packcode IS NOT NULL
-         AND TRIM(c.packcode) <> ''
-         AND c.packcode <> 'NO'
-         AND LEFT(c.packcode, 2) <> 'KH'
-        THEN c.packcode
-        ELSE i.xitem
+        WHEN ci.xdrawing IS NOT NULL
+         AND ci.xdrawing::text <> ''::text
+         AND ci.xdrawing::text <> 'NO'::text
+         AND LEFT(ci.xdrawing::text, 2) <> 'KH'::text
+        THEN ci.xdrawing::text
+        ELSE i.xitem::text
     END,
     i.xdate::date,
     i.xyear,

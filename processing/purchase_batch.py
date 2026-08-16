@@ -313,6 +313,217 @@ def _norm_code(x) -> str:
         s = s[:-2]
     return s
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared FIFO core — used by BOTH run_batch_profitability_engine (Batch P&L)
+# and build_batch_consolidation (Batch Con) so the two views can never drift
+# apart in how they compute stock depletion.  Any change to depletion logic
+# (what counts as an event, how older_open/available/sold is derived) belongs
+# here, not duplicated in either caller.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_sales_value_col(sdf: pd.DataFrame) -> str:
+    if sdf is None or not isinstance(sdf, pd.DataFrame) or sdf.empty:
+        return ""
+    if "totalsales" in sdf.columns:
+        return "totalsales"
+    if "altsales" in sdf.columns:
+        return "altsales"
+    return ""
+
+
+def _build_daily_events(
+    s_df: pd.DataFrame, r_df: pd.DataFrame, issues_df: pd.DataFrame, target_zid: str
+) -> pd.DataFrame:
+    """Build daily (itemcode, d) events: sales_qty, sales_rev, return_qty, issue_qty.
+
+    sales_df / returns_df are filtered to zid == target_zid.  issues_df is NOT
+    zid-filtered: mv_issues_daily_item maps 100009 items to their 100001 codes
+    via xdrawing, so all relevant issues already appear under 100001 item codes
+    regardless of source ZID.
+    """
+    # ---- sales daily
+    s = s_df.copy() if isinstance(s_df, pd.DataFrame) else pd.DataFrame()
+    if not s.empty:
+        s["zid"] = s["zid"].astype(str).str.strip()
+        s = s[s["zid"] == str(target_zid).strip()].copy()
+        s["itemcode"] = s["itemcode"].apply(_norm_code).astype(str).str.strip()
+        s["d"] = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
+        s = s[s["d"].notna()].copy()
+        s["quantity"] = pd.to_numeric(s.get("quantity", 0), errors="coerce").fillna(0.0)
+
+        val_col = _resolve_sales_value_col(s)
+        if val_col == "totalsales":
+            s["totalsales"] = pd.to_numeric(s.get("totalsales", 0), errors="coerce").fillna(0.0)
+            s["_rev"] = s["totalsales"]
+        elif val_col == "altsales":
+            s["altsales"] = pd.to_numeric(s.get("altsales", 0), errors="coerce").fillna(0.0)
+            s["_rev"] = s["altsales"]
+        else:
+            s["_rev"] = 0.0
+
+        s_daily = (
+            s.groupby(["itemcode", "d"], as_index=False)
+            .agg(
+                sales_qty=("quantity", "sum"),
+                sales_rev=("_rev", "sum"),
+            )
+        )
+    else:
+        s_daily = pd.DataFrame(columns=["itemcode", "d", "sales_qty", "sales_rev"])
+
+    # ---- returns daily
+    r = r_df.copy() if isinstance(r_df, pd.DataFrame) else pd.DataFrame()
+    if not r.empty:
+        r["zid"] = r["zid"].astype(str).str.strip()
+        r = r[r["zid"] == str(target_zid).strip()].copy()
+        r["itemcode"] = r["itemcode"].apply(_norm_code).astype(str).str.strip()
+        r_dcol = "date" if "date" in r.columns else ("xdate" if "xdate" in r.columns else None)
+
+        if r_dcol is not None:
+            r["d"] = pd.to_datetime(r[r_dcol], errors="coerce").dt.floor("D")
+            r = r[r["d"].notna()].copy()
+            r["returnqty"] = pd.to_numeric(r.get("returnqty", 0), errors="coerce").fillna(0.0)
+
+            r_daily = (
+                r.groupby(["itemcode", "d"], as_index=False)
+                .agg(return_qty=("returnqty", "sum"))
+            )
+        else:
+            r_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
+    else:
+        r_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
+
+    # ---- issues daily (IS--, ISS-) — no ZID filter
+    i = issues_df.copy() if isinstance(issues_df, pd.DataFrame) else pd.DataFrame()
+    if not i.empty and "issue_qty" in i.columns:
+        i["itemcode"] = i["itemcode"].apply(_norm_code).astype(str).str.strip()
+        i["d"] = pd.to_datetime(i["date"], errors="coerce").dt.floor("D")
+        i = i[i["d"].notna()].copy()
+        i["issue_qty"] = pd.to_numeric(i["issue_qty"], errors="coerce").fillna(0.0)
+        i_daily = (
+            i.groupby(["itemcode", "d"], as_index=False)
+            .agg(issue_qty=("issue_qty", "sum"))
+        )
+    else:
+        i_daily = pd.DataFrame(columns=["itemcode", "d", "issue_qty"])
+
+    ev = pd.merge(s_daily, r_daily, on=["itemcode", "d"], how="outer").fillna(0.0)
+    ev = pd.merge(ev, i_daily, on=["itemcode", "d"], how="outer").fillna(0.0)
+    if ev.empty:
+        return ev
+
+    ev["sales_qty"]  = pd.to_numeric(ev["sales_qty"],  errors="coerce").fillna(0.0)
+    ev["sales_rev"]  = pd.to_numeric(ev["sales_rev"],  errors="coerce").fillna(0.0)
+    ev["return_qty"] = pd.to_numeric(ev["return_qty"], errors="coerce").fillna(0.0)
+    ev["issue_qty"]  = pd.to_numeric(ev["issue_qty"],  errors="coerce").fillna(0.0)
+
+    ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
+    return ev
+
+
+def _fifo_batches_asof(
+    all_batches: pd.DataFrame, events: pd.DataFrame, as_of: Optional[pd.Timestamp] = None
+) -> pd.DataFrame:
+    """Core FIFO allocation across repeated batches (shipments) of the same itemcode.
+
+    Shared by run_batch_profitability_engine (Batch P&L) and build_batch_consolidation
+    (Batch Con) so both always compute sold_qty / remaining_qty identically.
+
+    all_batches: one row per (shipmentname, itemcode, combinedate) batch — must have
+                 columns itemcode, combinedate, initial_qty (shipmentname optional,
+                 used only as a sort tie-break for batches sharing a date).
+    events:      output of _build_daily_events — itemcode, d, sales_qty, return_qty,
+                 issue_qty (sales_rev optional, ignored here).
+    as_of:       cap event visibility to d <= as_of (inclusive). None = no cap (uses
+                 full event history — this is "as of today").
+
+    Rule (must stay identical everywhere this is used):
+      - older_open_at_batch = max(0, purchased_before_batch − net_depleted_before_batch)
+        "before" = combinedate / event date STRICTLY LESS THAN this batch's combinedate.
+      - depletion attributable to a batch = net_qty events with
+        batch.combinedate <= d <= as_of (or unbounded if as_of is None).
+      - sold = min(initial_qty, max(0, that depletion − older_open_at_batch))
+      - remaining = initial_qty − sold  (clipped at 0)
+
+    IMPORTANT: older_open accumulates across ALL shipments of the same itemcode
+    (not just the shipment being displayed) — a later shipment cannot see its own
+    stock as "available" until earlier shipments' stock is exhausted.
+    """
+    EPS = 1e-9
+    batches = all_batches.copy()
+    batches["itemcode"]     = batches["itemcode"].astype(str).str.strip()
+    batches["combinedate"]  = pd.to_datetime(batches["combinedate"], errors="coerce").dt.floor("D")
+    batches["initial_qty"]  = pd.to_numeric(batches.get("initial_qty", 0), errors="coerce").fillna(0.0)
+    batches["sold_qty"]     = 0.0
+    batches["older_open_qty"] = 0.0
+    batches["depletion_since_batch"] = 0.0   # total net_qty from batch_date thru as_of, uncapped
+    batches["remaining_qty"] = batches["initial_qty"]
+
+    if batches.empty or events is None or events.empty:
+        return batches
+
+    ev = events.copy()
+    ev["itemcode"] = ev["itemcode"].astype(str).str.strip()
+    ev["d"] = pd.to_datetime(ev["d"], errors="coerce").dt.floor("D")
+    ev = ev[ev["d"].notna()].copy()
+    if as_of is not None:
+        ev = ev[ev["d"] <= pd.Timestamp(as_of).floor("D")].copy()
+
+    ev["sales_qty"]  = pd.to_numeric(ev.get("sales_qty",  0), errors="coerce").fillna(0.0)
+    ev["return_qty"] = pd.to_numeric(ev.get("return_qty", 0), errors="coerce").fillna(0.0)
+    ev["issue_qty"]  = pd.to_numeric(ev.get("issue_qty",  0), errors="coerce").fillna(0.0)
+    # net_qty: sales + issues both deplete stock; returns add stock back.
+    # Allowed to go negative per-day (a no-sale day with a return correctly
+    # credits back against future depletion once cumulative-summed).
+    ev["net_qty"] = ev["sales_qty"] + ev["issue_qty"] - ev["return_qty"]
+    ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
+
+    sort_cols = ["combinedate", "shipmentname"] if "shipmentname" in batches.columns else ["combinedate"]
+
+    for code, bgrp in batches.groupby("itemcode", sort=False):
+        sales = ev[ev["itemcode"] == code]
+        if sales.empty:
+            continue
+        sales = sales.sort_values("d").reset_index(drop=True)
+
+        for pos in bgrp.sort_values(sort_cols).index.tolist():
+            batch_qty  = float(batches.at[pos, "initial_qty"])
+            batch_date = pd.Timestamp(batches.at[pos, "combinedate"]).floor("D")
+
+            # older purchase qty strictly before this batch (ALL shipments of this item)
+            older_batches = batches[
+                (batches["itemcode"] == code) & (batches["combinedate"] < batch_date)
+            ]
+            older_purchase_qty = float(older_batches["initial_qty"].sum()) if not older_batches.empty else 0.0
+
+            # net depletion strictly before this batch date
+            sales_before = sales[sales["d"] < batch_date]
+            net_sales_before = float(sales_before["net_qty"].sum()) if not sales_before.empty else 0.0
+
+            older_open_at_batch = max(0.0, older_purchase_qty - net_sales_before)
+            batches.at[pos, "older_open_qty"] = older_open_at_batch
+
+            # depletion on/after this batch's arrival date, through as_of
+            sales_after_batch = sales[sales["d"] >= batch_date]
+            if sales_after_batch.empty:
+                continue
+            total_sales_after_batch = float(sales_after_batch["net_qty"].sum())
+            batches.at[pos, "depletion_since_batch"] = total_sales_after_batch
+
+            # this batch can only consume depletion beyond older stock still open
+            available_for_batch = max(0.0, total_sales_after_batch - older_open_at_batch)
+            sold = max(0.0, min(batch_qty, available_for_batch))
+
+            if sold > EPS:
+                batches.at[pos, "sold_qty"] = sold
+
+    batches["sold_qty"] = pd.to_numeric(batches["sold_qty"], errors="coerce").fillna(0.0)
+    batches["remaining_qty"] = (batches["initial_qty"] - batches["sold_qty"]).clip(lower=0.0)
+    batches["remaining_qty"] = np.where(batches["remaining_qty"] < EPS, 0.0, batches["remaining_qty"])
+    return batches
+
+
 def _prep_purchase_shipment(purchase_df: pd.DataFrame, shipmentname: str) -> pd.DataFrame:
     p = purchase_df.copy()
     p["shipmentname"] = p["shipmentname"].astype(str).str.strip()
@@ -921,97 +1132,8 @@ def run_batch_profitability_engine(
         out.index = selected_batches.index
         return out
 
-    def _resolve_sales_value_col(sdf: pd.DataFrame) -> str:
-        if sdf is None or not isinstance(sdf, pd.DataFrame) or sdf.empty:
-            return ""
-        if "totalsales" in sdf.columns:
-            return "totalsales"
-        if "altsales" in sdf.columns:
-            return "altsales"
-        return ""
-
-    def _build_daily_events(s_df: pd.DataFrame, r_df: pd.DataFrame, issues_df: pd.DataFrame, target_zid: str) -> pd.DataFrame:
-        # ---- sales daily
-        s = s_df.copy() if isinstance(s_df, pd.DataFrame) else pd.DataFrame()
-        if not s.empty:
-            s["zid"] = s["zid"].astype(str).str.strip()
-            s = s[s["zid"] == str(target_zid).strip()].copy()
-            s["itemcode"] = s["itemcode"].apply(_norm_code).astype(str).str.strip()
-            s["d"] = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
-            s = s[s["d"].notna()].copy()
-            s["quantity"] = pd.to_numeric(s.get("quantity", 0), errors="coerce").fillna(0.0)
-
-            val_col = _resolve_sales_value_col(s)
-            if val_col == "totalsales":
-                s["totalsales"] = pd.to_numeric(s.get("totalsales", 0), errors="coerce").fillna(0.0)
-                s["_rev"] = s["totalsales"]
-            elif val_col == "altsales":
-                s["altsales"] = pd.to_numeric(s.get("altsales", 0), errors="coerce").fillna(0.0)
-                s["_rev"] = s["altsales"]
-            else:
-                s["_rev"] = 0.0
-
-            s_daily = (
-                s.groupby(["itemcode", "d"], as_index=False)
-                .agg(
-                    sales_qty=("quantity", "sum"),
-                    sales_rev=("_rev", "sum"),
-                )
-            )
-        else:
-            s_daily = pd.DataFrame(columns=["itemcode", "d", "sales_qty", "sales_rev"])
-
-        # ---- returns daily
-        r = r_df.copy() if isinstance(r_df, pd.DataFrame) else pd.DataFrame()
-        if not r.empty:
-            r["zid"] = r["zid"].astype(str).str.strip()
-            r = r[r["zid"] == str(target_zid).strip()].copy()
-            r["itemcode"] = r["itemcode"].apply(_norm_code).astype(str).str.strip()
-            r_dcol = "date" if "date" in r.columns else ("xdate" if "xdate" in r.columns else None)
-
-            if r_dcol is not None:
-                r["d"] = pd.to_datetime(r[r_dcol], errors="coerce").dt.floor("D")
-                r = r[r["d"].notna()].copy()
-                r["returnqty"] = pd.to_numeric(r.get("returnqty", 0), errors="coerce").fillna(0.0)
-
-                r_daily = (
-                    r.groupby(["itemcode", "d"], as_index=False)
-                    .agg(return_qty=("returnqty", "sum"))
-                )
-            else:
-                r_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
-        else:
-            r_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
-
-        # ---- issues daily (IS--, ISS-) ─────────────────────────────────────
-        # No ZID filter: mv_issues_daily_item maps 100009 items to their 100001
-        # codes via xdrawing, so all relevant issues appear under 100001 item codes
-        # regardless of source ZID.
-        i = issues_df.copy() if isinstance(issues_df, pd.DataFrame) else pd.DataFrame()
-        if not i.empty and "issue_qty" in i.columns:
-            i["itemcode"] = i["itemcode"].apply(_norm_code).astype(str).str.strip()
-            i["d"] = pd.to_datetime(i["date"], errors="coerce").dt.floor("D")
-            i = i[i["d"].notna()].copy()
-            i["issue_qty"] = pd.to_numeric(i["issue_qty"], errors="coerce").fillna(0.0)
-            i_daily = (
-                i.groupby(["itemcode", "d"], as_index=False)
-                .agg(issue_qty=("issue_qty", "sum"))
-            )
-        else:
-            i_daily = pd.DataFrame(columns=["itemcode", "d", "issue_qty"])
-
-        ev = pd.merge(s_daily, r_daily, on=["itemcode", "d"], how="outer").fillna(0.0)
-        ev = pd.merge(ev, i_daily, on=["itemcode", "d"], how="outer").fillna(0.0)
-        if ev.empty:
-            return ev
-
-        ev["sales_qty"]  = pd.to_numeric(ev["sales_qty"],  errors="coerce").fillna(0.0)
-        ev["sales_rev"]  = pd.to_numeric(ev["sales_rev"],  errors="coerce").fillna(0.0)
-        ev["return_qty"] = pd.to_numeric(ev["return_qty"], errors="coerce").fillna(0.0)
-        ev["issue_qty"]  = pd.to_numeric(ev["issue_qty"],  errors="coerce").fillna(0.0)
-
-        ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
-        return ev
+    # _resolve_sales_value_col and _build_daily_events are module-level (shared
+    # with build_batch_consolidation) — see definitions near _norm_code above.
 
     # ----------------------------------------------------------
     # 1) Prepare all batches and selected shipment batches
@@ -1043,28 +1165,20 @@ def run_batch_profitability_engine(
         """
         FIFO allocation across repeated shipments of the same SKU.
 
-        Correct rule:
-        - Only sales on/after a batch's combinedate can affect that batch.
-        - Earlier batches get consumed first.
-        - The quantity available for a batch is based on:
-            sales after batch date
-            minus older stock still open at batch date
-        NOT minus total older purchases.
+        Core sold_qty / remaining_qty / older_open_qty come from the shared
+        _fifo_batches_asof (module-level, also used by build_batch_consolidation
+        so both features can never drift apart on stock math). This function
+        layers P&L-specific extras on top: sold_revenue, avg_price, batch_end_date.
         """
-
         EPS = 1e-9
 
-        batches = all_batches.copy()
-
-        batches["sold_qty"] = 0.0
+        core = _fifo_batches_asof(all_batches, events, as_of=None)
+        batches = core.copy()
         batches["sold_revenue"] = 0.0
         batches["batch_end_date"] = pd.NaT
-        batches["remaining_qty"] = pd.to_numeric(
-            batches.get("initial_qty", 0), errors="coerce"
-        ).fillna(0.0)
-        batches["is_closed"] = False
 
-        if batches.empty or events is None or events.empty:
+        if events is None or events.empty or batches.empty:
+            batches["is_closed"] = batches["remaining_qty"] <= EPS
             return batches
 
         ev = events.copy()
@@ -1076,57 +1190,26 @@ def run_batch_profitability_engine(
         ev["sales_rev"]  = pd.to_numeric(ev.get("sales_rev",  0), errors="coerce").fillna(0.0)
         ev["return_qty"] = pd.to_numeric(ev.get("return_qty", 0), errors="coerce").fillna(0.0)
         ev["issue_qty"]  = pd.to_numeric(ev.get("issue_qty",  0), errors="coerce").fillna(0.0)
-        # net_qty: sales + issues both deplete stock; returns add stock back
         ev["net_qty"] = ev["sales_qty"] + ev["issue_qty"] - ev["return_qty"]
-
         ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
 
-        batches["itemcode"] = batches["itemcode"].astype(str).str.strip()
-        batches["combinedate"] = pd.to_datetime(batches["combinedate"], errors="coerce").dt.floor("D")
-        batches["initial_qty"] = pd.to_numeric(batches.get("initial_qty", 0), errors="coerce").fillna(0.0)
-
         for code, bgrp in batches.groupby("itemcode", sort=False):
-            sales = ev[ev["itemcode"] == code].copy()
+            sales = ev[ev["itemcode"] == code]
             if sales.empty:
                 continue
-
             sales = sales.sort_values("d").reset_index(drop=True)
-            sales["cum_net"] = sales["net_qty"].cumsum()
 
-            batch_positions = bgrp.sort_values(["combinedate", "shipmentname"]).index.tolist()
-
-            for pos in batch_positions:
-                batch_qty = float(batches.at[pos, "initial_qty"])
-                batch_date = pd.Timestamp(batches.at[pos, "combinedate"]).floor("D")
-
-                # older purchase qty strictly before this batch
-                older_batches = batches[
-                    (batches["itemcode"] == code) &
-                    (batches["combinedate"] < batch_date)
-                ].copy()
-
-                older_purchase_qty = float(older_batches["initial_qty"].sum()) if not older_batches.empty else 0.0
-
-                # net sales strictly before this batch date
-                sales_before = sales[sales["d"] < batch_date].copy()
-                net_sales_before = float(sales_before["net_qty"].sum()) if not sales_before.empty else 0.0
-
-                # older stock still open when this batch arrives
-                older_open_at_batch = max(0.0, older_purchase_qty - net_sales_before)
-
-                # sales only after this batch arrived
-                sales_after_batch = sales[sales["d"] >= batch_date].copy()
-                if sales_after_batch.empty:
+            for pos in bgrp.index.tolist():
+                sold = float(batches.at[pos, "sold_qty"])
+                if sold <= EPS:
                     continue
 
-                total_sales_after_batch = float(sales_after_batch["net_qty"].sum())
+                batch_qty  = float(batches.at[pos, "initial_qty"])
+                batch_date = pd.Timestamp(batches.at[pos, "combinedate"]).floor("D")
+                older_open_at_batch = float(batches.at[pos, "older_open_qty"])
 
-                # this batch can only consume sales beyond older stock still open
-                available_for_batch = max(0.0, total_sales_after_batch - older_open_at_batch)
-
-                sold = max(0.0, min(batch_qty, available_for_batch))
-
-                if sold <= EPS:
+                sales_after_batch = sales[sales["d"] >= batch_date]
+                if sales_after_batch.empty:
                     continue
 
                 # average realized price using sales after batch date
@@ -1137,51 +1220,23 @@ def run_batch_profitability_engine(
                     total_sales_rev_after_batch / total_sales_qty_after_batch
                     if total_sales_qty_after_batch > EPS else 0.0
                 )
-                revenue = sold * avg_price
+                batches.at[pos, "sold_revenue"] = sold * avg_price
 
-                batches.at[pos, "sold_qty"] = sold
-                batches.at[pos, "sold_revenue"] = revenue
-
-                # batch end date:
-                # first day where cumulative net sales since batch date
-                # exceeds older_open_at_batch + sold
-                # batch_end_date should only exist if the batch is fully depleted
+                # batch end date: first day cumulative net depletion since batch
+                # date exceeds older_open_at_batch + batch_qty. Only set when the
+                # batch is fully depleted (sold >= batch_qty).
                 if sold >= (batch_qty - EPS):
-                    sales_after_batch = sales_after_batch.copy()
-                    sales_after_batch["cum_qty_from_batch"] = sales_after_batch["net_qty"].cumsum()
-
-                    # To close this batch, sales after batch date must first clear older open stock
-                    # and then consume the FULL batch quantity
+                    sab = sales_after_batch.copy()
+                    sab["cum_qty_from_batch"] = sab["net_qty"].cumsum()
                     close_target = older_open_at_batch + batch_qty
-
-                    hit = sales_after_batch[
-                        sales_after_batch["cum_qty_from_batch"] >= close_target
-                    ]
-
+                    hit = sab[sab["cum_qty_from_batch"] >= close_target]
                     if not hit.empty:
                         close_dt = pd.Timestamp(hit.iloc[0]["d"]).floor("D")
                         if close_dt >= batch_date:
                             batches.at[pos, "batch_end_date"] = close_dt
-                    else:
-                        batches.at[pos, "batch_end_date"] = pd.NaT
-                else:
-                    batches.at[pos, "batch_end_date"] = pd.NaT
-                    
-        batches["sold_qty"] = pd.to_numeric(batches["sold_qty"], errors="coerce").fillna(0.0)
+
         batches["sold_revenue"] = pd.to_numeric(batches["sold_revenue"], errors="coerce").fillna(0.0)
-
-        batches["remaining_qty"] = (
-            batches["initial_qty"].astype(float) - batches["sold_qty"].astype(float)
-        ).clip(lower=0.0)
-
-        batches["remaining_qty"] = np.where(
-            batches["remaining_qty"] < EPS,
-            0.0,
-            batches["remaining_qty"]
-        )
-
         batches["batch_end_date"] = pd.to_datetime(batches["batch_end_date"], errors="coerce")
-
         batches.loc[
             batches["batch_end_date"].notna() & (batches["batch_end_date"] < batches["combinedate"]),
             "batch_end_date"
@@ -1656,6 +1711,7 @@ def build_batch_consolidation(
     sales_df: pd.DataFrame,
     returns_df: Optional[pd.DataFrame] = None,
     issues_df:  Optional[pd.DataFrame] = None,
+    zid_deplete: str = "100001",
 ) -> tuple:
     """Shipment-level consolidation with FIFO stock snapshots and MTD/yesterday sales.
 
@@ -1666,10 +1722,15 @@ def build_batch_consolidation(
     Window  : Jan 1 of (current_year − 3) through yesterday — computed dynamically.
     Pricing : avg realized price per batch = revenue / qty from sales since batch arrival.
               Fallback to unit_cost when an item has no post-arrival sales history.
-    FIFO    : matches run_batch_profitability_engine — sales strictly after combinedate
-              deplete the oldest-arriving batch of each item first.
+    FIFO    : uses the SAME shared _build_daily_events + _fifo_batches_asof core as
+              run_batch_profitability_engine (Batch P&L) — identical depletion events,
+              identical older_open/available/sold math, computed across ALL shipments
+              of an itemcode (not just one shipment in isolation). The only difference
+              from P&L is that this calls _fifo_batches_asof three times (month-start,
+              day-before-yesterday, yesterday) to get point-in-time snapshots, whereas
+              P&L calls it once unbounded ("as of today").
     ZIDs    : purchase_df already contains both 100001 + 100009 (analytics auto-expansion);
-              itemcodes are pre-resolved via packcode SQL CASE in the query.
+              itemcodes are pre-resolved via the xdrawing SQL CASE in the query.
     """
     today               = pd.Timestamp.today().normalize()
     yesterday           = today - pd.Timedelta(days=1)
@@ -1751,91 +1812,13 @@ def build_batch_consolidation(
             grp["cum_rev"].values.astype(float),
         )
 
-    # ── 3b. Build net-depletion lookup: sales + issues − returns ─────────────
-    # Returns add stock back; issues deplete just like sales.
-    # net_qty per (itemcode, date) drives FIFO — identical to _fifo_allocate_batches.
-
-    _r = pd.DataFrame()
-    if returns_df is not None and not returns_df.empty:
-        _r = returns_df.copy()
-        _r["itemcode"] = _r["itemcode"].astype(str).str.strip()
-        _r["date"]     = pd.to_datetime(_r["date"], errors="coerce").dt.floor("D")
-        _rqty = next((c for c in ["returnqty", "return_qty", "quantity"] if c in _r.columns), None)
-        if _rqty:
-            _r["_rq"] = pd.to_numeric(_r[_rqty], errors="coerce").fillna(0.0).clip(lower=0.0)
-            _r = _r[_r["date"].notna()].groupby(["itemcode", "date"], as_index=False).agg(rqty=("_rq", "sum"))
-        else:
-            _r = pd.DataFrame(columns=["itemcode", "date", "rqty"])
-    if _r.empty:
-        _r = pd.DataFrame(columns=["itemcode", "date", "rqty"])
-
-    _iss = pd.DataFrame()
-    if issues_df is not None and not issues_df.empty:
-        _iss = issues_df.copy()
-        _iss["itemcode"] = _iss["itemcode"].astype(str).str.strip()
-        _iss["date"]     = pd.to_datetime(_iss["date"], errors="coerce").dt.floor("D")
-        _iqty = next((c for c in ["issue_qty", "quantity"] if c in _iss.columns), None)
-        if _iqty:
-            _iss["_iq"] = pd.to_numeric(_iss[_iqty], errors="coerce").fillna(0.0).clip(lower=0.0)
-            _iss = _iss[_iss["date"].notna()].groupby(["itemcode", "date"], as_index=False).agg(iqty=("_iq", "sum"))
-        else:
-            _iss = pd.DataFrame(columns=["itemcode", "date", "iqty"])
-    if _iss.empty:
-        _iss = pd.DataFrame(columns=["itemcode", "date", "iqty"])
-
-    _net = (
-        s[["itemcode", "date", "qty"]].rename(columns={"qty": "sqty"})
-          .merge(_r,   on=["itemcode", "date"], how="outer")
-          .merge(_iss, on=["itemcode", "date"], how="outer")
-          .fillna(0.0)
-    )
-    # Allow negatives — a day where returns > sales correctly reduces cumulative depletion
-    # (same behaviour as _build_daily_events / _fifo_allocate_batches in Batch P&L).
-    # max(0, …) in _qty_range keeps the range non-negative; daily negatives propagate
-    # through cumsum so past returns credit back against future sales correctly.
-    _net["net_qty"] = _net["sqty"] + _net["iqty"] - _net["rqty"]
-    _net = _net[_net["net_qty"] != 0].sort_values(["itemcode", "date"])
-    _net["cum_net"] = _net.groupby("itemcode")["net_qty"].cumsum()
-
-    # itemcode -> (dates_np, cum_net_np)  — used for DEPLETION
-    net_lkp: dict = {}
-    for code, grp in _net.groupby("itemcode"):
-        net_lkp[str(code)] = (
-            grp["date"].values.astype("datetime64[ns]"),
-            grp["cum_net"].values.astype(float),
-        )
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Helpers (pricing only) ──────────────────────────────────────────────
     def _cum_at(dates_np, cum_np, T: pd.Timestamp) -> float:
         """Cumulative value for dates <= T (searchsorted right, O(log n))."""
         if pd.isna(T):
             return 0.0
         idx = int(np.searchsorted(dates_np, np.datetime64(T, "ns"), side="right")) - 1
         return float(cum_np[idx]) if idx >= 0 else 0.0
-
-    def _qty_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
-        """Net depletion (sales + issues − returns) in (D, T] — matches _fifo_allocate_batches."""
-        if code not in net_lkp or pd.isna(D) or pd.isna(T) or T <= D:
-            return 0.0
-        dn, cq = net_lkp[code]
-        return max(0.0, _cum_at(dn, cq, T) - _cum_at(dn, cq, D))
-
-    def _rev_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
-        """Revenue in (D, T] — from sales only, used for pricing."""
-        if code not in sales_lkp or pd.isna(D) or pd.isna(T) or T <= D:
-            return 0.0
-        dn, _, cr = sales_lkp[code]
-        return max(0.0, _cum_at(dn, cr, T) - _cum_at(dn, cr, D))
-
-    def _rem(D_batch: pd.Timestamp, initial: float, older_open: float,
-             code: str, T: pd.Timestamp) -> float:
-        """FIFO remaining qty of one batch at date T.
-        older_open = remaining qty of all older batches of the same item AT D_batch.
-        """
-        if T < D_batch:
-            return initial        # batch not yet in warehouse
-        sold = min(initial, max(0.0, _qty_range(code, D_batch, T) - older_open))
-        return max(0.0, initial - sold)
 
     # ── 4. Avg realized price per (itemcode, combinedate) ─────────────────────
     # Price window: from batch arrival to the day BEFORE the next batch of the same
@@ -1872,72 +1855,71 @@ def build_batch_consolidation(
         else:
             price_cache[key] = float(row["unit_cost"])
 
-    # ── 5. FIFO snapshots — per shipment, then per item within that shipment ────
-    # Each shipment is evaluated independently, matching run_batch_profitability_engine
-    # which processes one shipment at a time.  Cross-shipment older_open is intentionally
-    # suppressed: Batch P&L never sees stock from other shipments, so Batch Con must not
-    # either.  Within a shipment, multi-date deliveries of the same item still accumulate
-    # older_open correctly (oldest delivery depletes first).
-    # Three snapshots: snap_ms (month start), yesterday, day_before_yest.
-    # MTD qty       = rem(snap_ms) − rem(yesterday)
-    # Yesterday qty = rem(day_before_yest) − rem(yesterday)
+    # ── 5. FIFO — via the SHARED _build_daily_events + _fifo_batches_asof, the
+    # exact same functions run_batch_profitability_engine (Batch P&L) uses.
+    # all_batches spans EVERY shipment of these itemcodes within the window (not
+    # just one shipment): a later shipment cannot show its own stock as "available"
+    # until earlier shipments of the same item are exhausted — this matches P&L's
+    # cross-shipment FIFO exactly.  Called three times (once per snapshot date) to
+    # get point-in-time remaining_qty; P&L calls the same function once, unbounded.
+    events = _build_daily_events(
+        sales_df,
+        returns_df if returns_df is not None else pd.DataFrame(),
+        issues_df if issues_df is not None else pd.DataFrame(),
+        zid_deplete,
+    )
+
+    all_batches = p[["shipmentname", "itemcode", "combinedate", "initial_qty"]].copy()
+
+    core_ms  = _fifo_batches_asof(all_batches, events, as_of=snap_ms)
+    core_dby = _fifo_batches_asof(all_batches, events, as_of=day_before_yest)
+    core_y   = _fifo_batches_asof(all_batches, events, as_of=yesterday)
+
     batch_rows: list = []
     debug_rows: list = []
 
-    for _shipname, ship_df in p.groupby("shipmentname", sort=False):
-      for code, item_df in (
-        ship_df.sort_values(["itemcode", "combinedate"])
-               .groupby("itemcode", sort=False)
-      ):
-        code = str(code)
-        item_df = item_df.sort_values("combinedate").reset_index(drop=True)
-        processed: list = []    # resets per shipment — no cross-shipment accumulation
+    for idx in p.index:
+        code      = str(p.at[idx, "itemcode"])
+        Di        = p.at[idx, "combinedate"]
+        initial_i = float(p.at[idx, "initial_qty"])
+        ship      = p.at[idx, "shipmentname"]
+        iname     = str(p.at[idx, "itemname"])
 
-        for _, batch in item_df.iterrows():
-            Di        = batch["combinedate"]
-            initial_i = float(batch["initial_qty"])
+        price = price_cache.get((code, Di), float(p.at[idx, "unit_cost"]))
 
-            # older_open within THIS shipment only
-            older_open_i = float(sum(
-                _rem(Dj, init_j, oo_j, code, Di)
-                for Dj, init_j, oo_j in processed
-            ))
-            processed.append((Di, initial_i, older_open_i))
+        rem_ms  = float(core_ms.at[idx, "remaining_qty"])
+        rem_dby = float(core_dby.at[idx, "remaining_qty"])
+        rem_y        = float(core_y.at[idx, "remaining_qty"])
+        older_open_i = float(core_y.at[idx, "older_open_qty"])
+        sold_y       = float(core_y.at[idx, "sold_qty"])
+        depletion_seen = float(core_y.at[idx, "depletion_since_batch"])
 
-            price = price_cache.get((code, Di), float(batch["unit_cost"]))
+        mtd_qty  = max(0.0, rem_ms  - rem_y)
+        yest_qty = max(0.0, rem_dby - rem_y)
 
-            rem_ms  = _rem(Di, initial_i, older_open_i, code, snap_ms)
-            rem_y   = _rem(Di, initial_i, older_open_i, code, yesterday)
-            rem_dby = _rem(Di, initial_i, older_open_i, code, day_before_yest)
+        batch_rows.append({
+            "shipmentname":  ship,
+            "combinedate":   Di,
+            "arrival_val":   initial_i * price,
+            "ms_stock_val":  rem_ms    * price,
+            "cur_stock_val": rem_y     * price,
+            "mtd_val":       mtd_qty   * price,
+            "yest_val":      yest_qty  * price,
+        })
 
-            mtd_qty  = max(0.0, rem_ms  - rem_y)
-            yest_qty = max(0.0, rem_dby - rem_y)
-
-            batch_rows.append({
-                "shipmentname":  batch["shipmentname"],
-                "combinedate":   Di,
-                "arrival_val":   initial_i * price,
-                "ms_stock_val":  rem_ms    * price,
-                "cur_stock_val": rem_y     * price,
-                "mtd_val":       mtd_qty   * price,
-                "yest_val":      yest_qty  * price,
-            })
-
-            depletion_seen = round(_qty_range(code, Di, yesterday))
-            sold_fifo      = round(initial_i - rem_y)
-            debug_rows.append({
-                "Shipment":       batch["shipmentname"],
-                "Item Code":      code,
-                "Item Name":      str(batch.get("itemname", "")),
-                "Batch Date":     Di,
-                "Initial Qty":    round(initial_i),
-                "Older Open":     round(older_open_i),
-                "Depletion Seen": depletion_seen,
-                "Sold (FIFO)":    sold_fifo,
-                "Remaining Qty":  round(rem_y),
-                "Price":          round(price, 2),
-                "Stock Val":      round(rem_y * price),
-            })
+        debug_rows.append({
+            "Shipment":       ship,
+            "Item Code":      code,
+            "Item Name":      iname,
+            "Batch Date":     Di,
+            "Initial Qty":    round(initial_i),
+            "Older Open":     round(older_open_i),
+            "Depletion Seen": round(depletion_seen),
+            "Sold (FIFO)":    round(sold_y),
+            "Remaining Qty":  round(rem_y),
+            "Price":          round(price, 2),
+            "Stock Val":      round(rem_y * price),
+        })
 
     if not batch_rows:
         return EMPTY

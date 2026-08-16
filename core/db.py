@@ -1,6 +1,7 @@
 import psycopg2
 import threading
 from psycopg2 import pool
+from psycopg2.extras import execute_values
 import pandas as pd
 from typing import Optional
 from config.settings import get_db_params
@@ -61,6 +62,36 @@ def execute_write(sql: str, params: tuple = ()) -> bool:
             except Exception:
                 pass
         return False
+    finally:
+        if conn:
+            _get_pool().putconn(conn)
+
+
+def execute_values_insert(sql_template: str, rows: list) -> int:
+    """Bulk INSERT via psycopg2.extras.execute_values in one round trip.
+
+    sql_template must be of the form "INSERT INTO t (...) VALUES %s [ON CONFLICT ...]".
+    Returns the number of rows actually inserted (accounts for ON CONFLICT DO NOTHING
+    skipping duplicates) via cur.rowcount, or -1 on failure.
+    """
+    if not rows:
+        return 0
+    conn = None
+    try:
+        conn = _get_pool().getconn()
+        with conn.cursor() as cur:
+            execute_values(cur, sql_template, rows)
+            inserted = cur.rowcount
+        conn.commit()
+        return inserted
+    except Exception as e:
+        LogManager.logger.error(f"execute_values_insert error: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return -1
     finally:
         if conn:
             _get_pool().putconn(conn)

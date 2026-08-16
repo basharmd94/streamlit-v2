@@ -208,6 +208,31 @@ View mode radio: `["👤 Individual Salesman", "📊 All Salesmen Overview", "�
 
 ---
 
+## Marketing Leads CRM (`views/marketing.py` → "🎣 Leads" mode)
+
+Facebook Lead Ads (or similar) CSV/Excel exports get uploaded here and tracked through to conversion.
+
+### App-owned tables (NOT synced via `db_sync`)
+Created once via `db/sql_scripts/create_marketing_leads_tables.sql`, same convention as `crm_call_log`/`users`/`page_permissions` — written directly by the app, not mirrored from the ERP.
+- **`marketing_leads`** — one row per lead. `zid` is set at upload time from the uploader's active ZID (never present in the export). `fb_lead_id` (the export's own `id` column) is `UNIQUE (zid, fb_lead_id)` so re-uploading the same export is a no-op. Any CSV column outside the fixed schema (lead forms carry different custom questions — e.g. a Bengali institution-type question that won't recur on every form) is packed into `extra_fields` JSONB as `{question: answer}` instead of requiring a schema change per form.
+- **`marketing_lead_call_log`** — call history against a lead, separate from `crm_call_log` (which is keyed on `cusid`, a real ERP customer code — a lead isn't one yet). Mirrors `crm_call_log`'s shape and adds `next_visit_date`.
+
+### Conversion tracking — no `cus_code` column on `marketing_leads`
+When staff convert a lead to a real customer in the ERP, they manually paste the lead's `fb_lead_id` into that new customer's `cacus.xurl` field. The app reads this live via `get_cacus_lead_links` (`cacus.xurl` join, registered in `Analytics` as `"cacus_lead_links"`) rather than storing a customer code on the lead row — conversion can happen at any time on the ERP side, so a stored value would go stale.
+
+### Permissions (role-gated inside the view, not via `page_permissions`)
+Both `crm` and `sales` already have page-level access to "Marketing Analysis" in `page_permissions`. Finer-grained access is enforced in `views/marketing.py::_show_leads` by `st.session_state.user_role`:
+- **`crm`/`admin`**: upload section, call-log entry panel, both tables, CSV downloads.
+- **`sales`**: Table 1 (leads list) only, read-only — no upload, no call-log entry, no Table 2.
+
+### Shared call-log module: `views/lead_call_log_shared.py`
+Mirrors `views/call_log_shared.py`'s panel exactly (imports `OUTCOMES`/`_OUTCOME_BADGE`/`blue_header`/`BLUE_FOOTER` from it for identical styling) but keyed on `lead_id` instead of `cusid`, and adds a `next_visit_date` field to both the entry form and the history badges.
+
+### Bulk insert: `core/db.py::execute_values_insert`
+Added for this feature — one round trip via `psycopg2.extras.execute_values`, `ON CONFLICT (zid, fb_lead_id) DO NOTHING`, returns `cur.rowcount` (correctly excludes skipped duplicates) so the upload UI can report "N new, M already existed".
+
+---
+
 ## Git / Deployment
 
 - **Main branch**: `main` — always deployable. Feature branches merged to main when approved.
