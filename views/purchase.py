@@ -1016,8 +1016,6 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
     with st.spinner("Running FIFO batch consolidation…"):
         result = build_batch_consolidation(
             purchase_raw, sales_raw,
-            movements_df=data_dict.get("imtrn_movements", pd.DataFrame()),
-            live_inv_df=_load_tts_final_items(str(zid)),
         )
     # build_batch_consolidation returns (summary_df, debug_df)
     df, debug_df = result if isinstance(result, tuple) else (result, pd.DataFrame())
@@ -1331,7 +1329,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
 
             tables = purchase.build_shipment_inventory_tables(
                 purchase_df=data_dict["purchase_batches"],
-                movements_df=data_dict["imtrn_movements"],
+                stock_movement_df=data_dict["stock_movement"],
                 sales_df=data_dict["sales_daily_item"],
                 shipmentname=selected_shipment,
                 project=st.session_state.proj,
@@ -1557,7 +1555,9 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             result_df = purchase.run_batch_profitability_engine(
                 purchase_df=data_dict["purchase_batches"],
                 sales_df=data_dict["sales_daily_item"],
-                movements_df=data_dict["imtrn_movements"],
+                returns_df=data_dict["returns_daily_item"],
+                stock_movement_df=data_dict["stock_movement"],
+                issues_df=data_dict.get("issues_daily_item", pd.DataFrame()),
                 hierarchy_path="data/hierarchy.json",
                 shipmentname=selected_shipment,
                 discount_pct=0.0,
@@ -1566,7 +1566,6 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                 vat_pct=vat_pct,
                 manual_overhead_value=manual_overhead_value,
                 inventory_tables=st.session_state.get("invcheck_tables"),
-                live_inv_df=_load_tts_final_items(str(zid)),
             )
 
             st.session_state["last_batch_df"] = result_df.copy()
@@ -1608,112 +1607,6 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
                     disp_bpl = disp_bpl[disp_bpl["itemname"].isin(sel_prods_bpl)]
 
             st.dataframe(disp_bpl, width="stretch")
-
-            # ── FIFO Diagnostic expander ───────────────────────────────────────
-            # Reveals whether phantom remaining comes from missing depletions
-            # (dep_daily too small) or from older lots absorbing everything.
-            with st.expander("🔬 FIFO Diagnostic — lots vs depletions", expanded=False):
-                st.caption(
-                    "Compares total FIFO-visible lots and depletions per item "
-                    "against live inventory. A large gap between **Total Depletion** "
-                    "and **(Lots − Live Stock)** means the MV is missing IS/DO rows."
-                )
-                _mv = data_dict.get("imtrn_movements")
-                _pb = data_dict.get("purchase_batches")
-                if _mv is not None and not _mv.empty and _pb is not None and not _pb.empty:
-                    try:
-                        import processing.purchase_batch as _pbatch
-                        _all_lots = _pbatch._build_raw_lots(_mv, _pb)
-                        _dep_all  = _pbatch._build_dep_daily(_mv, dep_zid="100001")
-
-                        # Items in this shipment only
-                        _ship_items = set(result_df["itemcode"].astype(str).tolist()) if not result_df.empty else set()
-
-                        if not _all_lots.empty and _ship_items:
-                            # Total lots qty per item (all shipments)
-                            _lots_sum = (
-                                _all_lots[_all_lots["itemcode"].isin(_ship_items)]
-                                .groupby("itemcode", as_index=False)["lot_qty"].sum()
-                                .rename(columns={"lot_qty": "total_lots_qty"})
-                            )
-                            # Total depletions per item
-                            _dep_sum = (
-                                _dep_all[_dep_all["itemcode"].isin(_ship_items)]
-                                .groupby("itemcode", as_index=False)["dep_qty"].sum()
-                                .rename(columns={"dep_qty": "total_dep_qty"})
-                            )
-                            # FIFO result for this shipment
-                            _fifo_sum = result_df[["itemcode", "itemname", "initial_qty", "sold_qty", "remaining_qty"]].copy()
-                            _fifo_sum = _fifo_sum.rename(columns={
-                                "initial_qty":   "batch_initial",
-                                "sold_qty":      "batch_sold",
-                                "remaining_qty": "batch_remaining",
-                            })
-
-                            # Live stock from inventory
-                            _inv_bpl = _load_tts_final_items(str(zid))
-                            _live_map = {}
-                            if not _inv_bpl.empty and "item_id" in _inv_bpl.columns:
-                                _live_map = _inv_bpl.set_index("item_id")["stock"].to_dict()
-
-                            _diag = (
-                                _fifo_sum
-                                .merge(_lots_sum, on="itemcode", how="left")
-                                .merge(_dep_sum,  on="itemcode", how="left")
-                            )
-                            _diag["total_lots_qty"] = pd.to_numeric(_diag["total_lots_qty"], errors="coerce").fillna(0)
-                            _diag["total_dep_qty"]  = pd.to_numeric(_diag["total_dep_qty"],  errors="coerce").fillna(0)
-                            _diag["live_stock"]     = pd.to_numeric(_diag["itemcode"].astype(str).map(_live_map), errors="coerce").fillna(0.0)
-                            _diag["expected_dep"]   = (_diag["total_lots_qty"] - _diag["live_stock"]).clip(lower=0)
-                            _diag["dep_gap"]        = (_diag["expected_dep"] - _diag["total_dep_qty"]).round(0)
-
-                            def _flag(row):
-                                gap = row["dep_gap"]
-                                if abs(gap) <= 5:
-                                    return "✅ OK"
-                                elif gap > 0:
-                                    return f"⚠️ Missing {int(gap):,} depletions"
-                                else:
-                                    return f"ℹ️ Extra {int(-gap):,} depletions"
-
-                            _diag["status"] = _diag.apply(_flag, axis=1)
-
-                            st.dataframe(
-                                _diag[[
-                                    "itemcode", "itemname",
-                                    "total_lots_qty", "total_dep_qty",
-                                    "expected_dep", "dep_gap",
-                                    "batch_initial", "batch_sold", "batch_remaining",
-                                    "live_stock", "status",
-                                ]].rename(columns={
-                                    "itemcode":        "Item Code",
-                                    "itemname":        "Item Name",
-                                    "total_lots_qty":  "Total Lots (all shipments)",
-                                    "total_dep_qty":   "Total Depletion (FIFO sees)",
-                                    "expected_dep":    "Expected Depletion (Lots − Live)",
-                                    "dep_gap":         "Gap (missing depletions)",
-                                    "batch_initial":   "Batch Initial",
-                                    "batch_sold":      "Batch Sold",
-                                    "batch_remaining": "Batch Remaining",
-                                    "live_stock":      "Live Stock",
-                                    "status":          "Status",
-                                }),
-                                hide_index=True,
-                                width="stretch",
-                            )
-                            st.download_button(
-                                "⬇ Download diagnostic CSV",
-                                data=_diag.to_csv(index=False).encode("utf-8"),
-                                file_name=f"fifo_diag_{selected_shipment}.csv",
-                                mime="text/csv",
-                                key="bpl_fifo_diag_dl",
-                            )
-                        else:
-                            st.info("No lot data found for items in this shipment.")
-                    except Exception as _e:
-                        st.warning(f"Diagnostic error: {_e}")
-                else:
-                    st.info("Movement data not loaded — run the shipment analysis first.")
 
             if result_df is not None and not result_df.empty:
                 sum_cols = [

@@ -66,6 +66,7 @@ class Analytics:
             "gl_income_overhead":     queries.get_gl_income_overhead,
             "sales_daily_item":       queries.get_sales_daily_item,
             "returns_daily_item":     queries.get_returns_daily_item,
+            "issues_daily_item":      queries.get_issues_daily_item,
             "ar":               queries.get_ar_data,
             "payments":         queries.get_payment_data,
             "cacus_simple":     queries.get_cacus_simple,
@@ -75,7 +76,7 @@ class Analytics:
             "glmst_simple":     queries.get_glmst_simple,
             "casup_simple":     queries.get_casup_simple,
             "stock_movement":   queries.get_stock_movement_data,
-            "imtrn_movements":  queries.get_imtrn_movements,
+            # "imtrn_movements" removed — replaced by mv_stock_movement + mv_issues_daily_item
             "caitem":           queries.get_caitem_data,
             "opmob_pending":    queries.get_opmob_pending,
             "opmob_all":        queries.get_opmob_all_data,

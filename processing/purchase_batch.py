@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import pandas as pd
 import numpy as np
 from processing import common
@@ -8,8 +7,6 @@ from datetime import datetime
 import streamlit as st
 from datetime import date as _date
 from typing import Dict, List, Tuple, Optional, Any
-
-_log = logging.getLogger(__name__)
 
 
 def generate_cohort(purchase_data,year_ago,inventory_data,sales_df,cohort_df):
@@ -382,20 +379,11 @@ def _compute_batch_end_and_sold_remaining(
     sku_before = sku[sku["date"] <= before_date]
     baseline = float(sku_before["onhand_qty"].iloc[-1]) if not sku_before.empty else 0.0
 
-    # When baseline < 0, pre-existing backorders were filled the moment this shipment
-    # arrived — those units were immediately consumed. Reduce the effective bin size by
-    # the backorder depth so remaining_qty can't be inflated by a negative subtrahend.
-    # We keep original_ship_qty for sold_eff so that backorder-fill is counted as sold.
-    original_ship_qty = ship_qty
-    if baseline < 0.0:
-        ship_qty = max(0.0, ship_qty + baseline)  # units available for forward tracking
-        baseline = 0.0
-
     # slice after start
     sku_after = sku[(sku["date"] >= start) & (sku["date"] <= as_of)].copy()
     if sku_after.empty:
         # no movements after start, assume still open
-        return (pd.NaT, 0.0, original_ship_qty, baseline, baseline)
+        return (pd.NaT, 0.0, ship_qty, baseline, baseline)
 
     # compute shipment remaining series
     rem = (sku_after["onhand_qty"] - baseline).clip(lower=0.0).clip(upper=ship_qty)
@@ -419,9 +407,8 @@ def _compute_batch_end_and_sold_remaining(
     sku_end = sku_after[sku_after["date"] <= end_eff]
     remaining_eff = float(sku_end["ship_remaining"].iloc[-1]) if not sku_end.empty else ship_qty
 
-    # sold = original purchased qty minus what's still remaining (includes backorder fill)
-    sold_eff = original_ship_qty - remaining_eff
-    sold_eff = max(0.0, min(original_ship_qty, sold_eff))
+    sold_eff = ship_qty - remaining_eff
+    sold_eff = max(0.0, min(ship_qty, sold_eff))
 
     # onhand at end_eff (debugging)
     sku_onhand_end = sku_after[sku_after["date"] <= end_eff]
@@ -451,8 +438,9 @@ def _sales_revenue_for_period(sales_df: pd.DataFrame, itemcode: str, start: pd.T
 @st.cache_data(show_spinner=False, ttl=86400)
 def build_shipment_inventory_tables(
     purchase_df: pd.DataFrame,
-    movements_df: pd.DataFrame,
+    stock_movement_df: pd.DataFrame,
     sales_df: pd.DataFrame,
+    returns_df: pd.DataFrame,
     shipmentname: str,
     project: str = None,
     zid_deplete: str = "100001",) -> Dict[str, pd.DataFrame]:
@@ -525,9 +513,9 @@ def build_shipment_inventory_tables(
     )
 
     # ----------------------------
-    # 1) Stock movement prep — from mv_imtrn_movements (net daily per item)
+    # 1) Stock movement prep (ledger deltas)
     # ----------------------------
-    sm = movements_df.copy() if isinstance(movements_df, pd.DataFrame) else pd.DataFrame()
+    sm = stock_movement_df.copy() if isinstance(stock_movement_df, pd.DataFrame) else pd.DataFrame()
     if sm.empty:
         # Return tables with purchase only (inventory unknown)
         arrival_100001_only = p_sum[p_sum["purchased_qty_100009"] <= 0].copy()
@@ -558,22 +546,21 @@ def build_shipment_inventory_tables(
     sm["zid"] = sm["zid"].astype(str).str.strip()
     sm = sm[sm["zid"].isin(["100001", "100009"])].copy()
     sm["itemcode"] = sm["itemcode"].apply(_norm_code).astype(str).str.strip()
-    # mv_imtrn_movements uses txn_date; net_qty = xqty * xsign (signed stock delta)
-    sm["date"] = pd.to_datetime(sm["txn_date"], errors="coerce").dt.floor("D")
+    sm["date"] = pd.to_datetime(sm["date"], errors="coerce").dt.floor("D")
     sm = sm[sm["date"].notna()].copy()
-    sm["net_qty"] = pd.to_numeric(sm.get("net_qty", 0), errors="coerce").fillna(0.0)
+    sm["stockqty"] = pd.to_numeric(sm.get("stockqty", 0), errors="coerce").fillna(0.0)
+    sm["warehouse"] = sm.get("warehouse", "").astype(str).fillna("").str.strip()
 
     def _build_daily_onhand(sm_in: pd.DataFrame) -> pd.DataFrame:
-        """Cumulative onhand from mv_imtrn_movements net daily movements."""
         d = (
-            sm_in.groupby(["date", "itemcode"], as_index=False)["net_qty"]
+            sm_in.groupby(["date", "itemcode"], as_index=False)["stockqty"]
             .sum()
             .copy()
         )
         d["date"] = pd.to_datetime(d["date"], errors="coerce").dt.floor("D")
         d = d[d["date"].notna()].copy()
         d = d.sort_values(["date", "itemcode"]).reset_index(drop=True)
-        d["onhand_qty"] = d.groupby("itemcode")["net_qty"].cumsum()
+        d["onhand_qty"] = d.groupby("itemcode")["stockqty"].cumsum()
         return d[["date", "itemcode", "onhand_qty"]]
 
     daily_total = _build_daily_onhand(sm)                         # 100001+100009
@@ -737,19 +724,8 @@ def build_shipment_inventory_tables(
 
         return (c1 - c0).astype(float)
 
-    # Derive DO-- sales qty and cust_return qty from mv_imtrn_movements
-    # for the reconcile window — captures all physical movements, not just sales orders.
-    _do_rows = sm[sm["txn_type"] == "sale"].copy() if "txn_type" in sm.columns else pd.DataFrame()
-    if not _do_rows.empty:
-        _do_rows = _do_rows.copy()
-        _do_rows["quantity"] = pd.to_numeric(_do_rows.get("xqty", 0), errors="coerce").fillna(0.0)
-    _ret_rows = sm[sm["txn_type"] == "cust_return"].copy() if "txn_type" in sm.columns else pd.DataFrame()
-    if not _ret_rows.empty:
-        _ret_rows = _ret_rows.copy()
-        _ret_rows["returnqty"] = pd.to_numeric(_ret_rows.get("xqty", 0), errors="coerce").fillna(0.0)
-
-    base["sales_qty_window"] = _window_qty(_do_rows if not _do_rows.empty else sales_df, "quantity")
-    base["return_qty_window"] = _window_qty(_ret_rows, "returnqty")
+    base["sales_qty_window"] = _window_qty(sales_df, "quantity")
+    base["return_qty_window"] = _window_qty(returns_df, "returnqty")
 
     base["expected_onhand_today_salesmodel"] = (
         base["onhand_before_total(100001+100009)"]
@@ -811,208 +787,13 @@ def build_shipment_inventory_tables(
         # "warehouse_breakdown": warehouse_breakdown,
     }
 
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Raw-ledger FIFO helpers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Raw-ledger FIFO helpers
-# Replace the combinedate-grouped approach with individual IGRN receipt lots.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _build_raw_lots(
-    movements_df: pd.DataFrame,
-    purchase_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Join individual IGRN purchase receipts from mv_imtrn_movements with
-    shipmentname and unit_cost from mv_purchase_batches.
-
-    Both 100001 (direct imports) and 100009 (cross-ZID) IGRN rows are included.
-    100009 item codes are already mapped to 100001 codes in the MV via
-    caitem.xdrawing, so itemcode is consistent across both ZIDs.
-
-    Each row = one FIFO lot: txn_date (actual receipt date), net_qty,
-    shipmentname, unit_cost.  No combinedate grouping — no phantom remaining.
-
-    Returns columns: zid, xdocnum, itemcode, itemname, shipmentname,
-                     lot_date, lot_qty, unit_cost
-    """
-    if (movements_df is None or not isinstance(movements_df, pd.DataFrame)
-            or movements_df.empty
-            or purchase_df is None or not isinstance(purchase_df, pd.DataFrame)
-            or purchase_df.empty):
-        return pd.DataFrame()
-
-    mv = movements_df.copy()
-    mv["zid"]      = mv["zid"].astype(str).str.strip()
-    mv["xdocnum"]  = mv["xdocnum"].astype(str).str.strip()
-    mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
-    mv["lot_date"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
-    mv["lot_qty"]  = pd.to_numeric(mv["net_qty"], errors="coerce").fillna(0.0)
-
-    mv = mv[
-        (mv["txn_type"] == "purchase") &
-        mv["xdocnum"].str.startswith("IGRN") &
-        mv["lot_date"].notna() &
-        (mv["lot_qty"] > 0)
-    ].copy()
-
-    if mv.empty:
-        return pd.DataFrame()
-
-    # Raw purchase_df: may alias unit_cost as 'cost' depending on query
-    pb = purchase_df.copy()
-    pb["zid"]        = pb["zid"].astype(str).str.strip()
-    pb["grnvoucher"] = pb["grnvoucher"].astype(str).str.strip()
-    pb["itemcode"]   = pb["itemcode"].apply(_norm_code).astype(str).str.strip()
-    _cost_col = "unit_cost" if "unit_cost" in pb.columns else "cost"
-    pb = pb.rename(columns={_cost_col: "unit_cost"})
-    pb = pb[pb["grnvoucher"].str.startswith("IGRN")].copy()
-    pb = pb[["zid", "grnvoucher", "itemcode", "itemname",
-             "shipmentname", "unit_cost"]].drop_duplicates()
-
-    # Drop any itemname column from mv before the join so it doesn't collide
-    # with pb's itemname (mv_imtrn_movements has no itemname column in production,
-    # but be defensive in case a caller passes enriched data).
-    mv = mv.drop(columns=[c for c in ["itemname"] if c in mv.columns], errors="ignore")
-
-    # Join: (zid, xdocnum=grnvoucher, itemcode) — all three already xdrawing-resolved in MV
-    lots = mv.merge(
-        pb,
-        left_on=["zid", "xdocnum", "itemcode"],
-        right_on=["zid", "grnvoucher", "itemcode"],
-        how="inner",
-    )
-
-    if lots.empty:
-        return pd.DataFrame()
-
-    lots["unit_cost"] = pd.to_numeric(lots["unit_cost"], errors="coerce").fillna(0.0)
-    return lots[
-        ["zid", "xdocnum", "itemcode", "itemname", "shipmentname",
-         "lot_date", "lot_qty", "unit_cost"]
-    ].reset_index(drop=True)
-
-
-def _build_dep_daily(
-    movements_df: pd.DataFrame,
-    dep_zid: str = "100001",
-) -> pd.DataFrame:
-    """Daily depletion totals from mv_imtrn_movements, filtered to dep_zid only.
-
-    Depletions = txn_type in ('sale', 'issue') for dep_zid only.
-
-    100009 IS-- (MO-- manufacturing) and 100009 DO-- (inter-company transfers
-    to 100001) are excluded by the zid filter.  In the combined entity view
-    these cancel with 100001 GRN- receipts and 100009 production outputs
-    respectively, so omitting them gives the correct net depletion.
-
-    Returns columns: itemcode, dep_date, dep_qty
-    """
-    if (movements_df is None or not isinstance(movements_df, pd.DataFrame)
-            or movements_df.empty):
-        return pd.DataFrame(columns=["itemcode", "dep_date", "dep_qty"])
-
-    mv = movements_df.copy()
-    mv["zid"]      = mv["zid"].astype(str).str.strip()
-    mv             = mv[mv["zid"] == str(dep_zid).strip()].copy()
-    mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
-    mv["dep_date"] = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
-    mv             = mv[mv["txn_type"].isin(["sale", "issue"])
-                        & mv["dep_date"].notna()].copy()
-    mv["dep_qty"]  = pd.to_numeric(mv["xqty"], errors="coerce").fillna(0.0)
-
-    dep = (
-        mv.groupby(["itemcode", "dep_date"], as_index=False)["dep_qty"].sum()
-    )
-    return dep.sort_values(["itemcode", "dep_date"]).reset_index(drop=True)
-
-
-def _fifo_lots(lots: pd.DataFrame, deps: pd.DataFrame) -> pd.DataFrame:
-    """Greedy oldest-first FIFO depletion engine.
-
-    Parameters
-    ----------
-    lots : DataFrame — columns [itemcode, lot_date, lot_qty, …]
-           All other columns are preserved in the output unchanged.
-    deps : DataFrame — columns [itemcode, dep_date, dep_qty]
-
-    Returns lots with added columns:
-        sold_qty       — units consumed from this lot by FIFO depletions
-        remaining_qty  — lot_qty − sold_qty (≥ 0)
-        is_closed      — remaining_qty < EPS
-        batch_end_date — first dep_date on which this lot became fully
-                         depleted; NaT if still has remaining stock
-
-    Key properties
-    --------------
-    • Lots with lot_date > dep_date are not yet in the warehouse and are
-      skipped (all later lots in sorted order are also skipped, so the
-      break is safe).
-    • Combined entity: lots from both 100001 + 100009 feed the queue;
-      deps must be pre-filtered by the caller to dep_zid='100001'.
-    • 100009 internal movements (MO-- IS--, DO-- to 100001) do NOT appear
-      in deps because _build_dep_daily applies the zid filter.
-    """
-    EPS = 1e-9
-    result = lots.copy()
-    result["sold_qty"]       = 0.0
-    result["batch_end_date"] = pd.NaT
-
-    deps = deps.copy()
-    deps["dep_date"] = pd.to_datetime(deps["dep_date"], errors="coerce").dt.floor("D")
-    deps = deps[deps["dep_date"].notna()].copy()
-
-    for code, code_lots in lots.groupby("itemcode", sort=False):
-        code_deps = (
-            deps[deps["itemcode"] == str(code)]
-            .sort_values("dep_date")
-            .reset_index(drop=True)
-        )
-        if code_deps.empty:
-            continue
-
-        sorted_idx = code_lots.sort_values("lot_date").index.tolist()
-        remaining  = {i: float(lots.at[i, "lot_qty"]) for i in sorted_idx}
-        end_dates  = {i: pd.NaT                       for i in sorted_idx}
-        qpos = 0
-
-        for _, dep in code_deps.iterrows():
-            to_dep   = float(dep["dep_qty"])
-            dep_date = pd.Timestamp(dep["dep_date"]).floor("D")
-
-            while to_dep > EPS and qpos < len(sorted_idx):
-                idx      = sorted_idx[qpos]
-                lot_date = lots.at[idx, "lot_date"]
-                if pd.notna(lot_date) and pd.Timestamp(lot_date).floor("D") > dep_date:
-                    break  # lot not yet in warehouse; all later lots are newer too
-                absorbed        = min(remaining[idx], to_dep)
-                remaining[idx] -= absorbed
-                to_dep         -= absorbed
-                if remaining[idx] < EPS:
-                    remaining[idx] = 0.0
-                    if pd.isna(end_dates[idx]):
-                        end_dates[idx] = dep_date
-                    qpos += 1
-
-        for i in sorted_idx:
-            result.at[i, "sold_qty"]       = lots.at[i, "lot_qty"] - remaining[i]
-            result.at[i, "batch_end_date"] = end_dates[i]
-
-    result["remaining_qty"] = (result["lot_qty"] - result["sold_qty"]).clip(lower=0.0)
-    result["is_closed"]     = result["remaining_qty"] < EPS
-    return result
-
-
-
 def run_batch_profitability_engine(
     purchase_df: pd.DataFrame,
     sales_df: pd.DataFrame,
-    movements_df: pd.DataFrame,
-    hierarchy_path: str,
+    returns_df: pd.DataFrame,
+    stock_movement_df: pd.DataFrame,
+    issues_df: Optional[pd.DataFrame] = None,
+    hierarchy_path: str = "data/hierarchy.json",
     shipmentname: str,
     discount_pct: float = 0.0,
     alloc_base: str = "Cost Share",
@@ -1025,342 +806,609 @@ def run_batch_profitability_engine(
     shipment_overhead_total: float = 0.0,
     vat_pct: float = 0.0,
     manual_overhead_value: float = 0.0,
-    inventory_tables: Optional[Dict[str, pd.DataFrame]] = None,
-    live_inv_df: Optional[pd.DataFrame] = None,
-) -> pd.DataFrame:
-    """Batch profitability using raw-ledger FIFO across repeated shipments.
+    inventory_tables: Optional[Dict[str, pd.DataFrame]] = None,) -> pd.DataFrame:
+    """
+    Batch profitability using FIFO sales allocation across repeated shipments.
 
-    Each individual IGRN receipt in mv_imtrn_movements becomes one FIFO lot
-    (receipt date = txn_date, not a combinedate aggregate).  This eliminates
-    the phantom-remaining bug that arose when a single combinedate grouped
-    receipts spanning multiple days.
-
-    Combined entity: both 100001 and 100009 IGRN lots are in the FIFO queue.
-    Depletions are 100001-only (sale + issue); 100009 IS-- manufacturing issues
-    and DO-- inter-company transfers are excluded — they cancel in the combined
-    entity view.
-
-    Output columns are identical to the previous implementation so all
-    downstream views (SKU Simulator, Inventory Check, etc.) are unaffected.
+    Key changes:
+    - sold_qty / remaining_qty / batch_end_date / sold_revenue are driven by FIFO allocation
+      across all shipments of the same itemcode.
+    - Inventory Check session state is NOT used for profitability math anymore.
+      (Leave Inventory Check for audit only.)
+    - onhand_before is still computed from stock movement ledger as a display / threshold field.
     """
 
-    EPS   = 1e-9
-    as_of = pd.Timestamp(_today()).floor("D")
+    EPS = 1e-9
 
-    # ── inner helper: onhand just before each batch arrived ───────────────────
-    def _build_onhand_before(mv_df: pd.DataFrame, batches: pd.DataFrame) -> pd.Series:
-        if mv_df is None or (isinstance(mv_df, pd.DataFrame) and mv_df.empty) or batches.empty:
-            return pd.Series([0.0] * len(batches), index=batches.index)
-        mv = mv_df.copy()
-        mv["zid"]      = mv["zid"].astype(str).str.strip()
-        mv             = mv[mv["zid"].isin(["100001", "100009"])].copy()
-        if mv.empty:
-            return pd.Series([0.0] * len(batches), index=batches.index)
-        mv["itemcode"] = mv["itemcode"].apply(_norm_code).astype(str).str.strip()
-        mv["date"]     = pd.to_datetime(mv["txn_date"], errors="coerce").dt.floor("D")
-        mv             = mv[mv["date"].notna()].copy()
-        mv["net_qty"]  = pd.to_numeric(mv.get("net_qty", 0), errors="coerce").fillna(0.0)
+    # ----------------------------
+    # Dates
+    # ----------------------------
+    as_of = pd.to_datetime(_today(), errors="coerce")
+    if pd.isna(as_of):
+        as_of = pd.Timestamp.today()
+    as_of = pd.Timestamp(as_of).floor("D")
+
+    # ----------------------------------------------------------
+    # Helpers
+    # ----------------------------------------------------------
+    def _prep_all_purchase_batches(p_df: pd.DataFrame) -> pd.DataFrame:
+        p = p_df.copy()
+        if p.empty:
+            return pd.DataFrame()
+
+        p["shipmentname"] = p["shipmentname"].astype(str).str.strip()
+        p = p[p["shipmentname"] != ""].copy()
+        if p.empty:
+            return pd.DataFrame()
+
+        p["itemcode"] = p["itemcode"].apply(_norm_code).astype(str).str.strip()
+        p["itemname"] = p["itemname"].astype(str)
+        p["combinedate"] = pd.to_datetime(p["combinedate"], errors="coerce").dt.floor("D")
+        p["quantity"] = pd.to_numeric(p["quantity"], errors="coerce").fillna(0.0)
+        p["cost"] = pd.to_numeric(p["cost"], errors="coerce").fillna(0.0)
+
+        p = p[p["combinedate"].notna()].copy()
+        if p.empty:
+            return pd.DataFrame()
+
+        grp = (
+            p.groupby(["shipmentname", "itemcode", "itemname", "combinedate"], as_index=False)
+            .agg(
+                initial_qty=("quantity", "sum"),
+                unit_cost=("cost", "mean"),
+            )
+        )
+
+        grp["batch_id"] = (
+            grp["shipmentname"].astype(str)
+            + " | "
+            + grp["itemcode"].astype(str)
+            + " | "
+            + grp["combinedate"].dt.strftime("%Y-%m-%d")
+        )
+
+        grp["batch_cost"] = grp["initial_qty"] * grp["unit_cost"]
+        grp = grp.sort_values(["itemcode", "combinedate", "shipmentname"]).reset_index(drop=True)
+        return grp
+
+    def _build_onhand_before_for_selected(stock_mv_df: pd.DataFrame, selected_batches: pd.DataFrame) -> pd.Series:
+        if stock_mv_df is None or stock_mv_df.empty or selected_batches.empty:
+            return pd.Series([0.0] * len(selected_batches), index=selected_batches.index)
+
+        sm = stock_mv_df.copy()
+        sm["zid"] = sm["zid"].astype(str).str.strip()
+        sm = sm[sm["zid"].isin(["100001", "100009"])].copy()
+        if sm.empty:
+            return pd.Series([0.0] * len(selected_batches), index=selected_batches.index)
+
+        sm["itemcode"] = sm["itemcode"].apply(_norm_code).astype(str).str.strip()
+        sm["date"] = pd.to_datetime(sm["date"], errors="coerce").dt.floor("D")
+        sm = sm[sm["date"].notna()].copy()
+        sm["stockqty"] = pd.to_numeric(sm.get("stockqty", 0), errors="coerce").fillna(0.0)
+
         daily = (
-            mv.groupby(["date", "itemcode"], as_index=False)["net_qty"].sum()
-              .sort_values(["date", "itemcode"]).reset_index(drop=True)
+            sm.groupby(["date", "itemcode"], as_index=False)["stockqty"]
+            .sum()
+            .sort_values(["date", "itemcode"])
+            .reset_index(drop=True)
         )
-        daily["onhand_qty"] = daily.groupby("itemcode")["net_qty"].cumsum()
-        q = batches[["itemcode", "combinedate"]].copy()
-        q["qdate"]    = q["combinedate"] - pd.Timedelta(nanoseconds=1)
-        q             = q.reset_index(drop=False).rename(columns={"index": "_rowid"})
+        daily["onhand_qty"] = daily.groupby("itemcode")["stockqty"].cumsum()
+
+        q = selected_batches[["itemcode", "combinedate"]].copy()
+        q["qdate"] = q["combinedate"] - pd.Timedelta(nanoseconds=1)
+        q = q.reset_index(drop=False).rename(columns={"index": "_rowid"})
         q["itemcode"] = q["itemcode"].astype(str).str.strip()
+
         daily["itemcode"] = daily["itemcode"].astype(str).str.strip()
-        q     = q.sort_values(["qdate", "itemcode"]).reset_index(drop=True)
+        q = q.sort_values(["qdate", "itemcode"]).reset_index(drop=True)
         daily = daily.sort_values(["date", "itemcode"]).reset_index(drop=True)
+
         m = pd.merge_asof(
-            q, daily,
-            left_on="qdate", right_on="date",
-            by="itemcode", direction="backward", allow_exact_matches=True,
+            q,
+            daily,
+            left_on="qdate",
+            right_on="date",
+            by="itemcode",
+            direction="backward",
+            allow_exact_matches=True,
         )
+
         m = m[["_rowid", "onhand_qty"]].rename(columns={"onhand_qty": "onhand_before"})
         m["onhand_before"] = pd.to_numeric(m["onhand_before"], errors="coerce").fillna(0.0)
-        m["_rowid"]        = pd.to_numeric(m["_rowid"],        errors="coerce")
-        out = m.set_index("_rowid").reindex(range(len(batches)))["onhand_before"].fillna(0.0)
-        out.index = batches.index
+        m["_rowid"] = pd.to_numeric(m["_rowid"], errors="coerce")
+
+        out = m.set_index("_rowid").reindex(range(len(selected_batches)))["onhand_before"].fillna(0.0)
+        out.index = selected_batches.index
         return out
 
-    # ── 1. Build raw lots (individual IGRN receipts, both ZIDs) ──────────────
-    all_lots = _build_raw_lots(movements_df, purchase_df)
-    if all_lots.empty:
+    def _resolve_sales_value_col(sdf: pd.DataFrame) -> str:
+        if sdf is None or not isinstance(sdf, pd.DataFrame) or sdf.empty:
+            return ""
+        if "totalsales" in sdf.columns:
+            return "totalsales"
+        if "altsales" in sdf.columns:
+            return "altsales"
+        return ""
+
+    def _build_daily_events(s_df: pd.DataFrame, r_df: pd.DataFrame, issues_df: pd.DataFrame, target_zid: str) -> pd.DataFrame:
+        # ---- sales daily
+        s = s_df.copy() if isinstance(s_df, pd.DataFrame) else pd.DataFrame()
+        if not s.empty:
+            s["zid"] = s["zid"].astype(str).str.strip()
+            s = s[s["zid"] == str(target_zid).strip()].copy()
+            s["itemcode"] = s["itemcode"].apply(_norm_code).astype(str).str.strip()
+            s["d"] = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
+            s = s[s["d"].notna()].copy()
+            s["quantity"] = pd.to_numeric(s.get("quantity", 0), errors="coerce").fillna(0.0)
+
+            val_col = _resolve_sales_value_col(s)
+            if val_col == "totalsales":
+                s["totalsales"] = pd.to_numeric(s.get("totalsales", 0), errors="coerce").fillna(0.0)
+                s["_rev"] = s["totalsales"]
+            elif val_col == "altsales":
+                s["altsales"] = pd.to_numeric(s.get("altsales", 0), errors="coerce").fillna(0.0)
+                s["_rev"] = s["altsales"]
+            else:
+                s["_rev"] = 0.0
+
+            s_daily = (
+                s.groupby(["itemcode", "d"], as_index=False)
+                .agg(
+                    sales_qty=("quantity", "sum"),
+                    sales_rev=("_rev", "sum"),
+                )
+            )
+        else:
+            s_daily = pd.DataFrame(columns=["itemcode", "d", "sales_qty", "sales_rev"])
+
+        # ---- returns daily
+        r = r_df.copy() if isinstance(r_df, pd.DataFrame) else pd.DataFrame()
+        if not r.empty:
+            r["zid"] = r["zid"].astype(str).str.strip()
+            r = r[r["zid"] == str(target_zid).strip()].copy()
+            r["itemcode"] = r["itemcode"].apply(_norm_code).astype(str).str.strip()
+            r_dcol = "date" if "date" in r.columns else ("xdate" if "xdate" in r.columns else None)
+
+            if r_dcol is not None:
+                r["d"] = pd.to_datetime(r[r_dcol], errors="coerce").dt.floor("D")
+                r = r[r["d"].notna()].copy()
+                r["returnqty"] = pd.to_numeric(r.get("returnqty", 0), errors="coerce").fillna(0.0)
+
+                r_daily = (
+                    r.groupby(["itemcode", "d"], as_index=False)
+                    .agg(return_qty=("returnqty", "sum"))
+                )
+            else:
+                r_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
+        else:
+            r_daily = pd.DataFrame(columns=["itemcode", "d", "return_qty"])
+
+        # ---- issues daily (IS--, ISS-) ─────────────────────────────────────
+        # No ZID filter: mv_issues_daily_item maps 100009 items to their 100001
+        # codes via xdrawing, so all relevant issues appear under 100001 item codes
+        # regardless of source ZID.
+        i = issues_df.copy() if isinstance(issues_df, pd.DataFrame) else pd.DataFrame()
+        if not i.empty and "issue_qty" in i.columns:
+            i["itemcode"] = i["itemcode"].apply(_norm_code).astype(str).str.strip()
+            i["d"] = pd.to_datetime(i["date"], errors="coerce").dt.floor("D")
+            i = i[i["d"].notna()].copy()
+            i["issue_qty"] = pd.to_numeric(i["issue_qty"], errors="coerce").fillna(0.0)
+            i_daily = (
+                i.groupby(["itemcode", "d"], as_index=False)
+                .agg(issue_qty=("issue_qty", "sum"))
+            )
+        else:
+            i_daily = pd.DataFrame(columns=["itemcode", "d", "issue_qty"])
+
+        ev = pd.merge(s_daily, r_daily, on=["itemcode", "d"], how="outer").fillna(0.0)
+        ev = pd.merge(ev, i_daily, on=["itemcode", "d"], how="outer").fillna(0.0)
+        if ev.empty:
+            return ev
+
+        ev["sales_qty"]  = pd.to_numeric(ev["sales_qty"],  errors="coerce").fillna(0.0)
+        ev["sales_rev"]  = pd.to_numeric(ev["sales_rev"],  errors="coerce").fillna(0.0)
+        ev["return_qty"] = pd.to_numeric(ev["return_qty"], errors="coerce").fillna(0.0)
+        ev["issue_qty"]  = pd.to_numeric(ev["issue_qty"],  errors="coerce").fillna(0.0)
+
+        ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
+        return ev
+
+    # ----------------------------------------------------------
+    # 1) Prepare all batches and selected shipment batches
+    # ----------------------------------------------------------
+    all_batches = _prep_all_purchase_batches(purchase_df)
+    if all_batches.empty:
         return pd.DataFrame()
 
-    target_shipment  = str(shipmentname).strip()
-    sel_mask         = all_lots["shipmentname"] == target_shipment
-    if not sel_mask.any():
+    selected_batches = all_batches[all_batches["shipmentname"].astype(str) == str(shipmentname).strip()].copy()
+    if selected_batches.empty:
         return pd.DataFrame()
 
-    target_itemcodes = set(all_lots.loc[sel_mask, "itemcode"].tolist())
+    selected_batches = selected_batches.sort_values(["itemcode", "combinedate", "shipmentname"]).reset_index(drop=True)
 
-    # FIFO queue: all lots for these items (100001 + 100009)
-    fifo_input = all_lots[all_lots["itemcode"].isin(target_itemcodes)].copy()
+    # display threshold / baseline from stock ledger
+    selected_batches["onhand_before"] = _build_onhand_before_for_selected(stock_movement_df, selected_batches).astype(float)
+    selected_batches["threshold_qty"] = selected_batches["onhand_before"].astype(float)
 
-    # ── 2. Build depletions (100001 only: sale + issue) ───────────────────────
-    dep_daily = _build_dep_daily(movements_df, dep_zid=str(zid_deplete))
-    dep_daily = dep_daily[dep_daily["itemcode"].isin(target_itemcodes)].copy()
+    # ----------------------------------------------------------
+    # 2) Build daily sales events and FIFO allocate across ALL batches
+    #    for the selected shipment itemcodes
+    # ----------------------------------------------------------
+    target_itemcodes = set(selected_batches["itemcode"].astype(str).tolist())
 
-    # ── 3. Run FIFO ───────────────────────────────────────────────────────────
-    fifo_result = _fifo_lots(fifo_input, dep_daily)
+    alloc_src_batches = all_batches[all_batches["itemcode"].astype(str).isin(target_itemcodes)].copy()
+    alloc_src_batches = alloc_src_batches.sort_values(["itemcode", "combinedate", "shipmentname"]).reset_index(drop=True)
 
-    # ── 4. Aggregate lots → (shipmentname, itemcode) batch rows ──────────────
-    # combinedate = earliest receipt date for the shipment×item pair
-    # unit_cost   = quantity-weighted average across lots
-    agg_basic = (
-        fifo_result
-        .groupby(["shipmentname", "itemcode"], as_index=False)
-        .agg(
-            itemname     =("itemname",      "first"),
-            combinedate  =("lot_date",      "min"),
-            initial_qty  =("lot_qty",       "sum"),
-            sold_qty     =("sold_qty",      "sum"),
-            remaining_qty=("remaining_qty", "sum"),
-        )
-    )
+    def _fifo_allocate_batches(all_batches: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+        """
+        FIFO allocation across repeated shipments of the same SKU.
 
-    # weighted unit_cost
-    _wc = fifo_result[["shipmentname", "itemcode", "lot_qty", "unit_cost"]].copy()
-    _wc["_wc"] = _wc["lot_qty"] * _wc["unit_cost"]
-    _wc_agg = (
-        _wc.groupby(["shipmentname", "itemcode"], as_index=False)
-           .agg(_sq=("lot_qty", "sum"), _sw=("_wc", "sum"))
-    )
-    _wc_agg["unit_cost"] = np.where(
-        _wc_agg["_sq"] > EPS, _wc_agg["_sw"] / _wc_agg["_sq"], 0.0
-    )
+        Correct rule:
+        - Only sales on/after a batch's combinedate can affect that batch.
+        - Earlier batches get consumed first.
+        - The quantity available for a batch is based on:
+            sales after batch date
+            minus older stock still open at batch date
+        NOT minus total older purchases.
+        """
 
-    # batch_end_date: max close-date across closed lots; NaT if any lot is open
-    _closed  = fifo_result[fifo_result["is_closed"]].copy()
-    _bed_agg = (
-        _closed.groupby(["shipmentname", "itemcode"], as_index=False)["batch_end_date"].max()
-    )
+        EPS = 1e-9
 
-    batch_grp = (
-        agg_basic
-        .merge(_wc_agg[["shipmentname", "itemcode", "unit_cost"]],
-               on=["shipmentname", "itemcode"], how="left")
-        .merge(_bed_agg, on=["shipmentname", "itemcode"], how="left")
-    )
-    batch_grp["batch_end_date"] = pd.to_datetime(batch_grp["batch_end_date"], errors="coerce")
-    batch_grp.loc[batch_grp["remaining_qty"] >= EPS, "batch_end_date"] = pd.NaT
-    batch_grp["is_closed"]  = batch_grp["remaining_qty"] < EPS
-    batch_grp["batch_cost"] = batch_grp["initial_qty"] * batch_grp["unit_cost"]
-    batch_grp["batch_id"]   = (
-        batch_grp["shipmentname"].astype(str)
-        + " | " + batch_grp["itemcode"].astype(str)
-        + " | " + pd.to_datetime(batch_grp["combinedate"]).dt.strftime("%Y-%m-%d")
-    )
-    batch_grp["combinedate"] = pd.to_datetime(batch_grp["combinedate"], errors="coerce").dt.floor("D")
+        batches = all_batches.copy()
 
-    # ── 5. Pull selected shipment rows ────────────────────────────────────────
-    df0 = batch_grp[batch_grp["shipmentname"] == target_shipment].copy().reset_index(drop=True)
-    if df0.empty:
-        return pd.DataFrame()
+        batches["sold_qty"] = 0.0
+        batches["sold_revenue"] = 0.0
+        batches["batch_end_date"] = pd.NaT
+        batches["remaining_qty"] = pd.to_numeric(
+            batches.get("initial_qty", 0), errors="coerce"
+        ).fillna(0.0)
+        batches["is_closed"] = False
 
-    df0 = df0.sort_values(["itemcode", "combinedate"]).reset_index(drop=True)
+        if batches.empty or events is None or events.empty:
+            return batches
 
-    df0["onhand_before"] = _build_onhand_before(movements_df, df0).astype(float)
-    df0["threshold_qty"] = df0["onhand_before"].astype(float)
+        ev = events.copy()
+        ev["itemcode"] = ev["itemcode"].astype(str).str.strip()
+        ev["d"] = pd.to_datetime(ev["d"], errors="coerce").dt.floor("D")
+        ev = ev[ev["d"].notna()].copy()
 
-    # ── 5b. Inventory correction ──────────────────────────────────────────────
-    # When FIFO remaining_qty > live stock (caused by missing depletions in MV):
-    #   • Later shipment exists for this item → batch must already be fully
-    #     depleted (FIFO oldest-first; next batch only arrived after this ran out).
-    #     → remaining = 0, sold = initial_qty
-    #   • No later shipment → this is the current active batch.
-    #     → cap remaining at live stock, sold = initial - remaining
-    if live_inv_df is not None and not live_inv_df.empty and "stock" in live_inv_df.columns:
-        _id_col  = "item_id" if "item_id" in live_inv_df.columns else "itemcode"
-        _live_map = {
-            str(k): float(v)
-            for k, v in pd.to_numeric(
-                live_inv_df.set_index(_id_col)["stock"], errors="coerce"
-            ).fillna(0.0).items()
-        }
-        # Latest lot_date per item in this shipment (= when inventory arrived)
-        _ship_lots   = all_lots[all_lots["shipmentname"] == target_shipment]
-        _item_maxdate = _ship_lots.groupby("itemcode")["lot_date"].max()
+        ev["sales_qty"]  = pd.to_numeric(ev.get("sales_qty",  0), errors="coerce").fillna(0.0)
+        ev["sales_rev"]  = pd.to_numeric(ev.get("sales_rev",  0), errors="coerce").fillna(0.0)
+        ev["return_qty"] = pd.to_numeric(ev.get("return_qty", 0), errors="coerce").fillna(0.0)
+        ev["issue_qty"]  = pd.to_numeric(ev.get("issue_qty",  0), errors="coerce").fillna(0.0)
+        # net_qty: sales + issues both deplete stock; returns add stock back
+        ev["net_qty"] = ev["sales_qty"] + ev["issue_qty"] - ev["return_qty"]
 
-        for _i, _row in df0.iterrows():
-            _code = str(_row["itemcode"])
-            _rem  = float(_row["remaining_qty"])
-            _live = _live_map.get(_code, 0.0)
-            if _rem <= _live + 1.0:          # within 1-unit tolerance → FIFO OK
+        ev = ev.sort_values(["itemcode", "d"]).reset_index(drop=True)
+
+        batches["itemcode"] = batches["itemcode"].astype(str).str.strip()
+        batches["combinedate"] = pd.to_datetime(batches["combinedate"], errors="coerce").dt.floor("D")
+        batches["initial_qty"] = pd.to_numeric(batches.get("initial_qty", 0), errors="coerce").fillna(0.0)
+
+        for code, bgrp in batches.groupby("itemcode", sort=False):
+            sales = ev[ev["itemcode"] == code].copy()
+            if sales.empty:
                 continue
 
-            _mdate = _item_maxdate.get(_code, pd.NaT)
-            _later_exists = (
-                not all_lots[
-                    (all_lots["itemcode"]    == _code) &
-                    (all_lots["shipmentname"] != target_shipment) &
-                    (all_lots["lot_date"]     >  _mdate)
-                ].empty
-            ) if pd.notna(_mdate) else False
+            sales = sales.sort_values("d").reset_index(drop=True)
+            sales["cum_net"] = sales["net_qty"].cumsum()
 
-            if _later_exists:
-                # A newer shipment arrived → this batch is fully gone
-                df0.at[_i, "remaining_qty"] = 0.0
-                df0.at[_i, "sold_qty"]      = float(_row["initial_qty"])
-                df0.at[_i, "is_closed"]     = True
-            else:
-                # Last/only batch for this item → cap at live stock
-                _new_rem = max(0.0, _live)
-                df0.at[_i, "remaining_qty"] = _new_rem
-                df0.at[_i, "sold_qty"]      = max(0.0, float(_row["initial_qty"]) - _new_rem)
-                df0.at[_i, "is_closed"]     = _new_rem < EPS
+            batch_positions = bgrp.sort_values(["combinedate", "shipmentname"]).index.tolist()
 
-    # ── 6. Revenue / avg price ────────────────────────────────────────────────
-    # Build per-item cumulative (qty, rev) arrays from sales_df for price lookup
-    rev_lkp: dict = {}
-    if isinstance(sales_df, pd.DataFrame) and not sales_df.empty:
-        s = sales_df.copy()
-        s["zid"]      = s["zid"].astype(str).str.strip()
-        s             = s[s["zid"] == str(zid_deplete).strip()].copy()
-        s["itemcode"] = s["itemcode"].apply(_norm_code).astype(str).str.strip()
-        s["d"]        = pd.to_datetime(s.get("date"), errors="coerce").dt.floor("D")
-        s             = s[s["d"].notna()].copy()
-        _val_col = next((c for c in ["totalsales", "altsales", "sales_rev"] if c in s.columns), None)
-        _qty_col2 = "quantity" if "quantity" in s.columns else "sales_qty"
-        s["_rev"] = pd.to_numeric(s[_val_col],       errors="coerce").fillna(0.0) if _val_col else 0.0
-        s["_qty"] = pd.to_numeric(s.get(_qty_col2, 0), errors="coerce").fillna(0.0).clip(lower=0.0)
-        sr = (
-            s.groupby(["itemcode", "d"], as_index=False)
-             .agg(_qty=("_qty", "sum"), _rev=("_rev", "sum"))
-             .sort_values(["itemcode", "d"]).reset_index(drop=True)
+            for pos in batch_positions:
+                batch_qty = float(batches.at[pos, "initial_qty"])
+                batch_date = pd.Timestamp(batches.at[pos, "combinedate"]).floor("D")
+
+                # older purchase qty strictly before this batch
+                older_batches = batches[
+                    (batches["itemcode"] == code) &
+                    (batches["combinedate"] < batch_date)
+                ].copy()
+
+                older_purchase_qty = float(older_batches["initial_qty"].sum()) if not older_batches.empty else 0.0
+
+                # net sales strictly before this batch date
+                sales_before = sales[sales["d"] < batch_date].copy()
+                net_sales_before = float(sales_before["net_qty"].sum()) if not sales_before.empty else 0.0
+
+                # older stock still open when this batch arrives
+                older_open_at_batch = max(0.0, older_purchase_qty - net_sales_before)
+
+                # sales only after this batch arrived
+                sales_after_batch = sales[sales["d"] >= batch_date].copy()
+                if sales_after_batch.empty:
+                    continue
+
+                total_sales_after_batch = float(sales_after_batch["net_qty"].sum())
+
+                # this batch can only consume sales beyond older stock still open
+                available_for_batch = max(0.0, total_sales_after_batch - older_open_at_batch)
+
+                sold = max(0.0, min(batch_qty, available_for_batch))
+
+                if sold <= EPS:
+                    continue
+
+                # average realized price using sales after batch date
+                total_sales_qty_after_batch = float(sales_after_batch["sales_qty"].sum())
+                total_sales_rev_after_batch = float(sales_after_batch["sales_rev"].sum())
+
+                avg_price = (
+                    total_sales_rev_after_batch / total_sales_qty_after_batch
+                    if total_sales_qty_after_batch > EPS else 0.0
+                )
+                revenue = sold * avg_price
+
+                batches.at[pos, "sold_qty"] = sold
+                batches.at[pos, "sold_revenue"] = revenue
+
+                # batch end date:
+                # first day where cumulative net sales since batch date
+                # exceeds older_open_at_batch + sold
+                # batch_end_date should only exist if the batch is fully depleted
+                if sold >= (batch_qty - EPS):
+                    sales_after_batch = sales_after_batch.copy()
+                    sales_after_batch["cum_qty_from_batch"] = sales_after_batch["net_qty"].cumsum()
+
+                    # To close this batch, sales after batch date must first clear older open stock
+                    # and then consume the FULL batch quantity
+                    close_target = older_open_at_batch + batch_qty
+
+                    hit = sales_after_batch[
+                        sales_after_batch["cum_qty_from_batch"] >= close_target
+                    ]
+
+                    if not hit.empty:
+                        close_dt = pd.Timestamp(hit.iloc[0]["d"]).floor("D")
+                        if close_dt >= batch_date:
+                            batches.at[pos, "batch_end_date"] = close_dt
+                    else:
+                        batches.at[pos, "batch_end_date"] = pd.NaT
+                else:
+                    batches.at[pos, "batch_end_date"] = pd.NaT
+                    
+        batches["sold_qty"] = pd.to_numeric(batches["sold_qty"], errors="coerce").fillna(0.0)
+        batches["sold_revenue"] = pd.to_numeric(batches["sold_revenue"], errors="coerce").fillna(0.0)
+
+        batches["remaining_qty"] = (
+            batches["initial_qty"].astype(float) - batches["sold_qty"].astype(float)
+        ).clip(lower=0.0)
+
+        batches["remaining_qty"] = np.where(
+            batches["remaining_qty"] < EPS,
+            0.0,
+            batches["remaining_qty"]
         )
-        sr["cum_qty"] = sr.groupby("itemcode")["_qty"].cumsum()
-        sr["cum_rev"] = sr.groupby("itemcode")["_rev"].cumsum()
-        for code_r, grp_r in sr.groupby("itemcode"):
-            rev_lkp[str(code_r)] = (
-                grp_r["d"].values.astype("datetime64[ns]"),
-                grp_r["cum_qty"].values.astype(float),
-                grp_r["cum_rev"].values.astype(float),
+
+        batches["batch_end_date"] = pd.to_datetime(batches["batch_end_date"], errors="coerce")
+
+        batches.loc[
+            batches["batch_end_date"].notna() & (batches["batch_end_date"] < batches["combinedate"]),
+            "batch_end_date"
+        ] = pd.NaT
+
+        batches["is_closed"] = batches["remaining_qty"] <= EPS
+
+        return batches
+
+    events = _build_daily_events(sales_df, returns_df, issues_df if issues_df is not None else pd.DataFrame(), zid_deplete)
+    if not events.empty:
+        events = events[events["itemcode"].astype(str).isin(target_itemcodes)].copy()
+        events = events.sort_values(["itemcode", "d"]).reset_index(drop=True)
+
+    alloc_src_batches = _fifo_allocate_batches(alloc_src_batches, events)
+
+    alloc_src_batches["batch_end_date"] = pd.to_datetime(alloc_src_batches["batch_end_date"], errors="coerce")
+    alloc_src_batches.loc[
+        alloc_src_batches["batch_end_date"] < alloc_src_batches["combinedate"],
+        "batch_end_date"
+    ] = pd.NaT
+
+    # remaining qty on all batches
+    alloc_src_batches["sold_qty"] = pd.to_numeric(alloc_src_batches["sold_qty"], errors="coerce").fillna(0.0)
+    alloc_src_batches["sold_revenue"] = pd.to_numeric(alloc_src_batches["sold_revenue"], errors="coerce").fillna(0.0)
+    alloc_src_batches["remaining_qty"] = np.clip(
+        alloc_src_batches["initial_qty"].astype(float) - alloc_src_batches["sold_qty"].astype(float),
+        0.0,
+        None,
+    )
+    alloc_src_batches["remaining_qty"] = np.where(alloc_src_batches["remaining_qty"] < EPS, 0.0, alloc_src_batches["remaining_qty"])
+    alloc_src_batches["is_closed"] = alloc_src_batches["remaining_qty"] <= EPS
+
+    # pull back only selected shipment rows
+    alloc_cols = ["batch_id", "sold_qty", "sold_revenue", "remaining_qty", "batch_end_date", "is_closed"]
+    df0 = selected_batches.merge(
+        alloc_src_batches[alloc_cols],
+        on="batch_id",
+        how="left",
+    )
+
+    for c in ["sold_qty", "sold_revenue", "remaining_qty"]:
+        df0[c] = pd.to_numeric(df0[c], errors="coerce").fillna(0.0)
+
+    df0["is_closed"] = df0["is_closed"].fillna(False)
+    df0["batch_end_date"] = pd.to_datetime(df0["batch_end_date"], errors="coerce")
+
+    # ----------------------------------------------------------
+    # 3) Derived profitability fields
+    # ----------------------------------------------------------
+    # -----------------------------------------
+    # Price logic:
+    # 1) use realized batch avg price if sold_qty > 0
+    # 2) else fallback to historical SKU avg price from sales_df
+    # 3) else fallback to unit_cost
+    # -----------------------------------------
+
+    # batch realized avg price
+    df0["avg_price"] = np.where(df0["sold_qty"] > EPS, df0["sold_revenue"] / df0["sold_qty"], np.nan)
+    df0["avg_price"] = pd.to_numeric(df0["avg_price"], errors="coerce")
+
+    # build historical SKU avg price fallback from sales_df
+    hist_price_map = {}
+
+    if isinstance(sales_df, pd.DataFrame) and not sales_df.empty:
+        s_hist = sales_df.copy()
+        s_hist["zid"] = s_hist["zid"].astype(str).str.strip()
+        s_hist = s_hist[s_hist["zid"] == str(zid_deplete).strip()].copy()
+
+        if not s_hist.empty:
+            s_hist["itemcode"] = s_hist["itemcode"].apply(_norm_code).astype(str).str.strip()
+            s_hist["quantity"] = pd.to_numeric(s_hist.get("quantity", 0), errors="coerce").fillna(0.0)
+
+            if "totalsales" in s_hist.columns:
+                s_hist["sales_value"] = pd.to_numeric(s_hist.get("totalsales", 0), errors="coerce").fillna(0.0)
+            elif "altsales" in s_hist.columns:
+                s_hist["sales_value"] = pd.to_numeric(s_hist.get("altsales", 0), errors="coerce").fillna(0.0)
+            else:
+                s_hist["sales_value"] = 0.0
+
+            s_hist_grp = (
+                s_hist.groupby("itemcode", as_index=False)
+                .agg(total_qty=("quantity", "sum"), total_rev=("sales_value", "sum"))
             )
 
-    def _cum_at(dn, cn, T):
-        if pd.isna(T):
-            return 0.0
-        idx = int(np.searchsorted(dn, np.datetime64(T, "ns"), side="right")) - 1
-        return float(cn[idx]) if idx >= 0 else 0.0
+            s_hist_grp["hist_avg_price"] = np.where(
+                s_hist_grp["total_qty"] > EPS,
+                s_hist_grp["total_rev"] / s_hist_grp["total_qty"],
+                np.nan
+            )
 
-    # avg realized price per (itemcode, combinedate) window
-    # window: combinedate → day before next batch of same item (or today)
-    price_cache: dict = {}
-    for code_p, item_df in df0.groupby("itemcode"):
-        sorted_dates = sorted(item_df["combinedate"].dropna().unique())
-        for i_p, Di_p in enumerate(sorted_dates):
-            price_to = (sorted_dates[i_p + 1] - pd.Timedelta(days=1)
-                        if i_p + 1 < len(sorted_dates) else as_of)
-            key = (str(code_p), Di_p)
-            if str(code_p) in rev_lkp:
-                dn, cq, cr = rev_lkp[str(code_p)]
-                Di_excl = Di_p - pd.Timedelta(days=1)
-                qty_w   = max(0.0, _cum_at(dn, cq, price_to) - _cum_at(dn, cq, Di_excl))
-                rev_w   = max(0.0, _cum_at(dn, cr, price_to) - _cum_at(dn, cr, Di_excl))
-                price_cache[key] = (rev_w / qty_w) if qty_w > EPS else np.nan
-            else:
-                price_cache[key] = np.nan
+            hist_price_map = dict(
+                zip(
+                    s_hist_grp["itemcode"].astype(str),
+                    pd.to_numeric(s_hist_grp["hist_avg_price"], errors="coerce")
+                )
+            )
 
-    # global historical fallback per item
-    hist_price_map: dict = {}
-    if isinstance(sales_df, pd.DataFrame) and not sales_df.empty:
-        s_h = sales_df.copy()
-        s_h["zid"]      = s_h["zid"].astype(str).str.strip()
-        s_h             = s_h[s_h["zid"] == str(zid_deplete).strip()].copy()
-        s_h["itemcode"] = s_h["itemcode"].apply(_norm_code).astype(str).str.strip()
-        _vq = "quantity" if "quantity" in s_h.columns else "sales_qty"
-        _vr = next((c for c in ["totalsales", "altsales", "sales_rev"] if c in s_h.columns), None)
-        s_h["_qty"] = pd.to_numeric(s_h.get(_vq, 0), errors="coerce").fillna(0.0)
-        s_h["_rev"] = pd.to_numeric(s_h[_vr],        errors="coerce").fillna(0.0) if _vr else 0.0
-        hg = s_h.groupby("itemcode", as_index=False).agg(tq=("_qty", "sum"), tr=("_rev", "sum"))
-        hg["hp"] = np.where(hg["tq"] > EPS, hg["tr"] / hg["tq"], np.nan)
-        hist_price_map = dict(
-            zip(hg["itemcode"].astype(str), pd.to_numeric(hg["hp"], errors="coerce"))
-        )
+    # apply historical fallback
+    df0["hist_avg_price"] = df0["itemcode"].astype(str).map(hist_price_map)
 
-    # fallback chain: window realized → historical global → unit_cost
-    df0["avg_price"] = df0.apply(
-        lambda r: price_cache.get((str(r["itemcode"]), r["combinedate"]), np.nan), axis=1
-    )
-    df0["avg_price"] = df0["avg_price"].where(
-        df0["avg_price"].notna(),
-        df0["itemcode"].astype(str).map(hist_price_map),
-    )
+    # final avg_price fallback chain:
+    # realized batch avg -> historical avg -> unit_cost
+    df0["avg_price"] = df0["avg_price"].fillna(df0["hist_avg_price"])
     df0["avg_price"] = df0["avg_price"].fillna(df0["unit_cost"])
     df0["avg_price"] = pd.to_numeric(df0["avg_price"], errors="coerce").fillna(0.0)
 
     df0["scenario_price"] = df0["avg_price"] * (1.0 - float(discount_pct) / 100.0)
-    df0["sold_revenue"]   = df0["sold_qty"].astype(float) * df0["avg_price"].astype(float)
 
-    # ── 7. COGS / gross margin ────────────────────────────────────────────────
-    df0["realized_cogs"]         = df0["sold_qty"].astype(float) * df0["unit_cost"].astype(float)
-    df0["realized_gm"]           = df0["sold_revenue"].astype(float) - df0["realized_cogs"].astype(float)
-    df0["remaining_cost_value"]  = df0["remaining_qty"].astype(float) * df0["unit_cost"].astype(float)
+    df0["realized_cogs"] = df0["sold_qty"].astype(float) * df0["unit_cost"].astype(float)
+    df0["realized_gm"] = df0["sold_revenue"].astype(float) - df0["realized_cogs"].astype(float)
+
+    df0["remaining_cost_value"] = df0["remaining_qty"].astype(float) * df0["unit_cost"].astype(float)
     df0["proj_remaining_revenue"] = df0["remaining_qty"].astype(float) * df0["scenario_price"].astype(float)
-    df0["proj_remaining_gm"]     = df0["proj_remaining_revenue"].astype(float) - df0["remaining_cost_value"].astype(float)
+    df0["proj_remaining_gm"] = df0["proj_remaining_revenue"].astype(float) - df0["remaining_cost_value"].astype(float)
 
-    # ── 8. Activity timing / velocity ─────────────────────────────────────────
-    end_eff              = df0["batch_end_date"].where(df0["batch_end_date"].notna(), as_of)
-    df0["days_active"]   = ((end_eff - df0["combinedate"]).dt.days + 1).clip(lower=1).astype(int)
-    df0["velocity"]      = np.where(df0["days_active"] > 0, df0["sold_qty"] / df0["days_active"], 0.0)
-    df0["velocity"]      = pd.to_numeric(df0["velocity"], errors="coerce").fillna(0.0)
-    _vel_used            = np.where(df0["sold_qty"] > EPS, df0["velocity"], 0.02)
+    df0.drop(columns=["hist_avg_price"], errors="ignore", inplace=True)
+
+    # ----------------------------------------------------------
+    # 4) Activity timing / velocity
+    # ----------------------------------------------------------
+    end_eff = df0["batch_end_date"].where(df0["batch_end_date"].notna(), as_of)
+
+    df0["days_active"] = ((end_eff - df0["combinedate"]).dt.days + 1).clip(lower=1).astype(int)
+
+    df0["velocity"] = np.where(df0["days_active"] > 0, df0["sold_qty"] / df0["days_active"], 0.0)
+    df0["velocity"] = pd.to_numeric(df0["velocity"], errors="coerce").fillna(0.0)
+
+    # user rule:
+    # velocity_used = velocity_sku if sales > 0, else fallback floor 0.02
+    df0["velocity_used"] = np.where(df0["sold_qty"] > EPS, df0["velocity"], 0.02)
+    df0["velocity_used"] = pd.to_numeric(df0["velocity_used"], errors="coerce").fillna(0.02)
+
     df0["days_to_clear"] = np.where(
-        _vel_used > EPS, df0["remaining_qty"] / _vel_used, 730.0
+        df0["velocity_used"] > EPS,
+        df0["remaining_qty"] / df0["velocity_used"],
+        730.0,
     )
-    df0["days_to_clear"] = (
-        pd.to_numeric(df0["days_to_clear"], errors="coerce").fillna(730.0).clip(0.0, 730.0)
-    )
+    df0["days_to_clear"] = pd.to_numeric(df0["days_to_clear"], errors="coerce").fillna(730.0)
+    df0["days_to_clear"] = df0["days_to_clear"].clip(lower=0.0, upper=730.0)
+
     df0["batch_age_days"] = ((as_of - df0["combinedate"]).dt.days).astype(int)
 
-    # ── 9. Overhead ────────────────────────────────────────────────────────────
-    total_sold_revenue    = float(df0["sold_revenue"].sum()) if "sold_revenue" in df0.columns else 0.0
-    vat_overhead_value    = (float(vat_pct) / 100.0) * max(0.0, total_sold_revenue)
+    # ----------------------------------------------------------
+    # 5) Overhead logic
+    # ----------------------------------------------------------
+    total_sold_revenue = float(df0["sold_revenue"].sum()) if "sold_revenue" in df0.columns else 0.0
+
+    vat_overhead_value = (float(vat_pct) / 100.0) * max(0.0, total_sold_revenue)
     manual_overhead_value = float(manual_overhead_value or 0.0)
-    total_overhead_pool   = float(shipment_overhead_total or 0.0) + vat_overhead_value + manual_overhead_value
+    total_overhead_pool = float(shipment_overhead_total or 0.0) + float(vat_overhead_value) + float(manual_overhead_value)
 
     if total_sold_revenue > EPS:
         share_real = (df0["sold_revenue"] / total_sold_revenue).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     else:
-        _denom = float(df0["realized_cogs"].sum())
-        share_real = (df0["realized_cogs"] / _denom).replace([np.inf, -np.inf], np.nan).fillna(0.0) \
-            if _denom > EPS else 0.0
+        denom = float(df0["realized_cogs"].sum())
+        share_real = (df0["realized_cogs"] / denom).replace([np.inf, -np.inf], np.nan).fillna(0.0) if denom > EPS else 0.0
 
-    days_elapsed          = max(1, int(df0["days_active"].max()) if "days_active" in df0.columns else 1)
-    D0                    = total_overhead_pool / float(days_elapsed)
-    realized_end_eff      = df0["batch_end_date"].where(df0["batch_end_date"].notna(), as_of)
-    realized_days         = ((realized_end_eff - df0["combinedate"]).dt.days + 1).clip(lower=1).astype(float)
-    df0["overhead_realized"]   = D0 * realized_days * share_real
+    # D0 = initial daily overhead allocation across the shipment horizon
+    days_elapsed = int(df0["days_active"].max()) if "days_active" in df0.columns else 1
+    days_elapsed = max(1, days_elapsed)
+    D0 = total_overhead_pool / float(days_elapsed)
+
+    # realized overhead: stop at batch_end_date if closed, else run to as_of
+    realized_end_eff = df0["batch_end_date"].where(df0["batch_end_date"].notna(), as_of)
+    realized_days = ((realized_end_eff - df0["combinedate"]).dt.days + 1).clip(lower=1).astype(float)
+
+    df0["overhead_realized"] = D0 * realized_days * share_real
     df0["net_profit_realized"] = df0["realized_gm"] - df0["overhead_realized"]
 
-    _tprr = float(df0["proj_remaining_revenue"].sum())
-    if _tprr > EPS:
-        share_rem = (df0["proj_remaining_revenue"] / _tprr).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    # projected overhead
+    total_proj_remaining_revenue = float(df0["proj_remaining_revenue"].sum())
+    if total_proj_remaining_revenue > EPS:
+        share_rem = (df0["proj_remaining_revenue"] / total_proj_remaining_revenue).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     else:
-        _denom2 = float(df0["remaining_cost_value"].sum())
-        share_rem = (df0["remaining_cost_value"] / _denom2).replace([np.inf, -np.inf], np.nan).fillna(0.0) \
-            if _denom2 > EPS else 0.0
+        denom = float(df0["remaining_cost_value"].sum())
+        share_rem = (df0["remaining_cost_value"] / denom).replace([np.inf, -np.inf], np.nan).fillna(0.0) if denom > EPS else 0.0
 
-    dclear = df0["days_to_clear"].replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(0.0, 730.0)
-    df0["overhead_projected"]    = D0 * np.power(0.97, dclear / 60.0) * dclear * share_rem
+    dclear = df0["days_to_clear"].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    dclear = dclear.clip(lower=0.0, upper=730.0)
+
+    # user formula:
+    # overhead_projected_sku = D0 * (0.97)^(days_to_clear/60) * days_to_clear * remaining_share
+    decay_factor = np.power(0.97, dclear / 60.0)
+    df0["overhead_projected"] = D0 * decay_factor * dclear * share_rem
+
     df0["Proj_remaining_profit"] = df0["proj_remaining_gm"] - df0["overhead_projected"]
-    df0["proj_final_profit"]     = df0["net_profit_realized"] + df0["Proj_remaining_profit"]
+    df0["proj_final_profit"] = df0["net_profit_realized"] + df0["Proj_remaining_profit"]
 
-    # ── 10. Final output ───────────────────────────────────────────────────────
+    # ----------------------------------------------------------
+    # 6) Final output columns
+    # ----------------------------------------------------------
+    df0.drop(columns=["velocity_used"], errors="ignore", inplace=True)
+
     cols = [
-        "shipmentname", "batch_id", "itemcode", "itemname",
-        "onhand_before", "combinedate", "batch_end_date", "is_closed",
-        "initial_qty", "sold_qty", "remaining_qty", "threshold_qty",
-        "unit_cost", "sold_revenue", "realized_cogs", "realized_gm",
-        "overhead_realized", "net_profit_realized",
-        "remaining_cost_value", "proj_remaining_revenue", "proj_remaining_gm",
-        "overhead_projected", "Proj_remaining_profit", "proj_final_profit",
-        "avg_price", "scenario_price",
-        "days_active", "velocity", "days_to_clear", "batch_age_days",
+        "shipmentname",
+        "batch_id",
+        "itemcode",
+        "itemname",
+        "onhand_before",
+        "combinedate",
+        "batch_end_date",
+        "is_closed",
+        "initial_qty",
+        "sold_qty",
+        "remaining_qty",
+        "threshold_qty",
+        "unit_cost",
+        "sold_revenue",
+        "realized_cogs",
+        "realized_gm",
+        "overhead_realized",
+        "net_profit_realized",
+        "remaining_cost_value",
+        "proj_remaining_revenue",
+        "proj_remaining_gm",
+        "overhead_projected",
+        "Proj_remaining_profit",
+        "proj_final_profit",
+        "avg_price",
+        "scenario_price",
+        "days_active",
+        "velocity",
+        "days_to_clear",
+        "batch_age_days",
     ]
+
     for c in cols:
         if c not in df0.columns:
             if c in ("combinedate", "batch_end_date"):
@@ -1378,18 +1426,6 @@ def run_batch_profitability_engine(
         df0 = common.decimal_to_float(df0)
     except Exception:
         pass
-
-    _numeric_round_cols = [
-        "onhand_before", "initial_qty", "sold_qty", "remaining_qty", "threshold_qty",
-        "unit_cost", "sold_revenue", "realized_cogs", "realized_gm",
-        "overhead_realized", "net_profit_realized",
-        "remaining_cost_value", "proj_remaining_revenue", "proj_remaining_gm",
-        "overhead_projected", "Proj_remaining_profit", "proj_final_profit",
-        "avg_price", "scenario_price", "velocity", "days_to_clear",
-    ]
-    for _c in _numeric_round_cols:
-        if _c in df0.columns:
-            df0[_c] = pd.to_numeric(df0[_c], errors="coerce").round(0).fillna(0.0)
 
     return df0
 
@@ -1614,34 +1650,31 @@ def build_abc_xyz(sales_df: pd.DataFrame) -> pd.DataFrame:
     return result.sort_values(["abc", "xyz", "total_revenue"], ascending=[True, True, False]).reset_index(drop=True)
 
 
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def build_batch_consolidation(
     purchase_df: pd.DataFrame,
     sales_df: pd.DataFrame,
-    movements_df: pd.DataFrame | None = None,
-    live_inv_df: pd.DataFrame | None = None,
-) -> tuple:
-    """Shipment-level consolidation using raw-ledger FIFO stock snapshots.
+) -> pd.DataFrame:
+    """Shipment-level consolidation with FIFO stock snapshots and MTD/yesterday sales.
 
-    Replaces the combinedate-aggregated approach with individual IGRN receipt
-    lots from mv_imtrn_movements (via _build_raw_lots / _build_dep_daily /
-    _fifo_lots), eliminating phantom remaining quantities.
+    Returns one row per (closed) shipment:
+      Shipment Name | Shipment Date | Arrival Value (BDT) | Month Start Stock (BDT) |
+      Current Stock Yesterday (BDT) | MTD Sales (BDT) | Yesterday Sales (BDT)
 
-    Combined entity: lots from both 100001 + 100009 IGRN receipts;
-    depletions from 100001 only (sale + issue), so 100009 MO-- manufacturing
-    issues and DO-- inter-company transfers are excluded.
-
-    Returns (out[_COLS], pd.DataFrame(debug_rows)) — same tuple as before.
+    Window  : Jan 1 of (current_year − 3) through yesterday — computed dynamically.
+    Pricing : avg realized price per batch = revenue / qty from sales since batch arrival.
+              Fallback to unit_cost when an item has no post-arrival sales history.
+    FIFO    : matches run_batch_profitability_engine — sales strictly after combinedate
+              deplete the oldest-arriving batch of each item first.
+    ZIDs    : purchase_df already contains both 100001 + 100009 (analytics auto-expansion);
+              itemcodes are pre-resolved via packcode SQL CASE in the query.
     """
-    EPS = 1e-9
-
-    today           = pd.Timestamp.today().normalize()
-    yesterday       = today - pd.Timedelta(days=1)
-    day_before_yest = yesterday - pd.Timedelta(days=1)
-    month_start     = today.replace(day=1)
-    snap_ms         = month_start - pd.Timedelta(days=1)   # end of prev month
-    window_start    = pd.Timestamp(year=today.year - 3, month=1, day=1)
+    today               = pd.Timestamp.today().normalize()
+    yesterday           = today - pd.Timedelta(days=1)
+    day_before_yest     = yesterday - pd.Timedelta(days=1)
+    month_start         = today.replace(day=1)
+    snap_ms             = month_start - pd.Timedelta(days=1)   # end of prev month = stock at month start
+    window_start        = pd.Timestamp(year=today.year - 3, month=1, day=1)
 
     _COLS = [
         "Shipment Name", "Shipment Date", "Arrival Value (BDT)",
@@ -1651,226 +1684,193 @@ def build_batch_consolidation(
     EMPTY = pd.DataFrame(columns=_COLS)
 
     if purchase_df is None or purchase_df.empty:
-        return EMPTY, pd.DataFrame()
+        return EMPTY
     if sales_df is None or sales_df.empty:
-        return EMPTY, pd.DataFrame()
+        return EMPTY
 
-    # ── 1. Identify non-open shipments within the analysis window ─────────────
+    # ── 1. Filter: closed batches only, within window ─────────────────────────
     p = purchase_df.copy()
+    p["itemcode"]     = p["itemcode"].astype(str).str.strip()
     p["shipmentname"] = p["shipmentname"].astype(str).str.strip()
     p["combinedate"]  = pd.to_datetime(p["combinedate"], errors="coerce").dt.floor("D")
-    _status_col = "status" if "status" in p.columns else None
-    valid_mask = (
+    _qty_col  = "initial_qty" if "initial_qty" in p.columns else "quantity"
+    _cost_col = "unit_cost"   if "unit_cost"   in p.columns else "cost"
+    p["_qty"]      = pd.to_numeric(p[_qty_col],  errors="coerce").fillna(0.0)
+    p["unit_cost"] = pd.to_numeric(p[_cost_col], errors="coerce").fillna(0.0)
+
+    p = p[
+        (p["status"] != "1-Open") &
         p["combinedate"].notna() &
+        (p["_qty"] > 0) &
         (p["combinedate"] >= window_start)
+    ].copy()
+
+    if p.empty:
+        return EMPTY
+
+    # ── 2. Cross-ZID groupby: sum qty across 100001 + 100009 per shipment/item/date ─
+    p = p.groupby(
+        ["shipmentname", "itemcode", "combinedate"], as_index=False
+    ).agg(
+        initial_qty=("_qty",      "sum"),
+        unit_cost  =("unit_cost", "first"),
+        itemname   =("itemname",  "first"),
     )
-    if _status_col:
-        valid_mask &= (p[_status_col] != "1-Open")
-    valid_shipments = set(p.loc[valid_mask, "shipmentname"].unique())
-    if not valid_shipments:
-        return EMPTY, pd.DataFrame()
 
-    # ── 2. Build raw lots (both ZIDs, IGRN only) ──────────────────────────────
-    all_lots = _build_raw_lots(movements_df, purchase_df)
-    if all_lots.empty:
-        return EMPTY, pd.DataFrame()
-    all_lots = all_lots[all_lots["shipmentname"].isin(valid_shipments)].copy()
-    if all_lots.empty:
-        return EMPTY, pd.DataFrame()
-
-    # ── 3. Depletion table (100001 only) ─────────────────────────────────────
-    dep_daily = _build_dep_daily(movements_df, dep_zid="100001")
-    target_items = set(all_lots["itemcode"].tolist())
-    dep_daily = dep_daily[dep_daily["itemcode"].isin(target_items)].copy()
-
-    # ── 4. Price cache per lot (per-item cumulative sales arrays) ─────────────
+    # ── 3. Build per-itemcode cumulative sales/revenue arrays (sorted by date) ─
     s = sales_df.copy()
-    if "zid" in s.columns:
-        s["zid"] = s["zid"].astype(str).str.strip()
-        s = s[s["zid"] == "100001"].copy()
     s["itemcode"] = s["itemcode"].astype(str).str.strip()
-    s["date"]     = pd.to_datetime(s.get("date"), errors="coerce").dt.floor("D")
+    s["date"]     = pd.to_datetime(s["date"], errors="coerce").dt.floor("D")
     _qty_s = "quantity" if "quantity" in s.columns else "sales_qty"
-    _rev_s = next((c for c in ["totalsales", "altsales", "sales_rev"] if c in s.columns), None)
-    s["_qty"] = pd.to_numeric(s.get(_qty_s, 0), errors="coerce").fillna(0.0).clip(lower=0.0)
+    _rev_s = next((c for c in ["totalsales", "sales_rev", "altsales"] if c in s.columns), None)
+    s["_qty"] = pd.to_numeric(s[_qty_s], errors="coerce").fillna(0.0).clip(lower=0.0)
     s["_rev"] = pd.to_numeric(s[_rev_s], errors="coerce").fillna(0.0) if _rev_s else 0.0
     s = (
         s[s["date"].notna()]
         .groupby(["itemcode", "date"], as_index=False)
         .agg(qty=("_qty", "sum"), rev=("_rev", "sum"))
-        .sort_values(["itemcode", "date"]).reset_index(drop=True)
+        .sort_values(["itemcode", "date"])
+        .reset_index(drop=True)
     )
     s["cum_qty"] = s.groupby("itemcode")["qty"].cumsum()
     s["cum_rev"] = s.groupby("itemcode")["rev"].cumsum()
 
+    # Lookup dict: itemcode -> (dates_np, cum_qty_np, cum_rev_np)
     sales_lkp: dict = {}
-    for code_s, grp_s in s.groupby("itemcode"):
-        sales_lkp[str(code_s)] = (
-            grp_s["date"].values.astype("datetime64[ns]"),
-            grp_s["cum_qty"].values.astype(float),
-            grp_s["cum_rev"].values.astype(float),
+    for code, grp in s.groupby("itemcode"):
+        sales_lkp[str(code)] = (
+            grp["date"].values.astype("datetime64[ns]"),
+            grp["cum_qty"].values.astype(float),
+            grp["cum_rev"].values.astype(float),
         )
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
     def _cum_at(dates_np, cum_np, T: pd.Timestamp) -> float:
+        """Cumulative value for dates <= T (searchsorted right, O(log n))."""
         if pd.isna(T):
             return 0.0
         idx = int(np.searchsorted(dates_np, np.datetime64(T, "ns"), side="right")) - 1
         return float(cum_np[idx]) if idx >= 0 else 0.0
 
-    # Price window: lot_date → day before next lot of same item (or yesterday)
-    price_cache: dict = {}
-    for code_p, item_lots in all_lots.groupby("itemcode"):
-        sorted_dates = sorted(item_lots["lot_date"].dropna().unique())
-        for i_p, Di_p in enumerate(sorted_dates):
-            price_to = (
-                sorted_dates[i_p + 1] - pd.Timedelta(days=1)
-                if i_p + 1 < len(sorted_dates) else yesterday
-            )
-            key_p = (str(code_p), Di_p)
-            if str(code_p) in sales_lkp:
-                dn, cq, cr = sales_lkp[str(code_p)]
-                Di_excl = Di_p - pd.Timedelta(days=1)
-                qty_w   = max(0.0, _cum_at(dn, cq, price_to) - _cum_at(dn, cq, Di_excl))
-                rev_w   = max(0.0, _cum_at(dn, cr, price_to) - _cum_at(dn, cr, Di_excl))
-                price_cache[key_p] = (rev_w / qty_w) if qty_w > EPS else np.nan
+    def _qty_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
+        """Qty sold in (D, T] — strictly after D, matching engine convention."""
+        if code not in sales_lkp or pd.isna(D) or pd.isna(T) or T <= D:
+            return 0.0
+        dn, cq, _ = sales_lkp[code]
+        return max(0.0, _cum_at(dn, cq, T) - _cum_at(dn, cq, D))
+
+    def _rev_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
+        """Revenue in (D, T]."""
+        if code not in sales_lkp or pd.isna(D) or pd.isna(T) or T <= D:
+            return 0.0
+        dn, _, cr = sales_lkp[code]
+        return max(0.0, _cum_at(dn, cr, T) - _cum_at(dn, cr, D))
+
+    def _rem(D_batch: pd.Timestamp, initial: float, older_open: float,
+             code: str, T: pd.Timestamp) -> float:
+        """FIFO remaining qty of one batch at date T.
+        older_open = remaining qty of all older batches of the same item AT D_batch.
+        """
+        if T < D_batch:
+            return initial        # batch not yet in warehouse
+        sold = min(initial, max(0.0, _qty_range(code, D_batch, T) - older_open))
+        return max(0.0, initial - sold)
+
+    # ── 4. Avg realized price per (itemcode, combinedate) ─────────────────────
+    # Price window: from batch arrival to the day BEFORE the next batch of the same
+    # item arrives.  For the most-recent batch of each item, window ends today.
+    # This ensures batch 006's price only reflects sales during its active period,
+    # and doesn't bleed into the period after batch 007 arrived.
+    # Fallback: unit_cost when no sales exist in the window.
+
+    # Build (itemcode, combinedate) -> price_window_end date
+    price_window_end: dict = {}
+    for code, item_df in p.groupby("itemcode"):
+        sorted_dates = sorted(item_df["combinedate"].unique())
+        for i, Di in enumerate(sorted_dates):
+            if i + 1 < len(sorted_dates):
+                # end = day before next batch of this item arrives
+                price_window_end[(str(code), Di)] = sorted_dates[i + 1] - pd.Timedelta(days=1)
             else:
-                price_cache[key_p] = np.nan
+                price_window_end[(str(code), Di)] = today
 
-    # Fallback: global historical avg price per item
-    hist_price_map: dict = {}
-    for code_h, (dn_h, cq_h, cr_h) in sales_lkp.items():
-        tq_h = float(cq_h[-1]) if len(cq_h) > 0 else 0.0
-        tr_h = float(cr_h[-1]) if len(cr_h) > 0 else 0.0
-        hist_price_map[code_h] = (tr_h / tq_h) if tq_h > EPS else np.nan
-
-    # Assign price per lot (price_cache → hist_price_map → unit_cost)
-    def _lot_price(row) -> float:
+    price_cache: dict = {}
+    for _, row in p.iterrows():
         code = str(row["itemcode"])
-        ld   = pd.Timestamp(row["lot_date"]).floor("D")
-        pv   = price_cache.get((code, ld), np.nan)
-        if pd.isna(pv) or pv <= 0:
-            pv = hist_price_map.get(code, np.nan)
-        if pd.isna(pv) or pv <= 0:
-            pv = float(row["unit_cost"])
-        return pv
+        Di   = row["combinedate"]
+        key  = (code, Di)
+        if key in price_cache:
+            continue
+        price_to = price_window_end.get(key, today)
+        if code in sales_lkp:
+            dn, cq, cr = sales_lkp[code]
+            Di_excl = Di - pd.Timedelta(days=1)     # exclusive lower bound → inclusive of Di
+            qty_since = max(0.0, _cum_at(dn, cq, price_to) - _cum_at(dn, cq, Di_excl))
+            rev_since = max(0.0, _cum_at(dn, cr, price_to) - _cum_at(dn, cr, Di_excl))
+            price_cache[key] = (rev_since / qty_since) if qty_since > 1e-9 else float(row["unit_cost"])
+        else:
+            price_cache[key] = float(row["unit_cost"])
 
-    all_lots["price"] = all_lots.apply(_lot_price, axis=1).fillna(0.0)
+    # ── 5. FIFO snapshots per item, then per batch ────────────────────────────
+    # Process batches oldest→newest per item.
+    # older_open_at_Di = sum of remaining of all prior batches AT Di.
+    # Three snapshots: snap_ms (month start), yesterday, day_before_yest.
+    # MTD qty       = rem(snap_ms) − rem(yesterday)    [absorbed during current month]
+    # Yesterday qty = rem(day_before_yest) − rem(yesterday)
+    batch_rows: list = []
 
-    # ── 5. FIFO snapshots (run 3 times, filtered by date) ────────────────────
-    def _snap_remaining(T: pd.Timestamp) -> pd.DataFrame:
-        """FIFO remaining_qty per lot at date T."""
-        l_t = all_lots[
-            pd.to_datetime(all_lots["lot_date"], errors="coerce").dt.floor("D") <= T
-        ].copy()
-        d_t = dep_daily[
-            pd.to_datetime(dep_daily["dep_date"], errors="coerce").dt.floor("D") <= T
-        ].copy()
-        if l_t.empty:
-            return pd.DataFrame(columns=["zid", "xdocnum", "itemcode", "remaining_qty"])
-        return _fifo_lots(l_t, d_t)[["zid", "xdocnum", "itemcode", "remaining_qty"]]
+    for code, item_df in (
+        p.sort_values(["itemcode", "combinedate"])
+         .groupby("itemcode", sort=False)
+    ):
+        code = str(code)
+        item_df = item_df.sort_values("combinedate").reset_index(drop=True)
+        processed: list = []    # (Di, initial_i, older_open_i)
 
-    snap_ms_r  = _snap_remaining(snap_ms)
-    snap_y_r   = _snap_remaining(yesterday)
-    snap_dby_r = _snap_remaining(day_before_yest)
+        for _, batch in item_df.iterrows():
+            Di        = batch["combinedate"]
+            initial_i = float(batch["initial_qty"])
 
-    # ── 6. Merge snapshots onto lot master ────────────────────────────────────
-    base = all_lots[
-        ["zid", "xdocnum", "itemcode", "itemname",
-         "shipmentname", "lot_date", "lot_qty", "unit_cost", "price"]
-    ].copy()
+            # older_open_at_Di: remaining of every prior batch AT Di
+            older_open_i = float(sum(
+                _rem(Dj, init_j, oo_j, code, Di)
+                for Dj, init_j, oo_j in processed
+            ))
+            processed.append((Di, initial_i, older_open_i))
 
-    def _merge_rem(base_df, snap_df, col_name):
-        if snap_df.empty:
-            base_df[col_name] = 0.0
-            return base_df
-        snp = snap_df.rename(columns={"remaining_qty": col_name})
-        merged = base_df.merge(snp, on=["zid", "xdocnum", "itemcode"], how="left")
-        merged[col_name] = pd.to_numeric(merged[col_name], errors="coerce").fillna(0.0).clip(lower=0.0)
-        return merged
+            price = price_cache.get((code, Di), float(batch["unit_cost"]))
 
-    base = _merge_rem(base, snap_ms_r,  "rem_ms")
-    base = _merge_rem(base, snap_y_r,   "rem_y")
-    base = _merge_rem(base, snap_dby_r, "rem_dby")
+            rem_ms  = _rem(Di, initial_i, older_open_i, code, snap_ms)
+            rem_y   = _rem(Di, initial_i, older_open_i, code, yesterday)
+            rem_dby = _rem(Di, initial_i, older_open_i, code, day_before_yest)
 
-    # ── Post-FIFO inventory correction ───────────────────────────────────────
-    # Fixes rem_y (current stock) when FIFO overstates remaining due to missing
-    # depletions in mv_imtrn_movements.  Rule per item:
-    #   • Lots older than the last lot for this item → must be fully depleted.
-    #   • The last lot for this item → cap rem_y at live stock.
-    # rem_ms / rem_dby snapshots are left as-is; their relative differences
-    # still give meaningful MTD / yesterday sales estimates.
-    if live_inv_df is not None and not live_inv_df.empty and "stock" in live_inv_df.columns:
-        _id_col  = "item_id" if "item_id" in live_inv_df.columns else "itemcode"
-        _live_s  = pd.to_numeric(
-            live_inv_df.set_index(_id_col)["stock"], errors="coerce"
-        ).fillna(0.0)
-        _live_map = {str(k): float(v) for k, v in _live_s.items()}
+            mtd_qty  = max(0.0, rem_ms  - rem_y)
+            yest_qty = max(0.0, rem_dby - rem_y)
 
-        # Latest lot_date per item across ALL lots in the analysis
-        _global_max = all_lots.groupby("itemcode")["lot_date"].max()
+            batch_rows.append({
+                "shipmentname":  batch["shipmentname"],
+                "combinedate":   Di,
+                "arrival_val":   initial_i * price,
+                "ms_stock_val":  rem_ms    * price,
+                "cur_stock_val": rem_y     * price,
+                "mtd_val":       mtd_qty   * price,
+                "yest_val":      yest_qty  * price,
+            })
 
-        for _code_c, _item_rows in base.groupby("itemcode"):
-            _code_s      = str(_code_c)
-            _live        = _live_map.get(_code_s, 0.0)
-            _total_rem_y = float(_item_rows["rem_y"].sum())
-            if _total_rem_y <= _live + 1.0:
-                continue          # FIFO already correct for this item
+    if not batch_rows:
+        return EMPTY
 
-            _global_last = _global_max.get(_code_c, pd.NaT)
-            _sorted_idx  = _item_rows.sort_values("lot_date").index.tolist()
-            _allocated   = 0.0
+    br = pd.DataFrame(batch_rows)
 
-            for _idx in _sorted_idx:
-                _lot_date = base.at[_idx, "lot_date"]
-                _is_last  = (pd.notna(_lot_date) and pd.notna(_global_last)
-                             and pd.Timestamp(_lot_date) >= pd.Timestamp(_global_last))
-                if _is_last:
-                    # Last (or tied-last) lot → give it the remaining live stock
-                    base.at[_idx, "rem_y"] = max(0.0, _live - _allocated)
-                else:
-                    # Older lot with a newer one arriving → fully depleted
-                    base.at[_idx, "rem_y"] = 0.0
-
-    base["arrival_val"]   = base["lot_qty"]  * base["price"]
-    base["ms_stock_val"]  = base["rem_ms"]   * base["price"]
-    base["cur_stock_val"] = base["rem_y"]    * base["price"]
-    base["mtd_val"]       = (base["rem_ms"]  - base["rem_y"] ).clip(lower=0.0) * base["price"]
-    base["yest_val"]      = (base["rem_dby"] - base["rem_y"] ).clip(lower=0.0) * base["price"]
-
-    # ── 7. Debug rows (item-level per shipment) ───────────────────────────────
-    debug_grp = (
-        base
-        .groupby(["shipmentname", "itemcode", "itemname", "lot_date"], as_index=False)
-        .agg(
-            initial_qty =("lot_qty",   "sum"),
-            rem_y       =("rem_y",     "sum"),
-            price       =("price",     "first"),
-            unit_cost   =("unit_cost", "first"),
-        )
-    )
-    debug_rows = []
-    for _, r in debug_grp.iterrows():
-        debug_rows.append({
-            "Shipment":      r["shipmentname"],
-            "Item Code":     r["itemcode"],
-            "Item Name":     r["itemname"],
-            "Batch Date":    r["lot_date"],
-            "Initial Qty":   round(r["initial_qty"]),
-            "Sold (FIFO)":   round(max(0.0, r["initial_qty"] - r["rem_y"])),
-            "Remaining Qty": round(r["rem_y"]),
-            "Price":         round(float(r["price"]), 2),
-            "Stock Val":     round(r["rem_y"] * float(r["price"])),
-        })
-
-    # ── 8. Aggregate to shipment level ────────────────────────────────────────
+    # ── 6. Aggregate to shipment level ────────────────────────────────────────
     ship_dates = (
-        base.groupby("shipmentname")["lot_date"].min()
-        .rename("Shipment Date").reset_index()
+        p.groupby("shipmentname")["combinedate"].min()
+        .rename("Shipment Date")
+        .reset_index()
     )
+
     out = (
-        base
-        .groupby("shipmentname", as_index=False)
-        .agg(
+        br.groupby("shipmentname", as_index=False).agg(
             arrival_val  =("arrival_val",   "sum"),
             ms_stock_val =("ms_stock_val",  "sum"),
             cur_stock_val=("cur_stock_val", "sum"),
@@ -1881,28 +1881,20 @@ def build_batch_consolidation(
         .sort_values("Shipment Date", ascending=False)
         .reset_index(drop=True)
         .rename(columns={
-            "shipmentname":  "Shipment Name",
-            "arrival_val":   "Arrival Value (BDT)",
-            "ms_stock_val":  "Month Start Stock (BDT)",
-            "cur_stock_val": "Current Stock Yesterday (BDT)",
-            "mtd_val":       "MTD Sales (BDT)",
-            "yest_val":      "Yesterday Sales (BDT)",
+            "shipmentname":   "Shipment Name",
+            "arrival_val":    "Arrival Value (BDT)",
+            "ms_stock_val":   "Month Start Stock (BDT)",
+            "cur_stock_val":  "Current Stock Yesterday (BDT)",
+            "mtd_val":        "MTD Sales (BDT)",
+            "yest_val":       "Yesterday Sales (BDT)",
         })
     )
 
-    for col in [
-        "Arrival Value (BDT)", "Month Start Stock (BDT)",
-        "Current Stock Yesterday (BDT)", "MTD Sales (BDT)", "Yesterday Sales (BDT)",
-    ]:
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce").round(0).fillna(0).astype("Int64")
+    for col in ["Arrival Value (BDT)", "Month Start Stock (BDT)",
+                "Current Stock Yesterday (BDT)", "MTD Sales (BDT)", "Yesterday Sales (BDT)"]:
+        out[col] = out[col].round(0).astype("Int64")
 
     # Drop shipments with zero current stock (fully depleted)
     out = out[out["Current Stock Yesterday (BDT)"] > 0].reset_index(drop=True)
 
-    # Ensure all required columns exist
-    for c in _COLS:
-        if c not in out.columns:
-            out[c] = pd.NA
-
-    return out[_COLS], pd.DataFrame(debug_rows)
+    return out[_COLS]
