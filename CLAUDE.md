@@ -222,14 +222,14 @@ When staff convert a lead to a real customer in the ERP, they manually paste the
 
 ### Permissions (role-gated inside the view, not via `page_permissions`)
 Both `crm` and `sales` already have page-level access to "Marketing Analysis" in `page_permissions`. Finer-grained access is enforced in `views/marketing.py::_show_leads` by `st.session_state.user_role`:
-- **`crm`/`admin`**: upload section, call-log entry panel, both tables, CSV downloads.
-- **`sales`**: Table 1 (leads list) only, read-only — no upload, no call-log entry, no Table 2.
+- **`crm`/`admin`**: top-level radio (`_show_leads`) — **"➕ Add Leads"** (bulk upload + single-lead form, no tables) and **"📞 Call Log"** (Table 1 leads list → call-log entry panel → Table 2 all call logs, in that order). CSV downloads on both tables.
+- **`sales`**: no radio — Table 1 (leads list) only, read-only. No upload, no call-log entry, no Table 2.
 
 ### Shared call-log module: `views/lead_call_log_shared.py`
-Mirrors `views/call_log_shared.py`'s panel exactly (imports `OUTCOMES`/`_OUTCOME_BADGE`/`blue_header`/`BLUE_FOOTER` from it for identical styling) but keyed on `lead_id` instead of `cusid`, and adds a `next_visit_date` field to both the entry form and the history badges.
+Mirrors `views/call_log_shared.py`'s panel styling exactly (imports `blue_header`/`BLUE_FOOTER` from it) but keyed on `lead_id` instead of `cusid`, and adds a `next_visit_date` field to both the entry form and the history badges. **Outcomes are lead-specific, not shared with Customer Support** — `LEAD_OUTCOMES`/`_LEAD_OUTCOME_BADGE` are defined locally in this file (Customer Support's `OUTCOMES` are order/AR states like Paid/Delivered/Returned, meaningless before a lead converts): `Not Answered`, `Not Interested`, `B2C`, `Wrong Lead`, `Asked to Submit Sample`, `Sample Submitted`, `Still Using Sample – Will Contact After`, `Follow-up Requested`, `Promised to Order`, `Deal Completed`.
 
-### Bulk insert: `core/db.py::execute_values_insert`
-Added for this feature — one round trip via `psycopg2.extras.execute_values`, `ON CONFLICT (zid, fb_lead_id) DO NOTHING`, returns `cur.rowcount` (correctly excludes skipped duplicates) so the upload UI can report "N new, M already existed".
+### Bulk insert + dedup: `core/db.py::execute_values_insert`
+One round trip via `psycopg2.extras.execute_values`. **No `ON CONFLICT` clause** — the live server predates Postgres 9.5 (confirmed: both `CREATE INDEX IF NOT EXISTS` and `ON CONFLICT` throw syntax errors there), so dedup happens in Python instead: `get_existing_lead_fb_ids` fetches already-saved `fb_lead_id`s for the ZID and `_bulk_insert_leads` filters the upload batch against them before a plain `INSERT`. Returns `cur.rowcount`, or `-1` on a DB error — callers must NOT clamp this to 0 (a real bug: `-1` clamped via `max(n, 0)` once silently reported failed uploads as "0 new leads saved").
 
 ---
 

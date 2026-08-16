@@ -1235,50 +1235,14 @@ def _show_manual_lead_entry(zid: str) -> None:
         )
 
 
-def _show_leads(zid: str) -> None:
-    role = st.session_state.get("user_role")
-    is_crm = role in ("crm", "admin")
-
-    with st.spinner("Loading leads…"):
-        leads_df = _load_marketing_leads(zid)
-        links_df = _load_cacus_lead_links(zid)
-        call_logs_df = _load_all_lead_call_logs(zid)
-
-    if is_crm:
-        st.markdown("#### ➕ Add Leads")
-        tab_bulk, tab_single = st.tabs(["📤 Bulk Upload", "➕ Single Lead"])
-        with tab_bulk:
-            _show_lead_upload(zid)
-        with tab_single:
-            _show_manual_lead_entry(zid)
-        st.markdown("---")
-
-        # ── Call log entry — same panel style as Customer Support ────────────
-        st.markdown("#### 📞 Log a Call")
-        if leads_df.empty:
-            st.info("No leads yet — add one above to get started.")
-        else:
-            lead_opts_df = leads_df[["id", "full_name", "company_name"]].copy()
-            lead_opts = {
-                f"{r['full_name']} — {r['company_name']} (#{r['id']})": int(r["id"])
-                for _, r in lead_opts_df.iterrows()
-            }
-            lead_sel = st.selectbox(
-                "Select lead",
-                ["— pick a lead —"] + list(lead_opts.keys()),
-                key="leads_call_sel",
-            )
-            if lead_sel and lead_sel != "— pick a lead —":
-                sel_id = lead_opts[lead_sel]
-                sel_name = lead_sel.split(" — ")[0]
-                _render_lead_call_log_panel(sel_id, zid, sel_name, key_suffix="_leads")
-        st.markdown("---")
-
+def _render_leads_table(zid: str, leads_df: pd.DataFrame, links_df: pd.DataFrame,
+                         call_logs_df: pd.DataFrame, is_crm: bool) -> None:
+    """Table 1 — individual lead + latest call info. Shared by the sales
+    read-only path and the CRM 'Call Log' tab (leads table shown first there)."""
     if leads_df.empty:
         st.info("No leads uploaded yet.")
         return
 
-    # ── Table 1 — individual lead + latest call info ──────────────────────────
     st.markdown("#### 📋 Leads")
     summary = build_lead_summary_table(leads_df, links_df, call_logs_df)
 
@@ -1329,90 +1293,158 @@ def _show_leads(zid: str) -> None:
             key="leads_dl",
         )
 
-        # ── Table 2 — all call logs, filterable ───────────────────────────────
-        st.markdown("---")
-        st.markdown("#### 📒 All Call Logs")
-        log_tbl = build_lead_call_log_table(call_logs_df)
-        if log_tbl.empty:
-            st.info("No calls logged yet.")
-        else:
-            lf1, lf2, lf3 = st.columns(3)
 
-            # "Date called" is NOT NULL on every row, so defaulting the range to
-            # the full min/max is a true no-op — matches the date-range convention
-            # used elsewhere (collection.py, margin.py).
-            called_dates = log_tbl["called_at"].dt.date.dropna()
-            called_range = None
-            if not called_dates.empty:
-                with lf1:
-                    called_range = st.date_input(
-                        "Date called (range)",
-                        value=(called_dates.min(), called_dates.max()),
-                        key="leads_log_called_range",
-                    )
+def _render_lead_call_log_entry(zid: str, leads_df: pd.DataFrame) -> None:
+    """Call log entry — same panel style as Customer Support."""
+    st.markdown("#### 📞 Log a Call")
+    if leads_df.empty:
+        st.info("No leads yet — switch to **➕ Add Leads** to get started.")
+        return
 
-            # "Next visit" is usually NULL (most calls don't set one) — an
-            # explicit opt-in checkbox avoids a default range silently hiding
-            # every row that has no next-visit date scheduled.
-            with lf2:
-                filter_nvd = st.checkbox("Filter by next visit date", value=False, key="leads_log_nvd_toggle")
-                nvd_range = None
-                if filter_nvd:
-                    nvd_dates = log_tbl["next_visit_date"].dt.date.dropna()
-                    if not nvd_dates.empty:
-                        nvd_range = st.date_input(
-                            "Next visit (range)",
-                            value=(nvd_dates.min(), nvd_dates.max()),
-                            key="leads_log_nvd_range",
-                        )
-                    else:
-                        st.caption("No next-visit dates logged yet.")
+    lead_opts_df = leads_df[["id", "full_name", "company_name"]].copy()
+    lead_opts = {
+        f"{r['full_name']} — {r['company_name']} (#{r['id']})": int(r["id"])
+        for _, r in lead_opts_df.iterrows()
+    }
+    lead_sel = st.selectbox(
+        "Select lead",
+        ["— pick a lead —"] + list(lead_opts.keys()),
+        key="leads_call_sel",
+    )
+    if lead_sel and lead_sel != "— pick a lead —":
+        sel_id = lead_opts[lead_sel]
+        sel_name = lead_sel.split(" — ")[0]
+        _render_lead_call_log_panel(sel_id, zid, sel_name, key_suffix="_leads")
 
-            with lf3:
-                outcome_opts = sorted(log_tbl["outcome"].dropna().unique().tolist())
-                outcome_sel = st.multiselect("Outcome", outcome_opts, key="leads_log_outcome")
 
-            filt = log_tbl.copy()
-            if isinstance(called_range, tuple) and len(called_range) == 2:
-                start, end = called_range
-                filt = filt[
-                    (filt["called_at"].dt.date >= start) & (filt["called_at"].dt.date <= end)
-                ]
-            if filter_nvd and isinstance(nvd_range, tuple) and len(nvd_range) == 2:
-                start, end = nvd_range
-                filt = filt[
-                    filt["next_visit_date"].notna()
-                    & filt["next_visit_date"].dt.date.between(start, end, inclusive="both")
-                ]
-            if outcome_sel:
-                filt = filt[filt["outcome"].isin(outcome_sel)]
+def _render_all_lead_call_logs(zid: str, call_logs_df: pd.DataFrame) -> None:
+    """Table 2 — all call logs, filterable by date called / next visit date."""
+    st.markdown("#### 📒 All Call Logs")
+    log_tbl = build_lead_call_log_table(call_logs_df)
+    if log_tbl.empty:
+        st.info("No calls logged yet.")
+        return
 
-            log_rename = {
-                "lead_id": "Lead ID", "full_name": "Name", "company_name": "Company",
-                "work_phone_number": "Phone", "called_at": "Called At",
-                "called_by": "Called By", "outcome": "Outcome",
-                "next_visit_date": "Next Visit", "notes": "Notes",
-            }
-            log_cols = [c for c in log_rename if c in filt.columns]
-            log_disp = filt[log_cols].rename(columns=log_rename)
+    lf1, lf2, lf3 = st.columns(3)
 
-            st.caption(f"**{len(log_disp):,}** call(s)")
-            st.dataframe(
-                log_disp,
-                column_config={
-                    "Called At":  st.column_config.DatetimeColumn("Called At", format="YYYY-MM-DD HH:mm"),
-                    "Next Visit": st.column_config.DateColumn("Next Visit",   format="YYYY-MM-DD"),
-                },
-                width="stretch",
-                hide_index=True,
+    # "Date called" is NOT NULL on every row, so defaulting the range to
+    # the full min/max is a true no-op — matches the date-range convention
+    # used elsewhere (collection.py, margin.py).
+    called_dates = log_tbl["called_at"].dt.date.dropna()
+    called_range = None
+    if not called_dates.empty:
+        with lf1:
+            called_range = st.date_input(
+                "Date called (range)",
+                value=(called_dates.min(), called_dates.max()),
+                key="leads_log_called_range",
             )
-            st.download_button(
-                "⬇ Download Call Log CSV",
-                data=log_disp.to_csv(index=False).encode("utf-8"),
-                file_name=f"lead_call_logs_{zid}.csv",
-                mime="text/csv",
-                key="leads_log_dl",
-            )
+
+    # "Next visit" is usually NULL (most calls don't set one) — an
+    # explicit opt-in checkbox avoids a default range silently hiding
+    # every row that has no next-visit date scheduled.
+    with lf2:
+        filter_nvd = st.checkbox("Filter by next visit date", value=False, key="leads_log_nvd_toggle")
+        nvd_range = None
+        if filter_nvd:
+            nvd_dates = log_tbl["next_visit_date"].dt.date.dropna()
+            if not nvd_dates.empty:
+                nvd_range = st.date_input(
+                    "Next visit (range)",
+                    value=(nvd_dates.min(), nvd_dates.max()),
+                    key="leads_log_nvd_range",
+                )
+            else:
+                st.caption("No next-visit dates logged yet.")
+
+    with lf3:
+        outcome_opts = sorted(log_tbl["outcome"].dropna().unique().tolist())
+        outcome_sel = st.multiselect("Outcome", outcome_opts, key="leads_log_outcome")
+
+    filt = log_tbl.copy()
+    if isinstance(called_range, tuple) and len(called_range) == 2:
+        start, end = called_range
+        filt = filt[
+            (filt["called_at"].dt.date >= start) & (filt["called_at"].dt.date <= end)
+        ]
+    if filter_nvd and isinstance(nvd_range, tuple) and len(nvd_range) == 2:
+        start, end = nvd_range
+        filt = filt[
+            filt["next_visit_date"].notna()
+            & filt["next_visit_date"].dt.date.between(start, end, inclusive="both")
+        ]
+    if outcome_sel:
+        filt = filt[filt["outcome"].isin(outcome_sel)]
+
+    log_rename = {
+        "lead_id": "Lead ID", "full_name": "Name", "company_name": "Company",
+        "work_phone_number": "Phone", "called_at": "Called At",
+        "called_by": "Called By", "outcome": "Outcome",
+        "next_visit_date": "Next Visit", "notes": "Notes",
+    }
+    log_cols = [c for c in log_rename if c in filt.columns]
+    log_disp = filt[log_cols].rename(columns=log_rename)
+
+    st.caption(f"**{len(log_disp):,}** call(s)")
+    st.dataframe(
+        log_disp,
+        column_config={
+            "Called At":  st.column_config.DatetimeColumn("Called At", format="YYYY-MM-DD HH:mm"),
+            "Next Visit": st.column_config.DateColumn("Next Visit",   format="YYYY-MM-DD"),
+        },
+        width="stretch",
+        hide_index=True,
+    )
+    st.download_button(
+        "⬇ Download Call Log CSV",
+        data=log_disp.to_csv(index=False).encode("utf-8"),
+        file_name=f"lead_call_logs_{zid}.csv",
+        mime="text/csv",
+        key="leads_log_dl",
+    )
+
+
+def _show_leads(zid: str) -> None:
+    role = st.session_state.get("user_role")
+    is_crm = role in ("crm", "admin")
+
+    with st.spinner("Loading leads…"):
+        leads_df = _load_marketing_leads(zid)
+        links_df = _load_cacus_lead_links(zid)
+        call_logs_df = _load_all_lead_call_logs(zid)
+
+    if not is_crm:
+        # Sales: Table 1 only, read-only — no radio, no upload, no call log.
+        _render_leads_table(zid, leads_df, links_df, call_logs_df, is_crm=False)
+        return
+
+    sub_mode = st.radio(
+        "Leads",
+        ["➕ Add Leads", "📞 Call Log"],
+        horizontal=True,
+        key="leads_top_mode",
+    )
+    st.markdown("---")
+
+    if sub_mode == "➕ Add Leads":
+        tab_bulk, tab_single = st.tabs(["📤 Bulk Upload", "➕ Single Lead"])
+        with tab_bulk:
+            _show_lead_upload(zid)
+        with tab_single:
+            _show_manual_lead_entry(zid)
+        return
+
+    # ── 📞 Call Log: leads table first, then log-a-call, then all call logs ───
+    _render_leads_table(zid, leads_df, links_df, call_logs_df, is_crm=True)
+
+    if leads_df.empty:
+        return
+
+    st.markdown("---")
+    _render_lead_call_log_entry(zid, leads_df)
+
+    st.markdown("---")
+    _render_all_lead_call_logs(zid, call_logs_df)
 
 
 # ---------------------------------------------------------------------------
