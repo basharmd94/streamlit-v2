@@ -91,6 +91,7 @@ class Analytics:
             "admin_expense_monthly":    queries.get_admin_expense_monthly,
             "latest_sales_collection":  queries.get_latest_sales_collection,
             "crosszid_item_mapping":    queries.get_crosszid_item_mapping,
+            "cacus_lead_links":         queries.get_cacus_lead_links,
         }
 
         query_func = query_map.get(table_name)

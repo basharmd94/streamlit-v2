@@ -2325,6 +2325,109 @@ def delete_call_log(log_id: int) -> Tuple[str, tuple]:
     return sql, (log_id,)
 
 
+# ── Marketing Leads CRM ─────────────────────────────────────────────────────
+# marketing_leads / marketing_lead_call_log are app-owned tables (same convention
+# as crm_call_log) — not synced from the ERP. See db/sql_scripts/create_marketing_leads_tables.sql.
+
+_LEAD_COLS = (
+    "id, zid, fb_lead_id, created_time, ad_id, ad_name, adset_id, adset_name, "
+    "campaign_id, campaign_name, form_id, form_name, is_organic, platform, "
+    "full_name, work_phone_number, company_name, street_address, job_title, "
+    "inbox_url, lead_status, extra_fields, lead_stage, uploaded_by, uploaded_at"
+)
+
+
+def get_marketing_leads(zid: str) -> Tuple[str, tuple]:
+    """All leads for a ZID, newest first."""
+    sql = f"""
+        SELECT {_LEAD_COLS}
+        FROM marketing_leads
+        WHERE zid = %s
+        ORDER BY created_time DESC NULLS LAST
+    """
+    return sql, (zid,)
+
+
+def insert_marketing_leads_sql() -> str:
+    """execute_values template — one call inserts a whole uploaded batch.
+    ON CONFLICT (zid, fb_lead_id) DO NOTHING so re-uploading the same export
+    is a safe no-op; cur.rowcount then reports exactly how many were new."""
+    return f"""
+        INSERT INTO marketing_leads (
+            zid, fb_lead_id, created_time, ad_id, ad_name, adset_id, adset_name,
+            campaign_id, campaign_name, form_id, form_name, is_organic, platform,
+            full_name, work_phone_number, company_name, street_address, job_title,
+            inbox_url, lead_status, extra_fields, uploaded_by
+        ) VALUES %s
+        ON CONFLICT (zid, fb_lead_id) DO NOTHING
+    """
+
+
+def update_lead_stage(lead_id: int, lead_stage: str) -> Tuple[str, tuple]:
+    sql = "UPDATE marketing_leads SET lead_stage = %s WHERE id = %s"
+    return sql, (lead_stage, lead_id)
+
+
+def get_lead_call_logs(lead_id: int) -> Tuple[str, tuple]:
+    """All call log entries for one lead, newest first."""
+    sql = """
+        SELECT id, zid, lead_id, called_at, called_by, outcome, next_visit_date, notes
+        FROM marketing_lead_call_log
+        WHERE lead_id = %s
+        ORDER BY called_at DESC
+        LIMIT 200
+    """
+    return sql, (lead_id,)
+
+
+def get_all_lead_call_logs(zid: str) -> Tuple[str, tuple]:
+    """Every call log row for a ZID, joined with lead name/company — feeds the
+    'all call logs' table (filterable by date called / next visit date)."""
+    sql = """
+        SELECT
+            lcl.id, lcl.zid, lcl.lead_id,
+            l.full_name, l.company_name, l.work_phone_number,
+            lcl.called_at, lcl.called_by, lcl.outcome, lcl.next_visit_date, lcl.notes
+        FROM marketing_lead_call_log lcl
+        JOIN marketing_leads l ON l.id = lcl.lead_id
+        WHERE lcl.zid = %s
+        ORDER BY lcl.called_at DESC
+        LIMIT 5000
+    """
+    return sql, (zid,)
+
+
+def insert_lead_call_log(
+    zid: str, lead_id: int, called_by: str, outcome: str,
+    next_visit_date, notes: str,
+) -> Tuple[str, tuple]:
+    sql = """
+        INSERT INTO marketing_lead_call_log
+            (zid, lead_id, called_by, outcome, next_visit_date, notes)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """
+    return sql, (zid, lead_id, called_by, outcome, next_visit_date, notes)
+
+
+def delete_lead_call_log(log_id: int) -> Tuple[str, tuple]:
+    sql = "DELETE FROM marketing_lead_call_log WHERE id = %s"
+    return sql, (log_id,)
+
+
+def get_cacus_lead_links(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """xurl on cacus is repurposed to hold a converted lead's fb_lead_id (set
+    manually in the ERP when staff turn a lead into a real customer). Reading
+    it live (never stored on marketing_leads) means conversion status is always
+    current regardless of when/whether staff make that update."""
+    zid = filters["zid"][0]
+    sql = """
+        SELECT xcus::text AS cusid, xshort AS cusname, xurl AS fb_lead_id
+        FROM cacus
+        WHERE zid = %s AND xurl IS NOT NULL AND xurl <> ''
+    """
+    return sql, (zid,)
+
+
 def get_crosszid_item_mapping(filters=None) -> Tuple[str, tuple]:
     """Cross-ZID item name mapping: caitem 100001 joined to caitem 100009 via xdrawing.
 
