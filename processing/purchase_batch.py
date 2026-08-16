@@ -1789,8 +1789,12 @@ def build_batch_consolidation(
           .merge(_iss, on=["itemcode", "date"], how="outer")
           .fillna(0.0)
     )
-    _net["net_qty"] = (_net["sqty"] + _net["iqty"] - _net["rqty"]).clip(lower=0.0)
-    _net = _net[_net["net_qty"] > 0].sort_values(["itemcode", "date"])
+    # Allow negatives — a day where returns > sales correctly reduces cumulative depletion
+    # (same behaviour as _build_daily_events / _fifo_allocate_batches in Batch P&L).
+    # max(0, …) in _qty_range keeps the range non-negative; daily negatives propagate
+    # through cumsum so past returns credit back against future sales correctly.
+    _net["net_qty"] = _net["sqty"] + _net["iqty"] - _net["rqty"]
+    _net = _net[_net["net_qty"] != 0].sort_values(["itemcode", "date"])
     _net["cum_net"] = _net.groupby("itemcode")["net_qty"].cumsum()
 
     # itemcode -> (dates_np, cum_net_np)  — used for DEPLETION
@@ -1868,28 +1872,32 @@ def build_batch_consolidation(
         else:
             price_cache[key] = float(row["unit_cost"])
 
-    # ── 5. FIFO snapshots per item, then per batch ────────────────────────────
-    # Process batches oldest→newest per item.
-    # older_open_at_Di = sum of remaining of all prior batches AT Di.
+    # ── 5. FIFO snapshots — per shipment, then per item within that shipment ────
+    # Each shipment is evaluated independently, matching run_batch_profitability_engine
+    # which processes one shipment at a time.  Cross-shipment older_open is intentionally
+    # suppressed: Batch P&L never sees stock from other shipments, so Batch Con must not
+    # either.  Within a shipment, multi-date deliveries of the same item still accumulate
+    # older_open correctly (oldest delivery depletes first).
     # Three snapshots: snap_ms (month start), yesterday, day_before_yest.
-    # MTD qty       = rem(snap_ms) − rem(yesterday)    [absorbed during current month]
+    # MTD qty       = rem(snap_ms) − rem(yesterday)
     # Yesterday qty = rem(day_before_yest) − rem(yesterday)
     batch_rows: list = []
     debug_rows: list = []
 
-    for code, item_df in (
-        p.sort_values(["itemcode", "combinedate"])
-         .groupby("itemcode", sort=False)
-    ):
+    for _shipname, ship_df in p.groupby("shipmentname", sort=False):
+      for code, item_df in (
+        ship_df.sort_values(["itemcode", "combinedate"])
+               .groupby("itemcode", sort=False)
+      ):
         code = str(code)
         item_df = item_df.sort_values("combinedate").reset_index(drop=True)
-        processed: list = []    # (Di, initial_i, older_open_i)
+        processed: list = []    # resets per shipment — no cross-shipment accumulation
 
         for _, batch in item_df.iterrows():
             Di        = batch["combinedate"]
             initial_i = float(batch["initial_qty"])
 
-            # older_open_at_Di: remaining of every prior batch AT Di
+            # older_open within THIS shipment only
             older_open_i = float(sum(
                 _rem(Dj, init_j, oo_j, code, Di)
                 for Dj, init_j, oo_j in processed
