@@ -1654,7 +1654,9 @@ def build_abc_xyz(sales_df: pd.DataFrame) -> pd.DataFrame:
 def build_batch_consolidation(
     purchase_df: pd.DataFrame,
     sales_df: pd.DataFrame,
-) -> pd.DataFrame:
+    returns_df: Optional[pd.DataFrame] = None,
+    issues_df:  Optional[pd.DataFrame] = None,
+) -> tuple:
     """Shipment-level consolidation with FIFO stock snapshots and MTD/yesterday sales.
 
     Returns one row per (closed) shipment:
@@ -1681,7 +1683,12 @@ def build_batch_consolidation(
         "Month Start Stock (BDT)", "Current Stock Yesterday (BDT)",
         "MTD Sales (BDT)", "Yesterday Sales (BDT)",
     ]
-    EMPTY = pd.DataFrame(columns=_COLS)
+    _DBG_COLS = [
+        "Shipment", "Item Code", "Item Name", "Batch Date",
+        "Initial Qty", "Older Open", "Depletion Seen",
+        "Sold (FIFO)", "Remaining Qty", "Price", "Stock Val",
+    ]
+    EMPTY = (pd.DataFrame(columns=_COLS), pd.DataFrame(columns=_DBG_COLS))
 
     if purchase_df is None or purchase_df.empty:
         return EMPTY
@@ -1735,13 +1742,63 @@ def build_batch_consolidation(
     s["cum_qty"] = s.groupby("itemcode")["qty"].cumsum()
     s["cum_rev"] = s.groupby("itemcode")["rev"].cumsum()
 
-    # Lookup dict: itemcode -> (dates_np, cum_qty_np, cum_rev_np)
+    # Lookup dict: itemcode -> (dates_np, cum_qty_np, cum_rev_np)  — used for PRICING only
     sales_lkp: dict = {}
     for code, grp in s.groupby("itemcode"):
         sales_lkp[str(code)] = (
             grp["date"].values.astype("datetime64[ns]"),
             grp["cum_qty"].values.astype(float),
             grp["cum_rev"].values.astype(float),
+        )
+
+    # ── 3b. Build net-depletion lookup: sales + issues − returns ─────────────
+    # Returns add stock back; issues deplete just like sales.
+    # net_qty per (itemcode, date) drives FIFO — identical to _fifo_allocate_batches.
+
+    _r = pd.DataFrame()
+    if returns_df is not None and not returns_df.empty:
+        _r = returns_df.copy()
+        _r["itemcode"] = _r["itemcode"].astype(str).str.strip()
+        _r["date"]     = pd.to_datetime(_r["date"], errors="coerce").dt.floor("D")
+        _rqty = next((c for c in ["returnqty", "return_qty", "quantity"] if c in _r.columns), None)
+        if _rqty:
+            _r["_rq"] = pd.to_numeric(_r[_rqty], errors="coerce").fillna(0.0).clip(lower=0.0)
+            _r = _r[_r["date"].notna()].groupby(["itemcode", "date"], as_index=False).agg(rqty=("_rq", "sum"))
+        else:
+            _r = pd.DataFrame(columns=["itemcode", "date", "rqty"])
+    if _r.empty:
+        _r = pd.DataFrame(columns=["itemcode", "date", "rqty"])
+
+    _iss = pd.DataFrame()
+    if issues_df is not None and not issues_df.empty:
+        _iss = issues_df.copy()
+        _iss["itemcode"] = _iss["itemcode"].astype(str).str.strip()
+        _iss["date"]     = pd.to_datetime(_iss["date"], errors="coerce").dt.floor("D")
+        _iqty = next((c for c in ["issue_qty", "quantity"] if c in _iss.columns), None)
+        if _iqty:
+            _iss["_iq"] = pd.to_numeric(_iss[_iqty], errors="coerce").fillna(0.0).clip(lower=0.0)
+            _iss = _iss[_iss["date"].notna()].groupby(["itemcode", "date"], as_index=False).agg(iqty=("_iq", "sum"))
+        else:
+            _iss = pd.DataFrame(columns=["itemcode", "date", "iqty"])
+    if _iss.empty:
+        _iss = pd.DataFrame(columns=["itemcode", "date", "iqty"])
+
+    _net = (
+        s[["itemcode", "date", "qty"]].rename(columns={"qty": "sqty"})
+          .merge(_r,   on=["itemcode", "date"], how="outer")
+          .merge(_iss, on=["itemcode", "date"], how="outer")
+          .fillna(0.0)
+    )
+    _net["net_qty"] = (_net["sqty"] + _net["iqty"] - _net["rqty"]).clip(lower=0.0)
+    _net = _net[_net["net_qty"] > 0].sort_values(["itemcode", "date"])
+    _net["cum_net"] = _net.groupby("itemcode")["net_qty"].cumsum()
+
+    # itemcode -> (dates_np, cum_net_np)  — used for DEPLETION
+    net_lkp: dict = {}
+    for code, grp in _net.groupby("itemcode"):
+        net_lkp[str(code)] = (
+            grp["date"].values.astype("datetime64[ns]"),
+            grp["cum_net"].values.astype(float),
         )
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -1753,14 +1810,14 @@ def build_batch_consolidation(
         return float(cum_np[idx]) if idx >= 0 else 0.0
 
     def _qty_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
-        """Qty sold in (D, T] — strictly after D, matching engine convention."""
-        if code not in sales_lkp or pd.isna(D) or pd.isna(T) or T <= D:
+        """Net depletion (sales + issues − returns) in (D, T] — matches _fifo_allocate_batches."""
+        if code not in net_lkp or pd.isna(D) or pd.isna(T) or T <= D:
             return 0.0
-        dn, cq, _ = sales_lkp[code]
+        dn, cq = net_lkp[code]
         return max(0.0, _cum_at(dn, cq, T) - _cum_at(dn, cq, D))
 
     def _rev_range(code: str, D: pd.Timestamp, T: pd.Timestamp) -> float:
-        """Revenue in (D, T]."""
+        """Revenue in (D, T] — from sales only, used for pricing."""
         if code not in sales_lkp or pd.isna(D) or pd.isna(T) or T <= D:
             return 0.0
         dn, _, cr = sales_lkp[code]
@@ -1818,6 +1875,7 @@ def build_batch_consolidation(
     # MTD qty       = rem(snap_ms) − rem(yesterday)    [absorbed during current month]
     # Yesterday qty = rem(day_before_yest) − rem(yesterday)
     batch_rows: list = []
+    debug_rows: list = []
 
     for code, item_df in (
         p.sort_values(["itemcode", "combinedate"])
@@ -1857,10 +1915,27 @@ def build_batch_consolidation(
                 "yest_val":      yest_qty  * price,
             })
 
+            depletion_seen = round(_qty_range(code, Di, yesterday))
+            sold_fifo      = round(initial_i - rem_y)
+            debug_rows.append({
+                "Shipment":       batch["shipmentname"],
+                "Item Code":      code,
+                "Item Name":      str(batch.get("itemname", "")),
+                "Batch Date":     Di,
+                "Initial Qty":    round(initial_i),
+                "Older Open":     round(older_open_i),
+                "Depletion Seen": depletion_seen,
+                "Sold (FIFO)":    sold_fifo,
+                "Remaining Qty":  round(rem_y),
+                "Price":          round(price, 2),
+                "Stock Val":      round(rem_y * price),
+            })
+
     if not batch_rows:
         return EMPTY
 
-    br = pd.DataFrame(batch_rows)
+    br    = pd.DataFrame(batch_rows)
+    dbg   = pd.DataFrame(debug_rows) if debug_rows else pd.DataFrame(columns=_DBG_COLS)
 
     # ── 6. Aggregate to shipment level ────────────────────────────────────────
     ship_dates = (
@@ -1897,4 +1972,9 @@ def build_batch_consolidation(
     # Drop shipments with zero current stock (fully depleted)
     out = out[out["Current Stock Yesterday (BDT)"] > 0].reset_index(drop=True)
 
-    return out[_COLS]
+    # Keep debug rows only for shipments that appear in the summary
+    active_ships = set(out["Shipment Name"].astype(str))
+    if not dbg.empty and "Shipment" in dbg.columns:
+        dbg = dbg[dbg["Shipment"].astype(str).isin(active_ships)].reset_index(drop=True)
+
+    return out[_COLS], dbg
