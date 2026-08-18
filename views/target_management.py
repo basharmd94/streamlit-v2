@@ -28,6 +28,7 @@ from views.salesman_score import _render_salesman_score
 from views.next_month_target import _render_next_month_target
 from views.field_tracking import _render_field_tracking
 from views.glpmt_shared import render_glpmt_panel as _render_glpmt_panel
+from views.returns_registry import _render_returns_registry
 
 
 # ── Metric cards ───────────────────────────────────────────────────────────────
@@ -1043,7 +1044,7 @@ def display_target_management_page(current_page, zid, data_dict):
         ["👤 Individual Salesman", "📊 All Salesmen Overview", "🎯 Salesman Score",
          "📊 3 Month Averages", "🧾 SR Trn",
          "📦 Current Stock", "🔮 Next Month Target", "🗺️ Field Tracking",
-         "📲 App Collections"],
+         "📲 App Collections", "↩️ Returns Registry"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -1117,6 +1118,10 @@ def display_target_management_page(current_page, zid, data_dict):
 
     if _view_mode == "📲 App Collections":
         _render_glpmt_panel(str(zid), key_suffix="_tm")
+        return
+
+    if _view_mode == "↩️ Returns Registry":
+        _render_returns_registry(str(zid))
         return
 
     if _view_mode == "📦 Current Stock":

@@ -408,6 +408,60 @@ def get_return_data(filters=None):
     return query, tuple(params)
 
 
+def get_returns_registry(filters=None) -> Tuple[str, tuple]:
+    """Returns Registry — open (unreconciled) customer returns salesmen log
+    directly into the mobile Ordering app, status = '1-Open' only.
+
+    opcrn.xtotamt is blank on open returns (not yet finalized), so the total
+    is summed from opcdt.xlineamt instead — the same column get_return_data
+    uses for POSTED returns (treturnamt).
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            o.zid,
+            o.xcrnnum               AS crnnum,
+            o.xdate                 AS date,
+            o.xcus                  AS cusid,
+            COALESCE(c.xshort, '')  AS cusname,
+            o.xemp                  AS spid,
+            COALESCE(pr.xname, '')  AS spname,
+            COALESCE(o.xreason, '') AS reason,
+            COALESCE(SUM(d.xlineamt), 0) AS total_amt
+        FROM opcrn o
+        LEFT JOIN cacus c  ON c.zid = o.zid AND c.xcus = o.xcus
+        LEFT JOIN prmst pr ON pr.zid = o.zid AND pr.xemp = o.xemp
+        LEFT JOIN opcdt d  ON d.zid = o.zid AND d.xcrnnum = o.xcrnnum
+        WHERE o.zid = %s AND o.xstatuscrn = '1-Open'
+        GROUP BY o.zid, o.xcrnnum, o.xdate, o.xcus, c.xshort, o.xemp, pr.xname, o.xreason
+        ORDER BY o.xdate DESC
+    """
+    return sql, (zid,)
+
+
+def get_returns_registry_items(filters=None) -> Tuple[str, tuple]:
+    """Product line items (opcdt) behind get_returns_registry's header rows —
+    joined back to opcrn so only lines of OPEN ('1-Open') returns are included."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            d.zid,
+            d.xcrnnum  AS crnnum,
+            d.xitem    AS itemcode,
+            d.xdesc    AS itemname,
+            d.xqty     AS qty,
+            d.xrate    AS rate,
+            d.xlineamt AS lineamt
+        FROM opcdt d
+        JOIN opcrn o ON o.zid = d.zid AND o.xcrnnum = d.xcrnnum
+        WHERE d.zid = %s AND o.xstatuscrn = '1-Open'
+        ORDER BY d.xcrnnum, d.xrow
+    """
+    return sql, (zid,)
+
+
 def get_collection_data(filters=None):
     """Queries mv_collection_vouchers (materialized view).
 

@@ -235,6 +235,20 @@ Never merge glpmt data across ZIDs before calling either entry point — a custo
 
 ---
 
+## Returns Registry (`views/returns_registry.py` → Target Management "↩️ Returns Registry" mode)
+
+Customer returns salesmen log directly into the mobile Ordering app, still pending approval — `opcrn.xstatuscrn = '1-Open'` only (other statuses: `2-Accepted`, `3-Issued` — not shown here). Same architectural family as `glpmt`/App Collections: an app-staged entity read from the ERP, not app-owned.
+
+- `core/queries.py::get_returns_registry` — header rows (`opcrn`), one per return. **`opcrn.xtotamt` is blank on open returns** (not finalized yet) — the displayed total is `SUM(opcdt.xlineamt)` instead, joined in and grouped by `xcrnnum`. Sorted by `xdate` DESC.
+- `core/queries.py::get_returns_registry_items` — product line items (`opcdt`), joined back to `opcrn` so only lines belonging to an open header are included. `opcdt.xdesc` is a reliable snapshot (confirmed matches `caitem.xdesc`) — no `caitem` join needed for item names.
+- Real data has at least one legacy row with an out-of-range sentinel date (`2999-12-31`, exceeds pandas' `Timestamp` max) — `pd.to_datetime(..., errors="coerce")` is mandatory here, not optional; without it the whole page crashes with `OutOfBoundsDatetime`. The affected row degrades gracefully (blank date, sorts last).
+
+**Table 1 → Table 2 relationship**: the "Customer" filter above Table 1 is a single-select (not multiselect, unlike the Salesman filter) — it does double duty, narrowing Table 1 **and** driving which customer's product lines populate Table 2 below. Table 2 stays empty with a prompt until a customer is chosen.
+
+Spans all 3 ZIDs (100000/100001/100005 all have open returns) — `Analytics("returns_registry", zid=zid, ...)` is parameterized by whatever ZID is active in the sidebar, same as every other single-ZID-scoped table in this app; no cross-ZID merging needed here (unlike glpmt → Latest Collection above).
+
+---
+
 ## Marketing Leads CRM (`views/marketing.py` → "🎣 Leads" mode)
 
 Facebook Lead Ads (or similar) CSV/Excel exports get uploaded here and tracked through to conversion.

@@ -93,6 +93,8 @@ class Analytics:
             "latest_sales_collection":  queries.get_latest_sales_collection,
             "crosszid_item_mapping":    queries.get_crosszid_item_mapping,
             "cacus_lead_links":         queries.get_cacus_lead_links,
+            "returns_registry":         queries.get_returns_registry,
+            "returns_registry_items":   queries.get_returns_registry_items,
         }
 
         query_func = query_map.get(table_name)
