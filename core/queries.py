@@ -136,10 +136,12 @@ def get_sales_data(filters=None):
 
 
 def get_sales_7day(filters=None):
-    """Last 14 calendar days of sales line items from mv_sales_line_items.
+    """Last 90 calendar days of sales line items from mv_sales_line_items.
 
-    Used by the Customer Support DO-detail table. Date filter is applied in SQL
-    so only a small slice of the MV is fetched per call.
+    Used by the Customer Support DO-detail table (function/table name kept as
+    "7day" for historical reasons — the window was extended to 90 days without
+    renaming every reference). Date filter is applied in SQL so only a small
+    slice of the MV is fetched per call.
     """
     filters = filters or {}
     sql = """
@@ -150,9 +152,42 @@ def get_sales_7day(filters=None):
             quantity, altsales, proddiscount, totalsales, cost
         FROM mv_sales_line_items
         WHERE zid = %s
-          AND date >= CURRENT_DATE - 13
+          AND date >= CURRENT_DATE - 89
     """
     return sql, (filters["zid"][0],)
+
+
+def get_cus_delivery_payment_promise(filters=None) -> Tuple[str, tuple]:
+    """Per customer, the promised delivery date and promised payment date the
+    salesman logged in the mobile Ordering app on their most recent order that
+    actually has both fields set.
+
+    opdor.xdatedel / xdatepay are sparsely populated (this app-logging only
+    started recently) and use 2999-12-31 as an "unset" sentinel elsewhere in
+    this ERP — both are excluded here at the SQL level, not just coerced
+    client-side, since 2999-12-31 overflows pandas' Timestamp range and would
+    crash a naive pd.to_datetime() call downstream.
+
+    "Latest" = most recent xdate among orders where the pair is actually set —
+    not simply the customer's most recent order overall, which may predate
+    (or simply lack) this field being filled in.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT DISTINCT ON (o.zid, o.xcus)
+            o.zid,
+            o.xcus     AS cusid,
+            o.xdate    AS order_date,
+            o.xdatedel AS promised_delivery,
+            o.xdatepay AS promised_payment
+        FROM opdor o
+        WHERE o.zid = %s
+          AND o.xdatedel IS NOT NULL AND o.xdatedel <> '2999-12-31'
+          AND o.xdatepay IS NOT NULL AND o.xdatepay <> '2999-12-31'
+        ORDER BY o.zid, o.xcus, o.xdate DESC
+    """
+    return sql, (zid,)
 
     # ── ORIGINAL base-table version (preserved for reference) ────────────────
     # filters = filters or {}

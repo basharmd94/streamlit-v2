@@ -122,22 +122,48 @@ def load_all_glpmt() -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False, ttl=1800)
+def load_all_delivery_payment_promise() -> pd.DataFrame:
+    """Per customer, the salesman's promised delivery date + promised payment
+    date logged via the mobile Ordering app (opdor.xdatedel/xdatepay), for
+    every ZID with customer-facing AR. Currently only populated for 100001 —
+    other ZIDs degrade gracefully to an empty slice, same as load_all_glpmt."""
+    from core.analytics import Analytics
+
+    dfs: list[pd.DataFrame] = []
+    for zid in _ZID_PROJECT:
+        df = Analytics("cus_delivery_payment_promise", zid=zid, filters={}).data
+        if df is None or df.empty:
+            continue
+        df = df.copy()
+        df["zid"] = str(zid)
+        dfs.append(df)
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
 # ─── 7-day activity feed ──────────────────────────────────────────────────────
 
 def build_7day_feed(
     ar_df: pd.DataFrame,
     cacus_df: pd.DataFrame,
+    promise_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """Return one row per (zid, customer, voucher) in the last 7 days.
+    """Return one row per (zid, customer, voucher) in the last 90 days.
 
     Aggregates GL lines to voucher level so each CRM row maps to one
     transaction the specialist will tick off.
+
+    promise_df (optional): the ALL-ZID output of load_all_delivery_payment_promise()
+    — merged in per (zid, customer) as promised_delivery/promised_payment.
+    Customer-level attributes, so the same pair repeats across every one of
+    that customer's rows in the feed.
     """
     if ar_df.empty:
         return pd.DataFrame()
 
     today = pd.Timestamp.today().normalize()
-    cutoff = today - pd.Timedelta(days=13)  # inclusive last 14 days
+    cutoff = today - pd.Timedelta(days=89)  # inclusive last 90 days
 
     ar = ar_df.copy()
     ar["xdate"] = pd.to_datetime(ar["xdate"], errors="coerce")
@@ -175,6 +201,20 @@ def build_7day_feed(
             .rename(columns={"cusid": "xsub"})
         )
         feed = feed.merge(contact, on=["zid", "xsub"], how="left")
+
+    # Join promised delivery / promised payment date (customer-level — same
+    # pair repeats across every row that customer has in the feed)
+    if promise_df is not None and not promise_df.empty:
+        promise = (
+            promise_df[["zid", "cusid", "promised_delivery", "promised_payment"]]
+            .copy()
+            .assign(zid=lambda d: d["zid"].astype(str), cusid=lambda d: d["cusid"].astype(str))
+            .rename(columns={"cusid": "xsub"})
+        )
+        feed = feed.merge(promise, on=["zid", "xsub"], how="left")
+    else:
+        feed["promised_delivery"] = pd.NaT
+        feed["promised_payment"] = pd.NaT
 
     feed = feed.sort_values(
         ["xdate", "zid", "xsub"], ascending=[False, True, True]
@@ -220,6 +260,7 @@ def build_latest_sc_for_zid(
     zid: str,
     cacus_df: pd.DataFrame,
     glpmt_df: Optional[pd.DataFrame] = None,
+    promise_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Build Latest Sales & Collection for one ZID using the identical pipeline
     as Collection Analysis → Salesman Due → Latest sale & collection tab.
@@ -233,6 +274,9 @@ def build_latest_sc_for_zid(
     to this ZID internally, then folded into Latest Collection Date/Amount via
     merge_latest_app_payment (same function Salesman Due uses, same rule: a
     more recent app-logged payment wins over an older posted-ledger one).
+
+    promise_df (optional): the ALL-ZID output of load_all_delivery_payment_promise()
+    — sliced to this ZID and merged in as promised_delivery/promised_payment.
     """
     from processing.salesman_due import build_latest_sale_collection_report
 
@@ -247,6 +291,20 @@ def build_latest_sc_for_zid(
     if glpmt_df is not None and not glpmt_df.empty and "zid" in glpmt_df.columns:
         zid_glpmt = glpmt_df[glpmt_df["zid"].astype(str) == str(zid)]
         report = merge_latest_app_payment(report, zid_glpmt)
+
+    if promise_df is not None and not promise_df.empty and "zid" in promise_df.columns:
+        zid_promise = (
+            promise_df[promise_df["zid"].astype(str) == str(zid)]
+            [["cusid", "promised_delivery", "promised_payment"]]
+            .copy()
+            .assign(cusid=lambda d: d["cusid"].astype(str))
+            .rename(columns={"cusid": "Customer Code"})
+        )
+        report["Customer Code"] = report["Customer Code"].astype(str)
+        report = report.merge(zid_promise, on="Customer Code", how="left")
+    else:
+        report["promised_delivery"] = pd.NaT
+        report["promised_payment"] = pd.NaT
 
     # Salesman name from the MV-joined AR ledger (mv_ar_transactions already joins prmst)
     sp_lookup = (
@@ -291,6 +349,7 @@ def build_latest_sc_for_zid(
         "spid", "salesman_name", "city",
         "last_sale_date", "last_sale_amount", "days_since_sale",
         "last_coll_date", "last_coll_amount", "coll_source", "days_since_coll",
+        "promised_delivery", "promised_payment",
         "current_balance",
     ]
     return out[[c for c in keep if c in out.columns]].reset_index(drop=True)

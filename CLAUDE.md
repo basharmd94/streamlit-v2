@@ -249,6 +249,22 @@ Spans all 3 ZIDs (100000/100001/100005 all have open returns) — `Analytics("re
 
 ---
 
+## Promised Delivery / Payment Dates (`opdor.xdatedel` / `opdor.xdatepay`)
+
+Salesmen log a promised delivery date and promised payment date on orders via the mobile Ordering app. `core/queries.py::get_cus_delivery_payment_promise` returns, per customer, the pair from their most recent order **that actually has both fields set** (`DISTINCT ON`, ordered by `xdate DESC`) — not simply their most recent order overall, which may predate or lack this field. Currently only populated for ZID 100001 (237 customers); other ZIDs degrade gracefully to empty.
+
+Same `2999-12-31` "unset" sentinel as Returns Registry shows up here too — excluded at the SQL level (`<> '2999-12-31'`), not just coerced client-side, since a naive `pd.to_datetime()` on it crashes with `OutOfBoundsDatetime`.
+
+Wired into `processing/customer_support.py::load_all_delivery_payment_promise()` (same `_ZID_PROJECT` loop pattern as `load_all_glpmt`/`load_all_cacus`) and merged into two places, both in Customer Support:
+- **90-Day Activity** (`build_7day_feed`, renamed from "14-Day" — the window itself changed from 13 to 89 days back; `core/queries.py::get_sales_7day`'s DO-detail window changed to match. Function/table names kept as `7day`/`14day` in a few internal-only spots — not user-facing, left alone to limit blast radius) — customer-level attribute, so the same pair repeats across every row that customer has in the feed.
+- **Latest Sales & Collection** (`build_latest_sc_for_zid`) — merged on Customer Code alongside the existing `glpmt` merge.
+
+**Sales role cannot see Latest Sales & Collection in Customer Support** — `display_customer_support` only offers that radio option when `st.session_state.user_role != "sales"`; sales users see 90-Day Activity only, with no second option in the radio at all (not just blocked after selection).
+
+**Known pre-existing issue, not introduced by this feature**: `mv_ar_transactions` (backing the AR ledger / 90-Day Activity feed) has at least one garbage far-future date (`2102-10-11`-class, same family as the `stock` table's `year=2102` bug noted under Common Pitfalls) that always passes any `>= cutoff` date filter regardless of window size — it would have affected the old 14-day window too. Not fixed here since it's a shared MV touching many other pages.
+
+---
+
 ## Marketing Leads CRM (`views/marketing.py` → "🎣 Leads" mode)
 
 Facebook Lead Ads (or similar) CSV/Excel exports get uploaded here and tracked through to conversion.
