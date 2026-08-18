@@ -134,9 +134,14 @@ def _sales_14day_data() -> pd.DataFrame:
     return cs.load_all_sales_7day()
 
 
+@st.cache_data(show_spinner="Loading app-entered payments…", ttl=1800)
+def _glpmt_data() -> pd.DataFrame:
+    return cs.load_all_glpmt()
+
+
 @st.cache_data(show_spinner="Building Sales & Collection table…", ttl=1800)
 def _sc_data(zid: str) -> pd.DataFrame:
-    return cs.build_latest_sc_for_zid(_ar_data(), zid, _cacus_data())
+    return cs.build_latest_sc_for_zid(_ar_data(), zid, _cacus_data(), _glpmt_data())
 
 
 
@@ -402,7 +407,7 @@ def _render_merged_sc_table(
         "_status", "zid", "cusid", "customer_name", "last_called", "outcome", "notes",
         "cusmobile", "spid", "salesman_name", "city",
         "days_since_sale", "last_sale_date", "last_sale_amount",
-        "days_since_coll", "last_coll_date", "last_coll_amount",
+        "days_since_coll", "last_coll_date", "last_coll_amount", "coll_source",
         "current_balance",
     ]
     disp_cols = [c for c in col_order if c in df.columns]
@@ -415,6 +420,7 @@ def _render_merged_sc_table(
         "days_since_sale": "Days Sale", "last_sale_date": "Latest Sale Date",
         "last_sale_amount": "Sale Amt", "days_since_coll": "Days Coll",
         "last_coll_date": "Latest Coll Date", "last_coll_amount": "Last Coll Amt",
+        "coll_source": "Coll Source",
         "current_balance": "Balance",
     })
 
@@ -502,7 +508,7 @@ def _render_sc_table_zepto(
         "_status", "cusid", "customer_name", "last_called", "outcome", "notes",
         "cusmobile", "spid", "salesman_name", "city",
         "days_since_sale", "last_sale_date", "last_sale_amount",
-        "days_since_coll", "last_coll_date", "last_coll_amount",
+        "days_since_coll", "last_coll_date", "last_coll_amount", "coll_source",
         "current_balance",
     ]
     disp_cols = [c for c in col_order if c in df.columns]
@@ -513,7 +519,8 @@ def _render_sc_table_zepto(
         "city": "City", "days_since_sale": "Days Sale",
         "last_sale_date": "Latest Sale Date", "last_sale_amount": "Sale Amt",
         "days_since_coll": "Days Coll", "last_coll_date": "Latest Coll Date",
-        "last_coll_amount": "Last Coll Amt", "current_balance": "Balance",
+        "last_coll_amount": "Last Coll Amt", "coll_source": "Coll Source",
+        "current_balance": "Balance",
     })
 
     sm_label_z = f" · Salesman: **{salesman_filter}**" if salesman_filter else ""

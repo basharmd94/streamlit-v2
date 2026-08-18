@@ -141,8 +141,14 @@ def _load_salesman_due_reports(zid: str, project: str) -> dict:
     if prmst_df is None:
         prmst_df = pd.DataFrame(columns=["spid", "spname"])
 
+    glpmt_df = Analytics("glpmt", zid=zid, filters={}).data
+    if glpmt_df is None:
+        glpmt_df = pd.DataFrame()
+
     market_split = str(zid) in ("100000", "100001")
-    return salesman_due.build_salesman_due_reports(ar_df, cacus_df, prmst_df, market_split)
+    return salesman_due.build_salesman_due_reports(
+        ar_df, cacus_df, prmst_df, market_split, glpmt_df=glpmt_df
+    )
 
 
 @st.cache_data(ttl=3600, show_spinner="Building Salesman Due report (partner ZID)...")
@@ -165,8 +171,14 @@ def _load_salesman_due_reports_any(zid: str) -> dict:
     if prmst_df is None:
         prmst_df = pd.DataFrame(columns=["spid", "spname"])
 
+    glpmt_df = Analytics("glpmt", zid=zid, filters={}).data
+    if glpmt_df is None:
+        glpmt_df = pd.DataFrame()
+
     market_split = str(zid) in ("100000", "100001")
-    return salesman_due.build_salesman_due_reports(ar_df, cacus_df, prmst_df, market_split)
+    return salesman_due.build_salesman_due_reports(
+        ar_df, cacus_df, prmst_df, market_split, glpmt_df=glpmt_df
+    )
 
 
 @timed

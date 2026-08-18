@@ -195,6 +195,69 @@ def build_latest_sale_collection_report(
     return report
 
 
+def merge_latest_app_payment(report_df: pd.DataFrame, glpmt_df: pd.DataFrame) -> pd.DataFrame:
+    """Fold the latest mobile-app payment (glpmt) into 'Latest Collection Date' /
+    'Latest Collection Amount', per Customer Code — whichever source's date is
+    later wins.
+
+    glpmt entries aren't posted to the GL yet (they're staged pending
+    reconciliation), so without this, an app-logged payment more recent than
+    the last POSTED collection voucher would leave the report looking stale —
+    it would show an older ledger collection as "latest" even though the
+    customer has since paid via the app.
+
+    Deliberately does NOT touch "Current Balance" — that must keep reflecting
+    the real posted ledger; an unreconciled app payment hasn't actually
+    reduced it yet (it could still be rejected/reversed before posting).
+
+    glpmt_df must already be scoped to the same single ZID as report_df —
+    callers are responsible for that (see build_salesman_due_reports /
+    build_latest_sc_for_zid, both of which operate one ZID at a time).
+
+    Adds a "Collection Source" column ("Ledger" / "App (Pending)") so viewers
+    can tell a shown collection is still unreconciled, not confirmed-posted.
+    """
+    d = report_df.copy()
+    d["Collection Source"] = ""
+    d.loc[d["Latest Collection Date"].notna(), "Collection Source"] = "Ledger"
+
+    if glpmt_df is None or glpmt_df.empty or d.empty:
+        return d
+
+    g = glpmt_df.copy()
+    g["cusid"] = g["cusid"].astype(str)
+    g["paydate"] = pd.to_datetime(g["paydate"], errors="coerce")
+    latest_app = (
+        g.dropna(subset=["paydate"])
+         .sort_values("paydate")
+         .groupby("cusid", as_index=False)
+         .last()[["cusid", "paydate", "payamt"]]
+         .rename(columns={"paydate": "_app_date", "payamt": "_app_amt"})
+    )
+    if latest_app.empty:
+        return d
+
+    d["Customer Code"] = d["Customer Code"].astype(str)
+    d["Latest Collection Date"] = pd.to_datetime(d["Latest Collection Date"], errors="coerce")
+    d = d.merge(latest_app, left_on="Customer Code", right_on="cusid", how="left").drop(columns=["cusid"])
+    # Explicit dtypes — an all-unmatched left join otherwise leaves _app_date/_app_amt
+    # as object dtype, which pandas warns about when later assigned into the
+    # float64/datetime64 target columns below (harmless today, but a future
+    # pandas version turns this into an error).
+    d["_app_date"] = pd.to_datetime(d["_app_date"], errors="coerce")
+    d["_app_amt"]  = pd.to_numeric(d["_app_amt"], errors="coerce")
+    d["Latest Collection Amount"] = pd.to_numeric(d["Latest Collection Amount"], errors="coerce")
+
+    app_is_later = d["_app_date"].notna() & (
+        d["Latest Collection Date"].isna() | (d["_app_date"] > d["Latest Collection Date"])
+    )
+    d.loc[app_is_later, "Latest Collection Date"]   = d.loc[app_is_later, "_app_date"]
+    d.loc[app_is_later, "Latest Collection Amount"] = d.loc[app_is_later, "_app_amt"]
+    d.loc[app_is_later, "Collection Source"]        = "App (Pending)"
+
+    return d.drop(columns=["_app_date", "_app_amt"])
+
+
 def build_trickledown_balances(
     df_clean: pd.DataFrame,
     months_back: int = _MONTHS_BACK,
@@ -541,12 +604,17 @@ def build_salesman_due_reports(
     cacus_df: pd.DataFrame,
     prmst_df: pd.DataFrame,
     market_split: bool,
+    glpmt_df: pd.DataFrame = None,
 ) -> dict:
     """End-to-end port of jupyter_audits/HM_36_*_Due.py.
 
     market_split=True uses the HMBR/GI main_due_report (Retail/District split
     + market summary + grand total). market_split=False uses the Zepto
     main_due_report (salesman totals + single "Total" row).
+
+    glpmt_df (optional): mobile-app payment entries for THIS SAME ZID only —
+    folded into report_df's Latest Collection Date/Amount via
+    merge_latest_app_payment. Caller must pre-filter to one ZID.
 
     Returns a dict with keys: main_due_report, report_df, report_cc_with_names,
     missing_customers_df.
@@ -576,6 +644,7 @@ def build_salesman_due_reports(
         main_due_report = build_main_due_report_simple(report_salesman_area_city)
 
     report_df_final = finalize_report_df(report_df, df_customer, df_salesman)
+    report_df_final = merge_latest_app_payment(report_df_final, glpmt_df)
     missing_customers_df = build_missing_customers(report_df_final, report_cc_with_names)
 
     return {

@@ -10,7 +10,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-from processing.salesman_due import prep_ar_ledger
+from processing.salesman_due import prep_ar_ledger, merge_latest_app_payment
 
 # ZIDs that have customer-facing AR (project per ZID matches Salesman Due)
 _ZID_PROJECT: dict[str, str] = {
@@ -95,6 +95,24 @@ def load_all_cacus() -> pd.DataFrame:
     dfs: list[pd.DataFrame] = []
     for zid in _ZID_PROJECT:
         df = Analytics("cacus_directory", zid=zid, filters={}).data
+        if df is None or df.empty:
+            continue
+        df = df.copy()
+        df["zid"] = str(zid)
+        dfs.append(df)
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def load_all_glpmt() -> pd.DataFrame:
+    """Mobile Ordering-app payment entries (glpmt) for every ZID with
+    customer-facing AR — feeds merge_latest_app_payment in build_latest_sc_for_zid."""
+    from core.analytics import Analytics
+
+    dfs: list[pd.DataFrame] = []
+    for zid in _ZID_PROJECT:
+        df = Analytics("glpmt", zid=zid, filters={}).data
         if df is None or df.empty:
             continue
         df = df.copy()
@@ -201,6 +219,7 @@ def build_latest_sc_for_zid(
     ar_df_cleaned: pd.DataFrame,
     zid: str,
     cacus_df: pd.DataFrame,
+    glpmt_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Build Latest Sales & Collection for one ZID using the identical pipeline
     as Collection Analysis → Salesman Due → Latest sale & collection tab.
@@ -209,6 +228,11 @@ def build_latest_sc_for_zid(
     prep_ar_ledger has been applied per ZID and running_balance is present).
     This guarantees balances, latest sale, and latest collection all match
     the Salesman Due report exactly.
+
+    glpmt_df (optional): the ALL-ZID output of load_all_glpmt() — sliced down
+    to this ZID internally, then folded into Latest Collection Date/Amount via
+    merge_latest_app_payment (same function Salesman Due uses, same rule: a
+    more recent app-logged payment wins over an older posted-ledger one).
     """
     from processing.salesman_due import build_latest_sale_collection_report
 
@@ -219,6 +243,10 @@ def build_latest_sc_for_zid(
     report = build_latest_sale_collection_report(zid_df)
     if report.empty:
         return pd.DataFrame()
+
+    if glpmt_df is not None and not glpmt_df.empty and "zid" in glpmt_df.columns:
+        zid_glpmt = glpmt_df[glpmt_df["zid"].astype(str) == str(zid)]
+        report = merge_latest_app_payment(report, zid_glpmt)
 
     # Salesman name from the MV-joined AR ledger (mv_ar_transactions already joins prmst)
     sp_lookup = (
@@ -255,13 +283,14 @@ def build_latest_sc_for_zid(
         "Sale Amount":              "last_sale_amount",
         "Latest Collection Amount": "last_coll_amount",
         "Current Balance":          "current_balance",
+        "Collection Source":        "coll_source",
     })
 
     keep = [
         "cusid", "customer_name", "cusmobile",
         "spid", "salesman_name", "city",
         "last_sale_date", "last_sale_amount", "days_since_sale",
-        "last_coll_date", "last_coll_amount", "days_since_coll",
+        "last_coll_date", "last_coll_amount", "coll_source", "days_since_coll",
         "current_balance",
     ]
     return out[[c for c in keep if c in out.columns]].reset_index(drop=True)
