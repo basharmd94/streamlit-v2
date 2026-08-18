@@ -13,6 +13,14 @@ def _load_tts_final_items(zid: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_crosszid_mapping() -> pd.DataFrame:
+    """Cross-ZID item mapping — fixed 100001/100009 join, ZID-agnostic."""
+    from core.analytics import Analytics
+    df = Analytics("crosszid_item_mapping", zid="100001", filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
 def _build_sku_sim_excel(
     calc_df: pd.DataFrame,
     D0: float,
@@ -1128,6 +1136,121 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
             )
 
 
+# ── Cross-ZID Item Mapping ────────────────────────────────────────────────────────
+# Moved here from Manufacturing Analysis (100001 <-> 100009 packaging-item
+# mapping fits Purchase Analysis better than manufacturing).
+
+def _render_crosszid_mapping():
+    st.subheader("🔗 Cross-ZID Item Mapping")
+    st.caption(
+        "Every Gulshan Packaging (100009) item whose `caitem.xdrawing` claims a link "
+        "to a HMBR (100001) item code. A claim that resolves to a real 100001 item "
+        "shows both names side by side (mismatched names highlighted in amber). A "
+        "claim that does NOT resolve — a broken or mistyped `xdrawing` value — has "
+        "no duplicate on the 100001 side and is highlighted in red."
+    )
+
+    df = _load_crosszid_mapping()
+    if df.empty:
+        st.info("No cross-ZID mappings found (no 100009 items with a valid xdrawing).")
+        return
+
+    df = df.copy()
+    df["has_duplicate"] = df["itemcode"].notna()
+    df["itemcode"] = df["itemcode"].fillna("")
+    for col in ["name_100001", "name_100009"]:
+        df[col] = df[col].fillna("").astype(str).str.strip()
+    df["names_match"] = df["has_duplicate"] & (df["name_100001"].str.lower() == df["name_100009"].str.lower())
+
+    def _status(row):
+        if not row["has_duplicate"]:
+            return "❌ No Duplicate"
+        if not row["names_match"]:
+            return "⚠️ Name Mismatch"
+        return "✅ Match"
+    df["Status"] = df.apply(_status, axis=1)
+
+    n_total    = len(df)
+    n_no_dup   = int((~df["has_duplicate"]).sum())
+    n_mismatch = int((df["has_duplicate"] & ~df["names_match"]).sum())
+    n_match    = n_total - n_no_dup - n_mismatch
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mapped Items",    f"{n_total:,}")
+    c2.metric("✅ Names Match",   f"{n_match:,}")
+    c3.metric("⚠️ Name Mismatch", f"{n_mismatch:,}")
+    c4.metric("❌ No Duplicate",  f"{n_no_dup:,}")
+
+    filter_opt = st.radio(
+        "Show",
+        ["All", "⚠️ Name mismatches only", "❌ No duplicate only"],
+        horizontal=True,
+        key="crosszid_filter",
+    )
+    search = st.text_input("Search item code or name", placeholder="e.g. 2145 or plier", key="crosszid_search")
+
+    disp = df.copy()
+    if filter_opt == "⚠️ Name mismatches only":
+        disp = disp[disp["has_duplicate"] & ~disp["names_match"]]
+    elif filter_opt == "❌ No duplicate only":
+        disp = disp[~disp["has_duplicate"]]
+    if search.strip():
+        q = search.strip().lower()
+        mask = (
+            disp["itemcode"].astype(str).str.lower().str.contains(q, na=False) |
+            disp["name_100001"].str.lower().str.contains(q, na=False) |
+            disp["name_100009"].str.lower().str.contains(q, na=False) |
+            disp["item_100009"].astype(str).str.lower().str.contains(q, na=False)
+        )
+        disp = disp[mask]
+
+    disp = disp.reset_index(drop=True)
+    flags = disp[["has_duplicate", "names_match"]].copy()
+
+    disp = disp.rename(columns={
+        "itemcode":    "Item Code (100001)",
+        "name_100001": "Name — HMBR (100001)",
+        "name_100009": "Name — Gulshan (100009)",
+        "item_100009": "Item Code (100009)",
+        "group_100009":"Group (100009)",
+        "xabc_100001": "Group (100001)",
+    })
+    display_cols = [
+        "Status",
+        "Item Code (100001)", "Name — HMBR (100001)",
+        "Name — Gulshan (100009)", "Item Code (100009)",
+        "Group (100009)", "Group (100001)",
+    ]
+    disp = disp[[c for c in display_cols if c in disp.columns]].copy()
+
+    # Orphaned rows never had a real 100001 match — show "—" instead of blank.
+    for c in ["Item Code (100001)", "Name — HMBR (100001)", "Group (100001)"]:
+        if c in disp.columns:
+            disp[c] = disp[c].where(flags["has_duplicate"], "—")
+
+    def _highlight_row(row):
+        idx = row.name
+        if not flags.loc[idx, "has_duplicate"]:
+            return ["background-color: #F8D7DA; color: #721C24"] * len(row)
+        if not flags.loc[idx, "names_match"]:
+            return ["background-color: #FFF3CD; color: #856404"] * len(row)
+        return [""] * len(row)
+
+    try:
+        styled = disp.style.apply(_highlight_row, axis=1)
+        st.dataframe(styled, width="stretch", hide_index=True)
+    except Exception:
+        st.dataframe(disp, width="stretch", hide_index=True)
+
+    st.download_button(
+        "⬇ Download CSV",
+        disp.to_csv(index=False).encode("utf-8"),
+        file_name="crosszid_item_mapping.csv",
+        mime="text/csv",
+        key="dl_crosszid_mapping",
+    )
+
+
 @timed
 def display_purchase_analysis_page(current_page, zid, data_dict):
 
@@ -1141,10 +1264,16 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             "⏱ Time to Sell",
             "📊 ABC-XYZ",
             "📑 Batch Con",
+            "🔗 Cross-ZID Mapping",
         ],
         horizontal=True,
         index=0,
     )
+
+    # Cross-ZID mapping is a reference report available for all ZIDs
+    if mode == "🔗 Cross-ZID Mapping":
+        _render_crosszid_mapping()
+        return
 
     # -----------------------------
     # MODE 3: Total Inventory Overview

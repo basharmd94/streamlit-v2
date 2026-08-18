@@ -196,6 +196,14 @@ View mode radio: `["👤 Individual Salesman", "📊 All Salesmen Overview", "�
 
 ---
 
+## Cross-ZID Item Mapping (`views/purchase.py` → "🔗 Cross-ZID Mapping" mode)
+
+Audit report for the 100001 ↔ 100009 packaging-item link — lives in Purchase Analysis (moved from Manufacturing Analysis, where it was added by mistake). `core/queries.py::get_crosszid_item_mapping` is a **LEFT JOIN anchored on 100009**, not an INNER JOIN: every 100009 `caitem` row with a valid `xdrawing` (the standard non-blank/`'NO'`/`'KH*'` CASE) is supposed to resolve to a real 100001 item. An INNER JOIN would silently drop the ones that don't; the LEFT JOIN keeps them with `itemcode`/`name_100001` NULL so the view can flag them as **"❌ No Duplicate"** instead of them vanishing. Three states are surfaced: `✅ Match`, `⚠️ Name Mismatch` (matched but names differ), `❌ No Duplicate` (claimed link doesn't resolve — typo'd/stale `xdrawing`).
+
+Only checks the 100009→100001 direction, since `xdrawing` is the only explicit linkage signal (100001's own `xdrawing` column means something unrelated — variant consolidation, not cross-ZID). The reverse direction (100001 items with no 100009 counterpart) isn't checked — most of 100001's catalog has nothing to do with 100009 and was never meant to have one.
+
+---
+
 ## Customer Columns (all sales-derived tables)
 
 | DB column | Alias | Display label |
