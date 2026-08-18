@@ -74,6 +74,7 @@ class Analytics:
             "gldetail_simple":  queries.get_gldetail_simple,
             "glheader_simple":  queries.get_glheader_simple,
             "glmst_simple":     queries.get_glmst_simple,
+            "glpmt":            queries.get_glpmt_data,
             "casup_simple":     queries.get_casup_simple,
             "stock_movement":   queries.get_stock_movement_data,
             # "imtrn_movements" removed — replaced by mv_stock_movement + mv_issues_daily_item

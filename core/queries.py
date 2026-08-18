@@ -1329,6 +1329,43 @@ def get_glheader_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_glpmt_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """glpmt — payment collections salesmen enter directly into the mobile
+    Ordering app, staged here pending reconciliation into the real GL ledger.
+    One row per payment entry.
+
+    spname prefers prmst.xname (properly formatted, e.g. "Ziaur Rahman") over
+    glpmt's own xname (raw/informal, e.g. "rziaur"), falling back to the raw
+    value if the employee code isn't in prmst.
+
+    Sorted by ztime (date of ENTRY into the app) descending — latest first —
+    per the report spec; not xpaydate (the payment's own date, which can be
+    back-dated and differs from when it was actually logged).
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            p.zid,
+            p.xpmtnum                    AS pmtnum,
+            p.xcus                       AS cusid,
+            p.xshort                     AS cusname,
+            p.xemp                       AS spid,
+            COALESCE(pr.xname, p.xname)  AS spname,
+            p.xpaydate                   AS paydate,
+            p.xpayamt                    AS payamt,
+            p.xpaytype                   AS paytype,
+            p.xbankdetail                AS bankdetail,
+            p.xpaystatus                 AS paystatus,
+            p.xremarks                   AS remarks,
+            p.ztime                      AS entry_time
+        FROM glpmt p
+        LEFT JOIN prmst pr ON pr.xemp = p.xemp AND pr.zid = p.zid
+        WHERE p.zid = %s
+        ORDER BY p.ztime DESC
+    """
+    return sql, (zid,)
+
+
 def get_glmst_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     sql = """

@@ -6,6 +6,7 @@ from core.analytics import Analytics
 from processing import common, collection, salesman_due
 from utils.utils import timed
 from views.call_log_shared import render_call_log_readonly as _render_call_log_readonly
+from views.glpmt_shared import render_glpmt_panel as _render_glpmt_panel
 
 # ── ZID-scope constants ────────────────────────────────────────────────────────
 # Scope toggle is shown only when the active ZID is one of the two shared-team entities.
@@ -177,7 +178,11 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
     filtered_data_c = common.enrich_collection_with_sales_info(filtered_data_c, filtered_data_s)
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP",
         # "CPA",   # temporarily muted — uncomment to restore
-        "Customer Ledger","Salesman Due","📈 Order Analytics"],horizontal=True)
+        "Customer Ledger","Salesman Due","📈 Order Analytics","📲 App Collections"],horizontal=True)
+
+    if analysis_mode == "📲 App Collections":
+        _render_glpmt_panel(str(zid), key_suffix="_ca")
+        return
 
     #collection using glheader and details.
     filtered_data_ar = data_dict['ar']
