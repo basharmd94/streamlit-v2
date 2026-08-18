@@ -2438,10 +2438,16 @@ def get_cacus_lead_links(filters: Dict[str, Any]) -> Tuple[str, tuple]:
 
 
 def get_crosszid_item_mapping(filters=None) -> Tuple[str, tuple]:
-    """Cross-ZID item name mapping: caitem 100001 joined to caitem 100009 via xdrawing.
+    """Cross-ZID item mapping: every 100009 caitem row with a valid xdrawing
+    (same non-blank/'NO'/'KH*' CASE used everywhere else this column is read),
+    LEFT JOINed to its claimed 100001 counterpart.
 
-    Returns every 100009 item whose xdrawing resolves to a 100001 item code,
-    with both names side by side so discrepancies can be spotted easily.
+    Deliberately a LEFT JOIN, not an INNER JOIN: every 100009 item that claims
+    a link is supposed to have a matching duplicate on the 100001 side. An
+    INNER JOIN would silently drop the ones where that claim doesn't resolve
+    (broken/mistyped xdrawing) -- here they still appear, with itemcode/
+    name_100001/xabc_100001 NULL, so the caller can flag "no duplicate found"
+    instead of never seeing the row at all.
 
     Columns: itemcode, name_100001, name_100009, item_100009,
              group_100009, xabc_100001
@@ -2454,11 +2460,15 @@ def get_crosszid_item_mapping(filters=None) -> Tuple[str, tuple]:
             a9.xitem    AS item_100009,
             a9.xabc     AS group_100009,
             a1.xabc     AS xabc_100001
-        FROM caitem a1
-        JOIN caitem a9
-            ON  a9.xdrawing = a1.xitem
-            AND a9.zid      = '100009'
-        WHERE a1.zid = '100001'
-        ORDER BY a1.xitem
+        FROM caitem a9
+        LEFT JOIN caitem a1
+            ON  a1.xitem = a9.xdrawing
+            AND a1.zid   = '100001'
+        WHERE a9.zid = '100009'
+          AND a9.xdrawing IS NOT NULL
+          AND a9.xdrawing <> ''
+          AND a9.xdrawing <> 'NO'
+          AND LEFT(a9.xdrawing, 2) <> 'KH'
+        ORDER BY a9.xitem
     """
     return sql, ()
