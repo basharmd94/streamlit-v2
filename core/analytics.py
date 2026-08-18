@@ -96,6 +96,7 @@ class Analytics:
             "returns_registry":         queries.get_returns_registry,
             "returns_registry_items":   queries.get_returns_registry_items,
             "cus_delivery_payment_promise": queries.get_cus_delivery_payment_promise,
+            "cus_return_entry_date":        queries.get_cus_return_entry_date,
         }
 
         query_func = query_map.get(table_name)

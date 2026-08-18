@@ -136,12 +136,16 @@ def get_sales_data(filters=None):
 
 
 def get_sales_7day(filters=None):
-    """Last 90 calendar days of sales line items from mv_sales_line_items.
+    """Last 180 calendar days of sales line items from mv_sales_line_items.
 
     Used by the Customer Support DO-detail table (function/table name kept as
-    "7day" for historical reasons — the window was extended to 90 days without
-    renaming every reference). Date filter is applied in SQL so only a small
-    slice of the MV is fetched per call.
+    "7day" for historical reasons — the window has since been extended twice,
+    first to 90 days then to 180, without renaming every reference). 180 is
+    the max of the Activity feed's 15-180 day range slider — this query is
+    loaded once (cached) at the widest possible window, then the view layer
+    slices down to whatever the user's slider is actually set to, so the
+    slider doesn't need a fresh DB round trip per change. Date filter is
+    still applied in SQL so only a bounded slice of the MV is fetched per call.
     """
     filters = filters or {}
     sql = """
@@ -152,7 +156,7 @@ def get_sales_7day(filters=None):
             quantity, altsales, proddiscount, totalsales, cost
         FROM mv_sales_line_items
         WHERE zid = %s
-          AND date >= CURRENT_DATE - 89
+          AND date >= CURRENT_DATE - 179
     """
     return sql, (filters["zid"][0],)
 
@@ -257,6 +261,38 @@ def get_cus_delivery_payment_promise(filters=None) -> Tuple[str, tuple]:
     # if filters.get("itemgroup"):
     #     query += f" AND ci.xabc IN ({placeholders})"
     # return query, tuple(params)
+
+
+def get_cus_return_entry_date(filters=None) -> Tuple[str, tuple]:
+    """Per customer, the date the salesman entered their most recent return
+    into the mobile Ordering app (opcrn.xdate) — same source table as Returns
+    Registry, but deliberately NOT restricted to xstatuscrn = '1-Open'. By the
+    time a return shows up as a "Return" txn_type row in the 90-Day Activity
+    AR feed it has already been posted to the ledger, i.e. its opcrn status
+    has moved on to '2-Accepted'/'3-Issued' — filtering to '1-Open' here would
+    almost always come back empty (confirmed: 128,712 of 128,894 opcrn rows
+    are '3-Issued', only 141 are still '1-Open'). This is the app-logged date
+    the customer's return was submitted, distinct from the AR ledger's own
+    xdate for that same voucher (when it got posted/reconciled).
+
+    Same 2999-12-31 "unset" sentinel as get_cus_delivery_payment_promise,
+    excluded at the SQL level for the same reason (overflows pandas'
+    Timestamp range, and would otherwise always win the DISTINCT ON as the
+    latest date).
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT DISTINCT ON (o.zid, o.xcus)
+            o.zid,
+            o.xcus  AS cusid,
+            o.xdate AS return_entry_date
+        FROM opcrn o
+        WHERE o.zid = %s
+          AND o.xdate IS NOT NULL AND o.xdate <> '2999-12-31'
+        ORDER BY o.zid, o.xcus, o.xdate DESC
+    """
+    return sql, (zid,)
 
 
 def get_return_data(filters=None):

@@ -142,28 +142,58 @@ def load_all_delivery_payment_promise() -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False, ttl=1800)
+def load_all_return_entry_date() -> pd.DataFrame:
+    """Per customer, the date the salesman entered their most recent return
+    into the mobile Ordering app (opcrn.xdate), for every ZID with
+    customer-facing AR — feeds build_7day_feed's Return-type rows."""
+    from core.analytics import Analytics
+
+    dfs: list[pd.DataFrame] = []
+    for zid in _ZID_PROJECT:
+        df = Analytics("cus_return_entry_date", zid=zid, filters={}).data
+        if df is None or df.empty:
+            continue
+        df = df.copy()
+        df["zid"] = str(zid)
+        dfs.append(df)
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
 # ─── 7-day activity feed ──────────────────────────────────────────────────────
 
 def build_7day_feed(
     ar_df: pd.DataFrame,
     cacus_df: pd.DataFrame,
     promise_df: Optional[pd.DataFrame] = None,
+    return_entry_df: Optional[pd.DataFrame] = None,
+    days: int = 90,
 ) -> pd.DataFrame:
-    """Return one row per (zid, customer, voucher) in the last 90 days.
+    """Return one row per (zid, customer, voucher) in the last `days` days
+    (default 90 here; the view layer exposes this as a 15-180 day slider
+    that itself defaults to 15).
 
     Aggregates GL lines to voucher level so each CRM row maps to one
     transaction the specialist will tick off.
 
     promise_df (optional): the ALL-ZID output of load_all_delivery_payment_promise()
     — merged in per (zid, customer) as promised_delivery/promised_payment.
-    Customer-level attributes, so the same pair repeats across every one of
-    that customer's rows in the feed.
+    Customer-level attribute (comes from opdor, not tied to any one voucher),
+    so it's only meaningful attached to that customer's Delivery-type rows —
+    zeroed out (NaT) on every other txn_type after the merge, and further
+    zeroed out on Delivery rows where the promise is already stale relative
+    to that row's own xdate (promised_delivery <= xdate).
+
+    return_entry_df (optional): the ALL-ZID output of load_all_return_entry_date()
+    — merged in per (zid, customer) as return_entry_date. Same customer-level
+    shape, zeroed out on every row that isn't a Return.
     """
     if ar_df.empty:
         return pd.DataFrame()
 
     today = pd.Timestamp.today().normalize()
-    cutoff = today - pd.Timedelta(days=89)  # inclusive last 90 days
+    cutoff = today - pd.Timedelta(days=days - 1)  # inclusive last `days` days
 
     ar = ar_df.copy()
     ar["xdate"] = pd.to_datetime(ar["xdate"], errors="coerce")
@@ -203,7 +233,10 @@ def build_7day_feed(
         feed = feed.merge(contact, on=["zid", "xsub"], how="left")
 
     # Join promised delivery / promised payment date (customer-level — same
-    # pair repeats across every row that customer has in the feed)
+    # pair repeats across every row that customer has in the feed), then
+    # restrict to Delivery-type rows only: the promise is logged against the
+    # order/delivery event, so showing it on a Collection/Return/etc. row for
+    # that same customer would misattribute it.
     if promise_df is not None and not promise_df.empty:
         promise = (
             promise_df[["zid", "cusid", "promised_delivery", "promised_payment"]]
@@ -215,6 +248,32 @@ def build_7day_feed(
     else:
         feed["promised_delivery"] = pd.NaT
         feed["promised_payment"] = pd.NaT
+    feed["promised_delivery"] = pd.to_datetime(feed["promised_delivery"], errors="coerce")
+    feed["promised_payment"] = pd.to_datetime(feed["promised_payment"], errors="coerce")
+
+    not_delivery = feed["txn_type"] != "Delivery"
+    feed.loc[not_delivery, ["promised_delivery", "promised_payment"]] = pd.NaT
+
+    # Also hide on Delivery rows where the promise is stale relative to THIS
+    # row's own transaction date — a promised delivery date at/before the
+    # row's xdate has already passed relative to that specific delivery, so
+    # it's not a live promise worth surfacing here.
+    stale_promise = feed["promised_delivery"].isna() | (feed["promised_delivery"] <= feed["xdate"])
+    feed.loc[stale_promise, ["promised_delivery", "promised_payment"]] = pd.NaT
+
+    # Join return-entry date (customer-level), restricted the same way to
+    # Return-type rows only.
+    if return_entry_df is not None and not return_entry_df.empty:
+        ret = (
+            return_entry_df[["zid", "cusid", "return_entry_date"]]
+            .copy()
+            .assign(zid=lambda d: d["zid"].astype(str), cusid=lambda d: d["cusid"].astype(str))
+            .rename(columns={"cusid": "xsub"})
+        )
+        feed = feed.merge(ret, on=["zid", "xsub"], how="left")
+    else:
+        feed["return_entry_date"] = pd.NaT
+    feed.loc[feed["txn_type"] != "Return", "return_entry_date"] = pd.NaT
 
     feed = feed.sort_values(
         ["xdate", "zid", "xsub"], ascending=[False, True, True]
@@ -274,9 +333,20 @@ def build_latest_sc_for_zid(
     to this ZID internally, then folded into Latest Collection Date/Amount via
     merge_latest_app_payment (same function Salesman Due uses, same rule: a
     more recent app-logged payment wins over an older posted-ledger one).
+    Also used separately (via salesman_due.latest_app_payment_lookup) to add
+    dedicated app_paid_date/app_paid_amount columns at the very end (after
+    current_balance) — the customer's latest app entry regardless of whether
+    it's reflected in Latest Collection above, kept only when after
+    last_sale_date (same staleness rule as delivery_date/promised_payment).
 
     promise_df (optional): the ALL-ZID output of load_all_delivery_payment_promise()
-    — sliced to this ZID and merged in as promised_delivery/promised_payment.
+    — sliced to this ZID and merged in as delivery_date/promised_payment (only
+    kept when delivery_date is still after this customer's last_sale_date —
+    otherwise the promise is stale and gets zeroed to NaT).
+
+    "Collection Source" is intentionally dropped from the returned columns —
+    still computed internally by merge_latest_app_payment (harmless), just
+    not surfaced to viewers here.
     """
     from processing.salesman_due import build_latest_sale_collection_report
 
@@ -334,6 +404,38 @@ def build_latest_sc_for_zid(
     report["days_since_sale"] = (today - report["last_sale_date"]).dt.days
     report["days_since_coll"] = (today - report["last_coll_date"]).dt.days
 
+    # Only show the promise if it's still AFTER this customer's latest sale —
+    # a promised delivery date at/before their most recent sale is stale
+    # relative to it (same rule as build_7day_feed, using last_sale_date
+    # instead of a per-voucher xdate since this table is customer-level).
+    report["promised_delivery"] = pd.to_datetime(report["promised_delivery"], errors="coerce")
+    report["promised_payment"] = pd.to_datetime(report["promised_payment"], errors="coerce")
+    stale_promise = report["promised_delivery"].isna() | (report["promised_delivery"] <= report["last_sale_date"])
+    report.loc[stale_promise, ["promised_delivery", "promised_payment"]] = pd.NaT
+
+    # Dedicated "Paid Date"/"Amount Paid" — the customer's latest app-logged
+    # (glpmt) payment, shown at the very end (after current_balance),
+    # independent of whatever merge_latest_app_payment already folded into
+    # Latest Collection Date/Amount above. Same staleness rule: only kept
+    # when after last_sale_date.
+    from processing.salesman_due import latest_app_payment_lookup
+    zid_glpmt_for_paid = (
+        glpmt_df[glpmt_df["zid"].astype(str) == str(zid)]
+        if glpmt_df is not None and not glpmt_df.empty and "zid" in glpmt_df.columns
+        else None
+    )
+    app_pay = latest_app_payment_lookup(zid_glpmt_for_paid).rename(columns={"cusid": "Customer Code"})
+    if not app_pay.empty:
+        app_pay["Customer Code"] = app_pay["Customer Code"].astype(str)
+        report = report.merge(app_pay, on="Customer Code", how="left")
+    else:
+        report["app_paid_date"] = pd.NaT
+        report["app_paid_amount"] = pd.NA
+    report["app_paid_date"] = pd.to_datetime(report["app_paid_date"], errors="coerce")
+    report["app_paid_amount"] = pd.to_numeric(report["app_paid_amount"], errors="coerce")
+    stale_paid = report["app_paid_date"].isna() | (report["app_paid_date"] <= report["last_sale_date"])
+    report.loc[stale_paid, ["app_paid_date", "app_paid_amount"]] = [pd.NaT, pd.NA]
+
     out = report.rename(columns={
         "Customer Code":            "cusid",
         "Salesman Code":            "spid",
@@ -341,16 +443,17 @@ def build_latest_sc_for_zid(
         "Sale Amount":              "last_sale_amount",
         "Latest Collection Amount": "last_coll_amount",
         "Current Balance":          "current_balance",
-        "Collection Source":        "coll_source",
+        "promised_delivery":        "delivery_date",
     })
 
     keep = [
         "cusid", "customer_name", "cusmobile",
         "spid", "salesman_name", "city",
         "last_sale_date", "last_sale_amount", "days_since_sale",
-        "last_coll_date", "last_coll_amount", "coll_source", "days_since_coll",
-        "promised_delivery", "promised_payment",
+        "last_coll_date", "last_coll_amount", "days_since_coll",
+        "delivery_date", "promised_payment",
         "current_balance",
+        "app_paid_date", "app_paid_amount",
     ]
     return out[[c for c in keep if c in out.columns]].reset_index(drop=True)
 

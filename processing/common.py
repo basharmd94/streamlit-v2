@@ -28,6 +28,29 @@ def normalize_phone_cols(df: pd.DataFrame, extra_cols: "list[str] | None" = None
     return df
 
 
+def highlight_overdue_date(df: pd.DataFrame, col: str, ref_date=None):
+    """Return a pandas Styler flagging `col` where its date has already
+    passed `ref_date` (defaults to today) — e.g. an overdue promised-payment
+    date. High-contrast red/white so it reads on both light and dark
+    Streamlit themes. st.dataframe accepts a Styler in place of a plain
+    DataFrame and column_config still applies on top of it.
+
+    Safe to call unconditionally: returns `df` unchanged if `col` isn't
+    present (e.g. the column was filtered out upstream) or `df` is empty.
+    """
+    if col not in df.columns or df.empty:
+        return df
+    ref = pd.Timestamp.today().normalize() if ref_date is None else ref_date
+
+    def _flag(val):
+        d = pd.to_datetime(val, errors="coerce")
+        if pd.isna(d):
+            return ""
+        return "background-color: #ff4b4b; color: #ffffff; font-weight: 600;" if d < ref else ""
+
+    return df.style.map(_flag, subset=[col])
+
+
 def to_dataframe(data, columns):
     """Convert the fetched data to a pandas dataframe."""
     df = pd.DataFrame(data, columns=columns)

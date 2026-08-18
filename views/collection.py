@@ -145,9 +145,13 @@ def _load_salesman_due_reports(zid: str, project: str) -> dict:
     if glpmt_df is None:
         glpmt_df = pd.DataFrame()
 
+    promise_df = Analytics("cus_delivery_payment_promise", zid=zid, filters={}).data
+    if promise_df is None:
+        promise_df = pd.DataFrame()
+
     market_split = str(zid) in ("100000", "100001")
     return salesman_due.build_salesman_due_reports(
-        ar_df, cacus_df, prmst_df, market_split, glpmt_df=glpmt_df
+        ar_df, cacus_df, prmst_df, market_split, glpmt_df=glpmt_df, promise_df=promise_df
     )
 
 
@@ -175,9 +179,13 @@ def _load_salesman_due_reports_any(zid: str) -> dict:
     if glpmt_df is None:
         glpmt_df = pd.DataFrame()
 
+    promise_df = Analytics("cus_delivery_payment_promise", zid=zid, filters={}).data
+    if promise_df is None:
+        promise_df = pd.DataFrame()
+
     market_split = str(zid) in ("100000", "100001")
     return salesman_due.build_salesman_due_reports(
-        ar_df, cacus_df, prmst_df, market_split, glpmt_df=glpmt_df
+        ar_df, cacus_df, prmst_df, market_split, glpmt_df=glpmt_df, promise_df=promise_df
     )
 
 
@@ -843,9 +851,14 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             st.caption(f"{len(df_sd):,} rows")
             if len(df_sd) > 50_000:
                 st.info("Showing first 50,000 rows. Download the CSV for full data.")
-                st.dataframe(df_sd.head(50_000))
+                _df_sd_disp = df_sd.head(50_000)
             else:
-                st.dataframe(df_sd)
+                _df_sd_disp = df_sd
+            if sub_report == "Latest Sale & Collection":
+                st.caption("🔴 Promised Payment highlighted = date has already passed")
+                st.dataframe(common.highlight_overdue_date(_df_sd_disp, "Promised Payment"))
+            else:
+                st.dataframe(_df_sd_disp)
 
             st.download_button(
                 "Download CSV",

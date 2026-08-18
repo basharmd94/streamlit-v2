@@ -258,6 +258,111 @@ def merge_latest_app_payment(report_df: pd.DataFrame, glpmt_df: pd.DataFrame) ->
     return d.drop(columns=["_app_date", "_app_amt"])
 
 
+def merge_delivery_payment_promise(report_df: pd.DataFrame, promise_df: pd.DataFrame) -> pd.DataFrame:
+    """Fold promised delivery/payment dates (opdor.xdatedel/xdatepay, via
+    core/queries.py::get_cus_delivery_payment_promise) into the Latest Sale &
+    Collection report as "Delivery Date" / "Promised Payment".
+
+    Only kept when Delivery Date is still AFTER this customer's latest sale
+    ("Sales Date") — a promise dated at/before their most recent sale is
+    stale relative to it and gets hidden (NaT). Same rule, same reasoning, as
+    the 90-Day Activity feed and Customer Support's Latest Sales & Collection
+    (processing/customer_support.py::build_7day_feed / build_latest_sc_for_zid).
+
+    promise_df must already be scoped to the same single ZID as report_df —
+    same convention as merge_latest_app_payment's glpmt_df.
+    """
+    d = report_df.copy()
+    d["Sales Date"] = pd.to_datetime(d["Sales Date"], errors="coerce")
+
+    if promise_df is None or promise_df.empty:
+        d["Delivery Date"] = pd.NaT
+        d["Promised Payment"] = pd.NaT
+        return d
+
+    p = (
+        promise_df[["cusid", "promised_delivery", "promised_payment"]]
+        .copy()
+        .assign(cusid=lambda x: x["cusid"].astype(str))
+        .rename(columns={
+            "cusid": "Customer Code",
+            "promised_delivery": "Delivery Date",
+            "promised_payment": "Promised Payment",
+        })
+    )
+    d["Customer Code"] = d["Customer Code"].astype(str)
+    d = d.merge(p, on="Customer Code", how="left")
+
+    d["Delivery Date"] = pd.to_datetime(d["Delivery Date"], errors="coerce")
+    d["Promised Payment"] = pd.to_datetime(d["Promised Payment"], errors="coerce")
+
+    stale = d["Delivery Date"].isna() | (d["Delivery Date"] <= d["Sales Date"])
+    d.loc[stale, ["Delivery Date", "Promised Payment"]] = pd.NaT
+
+    return d
+
+
+def latest_app_payment_lookup(glpmt_df: pd.DataFrame) -> pd.DataFrame:
+    """Per customer, their single latest glpmt (mobile-app) payment entry —
+    date + amount, regardless of whether the ledger already has a more recent
+    posted collection. Returns columns: cusid, app_paid_date, app_paid_amount.
+
+    Distinct from merge_latest_app_payment: that function folds an app entry
+    INTO "Latest Collection Date/Amount" only when it out-dates the ledger
+    (so the merged value could be Ledger- or App-sourced, ambiguous once
+    displayed). This lookup surfaces the app entry as its own dedicated pair
+    of columns regardless, so it's always visible whether or not it happened
+    to be "the latest" overall.
+    """
+    if glpmt_df is None or glpmt_df.empty:
+        return pd.DataFrame(columns=["cusid", "app_paid_date", "app_paid_amount"])
+    g = glpmt_df.copy()
+    g["cusid"] = g["cusid"].astype(str)
+    g["paydate"] = pd.to_datetime(g["paydate"], errors="coerce")
+    return (
+        g.dropna(subset=["paydate"])
+         .sort_values("paydate")
+         .groupby("cusid", as_index=False)
+         .last()[["cusid", "paydate", "payamt"]]
+         .rename(columns={"paydate": "app_paid_date", "payamt": "app_paid_amount"})
+    )
+
+
+def merge_app_paid_columns(report_df: pd.DataFrame, glpmt_df: pd.DataFrame) -> pd.DataFrame:
+    """Add "Paid Date" / "Amount Paid" to the Latest Sale & Collection report —
+    the customer's latest app-logged (glpmt) payment, placed after every other
+    column (i.e. after "Current Balance").
+
+    Only kept when Paid Date is still AFTER this customer's latest sale
+    ("Sales Date") — same staleness rule as merge_delivery_payment_promise,
+    for the same reason (a payment logged before their most recent sale isn't
+    telling you anything about that sale's collection status).
+
+    glpmt_df must already be scoped to the same single ZID as report_df.
+    """
+    d = report_df.copy()
+    d["Sales Date"] = pd.to_datetime(d["Sales Date"], errors="coerce")
+
+    lookup = latest_app_payment_lookup(glpmt_df).rename(columns={"cusid": "Customer Code"})
+    d["Customer Code"] = d["Customer Code"].astype(str)
+    if lookup.empty:
+        d["Paid Date"] = pd.NaT
+        d["Amount Paid"] = pd.NA
+        return d
+    lookup["Customer Code"] = lookup["Customer Code"].astype(str)
+    d = d.merge(lookup, on="Customer Code", how="left").rename(columns={
+        "app_paid_date": "Paid Date", "app_paid_amount": "Amount Paid",
+    })
+
+    d["Paid Date"] = pd.to_datetime(d["Paid Date"], errors="coerce")
+    d["Amount Paid"] = pd.to_numeric(d["Amount Paid"], errors="coerce")
+
+    stale = d["Paid Date"].isna() | (d["Paid Date"] <= d["Sales Date"])
+    d.loc[stale, ["Paid Date", "Amount Paid"]] = [pd.NaT, pd.NA]
+
+    return d
+
+
 def build_trickledown_balances(
     df_clean: pd.DataFrame,
     months_back: int = _MONTHS_BACK,
@@ -605,6 +710,7 @@ def build_salesman_due_reports(
     prmst_df: pd.DataFrame,
     market_split: bool,
     glpmt_df: pd.DataFrame = None,
+    promise_df: pd.DataFrame = None,
 ) -> dict:
     """End-to-end port of jupyter_audits/HM_36_*_Due.py.
 
@@ -614,7 +720,17 @@ def build_salesman_due_reports(
 
     glpmt_df (optional): mobile-app payment entries for THIS SAME ZID only —
     folded into report_df's Latest Collection Date/Amount via
-    merge_latest_app_payment. Caller must pre-filter to one ZID.
+    merge_latest_app_payment. Caller must pre-filter to one ZID. Its
+    "Collection Source" column is intentionally dropped from report_df before
+    it's returned — not surfaced to viewers. Also used separately by
+    merge_app_paid_columns to add dedicated "Paid Date"/"Amount Paid" columns
+    at the very end of report_df (after "Current Balance"), independent of
+    whatever merge_latest_app_payment already folded into Latest Collection.
+
+    promise_df (optional): promised delivery/payment dates for THIS SAME ZID
+    only (core/queries.py::get_cus_delivery_payment_promise output) — folded
+    into report_df as "Delivery Date"/"Promised Payment" via
+    merge_delivery_payment_promise. Caller must pre-filter to one ZID.
 
     Returns a dict with keys: main_due_report, report_df, report_cc_with_names,
     missing_customers_df.
@@ -645,6 +761,9 @@ def build_salesman_due_reports(
 
     report_df_final = finalize_report_df(report_df, df_customer, df_salesman)
     report_df_final = merge_latest_app_payment(report_df_final, glpmt_df)
+    report_df_final = report_df_final.drop(columns=["Collection Source"], errors="ignore")
+    report_df_final = merge_delivery_payment_promise(report_df_final, promise_df)
+    report_df_final = merge_app_paid_columns(report_df_final, glpmt_df)
     missing_customers_df = build_missing_customers(report_df_final, report_cc_with_names)
 
     return {
