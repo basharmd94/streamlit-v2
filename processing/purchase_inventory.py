@@ -1324,3 +1324,73 @@ def get_all_warehouse_options(stock_movement_df: pd.DataFrame) -> Dict[str, List
         out[zid] = sorted(wh_list)
 
     return out
+
+
+# ============================================================
+# Cross-ZID Item Mapping (100009 FG/RM -> 100001 catalog)
+# ============================================================
+
+def build_crosszid_item_mapping(gulshan_df: pd.DataFrame, hmbr_df: pd.DataFrame) -> pd.DataFrame:
+    """Relate every Gulshan Packaging (100009) FG/RM item to its claimed HMBR
+    (100001) counterpart via caitem.xdrawing -- resolved here in Python
+    against a full 100001 catalog lookup, not via a SQL JOIN. This matters:
+    a JOIN with the usual "valid xdrawing" WHERE filter silently drops any
+    item whose xdrawing is blank/'NO'/'KH*' from the result set entirely,
+    so it never even gets a chance to be flagged "no duplicate" -- it just
+    vanishes. Resolving in Python means every FG/RM item is guaranteed to
+    produce exactly one output row, whatever its xdrawing looks like.
+
+    gulshan_df: get_gulshan_fg_rm_items() output -- one row per 100009 item
+        (itemcode prefixed 'FH' or 'HPI') with item_100009/name_100009/
+        group_100009/xdrawing.
+    hmbr_df: get_hmbr_catalog_lookup() output -- full 100001 catalog
+        (itemcode/name_100001/xabc_100001), used purely as a lookup table.
+
+    An xdrawing of NULL/''/'NO'/or starting with 'KH' is treated as "no real
+    link" -- the same CASE used everywhere else this column is read in this
+    codebase (see caitem's packcode CASE in CLAUDE.md) -- so those rows are
+    flagged has_duplicate=False without attempting a lookup at all.
+
+    Output columns match the original single-query version exactly (so the
+    view layer needs no changes to its Match/Mismatch/No-Duplicate logic),
+    plus the raw xdrawing value so a "No Duplicate" row's cause is visible
+    at a glance (blank vs 'NO' vs 'KH...' vs a mistyped/broken code):
+    itemcode, name_100001, name_100009, item_100009, group_100009,
+    xabc_100001, xdrawing.
+    """
+    if gulshan_df is None or gulshan_df.empty:
+        return pd.DataFrame(columns=[
+            "itemcode", "name_100001", "name_100009", "item_100009",
+            "group_100009", "xabc_100001", "xdrawing",
+        ])
+
+    g = gulshan_df.copy()
+    g["xdrawing"] = g["xdrawing"].fillna("").astype(str).str.strip()
+
+    valid_drawing = (
+        (g["xdrawing"] != "")
+        & (g["xdrawing"].str.upper() != "NO")
+        & (~g["xdrawing"].str.upper().str.startswith("KH"))
+    )
+    g["_drawing_key"] = g["xdrawing"].where(valid_drawing, other=pd.NA)
+
+    if hmbr_df is None or hmbr_df.empty:
+        hmbr = pd.DataFrame(columns=["itemcode", "name_100001", "xabc_100001"])
+    else:
+        hmbr = hmbr_df.drop_duplicates("itemcode").copy()
+        hmbr["itemcode"] = hmbr["itemcode"].astype(str)
+
+    merged = g.merge(hmbr, left_on="_drawing_key", right_on="itemcode", how="left")
+    merged = merged.drop(columns=["_drawing_key"])
+
+    keep = [
+        "itemcode", "name_100001", "name_100009", "item_100009",
+        "group_100009", "xabc_100001", "xdrawing",
+    ]
+    return (
+        merged[[c for c in keep if c in merged.columns]]
+        .sort_values("item_100009")
+        .reset_index(drop=True)
+    )
+
+    return out

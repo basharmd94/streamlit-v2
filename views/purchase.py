@@ -15,10 +15,17 @@ def _load_tts_final_items(zid: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def _load_crosszid_mapping() -> pd.DataFrame:
-    """Cross-ZID item mapping — fixed 100001/100009 join, ZID-agnostic."""
+    """Cross-ZID item mapping — 100009 FG/RM items (FH*/HPI*) related to
+    their claimed 100001 counterpart in Python, not via a SQL JOIN. See
+    processing/purchase_inventory.py::build_crosszid_item_mapping."""
     from core.analytics import Analytics
-    df = Analytics("crosszid_item_mapping", zid="100001", filters={}).data
-    return df if df is not None else pd.DataFrame()
+    from processing.purchase_inventory import build_crosszid_item_mapping
+
+    gulshan_df = Analytics("gulshan_fg_rm_items", zid="100009", filters={}).data
+    hmbr_df = Analytics("hmbr_catalog_lookup", zid="100001", filters={}).data
+    if gulshan_df is None or gulshan_df.empty:
+        return pd.DataFrame()
+    return build_crosszid_item_mapping(gulshan_df, hmbr_df)
 
 
 def _build_sku_sim_excel(
@@ -1143,16 +1150,18 @@ def _render_batch_con(zid: str, data_dict: dict) -> None:
 def _render_crosszid_mapping():
     st.subheader("🔗 Cross-ZID Item Mapping")
     st.caption(
-        "Every Gulshan Packaging (100009) item whose `caitem.xdrawing` claims a link "
-        "to a HMBR (100001) item code. A claim that resolves to a real 100001 item "
-        "shows both names side by side (mismatched names highlighted in amber). A "
-        "claim that does NOT resolve — a broken or mistyped `xdrawing` value — has "
-        "no duplicate on the 100001 side and is highlighted in red."
+        "Every Gulshan Packaging (100009) finished-goods (`FH*`) and raw-material "
+        "(`HPI*`) item, related to its claimed HMBR (100001) counterpart via "
+        "`caitem.xdrawing`. A claim that resolves to a real 100001 item shows both "
+        "names side by side (mismatched names highlighted in amber). An item with "
+        "no `xdrawing` set at all, or one that doesn't resolve to a real 100001 item "
+        "(broken/mistyped value) — has no duplicate on the 100001 side and is "
+        "highlighted in red; the raw `XDrawing` value is shown so you can tell which."
     )
 
     df = _load_crosszid_mapping()
     if df.empty:
-        st.info("No cross-ZID mappings found (no 100009 items with a valid xdrawing).")
+        st.info("No Gulshan Packaging FG/RM items found (no 100009 items starting with FH or HPI).")
         return
 
     df = df.copy()
@@ -1214,11 +1223,13 @@ def _render_crosszid_mapping():
         "item_100009": "Item Code (100009)",
         "group_100009":"Group (100009)",
         "xabc_100001": "Group (100001)",
+        "xdrawing":    "XDrawing (100009)",
     })
     display_cols = [
         "Status",
         "Item Code (100001)", "Name — HMBR (100001)",
         "Name — Gulshan (100009)", "Item Code (100009)",
+        "XDrawing (100009)",
         "Group (100009)", "Group (100001)",
     ]
     disp = disp[[c for c in display_cols if c in disp.columns]].copy()

@@ -2650,38 +2650,43 @@ def get_cacus_lead_links(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
-def get_crosszid_item_mapping(filters=None) -> Tuple[str, tuple]:
-    """Cross-ZID item mapping: every 100009 caitem row with a valid xdrawing
-    (same non-blank/'NO'/'KH*' CASE used everywhere else this column is read),
-    LEFT JOINed to its claimed 100001 counterpart.
+def get_gulshan_fg_rm_items(filters=None) -> Tuple[str, tuple]:
+    """Every Gulshan Packaging (100009) finished-goods ('FH' prefix) and
+    raw-material ('HPI' prefix) item, with its xdrawing value as-is —
+    including blank/'NO'/'KH*' ones.
 
-    Deliberately a LEFT JOIN, not an INNER JOIN: every 100009 item that claims
-    a link is supposed to have a matching duplicate on the 100001 side. An
-    INNER JOIN would silently drop the ones where that claim doesn't resolve
-    (broken/mistyped xdrawing) -- here they still appear, with itemcode/
-    name_100001/xabc_100001 NULL, so the caller can flag "no duplicate found"
-    instead of never seeing the row at all.
-
-    Columns: itemcode, name_100001, name_100009, item_100009,
-             group_100009, xabc_100001
+    Deliberately NOT filtered by xdrawing validity here (unlike the old
+    single-query version of this report) -- the point of this report is to
+    flag items with no real link, so those rows must actually be fetched
+    first. Relating xdrawing -> a 100001 item happens in Python
+    (processing/purchase_inventory.py::build_crosszid_item_mapping), not via
+    a SQL JOIN, so an item with a blank/invalid xdrawing still shows up
+    flagged "no duplicate" instead of silently vanishing from a WHERE clause.
     """
     sql = """
         SELECT
-            a1.xitem    AS itemcode,
-            a1.xdesc    AS name_100001,
-            a9.xdesc    AS name_100009,
-            a9.xitem    AS item_100009,
-            a9.xabc     AS group_100009,
-            a1.xabc     AS xabc_100001
-        FROM caitem a9
-        LEFT JOIN caitem a1
-            ON  a1.xitem = a9.xdrawing
-            AND a1.zid   = '100001'
-        WHERE a9.zid = '100009'
-          AND a9.xdrawing IS NOT NULL
-          AND a9.xdrawing <> ''
-          AND a9.xdrawing <> 'NO'
-          AND LEFT(a9.xdrawing, 2) <> 'KH'
-        ORDER BY a9.xitem
+            xitem    AS item_100009,
+            xdesc    AS name_100009,
+            xabc     AS group_100009,
+            xdrawing AS xdrawing
+        FROM caitem
+        WHERE zid = '100009'
+          AND (xitem LIKE 'FH%' OR xitem LIKE 'HPI%')
+        ORDER BY xitem
+    """
+    return sql, ()
+
+
+def get_hmbr_catalog_lookup(filters=None) -> Tuple[str, tuple]:
+    """Full 100001 item catalog (itemcode/name/group) -- used as a lookup
+    table in Python to resolve get_gulshan_fg_rm_items' xdrawing values,
+    not joined in SQL. See build_crosszid_item_mapping."""
+    sql = """
+        SELECT
+            xitem AS itemcode,
+            xdesc AS name_100001,
+            xabc  AS xabc_100001
+        FROM caitem
+        WHERE zid = '100001'
     """
     return sql, ()
