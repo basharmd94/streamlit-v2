@@ -22,6 +22,14 @@
 -- custom questions — e.g. a Bengali "what type of institution" question that
 -- won't be the same across forms) is preserved as {question: answer} in
 -- extra_fields rather than requiring a schema change per new lead form.
+--
+-- area and lead_cost are NOT platform-sourced: area is the lead's exact
+-- area/division, entered by whoever compiles the upload; lead_cost is
+-- calculated by hand by the CRM manager (via the bulk-upload template's
+-- lead_cost column, or filled in later). Column order here must stay in
+-- lockstep with processing/marketing_leads.py::_FIXED_COLS and
+-- core/queries.py::insert_marketing_leads_sql's INSERT column list — the
+-- bulk-insert path matches columns positionally, not by name.
 CREATE TABLE IF NOT EXISTS marketing_leads (
     id                  SERIAL PRIMARY KEY,
     zid                 VARCHAR(10)   NOT NULL,
@@ -41,9 +49,11 @@ CREATE TABLE IF NOT EXISTS marketing_leads (
     work_phone_number   VARCHAR(50),
     company_name        VARCHAR(255),
     street_address      TEXT,
+    area                VARCHAR(255),  -- exact area/division the lead is from
     job_title           VARCHAR(255),
     inbox_url           TEXT,
     lead_status         VARCHAR(50),   -- the lead-gen platform's own status (e.g. "complete")
+    lead_cost           NUMERIC(12,2), -- hand-calculated by the CRM manager
     extra_fields        JSONB,         -- any non-standard CSV columns, as {question: answer}
     lead_stage          VARCHAR(30)   NOT NULL DEFAULT 'New',  -- internal CRM pipeline stage
     uploaded_by         VARCHAR(50),

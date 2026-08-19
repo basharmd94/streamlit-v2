@@ -2545,8 +2545,8 @@ def delete_call_log(log_id: int) -> Tuple[str, tuple]:
 _LEAD_COLS = (
     "id, zid, fb_lead_id, created_time, ad_id, ad_name, adset_id, adset_name, "
     "campaign_id, campaign_name, form_id, form_name, is_organic, platform, "
-    "full_name, work_phone_number, company_name, street_address, job_title, "
-    "inbox_url, lead_status, extra_fields, lead_stage, uploaded_by, uploaded_at"
+    "full_name, work_phone_number, company_name, street_address, area, job_title, "
+    "inbox_url, lead_status, lead_cost, extra_fields, lead_stage, uploaded_by, uploaded_at"
 )
 
 
@@ -2574,13 +2574,19 @@ def insert_marketing_leads_sql() -> str:
     No ON CONFLICT clause (Postgres 9.5+ only, unavailable on this server) —
     callers must filter out rows whose (zid, fb_lead_id) already exists via
     get_existing_lead_fb_ids before calling this, or the UNIQUE constraint
-    will raise and abort the whole batch."""
+    will raise and abort the whole batch.
+
+    Column order (after zid, fb_lead_id) MUST match
+    processing/marketing_leads.py::_FIXED_COLS exactly — _bulk_insert_leads
+    builds each row tuple positionally from that DataFrame's column order,
+    not by name, so the two lists silently drifting apart would insert
+    values into the wrong columns without erroring."""
     return """
         INSERT INTO marketing_leads (
             zid, fb_lead_id, created_time, ad_id, ad_name, adset_id, adset_name,
             campaign_id, campaign_name, form_id, form_name, is_organic, platform,
-            full_name, work_phone_number, company_name, street_address, job_title,
-            inbox_url, lead_status, extra_fields, uploaded_by
+            full_name, work_phone_number, company_name, street_address, area,
+            job_title, inbox_url, lead_status, lead_cost, extra_fields, uploaded_by
         ) VALUES %s
     """
 
