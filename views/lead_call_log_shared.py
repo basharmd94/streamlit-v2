@@ -145,7 +145,7 @@ def render_lead_call_log_panel(
             nvd_badge = (
                 f'<span style="background:#EAF2F8;color:#1A5276;padding:2px 7px;'
                 f'border-radius:10px;font-size:11px;font-weight:500;margin-left:4px;">'
-                f'📅 Next visit: {nvd_str}</span>'
+                f'📅 Follow Up: {nvd_str}</span>'
                 if nvd_str else ""
             )
             note_line = (
@@ -187,7 +187,7 @@ def render_lead_call_log_panel(
         fc1, fc2, fc3, fc4 = st.columns([2, 2, 3, 1])
         outcome = fc1.selectbox("Outcome", LEAD_OUTCOMES, key=f"lead_outcome_{lead_id}{key_suffix}")
         next_visit = fc2.date_input(
-            "Next visit", value=None, key=f"lead_nvd_{lead_id}{key_suffix}",
+            "Next Follow Up", value=None, key=f"lead_nvd_{lead_id}{key_suffix}",
         )
         notes = fc3.text_input("Notes", placeholder="What did they say?", key=f"lead_notes_{lead_id}{key_suffix}")
         fc4.markdown("<br>", unsafe_allow_html=True)

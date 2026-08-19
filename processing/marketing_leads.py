@@ -142,37 +142,64 @@ def build_manual_lead_row(
     area: str = "",
     notes: str = "",
     lead_cost=None,
+    created_time=None,
+    ad_id: str = "",
+    ad_name: str = "",
+    adset_id: str = "",
+    adset_name: str = "",
+    campaign_id: str = "",
+    campaign_name: str = "",
+    form_id: str = "",
+    form_name: str = "",
+    is_organic=None,
+    platform: str = "",
+    inbox_url: str = "",
+    lead_status: str = "",
 ) -> pd.DataFrame:
     """One-row DataFrame in the same shape as parse_leads_upload's output, for
     a lead entered by hand (phone call / walk-in) rather than a platform export.
+
+    Every marketing_leads column that INSERT can set is exposed here as an
+    optional param -- only full_name/work_phone_number are actually required
+    (enforced by the caller's form, not here). ad_id/ad_name/.../form_name/
+    inbox_url are normally blank for a manually-entered lead (they're
+    platform metadata) but are accepted anyway so nothing in the table is
+    permanently out of reach from this path.
 
     fb_lead_id is a synthetic id ("manual-<hex>") — it still works as the
     cacus.xurl join key for conversion tracking, exactly like a real Facebook
     lead id; staff just paste this generated id instead.
 
-    lead_cost defaults to None (not exposed as a form field here) — it's
-    hand-calculated by the CRM manager, normally filled into the bulk-upload
-    template's lead_cost column instead.
+    created_time defaults to now() if not given (backdating a walk-in lead
+    logged after the fact is the only reason to pass it explicitly).
+    platform/lead_status default to "manual" if left blank, same as before
+    this became a parameter.
     """
     fb_lead_id = f"manual-{uuid.uuid4().hex[:12]}"
     notes = (notes or "").strip()
     extra = {"notes": notes} if notes else None
 
+    def _blank_to_none(v):
+        v = (v or "").strip()
+        return v or None
+
     row = {
         "fb_lead_id": fb_lead_id,
-        "created_time": pd.Timestamp.now(tz="UTC"),
-        "ad_id": None, "ad_name": None, "adset_id": None, "adset_name": None,
-        "campaign_id": None, "campaign_name": None, "form_id": None, "form_name": None,
-        "is_organic": None,
-        "platform": "manual",
+        "created_time": created_time if created_time is not None else pd.Timestamp.now(tz="UTC"),
+        "ad_id": _blank_to_none(ad_id), "ad_name": _blank_to_none(ad_name),
+        "adset_id": _blank_to_none(adset_id), "adset_name": _blank_to_none(adset_name),
+        "campaign_id": _blank_to_none(campaign_id), "campaign_name": _blank_to_none(campaign_name),
+        "form_id": _blank_to_none(form_id), "form_name": _blank_to_none(form_name),
+        "is_organic": is_organic,
+        "platform": _blank_to_none(platform) or "manual",
         "full_name": (full_name or "").strip(),
         "work_phone_number": (work_phone_number or "").strip(),
-        "company_name": (company_name or "").strip() or None,
-        "street_address": (street_address or "").strip() or None,
-        "area": (area or "").strip() or None,
-        "job_title": (job_title or "").strip() or None,
-        "inbox_url": None,
-        "lead_status": "manual",
+        "company_name": _blank_to_none(company_name),
+        "street_address": _blank_to_none(street_address),
+        "area": _blank_to_none(area),
+        "job_title": _blank_to_none(job_title),
+        "inbox_url": _blank_to_none(inbox_url),
+        "lead_status": _blank_to_none(lead_status) or "manual",
         "lead_cost": lead_cost,
         "extra_fields": json.dumps(extra, ensure_ascii=False) if extra else None,
     }
