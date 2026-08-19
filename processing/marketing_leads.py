@@ -89,6 +89,35 @@ def parse_leads_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+def build_leads_upload_template() -> pd.DataFrame:
+    """One-row example CSV in exactly the shape parse_leads_upload expects —
+    a clean, English-only column set for a CRM manager to fill in by hand and
+    re-upload, instead of a real Facebook Lead Ads export whose custom
+    per-form questions (e.g. a Bengali institution-type question) land as
+    unlabeled extra_fields and cause confusion about what each column means.
+
+    Columns exactly match _ID_COL + _FIXED_COLS, in the same order the
+    parser reads them in -- extending this template and _FIXED_COLS out of
+    sync would silently start routing a "new" column into extra_fields
+    again, so keep them together if either ever changes.
+    """
+    example = {
+        "id": "LEAD-0001",
+        "created_time": "2026-01-15 10:30:00",
+        "ad_id": "", "ad_name": "", "adset_id": "", "adset_name": "",
+        "campaign_id": "", "campaign_name": "", "form_id": "", "form_name": "",
+        "is_organic": "", "platform": "Manual",
+        "full_name": "Jane Doe",
+        "work_phone_number": "01711234567",
+        "company_name": "ABC Traders",
+        "street_address": "123 Main Road, Dhaka",
+        "job_title": "Purchase Manager",
+        "inbox_url": "", "lead_status": "",
+    }
+    out_cols = ["id"] + _FIXED_COLS
+    return pd.DataFrame([example])[out_cols]
+
+
 def build_manual_lead_row(
     full_name: str,
     work_phone_number: str,
