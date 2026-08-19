@@ -346,6 +346,13 @@ One round trip via `psycopg2.extras.execute_values`. **No `ON CONFLICT` clause**
 
 While verifying the round trip, found and fixed a real pre-existing bug in the same function: `pd.read_csv(uploaded)` / `pd.read_excel(uploaded)` had no `dtype` hint, so pandas infers a numeric-looking column (`work_phone_number`, `id`) as `int64` and **silently drops the leading zero** — every Bangladeshi phone number (`01711234567` → `1711234567`) and any leading-zero `id` gets corrupted on upload, template or not. Fixed by reading with `dtype=str` throughout; confirmed blank cells still parse as real `NaN` under `dtype=str` (doesn't change any of `parse_leads_upload`'s existing `pd.isna()`/`errors="coerce"` handling).
 
+### `area` and `lead_cost` columns (2026-08-19 addition)
+Neither is platform-sourced. **`area`** — the lead's exact area/division, entered by whoever compiles the upload (template column right after `street_address`). **`lead_cost`** — hand-calculated by the CRM manager, template's last column, `NUMERIC(12,2)`; `parse_leads_upload` runs it through `pd.to_numeric(errors="coerce")` so one bad cell (`"1,000"`, `"500/-"`) becomes `NULL` for that row instead of an invalid-numeric-literal error aborting the entire batch insert (`execute_values` is one round trip for the whole file).
+
+**Column order is safety-critical here, not just cosmetic.** `_bulk_insert_leads` builds each row tuple positionally — `(zid,) + tuple(r) + (uploaded_by,)` off `processing/marketing_leads.py::_FIXED_COLS`'s column order — and hands it straight to `core/queries.py::insert_marketing_leads_sql`'s `INSERT` column list. The two lists must stay in lockstep, or values silently land in the wrong columns with no error at all. `area` sits right after `street_address` and `lead_cost` is the last entry in `_FIXED_COLS`, matching both the `INSERT` statement and the DDL. `build_manual_lead_row` and `build_leads_upload_template` were both updated in the same change since they also construct rows against `_FIXED_COLS` — verified end-to-end (bulk-upload path and manual-entry path) against a temp table before shipping.
+
+Two DB scripts, not one: `db/sql_scripts/create_marketing_leads_tables.sql` (the `CREATE TABLE IF NOT EXISTS` — updated in place for a *fresh* setup) and `db/sql_scripts/add_marketing_leads_area_lead_cost_columns.sql` (new — a non-destructive `ALTER TABLE` for a server that already has the *old* schema and real lead data on it). The `ALTER` script deliberately doesn't use `ADD COLUMN IF NOT EXISTS` — that's a Postgres 9.6+ feature, and this server predates 9.5 per the `ON CONFLICT`/`CREATE INDEX IF NOT EXISTS` incompatibilities already documented above; safe to run once, errors (not silently no-ops) if run twice.
+
 ---
 
 ## Git / Deployment

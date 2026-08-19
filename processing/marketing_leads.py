@@ -16,11 +16,20 @@ import pandas as pd
 # e.g. a Bengali institution-type question that won't recur on every form)
 # is preserved per-row in extra_fields instead of requiring a schema change
 # every time a new lead form ships.
+#
+# "area" and "lead_cost" are NOT platform-sourced -- area is the lead's
+# exact area/division, entered by whoever compiles the upload; lead_cost is
+# calculated by hand by the CRM manager. Both are still declared here (not
+# left to fall into extra_fields) so they show up as first-class columns
+# instead of hidden JSON. Column order matters: it must stay in lockstep
+# with core/queries.py::insert_marketing_leads_sql's INSERT column list,
+# since _bulk_insert_leads builds insert rows positionally from this order.
 _FIXED_COLS = [
     "created_time", "ad_id", "ad_name", "adset_id", "adset_name",
     "campaign_id", "campaign_name", "form_id", "form_name",
     "is_organic", "platform", "full_name", "work_phone_number",
-    "company_name", "street_address", "job_title", "inbox_url", "lead_status",
+    "company_name", "street_address", "area", "job_title", "inbox_url",
+    "lead_status", "lead_cost",
 ]
 _ID_COL = "id"  # -> fb_lead_id (renamed to avoid clashing with our own serial PK)
 
@@ -82,6 +91,10 @@ def parse_leads_upload(raw_df: pd.DataFrame) -> pd.DataFrame:
 
     df["created_time"] = pd.to_datetime(df["created_time"], errors="coerce", utc=True)
     df["is_organic"] = df["is_organic"].apply(_to_bool)
+    # lead_cost is hand-typed (see _FIXED_COLS) -- coerce to numeric so a stray
+    # "1000/-" or "1,000" typo becomes NULL for that one row instead of an
+    # invalid-numeric-literal error aborting the whole batch insert.
+    df["lead_cost"] = pd.to_numeric(df["lead_cost"], errors="coerce")
 
     out_cols = ["fb_lead_id"] + _FIXED_COLS + ["extra_fields"]
     out = df[out_cols].copy()
@@ -111,8 +124,10 @@ def build_leads_upload_template() -> pd.DataFrame:
         "work_phone_number": "01711234567",
         "company_name": "ABC Traders",
         "street_address": "123 Main Road, Dhaka",
+        "area": "Dhanmondi, Dhaka",
         "job_title": "Purchase Manager",
         "inbox_url": "", "lead_status": "",
+        "lead_cost": "150",
     }
     out_cols = ["id"] + _FIXED_COLS
     return pd.DataFrame([example])[out_cols]
@@ -124,7 +139,9 @@ def build_manual_lead_row(
     company_name: str = "",
     job_title: str = "",
     street_address: str = "",
+    area: str = "",
     notes: str = "",
+    lead_cost=None,
 ) -> pd.DataFrame:
     """One-row DataFrame in the same shape as parse_leads_upload's output, for
     a lead entered by hand (phone call / walk-in) rather than a platform export.
@@ -132,6 +149,10 @@ def build_manual_lead_row(
     fb_lead_id is a synthetic id ("manual-<hex>") — it still works as the
     cacus.xurl join key for conversion tracking, exactly like a real Facebook
     lead id; staff just paste this generated id instead.
+
+    lead_cost defaults to None (not exposed as a form field here) — it's
+    hand-calculated by the CRM manager, normally filled into the bulk-upload
+    template's lead_cost column instead.
     """
     fb_lead_id = f"manual-{uuid.uuid4().hex[:12]}"
     notes = (notes or "").strip()
@@ -148,9 +169,11 @@ def build_manual_lead_row(
         "work_phone_number": (work_phone_number or "").strip(),
         "company_name": (company_name or "").strip() or None,
         "street_address": (street_address or "").strip() or None,
+        "area": (area or "").strip() or None,
         "job_title": (job_title or "").strip() or None,
         "inbox_url": None,
         "lead_status": "manual",
+        "lead_cost": lead_cost,
         "extra_fields": json.dumps(extra, ensure_ascii=False) if extra else None,
     }
     out_cols = ["fb_lead_id"] + _FIXED_COLS + ["extra_fields"]

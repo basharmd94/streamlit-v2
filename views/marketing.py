@@ -1232,7 +1232,9 @@ def _show_manual_lead_entry(zid: str) -> None:
         c3, c4 = st.columns(2)
         phone     = c3.text_input("Phone Number*")
         job_title = c4.text_input("Job Title")
-        address = st.text_input("Address")
+        c5, c6 = st.columns(2)
+        address = c5.text_input("Address")
+        area    = c6.text_input("Area", placeholder="e.g. Dhanmondi, Dhaka")
         notes   = st.text_area("Notes", placeholder="Any additional context about this lead")
         submitted = st.form_submit_button("💾 Save Lead")
 
@@ -1246,7 +1248,7 @@ def _show_manual_lead_entry(zid: str) -> None:
     row_df = build_manual_lead_row(
         full_name=full_name, work_phone_number=phone,
         company_name=company_name, job_title=job_title,
-        street_address=address, notes=notes,
+        street_address=address, area=area, notes=notes,
     )
     n_new = _bulk_insert_leads(row_df, zid, st.session_state.get("username", ""))
     if n_new == 1:
