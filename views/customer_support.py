@@ -1,6 +1,6 @@
 # views/customer_support.py
-# Customer Support view — 14-day activity feed + Latest Sales & Collection
-# with PostgreSQL-backed call log.
+# Customer Support view — 90-day activity feed (was 14-day) + Latest Sales &
+# Collection, with PostgreSQL-backed call log.
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from processing import customer_support as cs
-from processing.common import normalize_phone_cols
+from processing.common import normalize_phone_cols, highlight_overdue_date
 from views.call_log_shared import (
     OUTCOMES as _OUTCOMES,
     _OUTCOME_BADGE,
@@ -30,6 +30,7 @@ _FEED_COLS = [
     "zid", "xdate", "xsub", "customer_name", "xcity",
     "cusmobile", "whatsapp", "salesman_name",
     "xvoucher", "txn_type", "xprime",
+    "promised_delivery", "promised_payment", "return_entry_date",
 ]
 _FEED_RENAME = {
     "zid": "ZID", "xdate": "Date", "xsub": "Cust Code",
@@ -37,6 +38,11 @@ _FEED_RENAME = {
     "cusmobile": "Mobile", "whatsapp": "WhatsApp",
     "salesman_name": "Salesman", "xvoucher": "Voucher",
     "txn_type": "Type", "xprime": "Amount",
+    # "Delivered Date" here is the salesman's PROMISED delivery date (opdor.xdatedel),
+    # not an actual-delivered confirmation — named this way per request, only ever
+    # populated on Delivery-type rows (see build_7day_feed).
+    "promised_delivery": "Delivered Date", "promised_payment": "Promised Payment",
+    "return_entry_date": "Returned Date",
 }
 _LEDGER_COLS   = ["xdate", "xvoucher", "txn_type", "xprime", "running_balance"]
 _LEDGER_RENAME = {
@@ -105,14 +111,21 @@ def _render_coverage_matrix(
 def display_customer_support(zid, project):
     st.title("📞 Customer Support")
     st.markdown(_BLUE_CSS, unsafe_allow_html=True)
+
+    # Sales sees the activity feed only — Latest Sales & Collection (AR
+    # balances, collection status) is CRM/admin territory.
+    view_opts = ["📋 90-Day Activity"]
+    if st.session_state.get("user_role") != "sales":
+        view_opts.append("📊 Latest Sales & Collection")
+
     radio = st.radio(
         "View",
-        ["📋 14-Day Activity", "📊 Latest Sales & Collection"],
+        view_opts,
         horizontal=True,
         key="cs_radio",
     )
-    if radio == "📋 14-Day Activity":
-        _render_14day_activity()
+    if radio == "📋 90-Day Activity":
+        _render_90day_activity()
     else:
         _render_latest_sales_collection()
 
@@ -134,25 +147,49 @@ def _sales_14day_data() -> pd.DataFrame:
     return cs.load_all_sales_7day()
 
 
+@st.cache_data(show_spinner="Loading app-entered payments…", ttl=1800)
+def _glpmt_data() -> pd.DataFrame:
+    return cs.load_all_glpmt()
+
+
+@st.cache_data(show_spinner="Loading delivery/payment promises…", ttl=1800)
+def _promise_data() -> pd.DataFrame:
+    return cs.load_all_delivery_payment_promise()
+
+
+@st.cache_data(show_spinner="Loading return entry dates…", ttl=1800)
+def _return_entry_data() -> pd.DataFrame:
+    return cs.load_all_return_entry_date()
+
+
 @st.cache_data(show_spinner="Building Sales & Collection table…", ttl=1800)
 def _sc_data(zid: str) -> pd.DataFrame:
-    return cs.build_latest_sc_for_zid(_ar_data(), zid, _cacus_data())
+    return cs.build_latest_sc_for_zid(
+        _ar_data(), zid, _cacus_data(), _glpmt_data(), _promise_data()
+    )
 
 
 
-# ── Radio 1: 14-Day Activity ───────────────────────────────────────────────────
+# ── Radio 1: 90-Day Activity ───────────────────────────────────────────────────
 
-def _render_14day_activity():
-    ar_df    = _ar_data()
-    cacus_df = _cacus_data()
+def _render_90day_activity():
+    ar_df           = _ar_data()
+    cacus_df        = _cacus_data()
+    promise_df      = _promise_data()
+    return_entry_df = _return_entry_data()
 
     if ar_df is None or ar_df.empty:
         st.warning("No AR data available.")
         return
 
-    feed = cs.build_7day_feed(ar_df, cacus_df)
+    days_selected = st.slider(
+        "Time Range (days)", min_value=15, max_value=180, value=15, step=15,
+        key="cs_activity_days",
+    )
+
+    feed = cs.build_7day_feed(ar_df, cacus_df, promise_df, return_entry_df, days=days_selected)
     if feed.empty:
-        st.info("No customer transactions in the last 14 days.")
+        st.info(f"No customer transactions in the last {days_selected} days.")
         return
 
     feed["_xdate"] = pd.to_datetime(feed["xdate"], errors="coerce").dt.date
@@ -174,7 +211,8 @@ def _render_14day_activity():
     date_opts    = ["All dates"] + [d.strftime("%Y-%m-%d") for d in unique_dates]
     sel_date_str = fc1.selectbox("Date", date_opts, key="cs_activity_date")
     type_opts    = ["All Types"] + sorted(feed["txn_type"].dropna().unique().tolist())
-    sel_type     = fc2.selectbox("Type", type_opts, key="cs_type_filter")
+    default_type_idx = type_opts.index("Delivery") if "Delivery" in type_opts else 0
+    sel_type     = fc2.selectbox("Type", type_opts, index=default_type_idx, key="cs_type_filter")
 
     if sel_date_str != "All dates":
         import datetime as _dt
@@ -204,18 +242,22 @@ def _render_14day_activity():
 
         st.caption(
             f"**{len(feed):,}** vouchers"
-            + (f" — {sel_date_str}" if sel_date_str != "All dates" else " — last 14 days")
+            + (f" — {sel_date_str}" if sel_date_str != "All dates" else f" — last {days_selected} days")
             + (f", type: {sel_type}" if sel_type != "All Types" else "")
             + " · sorted latest first · Outcome/Notes = most recent call log entry per customer"
+            + " · 🔴 Promised Payment highlighted = date has already passed"
         )
         st.dataframe(
-            disp,
+            highlight_overdue_date(disp, "Promised Payment"),
             column_config={
-                "Date":        st.column_config.DateColumn("Date",        format="YYYY-MM-DD"),
-                "Amount":      st.column_config.NumberColumn("Amount",    format="%.0f"),
-                "Last Called": st.column_config.DateColumn("Last Called", format="YYYY-MM-DD"),
-                "Outcome":     st.column_config.TextColumn("Outcome"),
-                "Notes":       st.column_config.TextColumn("Notes"),
+                "Date":               st.column_config.DateColumn("Date",        format="YYYY-MM-DD"),
+                "Amount":             st.column_config.NumberColumn("Amount",    format="%.0f"),
+                "Last Called":        st.column_config.DateColumn("Last Called", format="YYYY-MM-DD"),
+                "Outcome":            st.column_config.TextColumn("Outcome"),
+                "Notes":              st.column_config.TextColumn("Notes"),
+                "Delivered Date":     st.column_config.DateColumn("Delivered Date",   format="YYYY-MM-DD"),
+                "Promised Payment":   st.column_config.DateColumn("Promised Payment", format="YYYY-MM-DD"),
+                "Returned Date":      st.column_config.DateColumn("Returned Date",    format="YYYY-MM-DD"),
             },
             width="stretch",
             hide_index=True,
@@ -269,8 +311,8 @@ def _render_14day_activity():
             sel_group = str(sel_row["group"])
             sel_name  = str(sel_row["customer_name"])
 
-            st.markdown("##### Deliveries — Last 14 Days (All Entities)")
-            _render_do_detail(_feed_full, sel_cusid)
+            st.markdown(f"##### Deliveries — Last {days_selected} Days (All Entities)")
+            _render_do_detail(_feed_full, sel_cusid, days_selected)
 
             st.markdown("---")
 
@@ -297,15 +339,20 @@ def _render_14day_activity():
     _render_coverage_matrix(_feed_matrix, _cl_map_14d, key_suffix="14d", has_type=True)
 
 
-def _render_do_detail(feed: pd.DataFrame, cusid: str):
+def _render_do_detail(feed: pd.DataFrame, cusid: str, days: int = 90):
     sales_df = _sales_14day_data()
     if sales_df is None or sales_df.empty:
-        st.info("No delivery line items found in the last 14 days.")
+        st.info(f"No delivery line items found in the last {days} days.")
         return
 
-    cust_sales = sales_df[sales_df["cusid"] == cusid].copy()
+    # sales_df is loaded once at a fixed 180-day SQL window (see get_sales_7day) —
+    # slice down to whatever the user's slider is actually set to.
+    cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=days - 1)
+    cust_sales = sales_df[
+        (sales_df["cusid"] == cusid) & (sales_df["date"] >= cutoff)
+    ].copy()
     if cust_sales.empty:
-        st.info("No DO line items for this customer in the last 14 days.")
+        st.info(f"No DO line items for this customer in the last {days} days.")
         return
 
     inop_rows = feed[
@@ -403,7 +450,9 @@ def _render_merged_sc_table(
         "cusmobile", "spid", "salesman_name", "city",
         "days_since_sale", "last_sale_date", "last_sale_amount",
         "days_since_coll", "last_coll_date", "last_coll_amount",
+        "delivery_date", "promised_payment",
         "current_balance",
+        "app_paid_date", "app_paid_amount",
     ]
     disp_cols = [c for c in col_order if c in df.columns]
     disp = normalize_phone_cols(df[disp_cols].copy()).rename(columns={
@@ -415,7 +464,9 @@ def _render_merged_sc_table(
         "days_since_sale": "Days Sale", "last_sale_date": "Latest Sale Date",
         "last_sale_amount": "Sale Amt", "days_since_coll": "Days Coll",
         "last_coll_date": "Latest Coll Date", "last_coll_amount": "Last Coll Amt",
+        "delivery_date": "Delivery Date", "promised_payment": "Promised Payment",
         "current_balance": "Balance",
+        "app_paid_date": "Paid Date", "app_paid_amount": "Amount Paid",
     })
 
     unique_cust = df[["cusid", "customer_name"]].drop_duplicates("cusid")
@@ -425,21 +476,27 @@ def _render_merged_sc_table(
         + sm_label
         + "  ·  >24 = 24+ days  ·  >30 = 30+ days  ·  sorted: most overdue group first"
         "  ·  Outcome/Notes = most recent call log entry"
+        "  ·  🔴 Promised Payment highlighted = date has already passed"
+        "  ·  Paid Date/Amount Paid = latest app collection entry"
     )
     st.dataframe(
-        disp,
+        highlight_overdue_date(disp, "Promised Payment"),
         column_config={
-            "⚠":               st.column_config.TextColumn("⚠", width="small"),
-            "Last Called":      st.column_config.DateColumn("Last Called",      format="YYYY-MM-DD"),
-            "Outcome":          st.column_config.TextColumn("Outcome"),
-            "Notes":            st.column_config.TextColumn("Notes"),
-            "Latest Sale Date": st.column_config.DateColumn("Latest Sale Date", format="YYYY-MM-DD"),
-            "Latest Coll Date": st.column_config.DateColumn("Latest Coll Date", format="YYYY-MM-DD"),
-            "Sale Amt":         st.column_config.NumberColumn("Sale Amt",        format="%.0f"),
-            "Last Coll Amt":    st.column_config.NumberColumn("Last Coll Amt",   format="%.0f"),
-            "Balance":          st.column_config.NumberColumn("Balance",          format="%.0f"),
-            "Days Sale":        st.column_config.NumberColumn("Days Sale",        format="%d"),
-            "Days Coll":        st.column_config.NumberColumn("Days Coll",        format="%d"),
+            "⚠":                 st.column_config.TextColumn("⚠", width="small"),
+            "Last Called":        st.column_config.DateColumn("Last Called",      format="YYYY-MM-DD"),
+            "Outcome":            st.column_config.TextColumn("Outcome"),
+            "Notes":              st.column_config.TextColumn("Notes"),
+            "Latest Sale Date":   st.column_config.DateColumn("Latest Sale Date", format="YYYY-MM-DD"),
+            "Latest Coll Date":   st.column_config.DateColumn("Latest Coll Date", format="YYYY-MM-DD"),
+            "Sale Amt":           st.column_config.NumberColumn("Sale Amt",        format="%.0f"),
+            "Last Coll Amt":      st.column_config.NumberColumn("Last Coll Amt",   format="%.0f"),
+            "Balance":            st.column_config.NumberColumn("Balance",          format="%.0f"),
+            "Days Sale":          st.column_config.NumberColumn("Days Sale",        format="%d"),
+            "Days Coll":          st.column_config.NumberColumn("Days Coll",        format="%d"),
+            "Delivery Date":      st.column_config.DateColumn("Delivery Date",    format="YYYY-MM-DD"),
+            "Promised Payment":   st.column_config.DateColumn("Promised Payment", format="YYYY-MM-DD"),
+            "Paid Date":          st.column_config.DateColumn("Paid Date",        format="YYYY-MM-DD"),
+            "Amount Paid":        st.column_config.NumberColumn("Amount Paid",    format="%.0f"),
         },
         width="stretch",
         hide_index=True,
@@ -503,7 +560,9 @@ def _render_sc_table_zepto(
         "cusmobile", "spid", "salesman_name", "city",
         "days_since_sale", "last_sale_date", "last_sale_amount",
         "days_since_coll", "last_coll_date", "last_coll_amount",
+        "delivery_date", "promised_payment",
         "current_balance",
+        "app_paid_date", "app_paid_amount",
     ]
     disp_cols = [c for c in col_order if c in df.columns]
     disp = normalize_phone_cols(df[disp_cols].copy()).rename(columns={
@@ -513,7 +572,10 @@ def _render_sc_table_zepto(
         "city": "City", "days_since_sale": "Days Sale",
         "last_sale_date": "Latest Sale Date", "last_sale_amount": "Sale Amt",
         "days_since_coll": "Days Coll", "last_coll_date": "Latest Coll Date",
-        "last_coll_amount": "Last Coll Amt", "current_balance": "Balance",
+        "last_coll_amount": "Last Coll Amt",
+        "delivery_date": "Delivery Date", "promised_payment": "Promised Payment",
+        "current_balance": "Balance",
+        "app_paid_date": "Paid Date", "app_paid_amount": "Amount Paid",
     })
 
     sm_label_z = f" · Salesman: **{salesman_filter}**" if salesman_filter else ""
@@ -522,21 +584,27 @@ def _render_sc_table_zepto(
         + sm_label_z
         + "  ·  >24 = 24+ days  ·  >30 = 30+ days"
         "  ·  Outcome/Notes = most recent call log entry"
+        "  ·  🔴 Promised Payment highlighted = date has already passed"
+        "  ·  Paid Date/Amount Paid = latest app collection entry"
     )
     st.dataframe(
-        disp,
+        highlight_overdue_date(disp, "Promised Payment"),
         column_config={
-            "⚠":               st.column_config.TextColumn("⚠", width="small"),
-            "Last Called":      st.column_config.DateColumn("Last Called",      format="YYYY-MM-DD"),
-            "Outcome":          st.column_config.TextColumn("Outcome"),
-            "Notes":            st.column_config.TextColumn("Notes"),
-            "Latest Sale Date": st.column_config.DateColumn("Latest Sale Date", format="YYYY-MM-DD"),
-            "Latest Coll Date": st.column_config.DateColumn("Latest Coll Date", format="YYYY-MM-DD"),
-            "Sale Amt":         st.column_config.NumberColumn("Sale Amt",        format="%.0f"),
-            "Last Coll Amt":    st.column_config.NumberColumn("Last Coll Amt",   format="%.0f"),
-            "Balance":          st.column_config.NumberColumn("Balance",          format="%.0f"),
-            "Days Sale":        st.column_config.NumberColumn("Days Sale",        format="%d"),
-            "Days Coll":        st.column_config.NumberColumn("Days Coll",        format="%d"),
+            "⚠":                 st.column_config.TextColumn("⚠", width="small"),
+            "Last Called":        st.column_config.DateColumn("Last Called",      format="YYYY-MM-DD"),
+            "Outcome":            st.column_config.TextColumn("Outcome"),
+            "Notes":              st.column_config.TextColumn("Notes"),
+            "Latest Sale Date":   st.column_config.DateColumn("Latest Sale Date", format="YYYY-MM-DD"),
+            "Latest Coll Date":   st.column_config.DateColumn("Latest Coll Date", format="YYYY-MM-DD"),
+            "Sale Amt":           st.column_config.NumberColumn("Sale Amt",        format="%.0f"),
+            "Last Coll Amt":      st.column_config.NumberColumn("Last Coll Amt",   format="%.0f"),
+            "Balance":            st.column_config.NumberColumn("Balance",          format="%.0f"),
+            "Days Sale":          st.column_config.NumberColumn("Days Sale",        format="%d"),
+            "Days Coll":          st.column_config.NumberColumn("Days Coll",        format="%d"),
+            "Delivery Date":      st.column_config.DateColumn("Delivery Date",    format="YYYY-MM-DD"),
+            "Promised Payment":   st.column_config.DateColumn("Promised Payment", format="YYYY-MM-DD"),
+            "Paid Date":          st.column_config.DateColumn("Paid Date",        format="YYYY-MM-DD"),
+            "Amount Paid":        st.column_config.NumberColumn("Amount Paid",    format="%.0f"),
         },
         width="stretch",
         hide_index=True,

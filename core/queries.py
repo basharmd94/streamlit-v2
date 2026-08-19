@@ -136,10 +136,16 @@ def get_sales_data(filters=None):
 
 
 def get_sales_7day(filters=None):
-    """Last 14 calendar days of sales line items from mv_sales_line_items.
+    """Last 180 calendar days of sales line items from mv_sales_line_items.
 
-    Used by the Customer Support DO-detail table. Date filter is applied in SQL
-    so only a small slice of the MV is fetched per call.
+    Used by the Customer Support DO-detail table (function/table name kept as
+    "7day" for historical reasons — the window has since been extended twice,
+    first to 90 days then to 180, without renaming every reference). 180 is
+    the max of the Activity feed's 15-180 day range slider — this query is
+    loaded once (cached) at the widest possible window, then the view layer
+    slices down to whatever the user's slider is actually set to, so the
+    slider doesn't need a fresh DB round trip per change. Date filter is
+    still applied in SQL so only a bounded slice of the MV is fetched per call.
     """
     filters = filters or {}
     sql = """
@@ -150,9 +156,42 @@ def get_sales_7day(filters=None):
             quantity, altsales, proddiscount, totalsales, cost
         FROM mv_sales_line_items
         WHERE zid = %s
-          AND date >= CURRENT_DATE - 13
+          AND date >= CURRENT_DATE - 179
     """
     return sql, (filters["zid"][0],)
+
+
+def get_cus_delivery_payment_promise(filters=None) -> Tuple[str, tuple]:
+    """Per customer, the promised delivery date and promised payment date the
+    salesman logged in the mobile Ordering app on their most recent order that
+    actually has both fields set.
+
+    opdor.xdatedel / xdatepay are sparsely populated (this app-logging only
+    started recently) and use 2999-12-31 as an "unset" sentinel elsewhere in
+    this ERP — both are excluded here at the SQL level, not just coerced
+    client-side, since 2999-12-31 overflows pandas' Timestamp range and would
+    crash a naive pd.to_datetime() call downstream.
+
+    "Latest" = most recent xdate among orders where the pair is actually set —
+    not simply the customer's most recent order overall, which may predate
+    (or simply lack) this field being filled in.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT DISTINCT ON (o.zid, o.xcus)
+            o.zid,
+            o.xcus     AS cusid,
+            o.xdate    AS order_date,
+            o.xdatedel AS promised_delivery,
+            o.xdatepay AS promised_payment
+        FROM opdor o
+        WHERE o.zid = %s
+          AND o.xdatedel IS NOT NULL AND o.xdatedel <> '2999-12-31'
+          AND o.xdatepay IS NOT NULL AND o.xdatepay <> '2999-12-31'
+        ORDER BY o.zid, o.xcus, o.xdate DESC
+    """
+    return sql, (zid,)
 
     # ── ORIGINAL base-table version (preserved for reference) ────────────────
     # filters = filters or {}
@@ -222,6 +261,38 @@ def get_sales_7day(filters=None):
     # if filters.get("itemgroup"):
     #     query += f" AND ci.xabc IN ({placeholders})"
     # return query, tuple(params)
+
+
+def get_cus_return_entry_date(filters=None) -> Tuple[str, tuple]:
+    """Per customer, the date the salesman entered their most recent return
+    into the mobile Ordering app (opcrn.xdate) — same source table as Returns
+    Registry, but deliberately NOT restricted to xstatuscrn = '1-Open'. By the
+    time a return shows up as a "Return" txn_type row in the 90-Day Activity
+    AR feed it has already been posted to the ledger, i.e. its opcrn status
+    has moved on to '2-Accepted'/'3-Issued' — filtering to '1-Open' here would
+    almost always come back empty (confirmed: 128,712 of 128,894 opcrn rows
+    are '3-Issued', only 141 are still '1-Open'). This is the app-logged date
+    the customer's return was submitted, distinct from the AR ledger's own
+    xdate for that same voucher (when it got posted/reconciled).
+
+    Same 2999-12-31 "unset" sentinel as get_cus_delivery_payment_promise,
+    excluded at the SQL level for the same reason (overflows pandas'
+    Timestamp range, and would otherwise always win the DISTINCT ON as the
+    latest date).
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT DISTINCT ON (o.zid, o.xcus)
+            o.zid,
+            o.xcus  AS cusid,
+            o.xdate AS return_entry_date
+        FROM opcrn o
+        WHERE o.zid = %s
+          AND o.xdate IS NOT NULL AND o.xdate <> '2999-12-31'
+        ORDER BY o.zid, o.xcus, o.xdate DESC
+    """
+    return sql, (zid,)
 
 
 def get_return_data(filters=None):
@@ -406,6 +477,111 @@ def get_return_data(filters=None):
         params.extend(filters["itemgroup"])
 
     return query, tuple(params)
+
+
+def get_returns_registry(filters=None) -> Tuple[str, tuple]:
+    """Returns Registry — open (unreconciled) customer returns salesmen log
+    directly into the mobile Ordering app, status = '1-Open' only.
+
+    opcrn.xtotamt is blank on open returns (not yet finalized), so the total
+    is summed from opcdt.xlineamt instead — the same column get_return_data
+    uses for POSTED returns (treturnamt).
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            o.zid,
+            o.xcrnnum               AS crnnum,
+            o.xdate                 AS date,
+            o.xcus                  AS cusid,
+            COALESCE(c.xshort, '')  AS cusname,
+            o.xemp                  AS spid,
+            COALESCE(pr.xname, '')  AS spname,
+            COALESCE(o.xreason, '') AS reason,
+            COALESCE(SUM(d.xlineamt), 0) AS total_amt
+        FROM opcrn o
+        LEFT JOIN cacus c  ON c.zid = o.zid AND c.xcus = o.xcus
+        LEFT JOIN prmst pr ON pr.zid = o.zid AND pr.xemp = o.xemp
+        LEFT JOIN opcdt d  ON d.zid = o.zid AND d.xcrnnum = o.xcrnnum
+        WHERE o.zid = %s AND o.xstatuscrn = '1-Open'
+        GROUP BY o.zid, o.xcrnnum, o.xdate, o.xcus, c.xshort, o.xemp, pr.xname, o.xreason
+        ORDER BY o.xdate DESC
+    """
+    return sql, (zid,)
+
+
+def get_returns_registry_items(filters=None) -> Tuple[str, tuple]:
+    """Product line items (opcdt) behind get_returns_registry's header rows —
+    joined back to opcrn so only lines of OPEN ('1-Open') returns are included."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            d.zid,
+            d.xcrnnum  AS crnnum,
+            d.xitem    AS itemcode,
+            d.xdesc    AS itemname,
+            d.xqty     AS qty,
+            d.xrate    AS rate,
+            d.xlineamt AS lineamt
+        FROM opcdt d
+        JOIN opcrn o ON o.zid = d.zid AND o.xcrnnum = d.xcrnnum
+        WHERE d.zid = %s AND o.xstatuscrn = '1-Open'
+        ORDER BY d.xcrnnum, d.xrow
+    """
+    return sql, (zid,)
+
+
+def get_feedback_data(filters=None) -> Tuple[str, tuple]:
+    """Market-level feedback salesmen log via the mobile Ordering app.
+
+    Same app-staged/ERP-synced family as glpmt/Returns Registry/promise
+    dates — read-only here, written by the mobile app, not app-owned.
+
+    A feedback row carries up to four independent, non-exclusive tags:
+    customer_id (about a specific customer), product_id (about a specific
+    product), is_delivery_issue, is_collection_issue. These aren't mutually
+    exclusive — on real data 10 rows have both customer_id AND product_id
+    set, and 4 rows have both is_delivery_issue AND is_collection_issue true
+    — so a single feedback entry can legitimately surface in more than one
+    of the four category tables the view builds from this. About 70% of
+    rows (145/204) carry none of the four tags at all (general feedback) —
+    those simply won't appear in any category table.
+
+    user_id is the prmst employee code (xemp) of the salesman who logged it.
+    Some legacy rows predate this field being captured and have it blank —
+    LEFT JOIN (not INNER) so those still surface, just with a blank
+    Salesman/Emp Code rather than silently vanishing.
+
+    customer_id/product_id LEFT JOIN to cacus/caitem for a display name;
+    both are plain codes (cacus.xcus / caitem.xitem), confirmed matching on
+    real data.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            f.zid,
+            f.id                   AS feedback_id,
+            f.customer_id          AS cusid,
+            COALESCE(c.xshort, '') AS cusname,
+            f.product_id           AS itemcode,
+            COALESCE(ci.xdesc, '') AS itemname,
+            f.is_delivery_issue,
+            f.is_collection_issue,
+            f.description,
+            f.created_at,
+            f.user_id              AS spid,
+            COALESCE(pr.xname, '') AS spname
+        FROM feedback f
+        LEFT JOIN cacus  c  ON c.zid  = f.zid AND c.xcus  = f.customer_id
+        LEFT JOIN caitem ci ON ci.zid = f.zid AND ci.xitem = f.product_id
+        LEFT JOIN prmst  pr ON pr.zid = f.zid AND pr.xemp = f.user_id
+        WHERE f.zid = %s
+        ORDER BY f.created_at DESC
+    """
+    return sql, (zid,)
 
 
 def get_collection_data(filters=None):
@@ -1325,6 +1501,43 @@ def get_glheader_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
             xper::int        AS month
         FROM glheader
         WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
+def get_glpmt_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """glpmt — payment collections salesmen enter directly into the mobile
+    Ordering app, staged here pending reconciliation into the real GL ledger.
+    One row per payment entry.
+
+    spname prefers prmst.xname (properly formatted, e.g. "Ziaur Rahman") over
+    glpmt's own xname (raw/informal, e.g. "rziaur"), falling back to the raw
+    value if the employee code isn't in prmst.
+
+    Sorted by ztime (date of ENTRY into the app) descending — latest first —
+    per the report spec; not xpaydate (the payment's own date, which can be
+    back-dated and differs from when it was actually logged).
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            p.zid,
+            p.xpmtnum                    AS pmtnum,
+            p.xcus                       AS cusid,
+            p.xshort                     AS cusname,
+            p.xemp                       AS spid,
+            COALESCE(pr.xname, p.xname)  AS spname,
+            p.xpaydate                   AS paydate,
+            p.xpayamt                    AS payamt,
+            p.xpaytype                   AS paytype,
+            p.xbankdetail                AS bankdetail,
+            p.xpaystatus                 AS paystatus,
+            p.xremarks                   AS remarks,
+            p.ztime                      AS entry_time
+        FROM glpmt p
+        LEFT JOIN prmst pr ON pr.xemp = p.xemp AND pr.zid = p.zid
+        WHERE p.zid = %s
+        ORDER BY p.ztime DESC
     """
     return sql, (zid,)
 

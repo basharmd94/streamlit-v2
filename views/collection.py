@@ -6,6 +6,7 @@ from core.analytics import Analytics
 from processing import common, collection, salesman_due
 from utils.utils import timed
 from views.call_log_shared import render_call_log_readonly as _render_call_log_readonly
+from views.glpmt_shared import render_glpmt_panel as _render_glpmt_panel
 
 # ── ZID-scope constants ────────────────────────────────────────────────────────
 # Scope toggle is shown only when the active ZID is one of the two shared-team entities.
@@ -140,8 +141,18 @@ def _load_salesman_due_reports(zid: str, project: str) -> dict:
     if prmst_df is None:
         prmst_df = pd.DataFrame(columns=["spid", "spname"])
 
+    glpmt_df = Analytics("glpmt", zid=zid, filters={}).data
+    if glpmt_df is None:
+        glpmt_df = pd.DataFrame()
+
+    promise_df = Analytics("cus_delivery_payment_promise", zid=zid, filters={}).data
+    if promise_df is None:
+        promise_df = pd.DataFrame()
+
     market_split = str(zid) in ("100000", "100001")
-    return salesman_due.build_salesman_due_reports(ar_df, cacus_df, prmst_df, market_split)
+    return salesman_due.build_salesman_due_reports(
+        ar_df, cacus_df, prmst_df, market_split, glpmt_df=glpmt_df, promise_df=promise_df
+    )
 
 
 @st.cache_data(ttl=3600, show_spinner="Building Salesman Due report (partner ZID)...")
@@ -164,8 +175,18 @@ def _load_salesman_due_reports_any(zid: str) -> dict:
     if prmst_df is None:
         prmst_df = pd.DataFrame(columns=["spid", "spname"])
 
+    glpmt_df = Analytics("glpmt", zid=zid, filters={}).data
+    if glpmt_df is None:
+        glpmt_df = pd.DataFrame()
+
+    promise_df = Analytics("cus_delivery_payment_promise", zid=zid, filters={}).data
+    if promise_df is None:
+        promise_df = pd.DataFrame()
+
     market_split = str(zid) in ("100000", "100001")
-    return salesman_due.build_salesman_due_reports(ar_df, cacus_df, prmst_df, market_split)
+    return salesman_due.build_salesman_due_reports(
+        ar_df, cacus_df, prmst_df, market_split, glpmt_df=glpmt_df, promise_df=promise_df
+    )
 
 
 @timed
@@ -177,7 +198,11 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
     filtered_data_c = common.enrich_collection_with_sales_info(filtered_data_c, filtered_data_s)
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP",
         # "CPA",   # temporarily muted — uncomment to restore
-        "Customer Ledger","Salesman Due","📈 Order Analytics"],horizontal=True)
+        "Customer Ledger","Salesman Due","📈 Order Analytics","📲 App Collections"],horizontal=True)
+
+    if analysis_mode == "📲 App Collections":
+        _render_glpmt_panel(str(zid), key_suffix="_ca")
+        return
 
     #collection using glheader and details.
     filtered_data_ar = data_dict['ar']
@@ -826,9 +851,14 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             st.caption(f"{len(df_sd):,} rows")
             if len(df_sd) > 50_000:
                 st.info("Showing first 50,000 rows. Download the CSV for full data.")
-                st.dataframe(df_sd.head(50_000))
+                _df_sd_disp = df_sd.head(50_000)
             else:
-                st.dataframe(df_sd)
+                _df_sd_disp = df_sd
+            if sub_report == "Latest Sale & Collection":
+                st.caption("🔴 Promised Payment highlighted = date has already passed")
+                st.dataframe(common.highlight_overdue_date(_df_sd_disp, "Promised Payment"))
+            else:
+                st.dataframe(_df_sd_disp)
 
             st.download_button(
                 "Download CSV",

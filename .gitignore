@@ -80,4 +80,7 @@ data/product_images/
 
 # Personal Claude Code tool permissions — local to this machine
 .claude/settings.local.json
+
+# Local-only dev utilities — not part of the deployed app
+scripts/
 graphify-out/

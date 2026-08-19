@@ -74,6 +74,7 @@ class Analytics:
             "gldetail_simple":  queries.get_gldetail_simple,
             "glheader_simple":  queries.get_glheader_simple,
             "glmst_simple":     queries.get_glmst_simple,
+            "glpmt":            queries.get_glpmt_data,
             "casup_simple":     queries.get_casup_simple,
             "stock_movement":   queries.get_stock_movement_data,
             # "imtrn_movements" removed — replaced by mv_stock_movement + mv_issues_daily_item
@@ -92,6 +93,11 @@ class Analytics:
             "latest_sales_collection":  queries.get_latest_sales_collection,
             "crosszid_item_mapping":    queries.get_crosszid_item_mapping,
             "cacus_lead_links":         queries.get_cacus_lead_links,
+            "returns_registry":         queries.get_returns_registry,
+            "returns_registry_items":   queries.get_returns_registry_items,
+            "cus_delivery_payment_promise": queries.get_cus_delivery_payment_promise,
+            "cus_return_entry_date":        queries.get_cus_return_entry_date,
+            "feedback":                     queries.get_feedback_data,
         }
 
         query_func = query_map.get(table_name)

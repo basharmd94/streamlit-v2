@@ -216,6 +216,92 @@ Only checks the 100009→100001 direction, since `xdrawing` is the only explicit
 
 ---
 
+## App Collections (`views/glpmt_shared.py` → "📲 App Collections" mode)
+
+`glpmt` is an ERP table (synced, not app-owned) holding payments salesmen enter directly into a separate mobile Ordering app, staged pending reconciliation into the real GL ledger — not the same thing as `crm_call_log`/`marketing_leads` (those are app-owned tables this Streamlit app writes to; `glpmt` is read-only here, written by the Ordering app). `core/queries.py::get_glpmt_data` LEFT JOINs `prmst` on `xemp` for a properly-formatted salesman name (`glpmt.xname` itself is raw/informal, e.g. `"emon"` vs prmst's `"Md. Abdullah Al Mamun Emon"`), falling back to the raw value if the employee code isn't in `prmst`.
+
+Sorted by `ztime` (when the entry was actually made) descending, latest first — **not** `xpaydate` (the payment's own date on the voucher, which can be back-dated and differ from when it was logged).
+
+One shared panel (`views/glpmt_shared.py::render_glpmt_panel`) is mounted identically in both **Collection Analysis** (`views/collection.py`) and **Target Management** (`views/target_management.py`) — same filters (salesman/emp code, customer, date-of-entry range), same table, same sort. Edit the shared module, not either call site, to change behavior in both places at once.
+
+### Feeding into "Latest Collection" (Salesman Due + Customer Support)
+`processing/salesman_due.py::merge_latest_app_payment` folds a customer's latest glpmt entry into the existing "Latest Collection Date"/"Latest Collection Amount" columns — **whichever source's date is later wins**, per (Customer Code, ZID). Adds a `Collection Source` column (`"Ledger"` / `"App (Pending)"`) so viewers can tell a shown collection is still unreconciled — **still computed, but no longer shown**; see "Collection Source removed from display" further down. Deliberately does **not** touch `Current Balance` — an unreconciled app payment hasn't actually reduced the real ledger balance yet (could still be rejected before posting).
+
+Two call sites, both already naturally per-ZID before this merge runs (no extra ZID-scoping needed in the merge itself):
+- **Salesman Due** (`views/collection.py::_load_salesman_due_reports`/`_load_salesman_due_reports_any` → `processing/salesman_due.py::build_salesman_due_reports`) — each function call already handles exactly one ZID end-to-end (including the 100001+100000 combined-scope path, which runs the whole per-ZID pipeline twice and concats after).
+- **Customer Support → Latest Sales & Collection** (`processing/customer_support.py::build_latest_sc_for_zid`) — receives the ALL-ZID `load_all_glpmt()` output and slices it to the current ZID internally, mirroring how `ar_df_cleaned`/`cacus_df` are already handled there.
+
+Never merge glpmt data across ZIDs before calling either entry point — a customer code is only unique within one ZID.
+
+---
+
+## Returns Registry (`views/returns_registry.py` → Target Management "↩️ Returns Registry" mode)
+
+Customer returns salesmen log directly into the mobile Ordering app, still pending approval — `opcrn.xstatuscrn = '1-Open'` only (other statuses: `2-Accepted`, `3-Issued` — not shown here). Same architectural family as `glpmt`/App Collections: an app-staged entity read from the ERP, not app-owned.
+
+- `core/queries.py::get_returns_registry` — header rows (`opcrn`), one per return. **`opcrn.xtotamt` is blank on open returns** (not finalized yet) — the displayed total is `SUM(opcdt.xlineamt)` instead, joined in and grouped by `xcrnnum`. Sorted by `xdate` DESC.
+- `core/queries.py::get_returns_registry_items` — product line items (`opcdt`), joined back to `opcrn` so only lines belonging to an open header are included. `opcdt.xdesc` is a reliable snapshot (confirmed matches `caitem.xdesc`) — no `caitem` join needed for item names.
+- Real data has at least one legacy row with an out-of-range sentinel date (`2999-12-31`, exceeds pandas' `Timestamp` max) — `pd.to_datetime(..., errors="coerce")` is mandatory here, not optional; without it the whole page crashes with `OutOfBoundsDatetime`. The affected row degrades gracefully (blank date, sorts last).
+
+**Table 1 → Table 2 relationship**: the "Customer" filter above Table 1 is a single-select (not multiselect, unlike the Salesman filter) — it does double duty, narrowing Table 1 **and** driving which customer's product lines populate Table 2 below. Table 2 stays empty with a prompt until a customer is chosen.
+
+Spans all 3 ZIDs (100000/100001/100005 all have open returns) — `Analytics("returns_registry", zid=zid, ...)` is parameterized by whatever ZID is active in the sidebar, same as every other single-ZID-scoped table in this app; no cross-ZID merging needed here (unlike glpmt → Latest Collection above).
+
+---
+
+## Feedback (`views/feedback.py` → Target Management "💬 Feedback" mode)
+
+Market-level feedback salesmen log via the mobile Ordering app — about a customer, a product, a delivery issue, or a collection issue. Same architectural family as `glpmt`/Returns Registry/promise dates: an app-staged entity read from the ERP `feedback` table, not app-owned.
+
+- `core/queries.py::get_feedback_data` — one row per feedback entry, LEFT JOINed to `cacus`/`caitem`/`prmst` for display names (`customer_id`→`cacus.xcus`, `product_id`→`caitem.xitem`, `user_id`→`prmst.xemp`, all confirmed matching on real data). LEFT JOINs, not INNER — `user_id` is blank on ~10 legacy rows (predates the field being captured), and those must still surface with a blank Salesman/Emp Code rather than silently vanishing.
+- **Four independent, non-exclusive tags per row**: `customer_id` set, `product_id` set, `is_delivery_issue`, `is_collection_issue`. Not mutually exclusive — confirmed on real data: 10 rows have both `customer_id` AND `product_id` set, 4 rows have both `is_delivery_issue` AND `is_collection_issue` true. So a single feedback entry can legitimately appear in more than one of the four category tables. About 70% of rows (145/204) carry none of the four tags (general feedback with no category) — those don't appear in any table, by design.
+- `views/feedback.py::_CATEGORIES` drives all four tables off one shared render path (`_render_feedback`) — a dict of `{label: {mask, id_cols, id_rename, empty_msg}}`. Customer/Product tables show that category's identity columns (Cust Code/Customer, Item Code/Item Name); Delivery/Collection Issue tables show no extra identity column since the DB has none for those two (just the boolean flags) — only Date/Emp Code/Salesman/Feedback, per what was asked.
+- Filters: Salesman (Emp Code) multiselect + Date range, both scoped to whichever category is currently selected (so the salesman dropdown only lists salesmen who actually have entries in that category).
+
+Spans all 3 ZIDs (100000/100001/100005 all have entries) — same single-ZID-scoped `Analytics("feedback", zid=zid, ...)` pattern as Returns Registry, no cross-ZID merging.
+
+---
+
+## Promised Delivery / Payment Dates (`opdor.xdatedel` / `opdor.xdatepay`)
+
+Salesmen log a promised delivery date and promised payment date on orders via the mobile Ordering app. `core/queries.py::get_cus_delivery_payment_promise` returns, per customer, the pair from their most recent order **that actually has both fields set** (`DISTINCT ON`, ordered by `xdate DESC`) — not simply their most recent order overall, which may predate or lack this field. Currently only populated for ZID 100001 (237 customers); other ZIDs degrade gracefully to empty.
+
+Same `2999-12-31` "unset" sentinel as Returns Registry shows up here too — excluded at the SQL level (`<> '2999-12-31'`), not just coerced client-side, since a naive `pd.to_datetime()` on it crashes with `OutOfBoundsDatetime`.
+
+Wired into `processing/customer_support.py::load_all_delivery_payment_promise()` (same `_ZID_PROJECT` loop pattern as `load_all_glpmt`/`load_all_cacus`) and merged into **three** places — both Customer Support views, plus Collection Analysis → Salesman Due:
+- **90-Day Activity** (`build_7day_feed`, renamed from "14-Day" — the window itself changed from 13 to 89 days back, and is now user-adjustable up to 180, see "Time Range slider" below; `core/queries.py::get_sales_7day`'s DO-detail window changed to match its 180-day max. Function/table names kept as `7day`/`14day` in a few internal-only spots — not user-facing, left alone to limit blast radius) — customer-level attribute (comes from `opdor`, not tied to any one voucher), so after the merge it's zeroed out (`NaT`) on every row whose `txn_type != "Delivery"`, **and further** zeroed out on Delivery rows where `promised_delivery <= xdate` (that row's own transaction date) — a promise dated at/before a given delivery has already passed relative to it, so it's not a live promise worth surfacing on that row. Displayed as **"Delivered Date"** (label only — the underlying value is still the salesman's *promised* date, not a confirmed delivery) and **"Promised Payment"**. The Type filter (`cs_type_filter`) defaults to `"Delivery"` on page load rather than `"All Types"`.
+- **Latest Sales & Collection** (Customer Support, `build_latest_sc_for_zid`) and **Latest Sale & Collection** (Collection Analysis → Salesman Due, `processing/salesman_due.py::merge_delivery_payment_promise`) — both customer-level tables (one row per customer, no `txn_type` to restrict against), so the gate here is `promised_delivery > last_sale_date` / `> "Sales Date"` instead — a promise dated at/before the customer's most recent actual sale is stale relative to it. Displayed as **"Delivery Date"** / **"Promised Payment"** in both. Internal column name in `build_latest_sc_for_zid`'s output is `delivery_date` (renamed from `promised_delivery` specifically because this table's label differs from 90-Day Activity's "Delivered Date").
+  - **On current real data, this gate zeroes out nearly everything** in both customer-level tables — the `opdor` promise-date feature is sparsely populated and clustered around late-2023/early-2024, while most customers' actual sales are far more recent, so `promised_delivery > last_sale_date` is rarely true. This was verified as correct behavior, not a bug, before shipping.
+
+**Sales role cannot see Latest Sales & Collection in Customer Support** — `display_customer_support` only offers that radio option when `st.session_state.user_role != "sales"`; sales users see 90-Day Activity only, with no second option in the radio at all (not just blocked after selection).
+
+**Known pre-existing issue, not introduced by this feature**: `mv_ar_transactions` (backing the AR ledger / 90-Day Activity feed) has at least one garbage far-future date (`2102-10-11`-class, same family as the `stock` table's `year=2102` bug noted under Common Pitfalls) that always passes any `>= cutoff` date filter regardless of window size — it would have affected the old 14-day window too. Not fixed here since it's a shared MV touching many other pages.
+
+### Returned Date (90-Day Activity only)
+
+Same pattern as promised delivery/payment, for the "Return" `txn_type` instead of "Delivery": `core/queries.py::get_cus_return_entry_date` returns, per customer, the date the salesman entered their most recent return into the mobile Ordering app (`opcrn.xdate`) — the *app-logged* date, distinct from `xdate` on the AR ledger's own Return row (`SRT`/`SRJV`/`IMSA` voucher — when it was actually posted/reconciled).
+
+Deliberately **not** restricted to `xstatuscrn = '1-Open'` like Returns Registry is — by the time a return shows up as a "Return" row in the AR-ledger-backed 90-Day feed, it has already been posted, meaning its `opcrn` status has moved on to `2-Accepted`/`3-Issued`. Confirmed on real data: 128,712 of 128,894 `opcrn` rows are `3-Issued`, only 141 are still `1-Open` — filtering to open-only here would return almost nothing. Same `2999-12-31` sentinel excluded at the SQL level, same reason as the promise-date query.
+
+Wired via `processing/customer_support.py::load_all_return_entry_date()` (same `_ZID_PROJECT` loop pattern) into `build_7day_feed` as `return_entry_date`, zeroed out (`NaT`) on every row whose `txn_type != "Return"`. Displayed as **"Returned Date"**. Not merged into either Latest Sale & Collection table — those have no `txn_type` to restrict against, and it wasn't asked for there.
+
+### 90-Day Activity Time Range slider
+
+`_render_90day_activity` exposes a `st.slider("Time Range (days)", min_value=15, max_value=180, value=15, step=15, key="cs_activity_days")` — applies to the whole feed regardless of Type filter, replacing what used to be a fixed 90-day window. `build_7day_feed(..., days=days_selected)` just changes its cutoff calc (`today - Timedelta(days=days-1)`); since `_ar_data()`/`load_all_ar_ledgers()` already loads full unfiltered AR history, moving the slider is a pure in-memory re-filter — no new DB round trip. The DO-detail sub-table (`_render_do_detail`, backed by `_sales_14day_data()` / `get_sales_7day`) is loaded once at the widest possible window (180 days, cached) and then sliced client-side to the same `days_selected` cutoff, so it stays in sync with the slider without re-querying per change.
+
+### Paid Date / Amount Paid (both Latest Sale & Collection locations)
+
+Dedicated columns at the very end of the table (after `current_balance`/"Balance") showing the customer's **latest `glpmt` (mobile-app) payment** — date + amount — via `processing/salesman_due.py::latest_app_payment_lookup` / `merge_app_paid_columns`. Same "must be after the latest sale" gate as Delivery Date: `Paid Date > last_sale_date` / `> "Sales Date"`, otherwise `NaT`.
+
+This is deliberately **separate** from `merge_latest_app_payment`'s existing "Latest Collection Date/Amount" folding (which still runs first, unchanged) — that function only surfaces an app payment when it *out-dates the ledger*, so a viewer can't tell from "Latest Collection Date" alone whether it came from the app or the ledger (this is also why the `Collection Source` column was removed from display — see below). Paid Date/Amount Paid always shows the app entry specifically, independent of whether it happened to win that comparison.
+
+### Collection Source removed from display, Promised Payment highlighted when overdue
+
+- `Collection Source` (`"Ledger"` / `"App (Pending)"`, added by `merge_latest_app_payment`) is still computed internally — needed there to decide whether an app payment out-dates the ledger — but is no longer surfaced to viewers in either Latest Sale & Collection table. Dropped via `.drop(columns=["Collection Source"], errors="ignore")` in `build_salesman_due_reports` (Collection Analysis) and simply left out of the `keep` whitelist in `build_latest_sc_for_zid` (Customer Support).
+- `processing/common.py::highlight_overdue_date(df, col, ref_date=None)` returns a pandas `Styler` that flags any cell in `col` with `background-color: #ff4b4b; color: #ffffff` when its date is before today (or `ref_date`) — high-contrast red chosen to read on both light and dark Streamlit themes. Applied to the "Promised Payment" column in 90-Day Activity, both Customer Support Latest Sales & Collection tables, and Collection Analysis's Latest Sale & Collection. `st.dataframe` accepts a `Styler` in place of a plain DataFrame, and `column_config` still applies on top of it — confirmed no conflict between the two. Not applied to "Paid Date"/"Amount Paid" — those are historical facts (a payment that already happened), not a promise that can go "overdue".
+
+---
+
 ## Marketing Leads CRM (`views/marketing.py` → "🎣 Leads" mode)
 
 Facebook Lead Ads (or similar) CSV/Excel exports get uploaded here and tracked through to conversion.
