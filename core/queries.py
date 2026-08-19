@@ -2597,15 +2597,22 @@ def update_lead_stage(lead_id: int, lead_stage: str) -> Tuple[str, tuple]:
 
 
 def update_marketing_lead_sql() -> str:
-    """UPDATE statement for editing a lead's core details after it's been
-    saved -- whether it came from a bulk upload or the single-lead form.
+    """UPDATE statement for editing a lead's details after it's been saved --
+    whether it came from a bulk upload or the single-lead form. Covers every
+    marketing_leads column that's meaningfully hand-editable.
 
-    id (primary key) and fb_lead_id are deliberately never part of this SET
-    list -- both stay fixed once a lead is created. id is the FK target for
+    id (primary key), fb_lead_id, extra_fields, uploaded_by, and uploaded_at
+    are deliberately never part of this SET list. id is the FK target for
     marketing_lead_call_log.lead_id, and fb_lead_id is the join key staff
-    paste into cacus.xurl to track conversion; changing either after the
+    paste into cacus.xurl to track conversion -- changing either after the
     fact would orphan call-log history or break an already-recorded
-    conversion link.
+    conversion link. extra_fields has no single-value UI representation
+    (it's per-form custom questions as JSON) and uploaded_by/uploaded_at are
+    audit fields, not business data.
+
+    Column order here MUST match views/marketing.py::_update_lead's own
+    column list exactly -- that function builds the params tuple
+    positionally from a dict, not by binding named parameters.
 
     Scoped by both id and zid (id alone is already globally unique as the
     PK, but the zid check is cheap defense-in-depth against a caller editing
@@ -2618,7 +2625,22 @@ def update_marketing_lead_sql() -> str:
             work_phone_number = %s,
             job_title = %s,
             street_address = %s,
-            lead_stage = %s
+            area = %s,
+            lead_stage = %s,
+            ad_id = %s,
+            ad_name = %s,
+            adset_id = %s,
+            adset_name = %s,
+            campaign_id = %s,
+            campaign_name = %s,
+            form_id = %s,
+            form_name = %s,
+            is_organic = %s,
+            platform = %s,
+            inbox_url = %s,
+            lead_status = %s,
+            lead_cost = %s,
+            created_time = %s
         WHERE id = %s AND zid = %s
     """
 
@@ -2636,12 +2658,13 @@ def get_lead_call_logs(lead_id: int) -> Tuple[str, tuple]:
 
 
 def get_all_lead_call_logs(zid: str) -> Tuple[str, tuple]:
-    """Every call log row for a ZID, joined with lead name/company — feeds the
-    'all call logs' table (filterable by date called / next visit date)."""
+    """Every call log row for a ZID, joined with lead name/company/area — feeds
+    the 'all call logs' table (filterable by date called / area / outcome /
+    next visit)."""
     sql = """
         SELECT
             lcl.id, lcl.zid, lcl.lead_id,
-            l.full_name, l.company_name, l.work_phone_number,
+            l.full_name, l.company_name, l.work_phone_number, l.area,
             lcl.called_at, lcl.called_by, lcl.outcome, lcl.next_visit_date, lcl.notes
         FROM marketing_lead_call_log lcl
         JOIN marketing_leads l ON l.id = lcl.lead_id

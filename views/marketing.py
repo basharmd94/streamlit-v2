@@ -1219,40 +1219,164 @@ def _show_lead_upload(zid: str) -> None:
             st.rerun()
 
 
+_LEAD_STAGES = ["New", "Contacted", "Qualified", "Follow-up", "Converted", "Not Interested"]
+
+# Column order here MUST match core/queries.py::update_marketing_lead_sql's
+# SET list exactly -- _update_lead builds its params tuple positionally off
+# this list, not by name.
+_LEAD_UPDATE_COLS = [
+    "full_name", "company_name", "work_phone_number", "job_title",
+    "street_address", "area", "lead_stage",
+    "ad_id", "ad_name", "adset_id", "adset_name",
+    "campaign_id", "campaign_name", "form_id", "form_name",
+    "is_organic", "platform", "inbox_url", "lead_status",
+    "lead_cost", "created_time",
+]
+
+
+def _render_lead_fields(prefix: str, defaults: dict | None = None, show_stage: bool = False) -> dict:
+    """Render the full marketing_leads field set as form inputs -- shared by
+    _show_manual_lead_entry (defaults=None, blank form) and _show_edit_lead
+    (defaults=the lead's current row, show_stage=True). Must be called
+    inside an st.form(...) block; returns the raw widget values, still
+    strings/labels at this point -- pass through _parse_lead_fields before
+    using them.
+    """
+    d = defaults or {}
+
+    def _s(col: str) -> str:
+        v = d.get(col)
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return ""
+        return str(v)
+
+    c1, c2 = st.columns(2)
+    full_name    = c1.text_input("Full Name*", value=_s("full_name"), key=f"{prefix}_full_name")
+    company_name = c2.text_input("Company Name", value=_s("company_name"), key=f"{prefix}_company_name")
+    c3, c4 = st.columns(2)
+    phone     = c3.text_input("Phone Number*", value=_s("work_phone_number"), key=f"{prefix}_phone")
+    job_title = c4.text_input("Job Title", value=_s("job_title"), key=f"{prefix}_job_title")
+    c5, c6 = st.columns(2)
+    address = c5.text_input("Address", value=_s("street_address"), key=f"{prefix}_address")
+    area    = c6.text_input("Area", value=_s("area"), placeholder="e.g. Dhanmondi, Dhaka", key=f"{prefix}_area")
+    c7, c8 = st.columns(2)
+    platform    = c7.text_input("Platform", value=_s("platform") or "Manual", key=f"{prefix}_platform")
+    lead_status = c8.text_input("Lead Status", value=_s("lead_status"), key=f"{prefix}_lead_status")
+    c9, c10 = st.columns(2)
+    _organic_opts = ["— Unknown —", "Yes", "No"]
+    _organic_default = {True: "Yes", False: "No"}.get(d.get("is_organic"), "— Unknown —")
+    is_organic_label = c9.selectbox(
+        "Organic Lead?", _organic_opts, index=_organic_opts.index(_organic_default), key=f"{prefix}_is_organic",
+    )
+    lead_cost_str = c10.text_input(
+        "Lead Cost", value=_s("lead_cost"), placeholder="e.g. 150", key=f"{prefix}_lead_cost",
+    )
+
+    raw_created = d.get("created_time")
+    created_default = None
+    if raw_created is not None and pd.notna(raw_created):
+        created_default = pd.to_datetime(raw_created).date()
+    created_date = st.date_input(
+        "Created Date", value=created_default,
+        help="Leave blank to use the current date/time.", key=f"{prefix}_created_date",
+    )
+
+    stage = None
+    if show_stage:
+        current_stage = d.get("lead_stage") or "New"
+        stage_opts = _LEAD_STAGES + ([current_stage] if current_stage not in _LEAD_STAGES else [])
+        stage = st.selectbox(
+            "Lead Stage", stage_opts, index=stage_opts.index(current_stage), key=f"{prefix}_stage",
+        )
+
+    st.markdown("**Campaign / Ad Info** *(optional — usually only set for platform-sourced leads)*")
+    c11, c12 = st.columns(2)
+    ad_id   = c11.text_input("Ad ID", value=_s("ad_id"), key=f"{prefix}_ad_id")
+    ad_name = c12.text_input("Ad Name", value=_s("ad_name"), key=f"{prefix}_ad_name")
+    c13, c14 = st.columns(2)
+    adset_id   = c13.text_input("Adset ID", value=_s("adset_id"), key=f"{prefix}_adset_id")
+    adset_name = c14.text_input("Adset Name", value=_s("adset_name"), key=f"{prefix}_adset_name")
+    c15, c16 = st.columns(2)
+    campaign_id   = c15.text_input("Campaign ID", value=_s("campaign_id"), key=f"{prefix}_campaign_id")
+    campaign_name = c16.text_input("Campaign Name", value=_s("campaign_name"), key=f"{prefix}_campaign_name")
+    c17, c18 = st.columns(2)
+    form_id   = c17.text_input("Form ID", value=_s("form_id"), key=f"{prefix}_form_id")
+    form_name = c18.text_input("Form Name", value=_s("form_name"), key=f"{prefix}_form_name")
+    inbox_url = st.text_input("Inbox URL", value=_s("inbox_url"), key=f"{prefix}_inbox_url")
+
+    return {
+        "full_name": full_name, "company_name": company_name, "phone": phone,
+        "job_title": job_title, "address": address, "area": area,
+        "platform": platform, "lead_status": lead_status,
+        "is_organic_label": is_organic_label, "lead_cost_str": lead_cost_str,
+        "created_date": created_date, "stage": stage,
+        "ad_id": ad_id, "ad_name": ad_name, "adset_id": adset_id, "adset_name": adset_name,
+        "campaign_id": campaign_id, "campaign_name": campaign_name,
+        "form_id": form_id, "form_name": form_name, "inbox_url": inbox_url,
+    }
+
+
+def _parse_lead_fields(raw: dict) -> dict:
+    """Convert _render_lead_fields' raw widget output into typed values ready
+    for build_manual_lead_row / _update_lead. Raises ValueError with a
+    user-facing message if Lead Cost isn't a valid number."""
+    out = {k: (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+    out["is_organic"] = {"Yes": True, "No": False}.get(raw["is_organic_label"])
+
+    lead_cost = None
+    if raw["lead_cost_str"].strip():
+        try:
+            lead_cost = float(raw["lead_cost_str"].strip())
+        except ValueError:
+            raise ValueError("Lead Cost must be a number (e.g. 150 or 150.50).")
+    out["lead_cost"] = lead_cost
+
+    created_date = raw.get("created_date")
+    out["created_time"] = pd.Timestamp(created_date, tz="UTC") if created_date else None
+    return out
+
+
 def _show_manual_lead_entry(zid: str) -> None:
     st.caption(
         "For leads that come in by phone or walk-in rather than a platform export. "
-        "A generated lead id is used the same way as a Facebook lead id — paste it "
-        "into the customer's URL field in the ERP if you want conversion tracked."
+        "Only Full Name and Phone Number are required — every other field mirrors "
+        "the marketing_leads table and can be left blank. A generated lead id is "
+        "used the same way as a Facebook lead id — paste it into the customer's "
+        "URL field in the ERP if you want conversion tracked."
     )
     with st.form("manual_lead_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        full_name    = c1.text_input("Full Name*")
-        company_name = c2.text_input("Company Name")
-        c3, c4 = st.columns(2)
-        phone     = c3.text_input("Phone Number*")
-        job_title = c4.text_input("Job Title")
-        c5, c6 = st.columns(2)
-        address = c5.text_input("Address")
-        area    = c6.text_input("Area", placeholder="e.g. Dhanmondi, Dhaka")
-        notes   = st.text_area("Notes", placeholder="Any additional context about this lead")
+        fields = _render_lead_fields("new_lead", defaults=None, show_stage=False)
+        notes = st.text_area("Notes", placeholder="Any additional context about this lead")
         submitted = st.form_submit_button("💾 Save Lead")
 
     if not submitted:
         return
 
-    if not full_name.strip() or not phone.strip():
+    if not fields["full_name"].strip() or not fields["phone"].strip():
         st.error("Full Name and Phone Number are required.")
         return
 
+    try:
+        parsed = _parse_lead_fields(fields)
+    except ValueError as e:
+        st.error(str(e))
+        return
+
     row_df = build_manual_lead_row(
-        full_name=full_name, work_phone_number=phone,
-        company_name=company_name, job_title=job_title,
-        street_address=address, area=area, notes=notes,
+        full_name=parsed["full_name"], work_phone_number=parsed["phone"],
+        company_name=parsed["company_name"], job_title=parsed["job_title"],
+        street_address=parsed["address"], area=parsed["area"], notes=notes,
+        lead_cost=parsed["lead_cost"], created_time=parsed["created_time"],
+        ad_id=parsed["ad_id"], ad_name=parsed["ad_name"],
+        adset_id=parsed["adset_id"], adset_name=parsed["adset_name"],
+        campaign_id=parsed["campaign_id"], campaign_name=parsed["campaign_name"],
+        form_id=parsed["form_id"], form_name=parsed["form_name"],
+        is_organic=parsed["is_organic"], platform=parsed["platform"],
+        inbox_url=parsed["inbox_url"], lead_status=parsed["lead_status"],
     )
     n_new = _bulk_insert_leads(row_df, zid, st.session_state.get("username", ""))
     if n_new == 1:
-        st.success(f"Lead saved: **{full_name.strip()}**.")
+        st.success(f"Lead saved: **{parsed['full_name']}**.")
         _load_marketing_leads.clear()
         st.rerun()
     else:
@@ -1263,19 +1387,37 @@ def _show_manual_lead_entry(zid: str) -> None:
         )
 
 
-_LEAD_STAGES = ["New", "Contacted", "Qualified", "Follow-up", "Converted", "Not Interested"]
+# Optional text columns where a blank field should store NULL, not "" --
+# matches build_manual_lead_row's _blank_to_none convention for the INSERT
+# path, so clearing a field in Edit behaves the same as leaving it blank
+# when creating a lead.
+_LEAD_BLANK_TO_NONE_COLS = [
+    "company_name", "street_address", "area", "job_title", "inbox_url",
+    "ad_id", "ad_name", "adset_id", "adset_name",
+    "campaign_id", "campaign_name", "form_id", "form_name",
+]
 
 
-def _update_lead(
-    lead_id: int, zid: str, full_name: str, company_name: str,
-    phone: str, job_title: str, address: str, stage: str,
-) -> bool:
+def _update_lead(lead_id: int, zid: str, parsed: dict) -> bool:
     from core.db import execute_write
     from core.queries import update_marketing_lead_sql
-    return execute_write(
-        update_marketing_lead_sql(),
-        (full_name, company_name, phone, job_title, address, stage, lead_id, zid),
-    )
+    values = {
+        **parsed,
+        "work_phone_number": parsed["phone"],
+        "street_address": parsed["address"],
+        "lead_stage": parsed["stage"],
+    }
+    for col in _LEAD_BLANK_TO_NONE_COLS:
+        if not values.get(col):
+            values[col] = None
+    # platform/lead_status fall back to "manual" rather than NULL, same as
+    # build_manual_lead_row -- there's no meaningful "unset" state for these
+    # beyond that default.
+    values["platform"] = values.get("platform") or "manual"
+    values["lead_status"] = values.get("lead_status") or "manual"
+
+    params = tuple(values[c] for c in _LEAD_UPDATE_COLS) + (lead_id, zid)
+    return execute_write(update_marketing_lead_sql(), params)
 
 
 def _show_edit_lead(zid: str) -> None:
@@ -1304,32 +1446,26 @@ def _show_edit_lead(zid: str) -> None:
 
     sel_id = lead_opts[sel_label]
     row = leads_df[leads_df["id"] == sel_id].iloc[0]
-    current_stage = row.get("lead_stage") or "New"
-    stage_opts = _LEAD_STAGES + ([current_stage] if current_stage not in _LEAD_STAGES else [])
 
     st.caption(f"Lead ID: **#{sel_id}** (fixed) · FB Lead ID: `{row.get('fb_lead_id') or '—'}` (fixed)")
 
     with st.form(f"edit_lead_form_{sel_id}"):
-        c1, c2 = st.columns(2)
-        full_name    = c1.text_input("Full Name*", value=row.get("full_name") or "")
-        company_name = c2.text_input("Company Name", value=row.get("company_name") or "")
-        c3, c4 = st.columns(2)
-        phone     = c3.text_input("Phone Number*", value=row.get("work_phone_number") or "")
-        job_title = c4.text_input("Job Title", value=row.get("job_title") or "")
-        address = st.text_input("Address", value=row.get("street_address") or "")
-        stage = st.selectbox("Lead Stage", stage_opts, index=stage_opts.index(current_stage))
+        fields = _render_lead_fields(f"edit_lead_{sel_id}", defaults=row.to_dict(), show_stage=True)
         submitted = st.form_submit_button("💾 Save Changes")
 
     if not submitted:
         return
-    if not full_name.strip() or not phone.strip():
+    if not fields["full_name"].strip() or not fields["phone"].strip():
         st.error("Full Name and Phone Number are required.")
         return
 
-    ok = _update_lead(
-        sel_id, zid, full_name.strip(), company_name.strip(), phone.strip(),
-        job_title.strip(), address.strip(), stage,
-    )
+    try:
+        parsed = _parse_lead_fields(fields)
+    except ValueError as e:
+        st.error(str(e))
+        return
+
+    ok = _update_lead(sel_id, zid, parsed)
     if ok:
         st.success(f"Lead #{sel_id} updated.")
         _load_marketing_leads.clear()
@@ -1352,13 +1488,14 @@ def _render_leads_table(zid: str, leads_df: pd.DataFrame, links_df: pd.DataFrame
     st.markdown("#### 📋 Leads")
     summary = build_lead_summary_table(leads_df, links_df, call_logs_df)
 
-    search = st.text_input("Search name / company / phone", "", key="leads_search")
+    search = st.text_input("Search name / company / phone / area", "", key="leads_search")
     disp = summary.copy()
     if search:
         mask = (
             disp.get("full_name", pd.Series(dtype=str)).astype(str).str.contains(search, case=False, na=False)
             | disp.get("company_name", pd.Series(dtype=str)).astype(str).str.contains(search, case=False, na=False)
             | disp.get("work_phone_number", pd.Series(dtype=str)).astype(str).str.contains(search, case=False, na=False)
+            | disp.get("area", pd.Series(dtype=str)).astype(str).str.contains(search, case=False, na=False)
         )
         disp = disp[mask]
 
@@ -1366,12 +1503,12 @@ def _render_leads_table(zid: str, leads_df: pd.DataFrame, links_df: pd.DataFrame
 
     _rename = {
         "id": "Lead ID", "created_time": "Created", "full_name": "Name",
-        "company_name": "Company", "work_phone_number": "Phone",
+        "company_name": "Company", "work_phone_number": "Phone", "area": "Area",
         "job_title": "Job Title", "campaign_name": "Campaign",
         "lead_status": "FB Status", "converted": "Status",
         "cusid": "Cus Code", "cusname": "Cus Name",
         "last_called": "Last Called", "last_outcome": "Last Outcome",
-        "next_visit_date": "Next Visit", "last_notes": "Last Notes",
+        "next_visit_date": "Next Follow Up", "last_notes": "Last Notes",
     }
     show_cols = [c for c in _rename if c in disp.columns]
     disp = disp[show_cols].rename(columns=_rename)
@@ -1383,8 +1520,8 @@ def _render_leads_table(zid: str, leads_df: pd.DataFrame, links_df: pd.DataFrame
     st.dataframe(
         disp,
         column_config={
-            "Last Called": st.column_config.DateColumn("Last Called", format="YYYY-MM-DD"),
-            "Next Visit":  st.column_config.DateColumn("Next Visit",  format="YYYY-MM-DD"),
+            "Last Called":     st.column_config.DateColumn("Last Called",     format="YYYY-MM-DD"),
+            "Next Follow Up":  st.column_config.DateColumn("Next Follow Up",  format="YYYY-MM-DD"),
         },
         width="stretch",
         hide_index=True,
@@ -1424,14 +1561,15 @@ def _render_lead_call_log_entry(zid: str, leads_df: pd.DataFrame) -> None:
 
 
 def _render_all_lead_call_logs(zid: str, call_logs_df: pd.DataFrame) -> None:
-    """Table 2 — all call logs, filterable by date called / next visit date."""
+    """Table 2 — all call logs, filterable by date called / outcome / area /
+    next follow up, all four filters in a single row."""
     st.markdown("#### 📒 All Call Logs")
     log_tbl = build_lead_call_log_table(call_logs_df)
     if log_tbl.empty:
         st.info("No calls logged yet.")
         return
 
-    lf1, lf2, lf3 = st.columns(3)
+    lf1, lf2, lf3, lf4 = st.columns(4)
 
     # "Date called" is NOT NULL on every row, so defaulting the range to
     # the full min/max is a true no-op — matches the date-range convention
@@ -1446,26 +1584,25 @@ def _render_all_lead_call_logs(zid: str, call_logs_df: pd.DataFrame) -> None:
                 key="leads_log_called_range",
             )
 
-    # "Next visit" is usually NULL (most calls don't set one) — an
-    # explicit opt-in checkbox avoids a default range silently hiding
-    # every row that has no next-visit date scheduled.
     with lf2:
-        filter_nvd = st.checkbox("Filter by next visit date", value=False, key="leads_log_nvd_toggle")
-        nvd_range = None
-        if filter_nvd:
-            nvd_dates = log_tbl["next_visit_date"].dt.date.dropna()
-            if not nvd_dates.empty:
-                nvd_range = st.date_input(
-                    "Next visit (range)",
-                    value=(nvd_dates.min(), nvd_dates.max()),
-                    key="leads_log_nvd_range",
-                )
-            else:
-                st.caption("No next-visit dates logged yet.")
-
-    with lf3:
         outcome_opts = sorted(log_tbl["outcome"].dropna().unique().tolist())
         outcome_sel = st.multiselect("Outcome", outcome_opts, key="leads_log_outcome")
+
+    with lf3:
+        area_opts = sorted(log_tbl["area"].dropna().unique().tolist()) if "area" in log_tbl.columns else []
+        area_sel = st.multiselect("Area", area_opts, key="leads_log_area")
+
+    # Next Follow Up is usually NULL (most calls don't set one). A plain
+    # multiselect of the distinct dates that ARE scheduled -- rather than a
+    # date-range input gated behind a checkbox -- means an empty selection
+    # naturally shows everything, with no toggle needed to opt in first.
+    with lf4:
+        nvd_opts = sorted(log_tbl["next_visit_date"].dt.date.dropna().unique().tolist())
+        nvd_sel = st.multiselect(
+            "Next Follow Up", nvd_opts,
+            format_func=lambda d: d.strftime("%Y-%m-%d"),
+            key="leads_log_nvd_sel",
+        )
 
     filt = log_tbl.copy()
     if isinstance(called_range, tuple) and len(called_range) == 2:
@@ -1473,20 +1610,18 @@ def _render_all_lead_call_logs(zid: str, call_logs_df: pd.DataFrame) -> None:
         filt = filt[
             (filt["called_at"].dt.date >= start) & (filt["called_at"].dt.date <= end)
         ]
-    if filter_nvd and isinstance(nvd_range, tuple) and len(nvd_range) == 2:
-        start, end = nvd_range
-        filt = filt[
-            filt["next_visit_date"].notna()
-            & filt["next_visit_date"].dt.date.between(start, end, inclusive="both")
-        ]
     if outcome_sel:
         filt = filt[filt["outcome"].isin(outcome_sel)]
+    if area_sel:
+        filt = filt[filt["area"].isin(area_sel)]
+    if nvd_sel:
+        filt = filt[filt["next_visit_date"].dt.date.isin(nvd_sel)]
 
     log_rename = {
         "lead_id": "Lead ID", "full_name": "Name", "company_name": "Company",
-        "work_phone_number": "Phone", "called_at": "Called At",
+        "work_phone_number": "Phone", "area": "Area", "called_at": "Called At",
         "called_by": "Called By", "outcome": "Outcome",
-        "next_visit_date": "Next Visit", "notes": "Notes",
+        "next_visit_date": "Next Follow Up", "notes": "Notes",
     }
     log_cols = [c for c in log_rename if c in filt.columns]
     log_disp = filt[log_cols].rename(columns=log_rename)
@@ -1495,8 +1630,8 @@ def _render_all_lead_call_logs(zid: str, call_logs_df: pd.DataFrame) -> None:
     st.dataframe(
         log_disp,
         column_config={
-            "Called At":  st.column_config.DatetimeColumn("Called At", format="YYYY-MM-DD HH:mm"),
-            "Next Visit": st.column_config.DateColumn("Next Visit",   format="YYYY-MM-DD"),
+            "Called At":       st.column_config.DatetimeColumn("Called At",       format="YYYY-MM-DD HH:mm"),
+            "Next Follow Up":  st.column_config.DateColumn("Next Follow Up",      format="YYYY-MM-DD"),
         },
         width="stretch",
         hide_index=True,
