@@ -353,6 +353,13 @@ Neither is platform-sourced. **`area`** — the lead's exact area/division, ente
 
 Two DB scripts, not one: `db/sql_scripts/create_marketing_leads_tables.sql` (the `CREATE TABLE IF NOT EXISTS` — updated in place for a *fresh* setup) and `db/sql_scripts/add_marketing_leads_area_lead_cost_columns.sql` (new — a non-destructive `ALTER TABLE` for a server that already has the *old* schema and real lead data on it). The `ALTER` script deliberately doesn't use `ADD COLUMN IF NOT EXISTS` — that's a Postgres 9.6+ feature, and this server predates 9.5 per the `ON CONFLICT`/`CREATE INDEX IF NOT EXISTS` incompatibilities already documented above; safe to run once, errors (not silently no-ops) if run twice.
 
+### Backup/restore pair for a DROP + CREATE migration path
+`db/sql_scripts/backup_marketing_leads_to_csv.sql` / `restore_marketing_leads_from_csv.sql` — for whoever prefers a clean drop-and-recreate over the `ALTER TABLE` script above (e.g. a full schema reset) but still needs to keep existing lead + call-log data. Both use `\copy`, a psql meta-command that runs client-side (wherever `psql` is invoked from), not server-side — no server filesystem access needed, and the CSVs land in the current working directory.
+
+**`id` preservation is the whole point of the restore script, not incidental.** `marketing_lead_call_log.lead_id` is a hard FK to `marketing_leads.id`; a plain re-INSERT that lets `SERIAL` renumber rows from 1 would silently repoint every restored call log at the wrong lead (or a nonexistent one). The restore script's `\copy ... (id, zid, ...)` explicitly lists `id` in the column list, which inserts the literal backed-up value instead of invoking the `SERIAL` default — then `setval(pg_get_serial_sequence(...), MAX(id))` on both tables afterward, so the *next* app-created lead/call-log doesn't collide with a restored id. Verified end-to-end against real Postgres: original ids preserved exactly (including a table with deliberate id gaps, mimicking rows deleted over time), call logs still correctly linked to the right lead by content after restore, a JSONB `extra_fields` value containing both an embedded comma and an escaped quote round-tripped byte-for-byte through the CSV, and a fresh insert after restore got a non-colliding id with no manual sequence bookkeeping needed.
+
+Backup runs against the *old* schema (no `area`/`lead_cost` columns exist yet) — its restore counterpart's explicit column list omits both, so every restored (old) lead correctly gets `NULL` for both rather than erroring on a column-count mismatch.
+
 ---
 
 ## Git / Deployment
