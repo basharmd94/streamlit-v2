@@ -1235,6 +1235,84 @@ def _show_manual_lead_entry(zid: str) -> None:
         )
 
 
+_LEAD_STAGES = ["New", "Contacted", "Qualified", "Follow-up", "Converted", "Not Interested"]
+
+
+def _update_lead(
+    lead_id: int, zid: str, full_name: str, company_name: str,
+    phone: str, job_title: str, address: str, stage: str,
+) -> bool:
+    from core.db import execute_write
+    from core.queries import update_marketing_lead_sql
+    return execute_write(
+        update_marketing_lead_sql(),
+        (full_name, company_name, phone, job_title, address, stage, lead_id, zid),
+    )
+
+
+def _show_edit_lead(zid: str) -> None:
+    st.caption(
+        "Edit a lead's details after it's been saved — from a bulk upload or the "
+        "single-lead form. The Lead ID (and Facebook Lead ID, where one exists) "
+        "never changes here — it's the join key used for conversion tracking and "
+        "call-log history."
+    )
+    leads_df = _load_marketing_leads(zid)
+    if leads_df.empty:
+        st.info("No leads yet — switch to **Bulk Upload** or **Single Lead** to add one.")
+        return
+
+    lead_opts = {
+        f"{r['full_name']} — {r['company_name']} (#{r['id']})": int(r["id"])
+        for _, r in leads_df[["id", "full_name", "company_name"]].fillna("").iterrows()
+    }
+    sel_label = st.selectbox(
+        "Select lead to edit",
+        ["— pick a lead —"] + list(lead_opts.keys()),
+        key="leads_edit_sel",
+    )
+    if not sel_label or sel_label == "— pick a lead —":
+        return
+
+    sel_id = lead_opts[sel_label]
+    row = leads_df[leads_df["id"] == sel_id].iloc[0]
+    current_stage = row.get("lead_stage") or "New"
+    stage_opts = _LEAD_STAGES + ([current_stage] if current_stage not in _LEAD_STAGES else [])
+
+    st.caption(f"Lead ID: **#{sel_id}** (fixed) · FB Lead ID: `{row.get('fb_lead_id') or '—'}` (fixed)")
+
+    with st.form(f"edit_lead_form_{sel_id}"):
+        c1, c2 = st.columns(2)
+        full_name    = c1.text_input("Full Name*", value=row.get("full_name") or "")
+        company_name = c2.text_input("Company Name", value=row.get("company_name") or "")
+        c3, c4 = st.columns(2)
+        phone     = c3.text_input("Phone Number*", value=row.get("work_phone_number") or "")
+        job_title = c4.text_input("Job Title", value=row.get("job_title") or "")
+        address = st.text_input("Address", value=row.get("street_address") or "")
+        stage = st.selectbox("Lead Stage", stage_opts, index=stage_opts.index(current_stage))
+        submitted = st.form_submit_button("💾 Save Changes")
+
+    if not submitted:
+        return
+    if not full_name.strip() or not phone.strip():
+        st.error("Full Name and Phone Number are required.")
+        return
+
+    ok = _update_lead(
+        sel_id, zid, full_name.strip(), company_name.strip(), phone.strip(),
+        job_title.strip(), address.strip(), stage,
+    )
+    if ok:
+        st.success(f"Lead #{sel_id} updated.")
+        _load_marketing_leads.clear()
+        st.rerun()
+    else:
+        st.error(
+            "Failed to save changes — check the server logs for an 'execute_write "
+            "error' line."
+        )
+
+
 def _render_leads_table(zid: str, leads_df: pd.DataFrame, links_df: pd.DataFrame,
                          call_logs_df: pd.DataFrame, is_crm: bool) -> None:
     """Table 1 — individual lead + latest call info. Shared by the sales
@@ -1427,11 +1505,15 @@ def _show_leads(zid: str) -> None:
     st.markdown("---")
 
     if sub_mode == "➕ Add Leads":
-        tab_bulk, tab_single = st.tabs(["📤 Bulk Upload", "➕ Single Lead"])
+        tab_bulk, tab_single, tab_edit = st.tabs(
+            ["📤 Bulk Upload", "➕ Single Lead", "✏️ Edit Lead"]
+        )
         with tab_bulk:
             _show_lead_upload(zid)
         with tab_single:
             _show_manual_lead_entry(zid)
+        with tab_edit:
+            _show_edit_lead(zid)
         return
 
     # ── 📞 Call Log: leads table first, then log-a-call, then all call logs ───

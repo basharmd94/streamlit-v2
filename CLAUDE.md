@@ -320,8 +320,17 @@ When staff convert a lead to a real customer in the ERP, they manually paste the
 
 ### Permissions (role-gated inside the view, not via `page_permissions`)
 Both `crm` and `sales` already have page-level access to "Marketing Analysis" in `page_permissions`. Finer-grained access is enforced in `views/marketing.py::_show_leads` by `st.session_state.user_role`:
-- **`crm`/`admin`**: top-level radio (`_show_leads`) — **"➕ Add Leads"** (bulk upload + single-lead form, no tables) and **"📞 Call Log"** (Table 1 leads list → call-log entry panel → Table 2 all call logs, in that order). CSV downloads on both tables.
-- **`sales`**: no radio — Table 1 (leads list) only, read-only. No upload, no call-log entry, no Table 2.
+- **`crm`/`admin`**: top-level radio (`_show_leads`) — **"➕ Add Leads"** (bulk upload + single-lead form + edit-lead form, no tables) and **"📞 Call Log"** (Table 1 leads list → call-log entry panel → Table 2 all call logs, in that order). CSV downloads on both tables.
+- **`sales`**: no radio — Table 1 (leads list) only, read-only. No upload, no edit, no call-log entry, no Table 2.
+
+### Editing a lead after it's saved: `views/marketing.py::_show_edit_lead` (CRM/admin only)
+Third tab under "➕ Add Leads" (`✏️ Edit Lead`, alongside Bulk Upload and Single Lead), since a lead saved either way — bulk import or the manual form — previously had no way to fix a typo or update its details afterward. Pick a lead from a selectbox, edit in a pre-filled `st.form`, save.
+
+`core/queries.py::update_marketing_lead_sql` covers `full_name`, `company_name`, `work_phone_number`, `job_title`, `street_address`, `lead_stage` — nothing else. **`id` and `fb_lead_id` are deliberately never in the SET list and can't be changed from this form**: `id` is the FK target for `marketing_lead_call_log.lead_id` (changing it would orphan call-log history), and `fb_lead_id` is the join key staff paste into `cacus.xurl` to track conversion (changing it after the fact would break an already-recorded conversion link). `WHERE id = %s AND zid = %s` — the `zid` check is cheap defense-in-depth on top of `id` already being globally unique as the PK.
+
+`lead_stage` uses a fixed dropdown (`_LEAD_STAGES` = New/Contacted/Qualified/Follow-up/Converted/Not Interested) with one safeguard: if the lead's current stage isn't in that list (a legacy/custom value), it's appended as an extra option so the field doesn't silently get overwritten by whatever the dropdown defaults to just because its current value wasn't a preset choice.
+
+Executed via `core/db.py::execute_write` (single DML helper, same one `crm_call_log` deletes use) — no bulk/`execute_values` machinery needed here, it's always exactly one row.
 
 ### Shared call-log module: `views/lead_call_log_shared.py`
 Mirrors `views/call_log_shared.py`'s panel styling exactly (imports `blue_header`/`BLUE_FOOTER` from it) but keyed on `lead_id` instead of `cusid`, and adds a `next_visit_date` field to both the entry form and the history badges. **Outcomes are lead-specific, not shared with Customer Support** — `LEAD_OUTCOMES`/`_LEAD_OUTCOME_BADGE` are defined locally in this file (Customer Support's `OUTCOMES` are order/AR states like Paid/Delivered/Returned, meaningless before a lead converts): `Not Answered`, `Not Interested`, `B2C`, `Wrong Lead`, `Asked to Submit Sample`, `Sample Submitted`, `Still Using Sample – Will Contact After`, `Follow-up Requested`, `Promised to Order`, `Deal Completed`.
