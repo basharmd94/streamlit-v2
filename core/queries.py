@@ -533,6 +533,57 @@ def get_returns_registry_items(filters=None) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_feedback_data(filters=None) -> Tuple[str, tuple]:
+    """Market-level feedback salesmen log via the mobile Ordering app.
+
+    Same app-staged/ERP-synced family as glpmt/Returns Registry/promise
+    dates — read-only here, written by the mobile app, not app-owned.
+
+    A feedback row carries up to four independent, non-exclusive tags:
+    customer_id (about a specific customer), product_id (about a specific
+    product), is_delivery_issue, is_collection_issue. These aren't mutually
+    exclusive — on real data 10 rows have both customer_id AND product_id
+    set, and 4 rows have both is_delivery_issue AND is_collection_issue true
+    — so a single feedback entry can legitimately surface in more than one
+    of the four category tables the view builds from this. About 70% of
+    rows (145/204) carry none of the four tags at all (general feedback) —
+    those simply won't appear in any category table.
+
+    user_id is the prmst employee code (xemp) of the salesman who logged it.
+    Some legacy rows predate this field being captured and have it blank —
+    LEFT JOIN (not INNER) so those still surface, just with a blank
+    Salesman/Emp Code rather than silently vanishing.
+
+    customer_id/product_id LEFT JOIN to cacus/caitem for a display name;
+    both are plain codes (cacus.xcus / caitem.xitem), confirmed matching on
+    real data.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            f.zid,
+            f.id                   AS feedback_id,
+            f.customer_id          AS cusid,
+            COALESCE(c.xshort, '') AS cusname,
+            f.product_id           AS itemcode,
+            COALESCE(ci.xdesc, '') AS itemname,
+            f.is_delivery_issue,
+            f.is_collection_issue,
+            f.description,
+            f.created_at,
+            f.user_id              AS spid,
+            COALESCE(pr.xname, '') AS spname
+        FROM feedback f
+        LEFT JOIN cacus  c  ON c.zid  = f.zid AND c.xcus  = f.customer_id
+        LEFT JOIN caitem ci ON ci.zid = f.zid AND ci.xitem = f.product_id
+        LEFT JOIN prmst  pr ON pr.zid = f.zid AND pr.xemp = f.user_id
+        WHERE f.zid = %s
+        ORDER BY f.created_at DESC
+    """
+    return sql, (zid,)
+
+
 def get_collection_data(filters=None):
     """Queries mv_collection_vouchers (materialized view).
 
