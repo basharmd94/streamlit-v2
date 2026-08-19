@@ -2590,6 +2590,33 @@ def update_lead_stage(lead_id: int, lead_stage: str) -> Tuple[str, tuple]:
     return sql, (lead_stage, lead_id)
 
 
+def update_marketing_lead_sql() -> str:
+    """UPDATE statement for editing a lead's core details after it's been
+    saved -- whether it came from a bulk upload or the single-lead form.
+
+    id (primary key) and fb_lead_id are deliberately never part of this SET
+    list -- both stay fixed once a lead is created. id is the FK target for
+    marketing_lead_call_log.lead_id, and fb_lead_id is the join key staff
+    paste into cacus.xurl to track conversion; changing either after the
+    fact would orphan call-log history or break an already-recorded
+    conversion link.
+
+    Scoped by both id and zid (id alone is already globally unique as the
+    PK, but the zid check is cheap defense-in-depth against a caller editing
+    the wrong business's lead).
+    """
+    return """
+        UPDATE marketing_leads
+        SET full_name = %s,
+            company_name = %s,
+            work_phone_number = %s,
+            job_title = %s,
+            street_address = %s,
+            lead_stage = %s
+        WHERE id = %s AND zid = %s
+    """
+
+
 def get_lead_call_logs(lead_id: int) -> Tuple[str, tuple]:
     """All call log entries for one lead, newest first."""
     sql = """
