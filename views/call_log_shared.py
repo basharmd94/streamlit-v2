@@ -12,7 +12,8 @@ import streamlit as st
 
 OUTCOMES = [
     "Promised", "Paid", "Not answered", "Dispute",
-    "Delivered", "Not Delivered", "Returned", "Other",
+    "Delivered", "Not Delivered", "Returned",
+    "Switched Business", "Price Issues", "Other",
 ]
 
 _OUTCOME_BADGE = {
