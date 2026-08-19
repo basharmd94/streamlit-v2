@@ -341,6 +341,11 @@ Unlike the lead call log above, Customer Support and Marketing → Inactive Outr
 ### Bulk insert + dedup: `core/db.py::execute_values_insert`
 One round trip via `psycopg2.extras.execute_values`. **No `ON CONFLICT` clause** — the live server predates Postgres 9.5 (confirmed: both `CREATE INDEX IF NOT EXISTS` and `ON CONFLICT` throw syntax errors there), so dedup happens in Python instead: `get_existing_lead_fb_ids` fetches already-saved `fb_lead_id`s for the ZID and `_bulk_insert_leads` filters the upload batch against them before a plain `INSERT`. Returns `cur.rowcount`, or `-1` on a DB error — callers must NOT clamp this to 0 (a real bug: `-1` clamped via `max(n, 0)` once silently reported failed uploads as "0 new leads saved").
 
+### Sample upload template + CSV/Excel `dtype=str` fix
+`processing/marketing_leads.py::build_leads_upload_template` — a one-row example CSV in exactly `_ID_COL` + `_FIXED_COLS` order (English-only column names, one filled-in example row), downloadable from an expander above the file uploader in `_show_lead_upload`. Exists because a real Facebook Lead Ads export was confusing a CRM manager filling leads by hand — its custom per-form questions (e.g. a Bengali institution-type question) aren't part of the fixed schema and silently land in `extra_fields` instead of the visible leads table, with no indication in the raw CSV that that's what would happen. The template sidesteps this: fill in only the known columns, upload through the same `_show_lead_upload` path unchanged.
+
+While verifying the round trip, found and fixed a real pre-existing bug in the same function: `pd.read_csv(uploaded)` / `pd.read_excel(uploaded)` had no `dtype` hint, so pandas infers a numeric-looking column (`work_phone_number`, `id`) as `int64` and **silently drops the leading zero** — every Bangladeshi phone number (`01711234567` → `1711234567`) and any leading-zero `id` gets corrupted on upload, template or not. Fixed by reading with `dtype=str` throughout; confirmed blank cells still parse as real `NaN` under `dtype=str` (doesn't change any of `parse_leads_upload`'s existing `pd.isna()`/`errors="coerce"` handling).
+
 ---
 
 ## Git / Deployment

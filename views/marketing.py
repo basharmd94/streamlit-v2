@@ -23,6 +23,7 @@ from processing.marketing_leads import (
     build_manual_lead_row,
     build_lead_summary_table,
     build_lead_call_log_table,
+    build_leads_upload_template,
 )
 from processing.common import normalize_phone_cols
 from core.analytics import Analytics
@@ -1143,6 +1144,26 @@ def _show_lead_upload(zid: str) -> None:
         "join key used to detect when a lead converts to a customer (staff paste it "
         "into the customer's URL field in the ERP once that happens)."
     )
+
+    with st.expander("📄 Need a blank template instead?", expanded=False):
+        st.caption(
+            "A clean, English-only column set to fill in by hand — use this instead of "
+            "a raw platform export if you're compiling leads from another source. **`id`** "
+            "must be unique per lead (use the lead's phone number, a Facebook lead id if "
+            "you have one, or just make one up e.g. `LEAD-0001`, `LEAD-0002`, ...). Every "
+            "other column can be left blank if you don't know it — just keep the column "
+            "names exactly as they are. Don't add, rename, or translate any column; an "
+            "unrecognized column (e.g. a form question in Bengali) gets tucked away as "
+            "extra metadata instead of showing up in the leads table."
+        )
+        st.download_button(
+            "⬇ Download Sample Template (CSV)",
+            data=build_leads_upload_template().to_csv(index=False).encode("utf-8"),
+            file_name="marketing_leads_upload_template.csv",
+            mime="text/csv",
+            key="leads_template_dl",
+        )
+
     uploaded = st.file_uploader(
         "Drag and drop or browse — CSV or Excel",
         type=["csv", "xlsx", "xls"],
@@ -1152,10 +1173,15 @@ def _show_lead_upload(zid: str) -> None:
         return
 
     try:
+        # dtype=str for every column -- otherwise pandas infers numeric-looking
+        # columns (work_phone_number, id) as int64 and silently drops leading
+        # zeros, corrupting every Bangladeshi phone number ("01711234567" ->
+        # "1711234567"). Blank cells still read as real NaN with dtype=str, so
+        # this doesn't change how missing values are handled downstream.
         if uploaded.name.lower().endswith(".csv"):
-            raw_df = pd.read_csv(uploaded)
+            raw_df = pd.read_csv(uploaded, dtype=str)
         else:
-            raw_df = pd.read_excel(uploaded)
+            raw_df = pd.read_excel(uploaded, dtype=str)
     except Exception as e:
         st.error(f"Could not read the file: {e}")
         return
