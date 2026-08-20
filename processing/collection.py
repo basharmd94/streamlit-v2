@@ -858,6 +858,70 @@ def display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_
     except Exception as e:
         st.error(f"Error generating pivot table: {e}")
 
+
+def build_salesman_month_transactions(
+    collection_df: pd.DataFrame,
+    return_df: pd.DataFrame,
+    spid: str,
+    year: int,
+    month: int,
+) -> pd.DataFrame:
+    """Collections + returns for one salesman in one month, one row per
+    voucher -- powers Collection Analysis Overview's "Salesman — This
+    Month's Collections & Returns" panel. Deliberately excludes sales/DOs
+    and mobile orders, only the two transaction types asked for.
+
+    collection_df: mv_collection_vouchers rows (glvoucher/cusid/cusname/
+        area/date/value/spid/year/month already embedded on each row).
+    return_df: get_return_data rows (revoucher/cusid/cusname/area/date/
+        treturnamt/spid/year/month) -- one row per return LINE ITEM, grouped
+        here to one row per voucher (summed treturnamt), same pattern as
+        views/target_management.py's "SR Trn" day-book.
+    """
+    rows = []
+
+    if collection_df is not None and not collection_df.empty:
+        c = collection_df.copy()
+        c["spid"] = c["spid"].astype(str)
+        c["year"] = pd.to_numeric(c["year"], errors="coerce")
+        c["month"] = pd.to_numeric(c["month"], errors="coerce")
+        c = c[(c["spid"] == str(spid)) & (c["year"] == year) & (c["month"] == month)]
+        if not c.empty:
+            c["date"] = pd.to_datetime(c["date"], errors="coerce")
+            coll_cols = [col for col in ["date", "glvoucher", "cusid", "cusname", "area", "value"] if col in c.columns]
+            t = c[coll_cols].rename(columns={
+                "date": "Date", "glvoucher": "Voucher", "cusid": "Cust Code",
+                "cusname": "Customer", "area": "Area", "value": "Amount",
+            })
+            t["Type"] = "Collection"
+            rows.append(t)
+
+    if return_df is not None and not return_df.empty:
+        r = return_df.copy()
+        r["spid"] = r["spid"].astype(str)
+        r["year"] = pd.to_numeric(r["year"], errors="coerce")
+        r["month"] = pd.to_numeric(r["month"], errors="coerce")
+        r = r[(r["spid"] == str(spid)) & (r["year"] == year) & (r["month"] == month)]
+        if not r.empty:
+            r["date"] = pd.to_datetime(r["date"], errors="coerce")
+            grp_cols = [col for col in ["date", "revoucher", "cusid", "cusname", "area"] if col in r.columns]
+            r_grp = r.groupby(grp_cols, as_index=False).agg(Amount=("treturnamt", "sum"))
+            t = r_grp.rename(columns={
+                "date": "Date", "revoucher": "Voucher", "cusid": "Cust Code",
+                "cusname": "Customer", "area": "Area",
+            })
+            t["Type"] = "Return"
+            rows.append(t)
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.concat(rows, ignore_index=True)
+    col_order = ["Date", "Type", "Voucher", "Cust Code", "Customer", "Area", "Amount"]
+    out = out[[c for c in col_order if c in out.columns]]
+    return out.sort_values("Date", ascending=False).reset_index(drop=True)
+
+
 @timed
 def plot_net(data1,data2,xaxis,yaxis1,yaxis2,bartitle,current_page):
 

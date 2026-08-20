@@ -11,7 +11,7 @@ import streamlit as st
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 OUTCOMES = [
-    "Promised", "Paid", "Not answered", "Dispute",
+    "Promised", "Paid", "Not Paid", "Not answered", "Dispute",
     "Delivered", "Not Delivered", "Returned",
     "Switched Business", "Price Issues", "Other",
 ]
