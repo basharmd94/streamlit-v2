@@ -256,7 +256,7 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
             _sp_opts_map = {f"{r['spid']} - {r['spname']}": r["spid"] for _, r in _sp_df.iterrows()}
 
             _today = pd.Timestamp.today().normalize()
-            _sp_col, _range_col = st.columns([2, 2])
+            _sp_col, _range_col, _btn_col = st.columns([2, 2, 1])
             _sel_sp_label = _sp_col.selectbox(
                 "Salesman (Code - Name)",
                 ["— select a salesman —"] + list(_sp_opts_map.keys()),
@@ -267,8 +267,8 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                 value=(_today.replace(day=1).date(), _today.date()),
                 key="ca_overview_sp_daterange",
             )
-
-            _load_clicked = st.button("📥 Load Data", key="ca_overview_sp_load_btn")
+            _btn_col.markdown("<br>", unsafe_allow_html=True)
+            _load_clicked = _btn_col.button("📥 Load Data", key="ca_overview_sp_load_btn")
             if _load_clicked:
                 if _sel_sp_label and _sel_sp_label != "— select a salesman —" \
                         and isinstance(_date_range, tuple) and len(_date_range) == 2:
