@@ -859,35 +859,37 @@ def display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_
         st.error(f"Error generating pivot table: {e}")
 
 
-def build_salesman_month_transactions(
+def build_salesman_range_transactions(
     collection_df: pd.DataFrame,
     return_df: pd.DataFrame,
     spid: str,
-    year: int,
-    month: int,
+    start_date,
+    end_date,
 ) -> pd.DataFrame:
-    """Collections + returns for one salesman in one month, one row per
-    voucher -- powers Collection Analysis Overview's "Salesman — This
-    Month's Collections & Returns" panel. Deliberately excludes sales/DOs
-    and mobile orders, only the two transaction types asked for.
+    """Collections + returns for one salesman within one date range (both
+    ends inclusive), one row per voucher -- powers Collection Analysis
+    Overview's "Salesman — Collections & Returns" panel. Deliberately
+    excludes sales/DOs and mobile orders, only the two transaction types
+    asked for. Only called on demand (button click), not on every
+    salesman/date-range change -- the caller is responsible for that gating.
 
     collection_df: mv_collection_vouchers rows (glvoucher/cusid/cusname/
-        area/date/value/spid/year/month already embedded on each row).
+        area/date/value/spid already embedded on each row).
     return_df: get_return_data rows (revoucher/cusid/cusname/area/date/
-        treturnamt/spid/year/month) -- one row per return LINE ITEM, grouped
-        here to one row per voucher (summed treturnamt), same pattern as
+        treturnamt/spid) -- one row per return LINE ITEM, grouped here to
+        one row per voucher (summed treturnamt), same pattern as
         views/target_management.py's "SR Trn" day-book.
     """
+    start_date = pd.Timestamp(start_date)
+    end_date = pd.Timestamp(end_date)
     rows = []
 
     if collection_df is not None and not collection_df.empty:
         c = collection_df.copy()
         c["spid"] = c["spid"].astype(str)
-        c["year"] = pd.to_numeric(c["year"], errors="coerce")
-        c["month"] = pd.to_numeric(c["month"], errors="coerce")
-        c = c[(c["spid"] == str(spid)) & (c["year"] == year) & (c["month"] == month)]
+        c["date"] = pd.to_datetime(c["date"], errors="coerce")
+        c = c[(c["spid"] == str(spid)) & c["date"].between(start_date, end_date, inclusive="both")]
         if not c.empty:
-            c["date"] = pd.to_datetime(c["date"], errors="coerce")
             coll_cols = [col for col in ["date", "glvoucher", "cusid", "cusname", "area", "value"] if col in c.columns]
             t = c[coll_cols].rename(columns={
                 "date": "Date", "glvoucher": "Voucher", "cusid": "Cust Code",
@@ -899,11 +901,9 @@ def build_salesman_month_transactions(
     if return_df is not None and not return_df.empty:
         r = return_df.copy()
         r["spid"] = r["spid"].astype(str)
-        r["year"] = pd.to_numeric(r["year"], errors="coerce")
-        r["month"] = pd.to_numeric(r["month"], errors="coerce")
-        r = r[(r["spid"] == str(spid)) & (r["year"] == year) & (r["month"] == month)]
+        r["date"] = pd.to_datetime(r["date"], errors="coerce")
+        r = r[(r["spid"] == str(spid)) & r["date"].between(start_date, end_date, inclusive="both")]
         if not r.empty:
-            r["date"] = pd.to_datetime(r["date"], errors="coerce")
             grp_cols = [col for col in ["date", "revoucher", "cusid", "cusname", "area"] if col in r.columns]
             r_grp = r.groupby(grp_cols, as_index=False).agg(Amount=("treturnamt", "sum"))
             t = r_grp.rename(columns={
