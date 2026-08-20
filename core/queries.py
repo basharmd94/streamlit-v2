@@ -161,6 +161,41 @@ def get_sales_7day(filters=None):
     return sql, (filters["zid"][0],)
 
 
+def get_customer_last_do_items(filters=None) -> Tuple[str, tuple]:
+    """Line items from one customer's most recent 2 distinct delivery
+    vouchers (their latest DO and the one before that) -- powers the
+    on-click "Show Last 2 Deliveries" button in Customer Support's Latest
+    Sales & Collection call-log panel.
+
+    Deliberately NOT date-windowed (unlike get_sales_7day's fixed 180-day
+    cap) -- a slow-moving customer's last delivery could be older than
+    that, and this is scoped to one customer + LIMIT 2 vouchers, so it
+    stays cheap regardless (mv_sales_line_items is indexed on (zid,cusid)).
+    filters must include "cusid" alongside the usual "zid".
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    cusid = filters["cusid"]
+    sql = """
+        WITH last_vouchers AS (
+            SELECT voucher, MAX(date) AS voucher_date
+            FROM mv_sales_line_items
+            WHERE zid = %s AND cusid = %s
+            GROUP BY voucher
+            ORDER BY voucher_date DESC
+            LIMIT 2
+        )
+        SELECT
+            m.zid, m.voucher, m.date, m.itemcode, m.itemname, m.itemgroup,
+            m.quantity, m.altsales
+        FROM mv_sales_line_items m
+        JOIN last_vouchers lv ON lv.voucher = m.voucher
+        WHERE m.zid = %s AND m.cusid = %s
+        ORDER BY m.date DESC, m.voucher, m.itemname
+    """
+    return sql, (zid, cusid, zid, cusid)
+
+
 def get_cus_delivery_payment_promise(filters=None) -> Tuple[str, tuple]:
     """Per customer, the promised delivery date and promised payment date the
     salesman logged in the mobile Ordering app on their most recent order that

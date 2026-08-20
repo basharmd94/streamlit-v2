@@ -239,6 +239,55 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         # Expandable section for pivot tables
         collection.display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_r, current_page)
 
+        # ── Salesman — this month's collections & returns ────────────────────
+        st.markdown("---")
+        st.subheader("🧾 Salesman — This Month's Collections & Returns")
+        _sp_parts = []
+        for _df in (filtered_data_c, filtered_data_r):
+            if _df is not None and not _df.empty and {"spid", "spname"}.issubset(_df.columns):
+                _sp_parts.append(_df[["spid", "spname"]])
+        if _sp_parts:
+            _sp_df = (
+                pd.concat(_sp_parts, ignore_index=True)
+                .dropna(subset=["spid"])
+                .drop_duplicates("spid")
+                .sort_values("spid")
+            )
+            _sp_opts_map = {f"{r['spid']} - {r['spname']}": r["spid"] for _, r in _sp_df.iterrows()}
+            _sel_sp_label = st.selectbox(
+                "Salesman (Code - Name)",
+                ["— select a salesman —"] + list(_sp_opts_map.keys()),
+                key="ca_overview_sp_filter",
+            )
+            if _sel_sp_label and _sel_sp_label != "— select a salesman —":
+                _sel_spid = _sp_opts_map[_sel_sp_label]
+                _today = pd.Timestamp.today()
+                _txn_tbl = collection.build_salesman_month_transactions(
+                    filtered_data_c, filtered_data_r, _sel_spid, _today.year, _today.month,
+                )
+                if _txn_tbl.empty:
+                    st.info(f"No collections or returns for this salesman in {_today.strftime('%B %Y')}.")
+                else:
+                    st.caption(f"**{len(_txn_tbl):,}** transaction(s) in {_today.strftime('%B %Y')}")
+                    st.dataframe(
+                        _txn_tbl,
+                        column_config={
+                            "Date":   st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                            "Amount": st.column_config.NumberColumn("Amount", format="%.0f"),
+                        },
+                        width="stretch",
+                        hide_index=True,
+                    )
+                    st.download_button(
+                        "⬇ Download CSV",
+                        _txn_tbl.to_csv(index=False).encode("utf-8"),
+                        file_name=f"salesman_collections_returns_{_sel_spid}_{_today.year}_{_today.month:02d}.csv",
+                        mime="text/csv",
+                        key="ca_overview_sp_txn_dl",
+                    )
+        else:
+            st.info("No salesman data available.")
+
     elif analysis_mode == "Comparison":
         all_years = sorted(filtered_data_c["year"].dropna().unique().astype(int).tolist())
         compare_type = st.selectbox("Compare Across", ["Year-over-Year (YOY)", "Month vs Month"])

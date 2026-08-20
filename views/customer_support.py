@@ -408,6 +408,50 @@ def _sc_status(days) -> str:
     return ""
 
 
+@st.cache_data(show_spinner=False, ttl=300)
+def _load_customer_last_do_items(zid: str, cusid: str) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("customer_last_do_items", zid=zid, filters={"cusid": cusid}).data
+    return df if df is not None else pd.DataFrame()
+
+
+def _render_last_do_button(zid: str, cusid: str, key_suffix: str) -> None:
+    """On-click "Show Last 2 Deliveries" button for the call-log panel in
+    Latest Sales & Collection — lazy-loads product line items from the
+    customer's latest DO and the one before that, only when asked (not
+    pre-loaded for every row up front)."""
+    state_key = f"_cs_last_do_{cusid}{key_suffix}"
+    if st.button("📦 Show Last 2 Deliveries", key=f"cs_last_do_btn_{cusid}{key_suffix}"):
+        st.session_state[state_key] = _load_customer_last_do_items(zid, cusid)
+
+    do_df = st.session_state.get(state_key)
+    if do_df is None:
+        return
+    if do_df.empty:
+        st.info("No delivery line items found for this customer.")
+        return
+
+    disp = do_df.rename(columns={
+        "voucher": "DO Number", "date": "Date", "itemcode": "Item Code",
+        "itemname": "Product", "itemgroup": "Group", "quantity": "Qty",
+        "altsales": "Amount",
+    })
+    show_cols = [c for c in ["Date", "DO Number", "Item Code", "Product", "Group", "Qty", "Amount"] if c in disp.columns]
+    disp = disp[show_cols]
+
+    st.caption(f"{len(disp):,} line item(s) across the last 2 deliveries")
+    st.dataframe(
+        disp,
+        column_config={
+            "Date":   st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+            "Qty":    st.column_config.NumberColumn("Qty", format="%.0f"),
+            "Amount": st.column_config.NumberColumn("Amount", format="%.0f"),
+        },
+        width="stretch",
+        hide_index=True,
+    )
+
+
 def _render_merged_sc_table(
     df_merged: pd.DataFrame,
     days_min: int | None,
@@ -518,6 +562,7 @@ def _render_merged_sc_table(
         sel_cusid = sel.split(" · ")[0]
         sel_name  = unique_cust.loc[unique_cust["cusid"] == sel_cusid, "customer_name"].iloc[0]
         _render_call_log_panel(sel_cusid, "100001", sel_name, key_suffix=f"_{table_key}")
+        _render_last_do_button("100001", sel_cusid, key_suffix=f"_{table_key}")
 
     st.markdown("---")
     _render_coverage_matrix(df_for_matrix, _cl_map, key_suffix=table_key)
@@ -626,6 +671,7 @@ def _render_sc_table_zepto(
         sel_cusid = sel.split(" · ")[0]
         sel_name  = df.loc[df["cusid"] == sel_cusid, "customer_name"].iloc[0]
         _render_call_log_panel(sel_cusid, "100005", sel_name, key_suffix="_zepto")
+        _render_last_do_button("100005", sel_cusid, key_suffix="_zepto")
 
     st.markdown("---")
     _render_coverage_matrix(df_full, _cl_map, key_suffix="zepto")
