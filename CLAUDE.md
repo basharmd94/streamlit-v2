@@ -390,14 +390,16 @@ Backup runs against the *old* schema (no `area`/`lead_cost` columns exist yet) �
 
 ---
 
-## Collection Analysis — Overview: Salesman This Month (`views/collection.py`, `analysis_mode == "Overview"`)
+## Collection Analysis — Overview: Salesman Collections & Returns (`views/collection.py`, `analysis_mode == "Overview"`)
 
-Sits directly below the existing "📊 Pivot Table Analysis" expander (`collection.display_entity_metric_pivot`). One selectbox ("Code - Name", built from the union of salesmen appearing in `filtered_data_c`/`filtered_data_r` so a salesman who only has returns this month, or only collections, still shows up) drives `processing/collection.py::build_salesman_month_transactions`, which returns **only** that salesman's Collection + Return rows for the **current calendar month** (`pd.Timestamp.today()`, not a selectable month like Target Management's "SR Trn" tab) — Sales/DOs and mobile orders are deliberately excluded, matching what was asked for.
+Sits directly below the existing "📊 Pivot Table Analysis" expander (`collection.display_entity_metric_pivot`). Salesman selectbox ("Code - Name", built from the union of salesmen appearing in `filtered_data_c`/`filtered_data_r` so a salesman who only has returns, or only collections, in the chosen range still shows up) + a `st.date_input` date range, side by side, then an explicit **"📥 Load Data"** button — nothing queries or renders until it's clicked, per how this was asked to work. Click again after changing the salesman or range to refresh; the previous result stays on screen (via `st.session_state["_ca_overview_sp_result"]`) until then, it isn't cleared just because a filter widget changed.
+
+`processing/collection.py::build_salesman_range_transactions(collection_df, return_df, spid, start_date, end_date)` returns **only** that salesman's Collection + Return rows within the chosen range (both ends inclusive) — Sales/DOs and mobile orders are deliberately excluded, matching what was asked for. Originally built month-locked to "this calendar month" (`build_salesman_month_transactions`, `year`/`month` params) before being generalized to an arbitrary date range in the same session.
 
 - Collections come from `mv_collection_vouchers` (`glvoucher`, one row per voucher already) — `area`/`cusname`/`spname` are already embedded on each row by the query itself.
 - Returns come from `get_return_data` (`revoucher`) — **one row per return *line item***, not per voucher, so they're grouped (`sum(treturnamt)`) down to one row per voucher first, same pattern as `views/target_management.py`'s "SR Trn" day-book table.
 - Output columns: Date, Type (`Collection`/`Return`), Voucher, Cust Code, Customer, Area, Amount — the Voucher column is literally the RCT/CRCT/BRCT-style collection voucher or SRT-style return voucher code, sorted newest first.
-- Verified against real data: a salesman with only collections this month, and separately one with a mix of both types (55 collections + 36 returns, including several multi-line-item returns confirmed correctly collapsed to one row each by voucher).
+- Date range defaults to the 1st of the current month through today, but is fully user-adjustable — verified against real data with a custom range (Aug 1–20) reproducing the exact same 55 collections + 36 returns the original "this month" version found, and a narrower 3-day sub-range correctly returning fewer rows.
 
 ---
 

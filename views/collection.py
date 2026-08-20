@@ -239,9 +239,9 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
         # Expandable section for pivot tables
         collection.display_entity_metric_pivot(filtered_data_c, filtered_data_s, filtered_data_r, current_page)
 
-        # ── Salesman — this month's collections & returns ────────────────────
+        # ── Salesman — collections & returns for a chosen date range ─────────
         st.markdown("---")
-        st.subheader("🧾 Salesman — This Month's Collections & Returns")
+        st.subheader("🧾 Salesman — Collections & Returns")
         _sp_parts = []
         for _df in (filtered_data_c, filtered_data_r):
             if _df is not None and not _df.empty and {"spid", "spname"}.issubset(_df.columns):
@@ -254,21 +254,40 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                 .sort_values("spid")
             )
             _sp_opts_map = {f"{r['spid']} - {r['spname']}": r["spid"] for _, r in _sp_df.iterrows()}
-            _sel_sp_label = st.selectbox(
+
+            _today = pd.Timestamp.today().normalize()
+            _sp_col, _range_col = st.columns([2, 2])
+            _sel_sp_label = _sp_col.selectbox(
                 "Salesman (Code - Name)",
                 ["— select a salesman —"] + list(_sp_opts_map.keys()),
                 key="ca_overview_sp_filter",
             )
-            if _sel_sp_label and _sel_sp_label != "— select a salesman —":
-                _sel_spid = _sp_opts_map[_sel_sp_label]
-                _today = pd.Timestamp.today()
-                _txn_tbl = collection.build_salesman_month_transactions(
-                    filtered_data_c, filtered_data_r, _sel_spid, _today.year, _today.month,
-                )
-                if _txn_tbl.empty:
-                    st.info(f"No collections or returns for this salesman in {_today.strftime('%B %Y')}.")
+            _date_range = _range_col.date_input(
+                "Date Range",
+                value=(_today.replace(day=1).date(), _today.date()),
+                key="ca_overview_sp_daterange",
+            )
+
+            _load_clicked = st.button("📥 Load Data", key="ca_overview_sp_load_btn")
+            if _load_clicked:
+                if _sel_sp_label and _sel_sp_label != "— select a salesman —" \
+                        and isinstance(_date_range, tuple) and len(_date_range) == 2:
+                    _sel_spid = _sp_opts_map[_sel_sp_label]
+                    _start, _end = _date_range
+                    st.session_state["_ca_overview_sp_result"] = collection.build_salesman_range_transactions(
+                        filtered_data_c, filtered_data_r, _sel_spid, _start, _end,
+                    )
+                    st.session_state["_ca_overview_sp_meta"] = (_sel_sp_label, _start, _end)
                 else:
-                    st.caption(f"**{len(_txn_tbl):,}** transaction(s) in {_today.strftime('%B %Y')}")
+                    st.warning("Pick a salesman and a full date range (start and end) before loading.")
+
+            _txn_tbl = st.session_state.get("_ca_overview_sp_result")
+            if _txn_tbl is not None:
+                _meta_label, _meta_start, _meta_end = st.session_state["_ca_overview_sp_meta"]
+                if _txn_tbl.empty:
+                    st.info(f"No collections or returns for {_meta_label} between {_meta_start} and {_meta_end}.")
+                else:
+                    st.caption(f"**{len(_txn_tbl):,}** transaction(s) for **{_meta_label}** — {_meta_start} to {_meta_end}")
                     st.dataframe(
                         _txn_tbl,
                         column_config={
@@ -281,7 +300,7 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
                     st.download_button(
                         "⬇ Download CSV",
                         _txn_tbl.to_csv(index=False).encode("utf-8"),
-                        file_name=f"salesman_collections_returns_{_sel_spid}_{_today.year}_{_today.month:02d}.csv",
+                        file_name=f"salesman_collections_returns_{_meta_start}_{_meta_end}.csv",
                         mime="text/csv",
                         key="ca_overview_sp_txn_dl",
                     )
