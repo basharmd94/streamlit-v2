@@ -189,6 +189,182 @@ def _load_salesman_due_reports_any(zid: str) -> dict:
     )
 
 
+def _render_salesman_due_ar_stats(reports: dict, reports2: dict, sd_scope: str, zid: str, other_zid) -> None:
+    """
+    AR Balance & Days Since Last Sale stats/distribution/drill-down, by customer.
+
+    AR Balance is sourced from Customer Credit Trickle-down (report_cc_with_names),
+    summed per customer -- a customer can span >1 salesman row within the
+    trailing FIFO window (verified on real data: 8 of 696 100001 customers).
+    Days Since Last Sale is sourced from Latest Sale & Collection (report_df's
+    Sales Date) instead -- the trickle-down table itself carries no date
+    column at all -- then restricted to the SAME customer population as AR
+    Balance: Latest Sale & Collection covers every customer with any sale
+    history (1,281 locally), a much broader set than the trickle-down table's
+    near-zero-balance filter keeps (696 locally), so without this restriction
+    the two metrics would silently describe different customer sets.
+    """
+    import numpy as np
+    import plotly.graph_objects as go
+
+    def _cc_balances(rep: dict) -> pd.DataFrame:
+        cc = rep.get("report_cc_with_names")
+        if cc is None or cc.empty:
+            return pd.DataFrame(columns=["Customer Code", "Customer Name", "Area", "City", "AR Balance"])
+        d = cc.groupby(["xsub", "customer_name"], as_index=False).agg(**{"AR Balance": ("total_due", "sum")})
+        meta = cc[["xsub", "city", "area"]].drop_duplicates("xsub")
+        d = d.merge(meta, on="xsub", how="left")
+        return d.rename(columns={"xsub": "Customer Code", "customer_name": "Customer Name", "city": "City", "area": "Area"})
+
+    def _last_sale(rep: dict) -> pd.DataFrame:
+        rdf = rep.get("report_df")
+        if rdf is None or rdf.empty:
+            return pd.DataFrame(columns=["Customer Code", "Sales Date"])
+        d = rdf[["Customer Code", "Sales Date"]].copy()
+        d["Sales Date"] = pd.to_datetime(d["Sales Date"], errors="coerce")
+        return d.dropna(subset=["Sales Date"]).drop_duplicates("Customer Code")
+
+    combined = sd_scope == _SCOPE_OPTS[1] and bool(reports2)
+    bal_df, last_df = _cc_balances(reports), _last_sale(reports)
+    if combined:
+        bal_df.insert(0, "ZID", zid)
+        last_df.insert(0, "ZID", zid)
+        bal2, last2 = _cc_balances(reports2), _last_sale(reports2)
+        bal2.insert(0, "ZID", other_zid)
+        last2.insert(0, "ZID", other_zid)
+        # Customer codes are only unique within one ZID -- keep the two
+        # businesses' customers distinct rather than colliding on code alone.
+        bal_df = pd.concat([bal_df, bal2], ignore_index=True)
+        last_df = pd.concat([last_df, last2], ignore_index=True)
+        join_keys = ["ZID", "Customer Code"]
+    else:
+        join_keys = ["Customer Code"]
+
+    if bal_df.empty:
+        st.info("No AR balance data available.")
+        return
+
+    today = pd.Timestamp.today().normalize()
+    last_df["Days Since Last Sale"] = (today - last_df["Sales Date"]).dt.days
+    customer_df = bal_df.merge(last_df[join_keys + ["Sales Date", "Days Since Last Sale"]], on=join_keys, how="left")
+
+    metric_choice = st.radio("Metric", ["AR Balance", "Days Since Last Sale"], horizontal=True, key="sd_stat_metric")
+
+    if metric_choice == "AR Balance":
+        col, decimals = "AR Balance", 0
+        stat_df = customer_df.copy()
+    else:
+        col, decimals = "Days Since Last Sale", 0
+        stat_df = customer_df[customer_df["Days Since Last Sale"].notna()].copy()
+        excluded = len(customer_df) - len(stat_df)
+        if excluded:
+            st.caption(
+                f"⚠️ {excluded:,} customer(s) excluded — no dated sale found in "
+                f"Latest Sale & Collection for them."
+            )
+
+    if stat_df.empty:
+        st.info("No customers with a defined value for this metric.")
+        return
+
+    vals = stat_df[col]
+
+    # ── Summary stats ──────────────────────────────────────────────────────
+    st.caption(
+        f"Based on **{len(stat_df):,}** customer(s)"
+        + (" (combined across both ZIDs)" if combined else "")
+        + " — Customer Credit Trickle-down population (non-zero AR balance in the trailing window)."
+    )
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Mean", f"{vals.mean():,.{decimals}f}")
+    c2.metric("Median", f"{vals.median():,.{decimals}f}")
+    c3.metric("Std Dev", f"{vals.std():,.{decimals}f}")
+    c4.metric("Min", f"{vals.min():,.{decimals}f}")
+    c5.metric("Max", f"{vals.max():,.{decimals}f}")
+
+    # ── Distribution + buckets ──────────────────────────────────────────────
+    clip_outliers = st.checkbox(
+        "Clip chart to 95th percentile",
+        value=True,
+        help="A handful of extreme customers (e.g. very old dormant balances) can otherwise "
+             "stretch equal-width buckets so far that almost everything lands in one giant "
+             "bucket. Summary stats above and the drill-down table always use the true, "
+             "unclipped values -- this only affects how the chart's buckets are drawn.",
+        key=f"sd_stat_clip_{metric_choice}",
+    )
+    n_bins = st.slider("Number of buckets", min_value=5, max_value=30, value=12, key=f"sd_stat_bins_{metric_choice}")
+
+    cap = vals.quantile(0.95) if clip_outliers else vals.max()
+    cap = max(cap, vals.min())
+    open_ended = cap < vals.max()
+    vals_for_bins = vals.clip(upper=cap) if open_ended else vals
+    counts, edges = np.histogram(vals_for_bins, bins=n_bins)
+
+    # "Mode" for a continuous value rarely means anything as a literal repeat
+    # -- report the modal histogram bucket instead.
+    modal_idx = int(counts.argmax())
+    st.caption(
+        f"Modal bucket (most customers): **{edges[modal_idx]:,.{decimals}f} – {edges[modal_idx+1]:,.{decimals}f}** "
+        f"({counts[modal_idx]:,} customers)"
+    )
+    if open_ended:
+        st.caption(
+            f"ℹ️ Chart capped at the 95th percentile ({cap:,.{decimals}f}); the last bucket "
+            f"includes everything at or above that, up to the true max of {vals.max():,.{decimals}f}."
+        )
+
+    bin_labels = [
+        f"{edges[i]:,.{decimals}f}+" if (open_ended and i == len(counts) - 1)
+        else f"{edges[i]:,.{decimals}f} – {edges[i+1]:,.{decimals}f}"
+        for i in range(len(counts))
+    ]
+    fig = go.Figure(data=[go.Bar(x=bin_labels, y=counts)])
+    fig.update_layout(xaxis_title=metric_choice, yaxis_title="Customer count", xaxis_tickangle=-40)
+    st.plotly_chart(fig, width="stretch")
+
+    # ── Drill-down: pick a bucket, see the customers in it ──────────────────
+    bucket_options = ["— select a bucket —"] + [
+        f"{lbl}  ({counts[i]:,} customers)" for i, lbl in enumerate(bin_labels)
+    ]
+    bucket_choice = st.selectbox(
+        f"Drill down into a {metric_choice} bucket",
+        bucket_options,
+        key=f"sd_stat_bucket_{metric_choice}",
+    )
+    if bucket_choice != "— select a bucket —":
+        idx = bucket_options.index(bucket_choice) - 1
+        lo, hi = edges[idx], edges[idx + 1]
+        is_last = idx == len(counts) - 1
+        if open_ended and is_last:
+            mask = vals >= lo
+        else:
+            mask = (vals >= lo) & (vals <= hi if is_last else vals < hi)
+
+        id_cols = (["ZID"] if combined else []) + [
+            "Customer Code", "Customer Name", "Area", "City",
+            "AR Balance", "Sales Date", "Days Since Last Sale",
+        ]
+        drill_df = (
+            stat_df.loc[mask, [c for c in id_cols if c in stat_df.columns]]
+            .sort_values(col, ascending=False)
+            .reset_index(drop=True)
+        )
+        st.markdown(f"**{len(drill_df):,}** customer(s) in this bucket:")
+        _fmt = {"AR Balance": "{:,.0f}", "Days Since Last Sale": "{:,.0f}"}
+        st.dataframe(
+            drill_df.style.format({k: v for k, v in _fmt.items() if k in drill_df.columns}, na_rep="—"),
+            width="stretch",
+            hide_index=True,
+        )
+        st.download_button(
+            "⬇ Download Bucket CSV",
+            drill_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"salesman_due_ar_{metric_choice.lower().replace(' ', '_')}_bucket.csv",
+            mime="text/csv",
+            key=f"sd_stat_dl_{metric_choice}",
+        )
+
+
 @timed
 def display_collection_analysis_page(current_page, zid, project, data_dict):
     st.sidebar.title("Overall Collection Analysis")
@@ -788,7 +964,8 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 
         sub_report = st.radio(
             "Select Report:",
-            ["Main Due Report", "Latest Sale & Collection", "Customer Credit Trickle-down", "Missing Customers"],
+            ["Main Due Report", "Latest Sale & Collection", "Customer Credit Trickle-down",
+             "📊 Statistical Analysis", "Missing Customers"],
             horizontal=True,
             key="salesman_due_sub_report",
         )
@@ -815,6 +992,10 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
 
         if not reports:
             st.info("No AR customer due data found for this business.")
+        elif sub_report == "📊 Statistical Analysis":
+            _render_salesman_due_ar_stats(
+                reports, reports2, _sd_scope, str(zid), _OTHER_ZID.get(str(zid))
+            )
         else:
             report_map = {
                 "Main Due Report": "main_due_report",

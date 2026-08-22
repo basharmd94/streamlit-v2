@@ -1508,6 +1508,41 @@ def get_inventory_overview(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_inventory_zid_stock_split(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """
+    100009-only stock, keyed by its 100001-equivalent item code, computed
+    live from imtrn/caitem (not from final_items_view, which has no
+    zid=100009 branch of its own -- see get_inventory_overview).
+
+    Mirrors final_items_view's own stk_100009 subquery exactly: same two
+    warehouses, same non-blank-xdrawing filter, same GROUP BY ca9.xdrawing --
+    so when MULTIPLE 100009 items share one xdrawing target (e.g. an HPI
+    raw-material item AND an FH/FZ finished-good item both linking back to
+    the same 100001 code), their stock is correctly summed into one row
+    instead of fanning out. Verified against real Postgres: this GROUP BY is
+    load-bearing -- an earlier ad-hoc check that omitted it undercounted
+    exactly these dual-linked items.
+
+    100001's own stock is deliberately NOT queried here -- Purchase
+    Analysis -> Total Inventory Overview derives it as
+    (existing combined Total Stock) - (this 100009 figure), so the two
+    halves always add back up to the total by construction rather than by
+    two independently-computed queries happening to agree.
+    """
+    sql = """
+        SELECT
+            ca9.xdrawing AS item_id,
+            SUM(im.xqty * im.xsign) AS stock_100009
+        FROM imtrn im
+        JOIN caitem ca9 ON ca9.zid = 100009 AND ca9.xitem = im.xitem
+        WHERE im.zid = 100009
+          AND im.xwh IN ('Finished Goods Store Packaging', 'Raw Material Store Packaging')
+          AND ca9.xdrawing IS NOT NULL AND ca9.xdrawing <> ''
+        GROUP BY ca9.xdrawing
+    """
+    return sql, ()
+
+
 def get_gldetail_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     zid = filters["zid"][0]
     project = filters.get("project")
