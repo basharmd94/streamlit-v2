@@ -194,6 +194,20 @@ View mode radio: `["👤 Individual Salesman", "📊 All Salesmen Overview", "�
 - `_DEFAULT_ITEMGROUPS`: 12 groups incl. "Import Item" — edit directly in file.
 - Final Stock ZID toggle: OFF = totals combined across 100001+100009; ON = per-ZID split. Cross-ZID grouping uses `itemcode` only (no `itemname`); `_meta` lookup prefers primary ZID names.
 
+### Statistical Analysis mode (`display_inventory_analysis_main` → `_render_statistical_analysis`)
+
+A top-level `st.radio("Analysis Mode", [...])` right under the page title switches between the existing Stock & Movement content (default) and a separate "📊 Statistical Analysis" mode — chosen deliberately light: it reuses `Analytics("final_items_view", zid=zid)` as-is (already registered, already used elsewhere by Target Management/Marketing), no new SQL, no joins to `stock_value`/`stock_movement`/`caitem`. Scoped to the currently selected ZID only (not combined across ZIDs — mixing sales velocity across unrelated businesses, e.g. HMBR vs Zepto, wouldn't be meaningful).
+
+Two metrics, radio-selected, **defaults to "Days to Clear"** per what was asked:
+- **Days to Clear** = `stock / avg_monthly_sales × 30`, reusing `final_items_view`'s own `avg_monthly_sales` column (a 3-month trailing average already baked into the view — same formula Purchase Analysis's Total Inventory Overview uses, so the number stays consistent app-wide). Items with `avg_monthly_sales = 0` are excluded (undefined), with an explicit count shown rather than silently dropped. **Verified on real data this exclusion is large and real** (322 of 2,353 100001 items had any DO/SRE/RECA activity in the trailing window) — confirmed via `imtrn` that this reflects genuinely non-moving catalog items, not stale local data (latest real transaction date was 2026-08-15, i.e. current).
+- **Cost Value** = `stock × std_price`, using `final_items_view`'s own `std_price` column directly — **this is `caitem.xstdprice`, the sales/list price, not `caitem.xstdcost`** (a real but separate cost field on `caitem`, deliberately not joined in — explicit user choice to keep this feature light and to use the sales-price valuation). Items with `std_price = 0` are excluded the same way (no price set → value undefined), not silently zeroed.
+
+Both metrics show mean/median/std/min/max via `st.metric` columns. **"Mode" is deliberately not a literal statistical mode** — continuous values (especially Cost Value, effectively all-distinct) rarely repeat exactly, so a raw mode is usually meaningless. Reported instead as the **modal histogram bucket** (most-populated bin) in a caption below the metrics.
+
+**Histogram clipping (`st.checkbox`, default ON)**: equal-width binning on the raw values produces a near-useless chart when a few extreme items dominate the range — verified on real 100001 data, Days to Clear ranged 0–189,810 with 316 of 322 items landing in one giant first bucket. When clipping is on, the chart bins are computed on `vals.clip(upper=vals.quantile(0.95))`, and the last bucket is labeled open-ended (`"X+"`) rather than a closed range. **Summary stats and the drill-down table always use the true unclipped values** — clipping only reshapes how the chart's bins are drawn. The last bucket's drill-down mask uses `vals >= lo` (no upper bound) specifically so its count matches the chart's clipped bucket count exactly — verified programmatically against real data that every bucket's drill-down count matches its chart count exactly, in both clipped and unclipped modes, for both metrics, with zero gaps or double-counting across the full value range.
+
+**Drill-down**: a `st.selectbox` listing every bucket with its item count (`"50.0 – 70.0 (23 items)"`) — picking one renders a table of the matching items (Item Code/Name/Group/Stock/Avg Monthly Sales/Std Price/Days to Clear/Cost Value) below, sortable by the active metric descending, with a CSV download.
+
 ---
 
 ## Total Inventory Overview (`views/purchase.py` → `_render_total_inventory`)

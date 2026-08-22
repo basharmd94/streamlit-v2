@@ -67,6 +67,180 @@ def _load_inventory_value(zid: str) -> pd.DataFrame:
             st.error(f"Error loading stock_value for zid={z}: {e}")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_final_items_view(zid: str) -> pd.DataFrame:
+    """Live stock snapshot (item_id, stock, avg_monthly_sales, std_price, …) for one ZID."""
+    df = Analytics("final_items_view", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+def _render_statistical_analysis(zid: str) -> None:
+    """
+    Days to Clear & Cost Value stats, distributions, and bucket drill-down —
+    driven entirely by final_items_view (no stock_value/stock_movement joins,
+    kept deliberately light). Scoped to the currently selected ZID only.
+    """
+    import plotly.graph_objects as go
+
+    st.subheader("📊 Statistical Analysis")
+    st.caption("Source: final_items_view (live stock snapshot), current ZID only.")
+
+    with st.spinner("Loading item snapshot…"):
+        df = _load_final_items_view(zid)
+
+    if df.empty:
+        st.warning("No inventory snapshot data available for the selected ZID.")
+        return
+
+    df = df.copy()
+    df["stock"] = pd.to_numeric(df.get("stock"), errors="coerce").fillna(0.0)
+    df["avg_monthly_sales"] = pd.to_numeric(df.get("avg_monthly_sales"), errors="coerce").fillna(0.0)
+    df["std_price"] = pd.to_numeric(df.get("std_price"), errors="coerce").fillna(0.0)
+
+    df["days_to_clear"] = np.where(
+        df["avg_monthly_sales"] > 0,
+        (df["stock"] / df["avg_monthly_sales"] * 30).round(1),
+        np.nan,
+    )
+    df["cost_value"] = df["stock"] * df["std_price"]
+
+    metric_choice = st.radio(
+        "Metric",
+        ["Days to Clear", "Cost Value"],
+        horizontal=True,
+        key="inv_stat_metric",
+    )
+
+    if metric_choice == "Days to Clear":
+        col, decimals = "days_to_clear", 1
+        stat_df = df[df["avg_monthly_sales"] > 0].copy()
+        excluded = len(df) - len(stat_df)
+        if excluded:
+            st.caption(
+                f"⚠️ {excluded:,} item(s) excluded — no sales in the trailing "
+                f"3-month window, so Days to Clear is undefined for them."
+            )
+    else:
+        col, decimals = "cost_value", 0
+        stat_df = df[df["std_price"] > 0].copy()
+        excluded = len(df) - len(stat_df)
+        if excluded:
+            st.caption(
+                f"⚠️ {excluded:,} item(s) excluded — no sales price set (Std Price = 0), "
+                f"so Cost Value is undefined for them."
+            )
+
+    if stat_df.empty:
+        st.info("No items with a defined value for this metric.")
+        return
+
+    vals = stat_df[col]
+
+    # ── Summary stats ──────────────────────────────────────────────────────
+    st.caption(f"Based on **{len(stat_df):,}** item(s).")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Mean", f"{vals.mean():,.{decimals}f}")
+    c2.metric("Median", f"{vals.median():,.{decimals}f}")
+    c3.metric("Std Dev", f"{vals.std():,.{decimals}f}")
+    c4.metric("Min", f"{vals.min():,.{decimals}f}")
+    c5.metric("Max", f"{vals.max():,.{decimals}f}")
+
+    # ── Distribution + buckets ──────────────────────────────────────────────
+    clip_outliers = st.checkbox(
+        "Clip chart to 95th percentile",
+        value=True,
+        help="A handful of extreme items (e.g. near-zero sales velocity) can otherwise stretch "
+             "equal-width buckets so far that almost everything lands in one giant bucket. "
+             "Summary stats above and the drill-down table always use the true, unclipped values "
+             "-- this only affects how the chart's buckets are drawn.",
+        key=f"inv_stat_clip_{metric_choice}",
+    )
+    n_bins = st.slider("Number of buckets", min_value=5, max_value=30, value=12, key=f"inv_stat_bins_{metric_choice}")
+
+    cap = vals.quantile(0.95) if clip_outliers else vals.max()
+    cap = max(cap, vals.min())  # guard the degenerate all-equal-value case
+    open_ended = cap < vals.max()
+    vals_for_bins = vals.clip(upper=cap) if open_ended else vals
+    counts, edges = np.histogram(vals_for_bins, bins=n_bins)
+
+    # "Mode" for a continuous value rarely means anything as a literal repeat
+    # -- report the modal histogram bucket instead, which is what's actually
+    # useful here.
+    modal_idx = int(counts.argmax())
+    st.caption(
+        f"Modal bucket (most items): **{edges[modal_idx]:,.{decimals}f} – {edges[modal_idx+1]:,.{decimals}f}** "
+        f"({counts[modal_idx]:,} items)"
+    )
+    if open_ended:
+        st.caption(
+            f"ℹ️ Chart capped at the 95th percentile ({cap:,.{decimals}f}); the last bucket includes "
+            f"everything at or above that, up to the true max of {vals.max():,.{decimals}f}."
+        )
+
+    bin_labels = [
+        f"{edges[i]:,.{decimals}f}+" if (open_ended and i == len(counts) - 1)
+        else f"{edges[i]:,.{decimals}f} – {edges[i+1]:,.{decimals}f}"
+        for i in range(len(counts))
+    ]
+    fig = go.Figure(data=[go.Bar(x=bin_labels, y=counts)])
+    fig.update_layout(
+        xaxis_title=metric_choice,
+        yaxis_title="Item count",
+        xaxis_tickangle=-40,
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    # ── Drill-down: pick a bucket, see the products in it ───────────────────
+    bucket_options = ["— select a bucket —"] + [
+        f"{lbl}  ({counts[i]:,} items)" for i, lbl in enumerate(bin_labels)
+    ]
+    bucket_choice = st.selectbox(
+        f"Drill down into a {metric_choice} bucket",
+        bucket_options,
+        key=f"inv_stat_bucket_{metric_choice}",
+    )
+    if bucket_choice != "— select a bucket —":
+        idx = bucket_options.index(bucket_choice) - 1
+        lo, hi = edges[idx], edges[idx + 1]
+        is_last = idx == len(counts) - 1
+        if open_ended and is_last:
+            # Open-ended tail bucket -- catch every item at/above lo on the
+            # TRUE (unclipped) values, matching the chart's clipped count
+            # exactly since clipping never removes an item from this bucket,
+            # only caps its displayed value.
+            mask = vals >= lo
+        else:
+            # np.histogram bins are half-open [lo, hi) except the last, which
+            # is closed [lo, hi].
+            mask = (vals >= lo) & (vals <= hi if is_last else vals < hi)
+        drill_df = (
+            stat_df.loc[mask, ["item_id", "item_name", "item_group", "stock", "avg_monthly_sales", "std_price", "days_to_clear", "cost_value"]]
+            .rename(columns={
+                "item_id": "Item Code", "item_name": "Item Name", "item_group": "Item Group",
+                "stock": "Stock", "avg_monthly_sales": "Avg Monthly Sales", "std_price": "Std Price",
+                "days_to_clear": "Days to Clear", "cost_value": "Cost Value",
+            })
+            .sort_values(metric_choice, ascending=False)
+            .reset_index(drop=True)
+        )
+        st.markdown(f"**{len(drill_df):,}** item(s) in this bucket:")
+        st.dataframe(
+            drill_df.style.format({
+                "Stock": "{:,.0f}", "Avg Monthly Sales": "{:,.1f}", "Std Price": "{:,.0f}",
+                "Days to Clear": "{:,.1f}", "Cost Value": "{:,.0f}",
+            }, na_rep="—"),
+            width="stretch",
+            hide_index=True,
+        )
+        st.download_button(
+            "⬇ Download Bucket CSV",
+            drill_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"inventory_{metric_choice.lower().replace(' ', '_')}_bucket.csv",
+            mime="text/csv",
+            key=f"inv_stat_dl_{metric_choice}",
+        )
+
+
 _DEFAULT_WAREHOUSES = [
     "Finished Goods Store Packaging",
     "HMBR -Main Store (4th Floor)",
@@ -93,6 +267,16 @@ _DEFAULT_ITEMGROUPS = [
 @timed
 def display_inventory_analysis_main(current_page, zid: str):
     st.title("Inventory Analysis")
+
+    analysis_mode = st.radio(
+        "Analysis Mode",
+        ["📦 Stock & Movement Analysis", "📊 Statistical Analysis (Days to Clear / Cost Value)"],
+        horizontal=True,
+        key="inv_analysis_mode",
+    )
+    if analysis_mode.startswith("📊"):
+        _render_statistical_analysis(zid)
+        return
 
     inv_df = _load_product_inventory(zid)
     val_df = _load_inventory_value(zid)
