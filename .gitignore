@@ -37,6 +37,7 @@ htmlcov/
 *.sqlite3
 *.db
 *.bak
+*.bak_*
 
 # Logs and temporary files
 *.log
