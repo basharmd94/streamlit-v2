@@ -196,6 +196,12 @@ View mode radio: `["👤 Individual Salesman", "📊 All Salesmen Overview", "�
 
 ---
 
+## Total Inventory Overview (`views/purchase.py` → `_render_total_inventory`)
+
+Combined 100001 + 100009 stock table in Purchase Analysis. `stock_agg` (grouped by `resolved_code`, the cross-ZID packcode-resolved item code) carries three stock columns side by side: **`100001 Stock`**, **`100009 Stock`** (each a per-ZID `groupby(...)["stock"].sum()`, `.fillna(0)` for items that only exist in one ZID), and **`Total Stock`** (their sum — column was previously just "Stock", renamed when the per-ZID split was added). The two per-ZID columns sit immediately to the left of Total Stock in both `col_map` and the CSV download, so a viewer can see the split without cross-referencing `views/inventory.py`'s separate ZID toggle.
+
+---
+
 ## Cross-ZID Item Mapping (`views/purchase.py` → "🔗 Cross-ZID Mapping" mode)
 
 Audit report for the 100001 ↔ 100009 packaging-item link — lives in Purchase Analysis (moved from Manufacturing Analysis, where it was added by mistake). Scope is fixed to Gulshan Packaging (100009) finished-goods (`xitem LIKE 'FH%'`) and raw-material (`xitem LIKE 'HPI%'`) items only — other 100009 prefixes (`RAW`, `FK0`, `KPI`, `KRI`) are out of scope and won't appear here even if they happen to carry a valid `xdrawing`.
