@@ -76,7 +76,7 @@ def _load_final_items_view(zid: str) -> pd.DataFrame:
 
 def _render_statistical_analysis(zid: str) -> None:
     """
-    Days to Clear & Cost Value stats, distributions, and bucket drill-down —
+    Days to Clear & Sales Value stats, distributions, and bucket drill-down —
     driven entirely by final_items_view (no stock_value/stock_movement joins,
     kept deliberately light). Scoped to the currently selected ZID only.
     """
@@ -102,11 +102,11 @@ def _render_statistical_analysis(zid: str) -> None:
         (df["stock"] / df["avg_monthly_sales"] * 30).round(1),
         np.nan,
     )
-    df["cost_value"] = df["stock"] * df["std_price"]
+    df["sales_value"] = df["stock"] * df["std_price"]
 
     metric_choice = st.radio(
         "Metric",
-        ["Days to Clear", "Cost Value"],
+        ["Days to Clear", "Sales Value"],
         horizontal=True,
         key="inv_stat_metric",
     )
@@ -121,13 +121,13 @@ def _render_statistical_analysis(zid: str) -> None:
                 f"3-month window, so Days to Clear is undefined for them."
             )
     else:
-        col, decimals = "cost_value", 0
+        col, decimals = "sales_value", 0
         stat_df = df[df["std_price"] > 0].copy()
         excluded = len(df) - len(stat_df)
         if excluded:
             st.caption(
                 f"⚠️ {excluded:,} item(s) excluded — no sales price set (Std Price = 0), "
-                f"so Cost Value is undefined for them."
+                f"so Sales Value is undefined for them."
             )
 
     if stat_df.empty:
@@ -214,11 +214,11 @@ def _render_statistical_analysis(zid: str) -> None:
             # is closed [lo, hi].
             mask = (vals >= lo) & (vals <= hi if is_last else vals < hi)
         drill_df = (
-            stat_df.loc[mask, ["item_id", "item_name", "item_group", "stock", "avg_monthly_sales", "std_price", "days_to_clear", "cost_value"]]
+            stat_df.loc[mask, ["item_id", "item_name", "item_group", "stock", "avg_monthly_sales", "std_price", "days_to_clear", "sales_value"]]
             .rename(columns={
                 "item_id": "Item Code", "item_name": "Item Name", "item_group": "Item Group",
                 "stock": "Stock", "avg_monthly_sales": "Avg Monthly Sales", "std_price": "Std Price",
-                "days_to_clear": "Days to Clear", "cost_value": "Cost Value",
+                "days_to_clear": "Days to Clear", "sales_value": "Sales Value",
             })
             .sort_values(metric_choice, ascending=False)
             .reset_index(drop=True)
@@ -227,7 +227,7 @@ def _render_statistical_analysis(zid: str) -> None:
         st.dataframe(
             drill_df.style.format({
                 "Stock": "{:,.0f}", "Avg Monthly Sales": "{:,.1f}", "Std Price": "{:,.0f}",
-                "Days to Clear": "{:,.1f}", "Cost Value": "{:,.0f}",
+                "Days to Clear": "{:,.1f}", "Sales Value": "{:,.0f}",
             }, na_rep="—"),
             width="stretch",
             hide_index=True,
@@ -270,7 +270,7 @@ def display_inventory_analysis_main(current_page, zid: str):
 
     analysis_mode = st.radio(
         "Analysis Mode",
-        ["📦 Stock & Movement Analysis", "📊 Statistical Analysis (Days to Clear / Cost Value)"],
+        ["📦 Stock & Movement Analysis", "📊 Statistical Analysis (Days to Clear / Sales Value)"],
         horizontal=True,
         key="inv_analysis_mode",
     )
