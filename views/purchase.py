@@ -193,10 +193,16 @@ def _render_total_inventory(zid, data_dict):
     """
     st.subheader("Total Inventory Overview")
 
+    show_breakdown = st.radio(
+        "Stock column",
+        ["Total Stock", "Break down by ZID (100001 / 100009)"],
+        horizontal=True,
+        key="total_inv_stock_mode",
+    ) == "Break down by ZID (100001 / 100009)"
+
     with st.spinner("Loading inventory data…"):
         inv_101 = _load_inventory_overview("100001")
         inv_109 = _load_inventory_overview("100009")
-        zid_split = _load_inventory_zid_stock_split()
 
     if inv_101.empty and inv_109.empty:
         st.warning("No inventory data available.")
@@ -205,14 +211,20 @@ def _render_total_inventory(zid, data_dict):
     # `final_items_view` has no zid=100009 branch of its own -- for a 100001
     # item cross-ZID-linked to a 100009 packaging item, the view's `stock`
     # already sums both ZIDs into that one 100001 row, so inv_109 above is
-    # always empty. Merge in the separately-queried per-ZID split instead so
-    # the two halves can be shown as their own columns.
-    if not zid_split.empty and not inv_101.empty:
-        inv_101 = inv_101.merge(zid_split, on="item_id", how="left")
-    for _c in ("stock_100001", "stock_100009"):
-        if _c not in inv_101.columns:
-            inv_101[_c] = 0.0
-        inv_101[_c] = pd.to_numeric(inv_101[_c], errors="coerce").fillna(0.0)
+    # always empty. Only pay for the live imtrn query when the radio actually
+    # asks to see the breakdown.
+    if show_breakdown and not inv_101.empty:
+        with st.spinner("Loading 100001 / 100009 stock breakdown…"):
+            zid_split = _load_inventory_zid_stock_split()
+        if not zid_split.empty:
+            inv_101 = inv_101.merge(zid_split, on="item_id", how="left")
+        if "stock_100009" not in inv_101.columns:
+            inv_101["stock_100009"] = 0.0
+        inv_101["stock_100009"] = pd.to_numeric(inv_101["stock_100009"], errors="coerce").fillna(0.0)
+        # 100001 Stock = existing combined Total Stock - the live-queried
+        # 100009 figure, so the two halves always add back up to the total
+        # by construction rather than by two queries happening to agree.
+        inv_101["stock_100001"] = pd.to_numeric(inv_101["stock"], errors="coerce").fillna(0.0) - inv_101["stock_100009"]
 
     # ── Resolve packcode for cross-ZID grouping ──────────────────────────
     def _resolve_code(df: pd.DataFrame) -> pd.DataFrame:
@@ -250,15 +262,14 @@ def _render_total_inventory(zid, data_dict):
         .rename(columns={"stock": "total_stock"})
     )
 
-    # Per-ZID stock breakdown, from the separately-queried split (see above —
-    # inv_109 is always empty, so it contributes nothing here).
-    split_agg = (
-        inv_101.groupby("resolved_code", as_index=False)[["stock_100001", "stock_100009"]].sum()
-        if not inv_101.empty else pd.DataFrame(columns=["resolved_code", "stock_100001", "stock_100009"])
-    )
-    stock_agg = stock_agg.merge(split_agg, on="resolved_code", how="left")
-    stock_agg["stock_100001"] = stock_agg["stock_100001"].fillna(0)
-    stock_agg["stock_100009"] = stock_agg["stock_100009"].fillna(0)
+    # Per-ZID stock breakdown -- only computed when the radio asks for it, so
+    # the two columns simply don't exist (and are auto-omitted below) when
+    # the default "Total Stock" view is selected.
+    if show_breakdown and not inv_101.empty and "stock_100001" in inv_101.columns:
+        split_agg = inv_101.groupby("resolved_code", as_index=False)[["stock_100001", "stock_100009"]].sum()
+        stock_agg = stock_agg.merge(split_agg, on="resolved_code", how="left")
+        stock_agg["stock_100001"] = stock_agg["stock_100001"].fillna(0)
+        stock_agg["stock_100009"] = stock_agg["stock_100009"].fillna(0)
 
     # Prefer 100001 metadata; fall back to 100009 for items only in 100009
     if not meta_101.empty and not meta_109.empty:
@@ -342,11 +353,20 @@ def _render_total_inventory(zid, data_dict):
         )
         display_df = display_df[mask]
 
-    st.caption(
-        f"Total Stock = 100001 Stock + 100009 Stock combined (cross-ZID packcode merge). "
-        f"Avg Monthly Sales = trailing 12-month window ({num_months} month(s) with data). "
-        f"Days to Clear = Total Stock ÷ Avg Monthly Sales × 30."
-    )
+    if show_breakdown:
+        st.caption(
+            f"Total Stock = 100001 + 100009 combined (cross-ZID packcode merge). "
+            f"100009 Stock is queried live from imtrn (joined via caitem.xdrawing); "
+            f"100001 Stock = Total Stock − 100009 Stock. "
+            f"Avg Monthly Sales = trailing 12-month window ({num_months} month(s) with data). "
+            f"Days to Clear = Total Stock ÷ Avg Monthly Sales × 30."
+        )
+    else:
+        st.caption(
+            f"Total Stock = 100001 + 100009 combined (cross-ZID packcode merge). "
+            f"Avg Monthly Sales = trailing 12-month window ({num_months} month(s) with data). "
+            f"Days to Clear = Total Stock ÷ Avg Monthly Sales × 30."
+        )
 
     fmt = {c: "{:,.0f}" for c in ["100001 Stock", "100009 Stock", "Total Stock", "Avg Monthly Sales", "Std Price", "Min Disc Amt", "Min Qty"]}
     fmt["Days to Clear"] = "{:,.1f}"

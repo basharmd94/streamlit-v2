@@ -1510,43 +1510,35 @@ def get_inventory_overview(filters: Dict[str, Any]) -> Tuple[str, tuple]:
 
 def get_inventory_zid_stock_split(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """
-    Per-ZID stock breakdown (100001 vs 100009) for every 100001 caitem row.
+    100009-only stock, keyed by its 100001-equivalent item code, computed
+    live from imtrn/caitem (not from final_items_view, which has no
+    zid=100009 branch of its own -- see get_inventory_overview).
 
-    `final_items_view` has NO zid=100009 branch of its own -- for a 100001 item
-    that is cross-ZID-linked to a 100009 packaging item (via caitem.xdrawing),
-    the view's single `stock` column already sums the 100001 warehouse balance
-    AND the linked 100009 item's balance together into that one 100001 row.
-    `Analytics("inventory_overview", zid="100009")` therefore always returns
-    zero rows -- there's nothing to split there.
+    Mirrors final_items_view's own stk_100009 subquery exactly: same two
+    warehouses, same non-blank-xdrawing filter, same GROUP BY ca9.xdrawing --
+    so when MULTIPLE 100009 items share one xdrawing target (e.g. an HPI
+    raw-material item AND an FH/FZ finished-good item both linking back to
+    the same 100001 code), their stock is correctly summed into one row
+    instead of fanning out. Verified against real Postgres: this GROUP BY is
+    load-bearing -- an earlier ad-hoc check that omitted it undercounted
+    exactly these dual-linked items.
 
-    This query recomputes the two halves separately, mirroring the view's own
-    stk_100001/stk_100009 subqueries exactly (same warehouses, same xdrawing
-    join), so Purchase Analysis -> Total Inventory Overview can show them as
-    their own columns instead of the combined total looking like it's all
-    100001.
+    100001's own stock is deliberately NOT queried here -- Purchase
+    Analysis -> Total Inventory Overview derives it as
+    (existing combined Total Stock) - (this 100009 figure), so the two
+    halves always add back up to the total by construction rather than by
+    two independently-computed queries happening to agree.
     """
     sql = """
         SELECT
-            ci.xitem AS item_id,
-            COALESCE(stk_100001.stock, 0) AS stock_100001,
-            COALESCE(stk_100009.stock, 0) AS stock_100009
-        FROM caitem ci
-        LEFT JOIN (
-            SELECT im.xitem, SUM(im.xqty * im.xsign) AS stock
-            FROM imtrn im
-            WHERE im.zid = 100001 AND im.xwh = 'HMBR -Main Store (4th Floor)'
-            GROUP BY im.xitem
-        ) stk_100001 ON stk_100001.xitem = ci.xitem
-        LEFT JOIN (
-            SELECT ca9.xdrawing AS xitem_100001, SUM(im.xqty * im.xsign) AS stock
-            FROM imtrn im
-            JOIN caitem ca9 ON ca9.zid = 100009 AND ca9.xitem = im.xitem
-            WHERE im.zid = 100009
-              AND im.xwh IN ('Finished Goods Store Packaging', 'Raw Material Store Packaging')
-              AND ca9.xdrawing IS NOT NULL AND ca9.xdrawing <> ''
-            GROUP BY ca9.xdrawing
-        ) stk_100009 ON stk_100009.xitem_100001 = ci.xitem
-        WHERE ci.zid = 100001
+            ca9.xdrawing AS item_id,
+            SUM(im.xqty * im.xsign) AS stock_100009
+        FROM imtrn im
+        JOIN caitem ca9 ON ca9.zid = 100009 AND ca9.xitem = im.xitem
+        WHERE im.zid = 100009
+          AND im.xwh IN ('Finished Goods Store Packaging', 'Raw Material Store Packaging')
+          AND ca9.xdrawing IS NOT NULL AND ca9.xdrawing <> ''
+        GROUP BY ca9.xdrawing
     """
     return sql, ()
 
