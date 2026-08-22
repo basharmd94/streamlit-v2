@@ -84,6 +84,7 @@ class Analytics:
             "opmob_all":        queries.get_opmob_all_data,
             "final_items_view":    queries.get_final_items_view,
             "inventory_overview":  queries.get_inventory_overview,
+            "inventory_zid_stock_split": queries.get_inventory_zid_stock_split,
             "opspprc":          queries.get_opspprc_data,
             "ar_due_ledger":    queries.get_ar_due_ledger,
             "cacus_master":     queries.get_cacus_master,
