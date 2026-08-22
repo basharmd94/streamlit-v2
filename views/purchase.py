@@ -230,6 +230,22 @@ def _render_total_inventory(zid, data_dict):
         .rename(columns={"stock": "total_stock"})
     )
 
+    # Per-ZID stock breakdown, merged alongside the combined total
+    stock_101_agg = (
+        inv_101.groupby("resolved_code", as_index=False)["stock"].sum()
+        .rename(columns={"stock": "stock_100001"})
+        if not inv_101.empty else pd.DataFrame(columns=["resolved_code", "stock_100001"])
+    )
+    stock_109_agg = (
+        inv_109.groupby("resolved_code", as_index=False)["stock"].sum()
+        .rename(columns={"stock": "stock_100009"})
+        if not inv_109.empty else pd.DataFrame(columns=["resolved_code", "stock_100009"])
+    )
+    stock_agg = stock_agg.merge(stock_101_agg, on="resolved_code", how="left")
+    stock_agg = stock_agg.merge(stock_109_agg, on="resolved_code", how="left")
+    stock_agg["stock_100001"] = stock_agg["stock_100001"].fillna(0)
+    stock_agg["stock_100009"] = stock_agg["stock_100009"].fillna(0)
+
     # Prefer 100001 metadata; fall back to 100009 for items only in 100009
     if not meta_101.empty and not meta_109.empty:
         meta = pd.concat([meta_101, meta_109], ignore_index=True).drop_duplicates("resolved_code", keep="first")
@@ -286,7 +302,9 @@ def _render_total_inventory(zid, data_dict):
         "item_id":           "Item Code",
         "item_name":         "Item Name",
         "item_group":        "Item Group",
-        "total_stock":       "Stock",
+        "stock_100001":      "100001 Stock",
+        "stock_100009":      "100009 Stock",
+        "total_stock":       "Total Stock",
         "avg_monthly_sales": "Avg Monthly Sales",
         "days_to_clear":     "Days to Clear",
         "std_price":         "Std Price",
@@ -311,12 +329,12 @@ def _render_total_inventory(zid, data_dict):
         display_df = display_df[mask]
 
     st.caption(
-        f"Stock = 100001 + 100009 combined (cross-ZID packcode merge). "
+        f"Total Stock = 100001 Stock + 100009 Stock combined (cross-ZID packcode merge). "
         f"Avg Monthly Sales = trailing 12-month window ({num_months} month(s) with data). "
-        f"Days to Clear = Stock ÷ Avg Monthly Sales × 30."
+        f"Days to Clear = Total Stock ÷ Avg Monthly Sales × 30."
     )
 
-    fmt = {c: "{:,.0f}" for c in ["Stock", "Avg Monthly Sales", "Std Price", "Min Disc Amt", "Min Qty"]}
+    fmt = {c: "{:,.0f}" for c in ["100001 Stock", "100009 Stock", "Total Stock", "Avg Monthly Sales", "Std Price", "Min Disc Amt", "Min Qty"]}
     fmt["Days to Clear"] = "{:,.1f}"
     existing_fmt = {k: v for k, v in fmt.items() if k in display_df.columns}
 
