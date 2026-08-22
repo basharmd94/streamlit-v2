@@ -429,6 +429,18 @@ Sits directly below the existing "📊 Pivot Table Analysis" expander (`collecti
 
 ---
 
+## Collection Analysis — Salesman Due → "📊 Statistical Analysis" (`views/collection.py::_render_salesman_due_ar_stats`)
+
+A 5th `sub_report` option alongside Main Due Report / Latest Sale & Collection / Customer Credit Trickle-down / Missing Customers, by customer, reusing the exact same `reports`/`reports2`/`_sd_scope` loading and dual-ZID (`100001 + 100000`) combine logic already on this page — no new data-loading mechanism.
+
+Two metrics, radio-selected, **not from the same underlying customer population**:
+- **AR Balance** — `report_cc_with_names.total_due` (Customer Credit Trickle-down), summed per customer via `groupby(["xsub","customer_name"])` — a customer can span >1 salesman row within the trailing 4-month FIFO window (verified: 8 of 696 100001 customers). Verified this sum reconciles exactly to Latest Sale & Collection's own `Current Balance` column for the same customer (e.g. `CUS-005596`: 1794.67 + 5988.33 = 7783.00, both sides).
+- **Days Since Last Sale** — the trickle-down table carries **no date column at all**, so this is sourced from Latest Sale & Collection (`report_df["Sales Date"]`, `today − Sales Date`) instead, then **restricted to the AR Balance customer population** — Latest Sale & Collection covers every customer with any sale history (1,281 locally), a much broader set than the trickle-down table's near-zero-balance filter keeps (696 locally); without the restriction the two metrics would silently describe different customer sets. Restriction is a left-merge of the two per-metric frames on `Customer Code` (`["ZID","Customer Code"]` in combined scope, since customer codes are only unique within one ZID — kept as two separately-tagged rows rather than merged across businesses).
+
+Same design as Inventory Analysis's Statistical Analysis mode (mean/median/std/min/max via `st.metric`; modal *histogram bucket* instead of a literal statistical mode; `st.checkbox` default-ON 95th-percentile chart clipping with an open-ended last bucket, verified bucket-for-bucket against the drill-down table's counts in both clipped/unclipped and single/combined-ZID modes) — **built standalone here, not as a shared component** (explicit choice over factoring out a shared helper, to avoid touching the already-shipped `views/inventory.py` code as a side effect of this feature).
+
+---
+
 ## Git / Deployment
 
 - **Main branch**: `main` — always deployable. Feature branches merged to main when approved.
