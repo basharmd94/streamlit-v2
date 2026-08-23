@@ -432,13 +432,24 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
 
                 # Order-level totals -- summed across EVERY product on each
                 # order, not just the one selected here. Verified against real
-                # Postgres these reconcile exactly to opdor.xdtdisc / opdor.xtotamt
-                # (the ERP's own order-header discount and grand-total rollups).
+                # Postgres these reconcile exactly to opdor.xdtdisc / opdor.xappamt
+                # (the ERP's own order-header discount and true AR/grand-total).
+                #
+                # Uses final_sales (= altsales - proddiscount, already computed by
+                # common.data_copy_add_columns), NOT totalsales/opddt.xlineamt.
+                # For 100005 specifically, xlineamt double-subtracts the item-wise
+                # MRP-discount attribution (xdisval) -- confirmed against a real
+                # ERP data pull (order DO--058487): xlineamt = xdtwotax - xdtdisc
+                # - xdisval, while true AR = SUM(xdtwotax - xdtdisc) with NO
+                # xdisval term. final_sales already matches AR exactly and is
+                # mathematically identical to totalsales for every other ZID
+                # (verified separately against 100001), so this is a safe
+                # universal fix rather than a ZID-conditional branch.
                 _po_order_totals = (
                     _oa_data.groupby("voucher", as_index=False)
                     .agg(**{
                         "Discount (Order Total)": ("proddiscount", "sum"),
-                        "Total Order Amount": ("totalsales", "sum"),
+                        "Total Order Amount": ("final_sales", "sum"),
                     })
                 )
 
@@ -450,12 +461,12 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                     _po_table = (
                         _po_lines[["date", "voucher", "cusid", "cusname", "area", "quantity",
                                    "altsales", "proddiscount", "Discount (Order Total)",
-                                   "Total Order Amount", "totalsales"]]
+                                   "Total Order Amount", "final_sales"]]
                         .rename(columns={
                             "date": "Date", "voucher": "Voucher", "cusid": "Customer Code",
                             "cusname": "Customer", "area": "Area", "quantity": "Quantity",
                             "altsales": "Altsales", "proddiscount": "Discount (Product)",
-                            "totalsales": "Final Line Amount",
+                            "final_sales": "Final Line Amount",
                         })
                         .sort_values("Date", ascending=False)
                         .reset_index(drop=True)
