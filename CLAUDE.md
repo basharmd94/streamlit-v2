@@ -449,11 +449,16 @@ Same design as Inventory Analysis's Statistical Analysis mode (mean/median/std/m
 
 A 4th `oa_sub` option alongside Order Size Distribution / Return Size Distribution / Rolling Average. Single-product selectbox ("Code — Name") at the top; picking one renders every order line for that product below. **Needs zero new SQL** — built entirely from `_oa_data` (the `mv_sales_line_items` pull already loaded for the rest of Order Analytics, respecting the same cross-ZID scope toggle), via a plain pandas filter + groupby. Self-contained: does not participate in the page's separate "Filter by" (Area/Salesman/Product Group/Customer) radio — that's a different, coarser filter used by the distribution/rolling-average charts.
 
-Columns: Date, Voucher, Customer, Area, Quantity, Altsales (gross), **Discount (Product)**, **Discount (Order Total)**, **Total Order Amount**, Final Line Amount. No Salesman column — deliberately dropped per what was asked.
+Columns: Date, Voucher, **Customer Code**, Customer, Area, Quantity, Altsales (gross), **Discount (Product)**, **Discount (Order Total)**, **Total Order Amount**, Final Line Amount. No Salesman column — deliberately dropped per what was asked.
 
 - **Discount (Product)** = `proddiscount` (`opddt.xdtdisc`) on that product's own line within the order.
 - **Discount (Order Total)** and **Total Order Amount** are both computed the same way — grouped by `voucher` **across every product on that order**, not just the selected one, via a single `_oa_data.groupby("voucher").agg(...)` pass (`SUM(proddiscount)` and `SUM(totalsales)` respectively). Verified against real Postgres both reconcile exactly to `opdor`'s own header rollups (`xdtdisc` / `xtotamt`) across multiple real multi-line orders, e.g. order `DO--508670` (53 line items across many different products): computed discount `80502.63` == `opdor.xdtdisc` `80502.63`, computed total `68953.92` == `opdor.xtotamt` `68953.92`, both to the cent. `opdor`'s header totals are pure rollups of its `opddt` lines, not an independent number.
 - **Final Line Amount** = `totalsales` (`opddt.xlineamt`), the net amount for that product's own line — already equals `Altsales − Discount (Product)` (same relationship as the `final_sales` column `processing/common.py::data_copy_add_columns` derives elsewhere, just sourced here from the DB's own pre-computed column instead of recomputing it).
+
+**Grouped by Order table** (`_po_grouped`), rendered below the line-level table: collapses to one row per `Voucher` via `.groupby("Voucher").agg(...)`, since the same product can appear on >1 line within one order (verified: 3,243 voucher+product combos locally, e.g. order `DO--019260` has item `12933` on 2 separate lines of 100 units each). Aggregation split by column meaning, not uniformly summed:
+- `Date`/`Customer Code`/`Customer`/`Area` — `"first"`, since these are identical across every line of the same voucher, not a real aggregation choice.
+- `Quantity`/`Altsales`/`Discount (Product)`/`Final Line Amount` — `"sum"`, the selected product's own totals across its line(s) within that order.
+- `Discount (Order Total)`/`Total Order Amount` — `"first"`, **not** `"sum"` — these are already order-wide figures merged onto every line of the line-level table above, so summing them across a product's multiple lines in the same order would multiply-count them. Verified on the real dual-line example above that both values are identical across the product's two lines before grouping, confirming `"first"` is safe.
 
 ---
 

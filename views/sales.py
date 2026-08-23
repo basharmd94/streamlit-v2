@@ -448,25 +448,29 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                 else:
                     _po_lines = _po_lines.merge(_po_order_totals, on="voucher", how="left")
                     _po_table = (
-                        _po_lines[["date", "voucher", "cusname", "area", "quantity",
+                        _po_lines[["date", "voucher", "cusid", "cusname", "area", "quantity",
                                    "altsales", "proddiscount", "Discount (Order Total)",
                                    "Total Order Amount", "totalsales"]]
                         .rename(columns={
-                            "date": "Date", "voucher": "Voucher", "cusname": "Customer", "area": "Area",
-                            "quantity": "Quantity", "altsales": "Altsales", "proddiscount": "Discount (Product)",
+                            "date": "Date", "voucher": "Voucher", "cusid": "Customer Code",
+                            "cusname": "Customer", "area": "Area", "quantity": "Quantity",
+                            "altsales": "Altsales", "proddiscount": "Discount (Product)",
                             "totalsales": "Final Line Amount",
                         })
                         .sort_values("Date", ascending=False)
                         .reset_index(drop=True)
                     )
-                    st.caption(f"**{len(_po_table):,}** order(s) for **{_po_choice}**.")
+                    _po_fmt = {
+                        "Quantity": "{:,.2f}", "Altsales": "{:,.0f}", "Discount (Product)": "{:,.0f}",
+                        "Discount (Order Total)": "{:,.0f}", "Total Order Amount": "{:,.0f}",
+                        "Final Line Amount": "{:,.0f}",
+                    }
+                    _po_date_col_cfg = {"Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD")}
+
+                    st.caption(f"**{len(_po_table):,}** order line(s) for **{_po_choice}**.")
                     st.dataframe(
-                        _po_table.style.format({
-                            "Quantity": "{:,.2f}", "Altsales": "{:,.0f}", "Discount (Product)": "{:,.0f}",
-                            "Discount (Order Total)": "{:,.0f}", "Total Order Amount": "{:,.0f}",
-                            "Final Line Amount": "{:,.0f}",
-                        }, na_rep="—"),
-                        column_config={"Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD")},
+                        _po_table.style.format(_po_fmt, na_rep="—"),
+                        column_config=_po_date_col_cfg,
                         width="stretch",
                         hide_index=True,
                     )
@@ -476,6 +480,50 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                         file_name=f"product_orders_{_po_code}.csv",
                         mime="text/csv",
                         key="oa_po_dl",
+                    )
+
+                    # ── Grouped by voucher — one row per order ───────────────
+                    # A product can appear on >1 line within the same order; this
+                    # collapses those into a single row per voucher. Date/Customer
+                    # Code/Customer/Area are identical across a voucher's own lines
+                    # so "first" is a safe pick, not an aggregation choice. Discount
+                    # (Order Total) and Total Order Amount are already order-level
+                    # figures merged onto every line above -- summing them would
+                    # multiply-count, so they're also just carried through via
+                    # "first" rather than summed like the per-product columns.
+                    st.markdown("#### 📦 Grouped by Order")
+                    _po_grouped = (
+                        _po_table.groupby("Voucher", as_index=False).agg({
+                            "Date": "first",
+                            "Customer Code": "first",
+                            "Customer": "first",
+                            "Area": "first",
+                            "Quantity": "sum",
+                            "Altsales": "sum",
+                            "Discount (Product)": "sum",
+                            "Discount (Order Total)": "first",
+                            "Total Order Amount": "first",
+                            "Final Line Amount": "sum",
+                        })
+                        [["Date", "Voucher", "Customer Code", "Customer", "Area", "Quantity",
+                          "Altsales", "Discount (Product)", "Discount (Order Total)",
+                          "Total Order Amount", "Final Line Amount"]]
+                        .sort_values("Date", ascending=False)
+                        .reset_index(drop=True)
+                    )
+                    st.caption(f"**{len(_po_grouped):,}** order(s) for **{_po_choice}**.")
+                    st.dataframe(
+                        _po_grouped.style.format(_po_fmt, na_rep="—"),
+                        column_config=_po_date_col_cfg,
+                        width="stretch",
+                        hide_index=True,
+                    )
+                    st.download_button(
+                        "⬇ Download CSV",
+                        _po_grouped.to_csv(index=False).encode("utf-8"),
+                        file_name=f"product_orders_{_po_code}_grouped.csv",
+                        mime="text/csv",
+                        key="oa_po_grouped_dl",
                     )
 
     elif analysis_mode == "👥 Customer Cycles":
