@@ -134,6 +134,32 @@ def _render_statistical_analysis(zid: str) -> None:
         st.info("No items with a defined value for this metric.")
         return
 
+    # ── Min/Max/Bins — same mechanism as Order Analytics (views/sales.py,
+    # views/collection.py). The range filter applies to everything below it:
+    # summary stats, chart, and bucket totals -- not just the chart.
+    mm1, mm2, mm3 = st.columns(3)
+    with mm1:
+        value_min = st.number_input(
+            "Min Value (optional)", value=None, placeholder="e.g. 10", key=f"inv_stat_min_{metric_choice}"
+        )
+    with mm2:
+        value_max = st.number_input(
+            "Max Value (optional)", value=None, placeholder="e.g. 500", key=f"inv_stat_max_{metric_choice}"
+        )
+    with mm3:
+        n_bins = st.number_input(
+            "Number of Bins", min_value=5, max_value=500, value=50, key=f"inv_stat_bins_{metric_choice}"
+        )
+
+    if value_min is not None:
+        stat_df = stat_df[stat_df[col] >= value_min]
+    if value_max is not None:
+        stat_df = stat_df[stat_df[col] <= value_max]
+
+    if stat_df.empty:
+        st.info("No items in the specified value range.")
+        return
+
     vals = stat_df[col]
 
     # ── Summary stats ──────────────────────────────────────────────────────
@@ -146,22 +172,7 @@ def _render_statistical_analysis(zid: str) -> None:
     c5.metric("Max", f"{vals.max():,.{decimals}f}")
 
     # ── Distribution + buckets ──────────────────────────────────────────────
-    clip_outliers = st.checkbox(
-        "Clip chart to 95th percentile",
-        value=True,
-        help="A handful of extreme items (e.g. near-zero sales velocity) can otherwise stretch "
-             "equal-width buckets so far that almost everything lands in one giant bucket. "
-             "Summary stats above and the drill-down table always use the true, unclipped values "
-             "-- this only affects how the chart's buckets are drawn.",
-        key=f"inv_stat_clip_{metric_choice}",
-    )
-    n_bins = st.slider("Number of buckets", min_value=5, max_value=30, value=12, key=f"inv_stat_bins_{metric_choice}")
-
-    cap = vals.quantile(0.95) if clip_outliers else vals.max()
-    cap = max(cap, vals.min())  # guard the degenerate all-equal-value case
-    open_ended = cap < vals.max()
-    vals_for_bins = vals.clip(upper=cap) if open_ended else vals
-    counts, edges = np.histogram(vals_for_bins, bins=n_bins)
+    counts, edges = np.histogram(vals, bins=int(n_bins))
 
     # "Mode" for a continuous value rarely means anything as a literal repeat
     # -- report the modal histogram bucket instead, which is what's actually
@@ -171,17 +182,8 @@ def _render_statistical_analysis(zid: str) -> None:
         f"Modal bucket (most items): **{edges[modal_idx]:,.{decimals}f} – {edges[modal_idx+1]:,.{decimals}f}** "
         f"({counts[modal_idx]:,} items)"
     )
-    if open_ended:
-        st.caption(
-            f"ℹ️ Chart capped at the 95th percentile ({cap:,.{decimals}f}); the last bucket includes "
-            f"everything at or above that, up to the true max of {vals.max():,.{decimals}f}."
-        )
 
-    bin_labels = [
-        f"{edges[i]:,.{decimals}f}+" if (open_ended and i == len(counts) - 1)
-        else f"{edges[i]:,.{decimals}f} – {edges[i+1]:,.{decimals}f}"
-        for i in range(len(counts))
-    ]
+    bin_labels = [f"{edges[i]:,.{decimals}f} – {edges[i+1]:,.{decimals}f}" for i in range(len(counts))]
     fig = go.Figure(data=[go.Bar(x=bin_labels, y=counts)])
     fig.update_layout(
         xaxis_title=metric_choice,
@@ -189,6 +191,13 @@ def _render_statistical_analysis(zid: str) -> None:
         xaxis_tickangle=-40,
     )
     st.plotly_chart(fig, width="stretch")
+
+    def _bucket_mask(idx: int) -> pd.Series:
+        # np.histogram bins are half-open [lo, hi) except the last, which is
+        # closed [lo, hi].
+        lo, hi = edges[idx], edges[idx + 1]
+        is_last = idx == len(counts) - 1
+        return (vals >= lo) & (vals <= hi if is_last else vals < hi)
 
     # ── Drill-down: pick a bucket, see the products in it ───────────────────
     bucket_options = ["— select a bucket —"] + [
@@ -201,18 +210,7 @@ def _render_statistical_analysis(zid: str) -> None:
     )
     if bucket_choice != "— select a bucket —":
         idx = bucket_options.index(bucket_choice) - 1
-        lo, hi = edges[idx], edges[idx + 1]
-        is_last = idx == len(counts) - 1
-        if open_ended and is_last:
-            # Open-ended tail bucket -- catch every item at/above lo on the
-            # TRUE (unclipped) values, matching the chart's clipped count
-            # exactly since clipping never removes an item from this bucket,
-            # only caps its displayed value.
-            mask = vals >= lo
-        else:
-            # np.histogram bins are half-open [lo, hi) except the last, which
-            # is closed [lo, hi].
-            mask = (vals >= lo) & (vals <= hi if is_last else vals < hi)
+        mask = _bucket_mask(idx)
         drill_df = (
             stat_df.loc[mask, ["item_id", "item_name", "item_group", "stock", "avg_monthly_sales", "std_price", "days_to_clear", "sales_value"]]
             .rename(columns={
@@ -239,6 +237,33 @@ def _render_statistical_analysis(zid: str) -> None:
             mime="text/csv",
             key=f"inv_stat_dl_{metric_choice}",
         )
+
+    # ── Bucket Totals — every bucket at once, regardless of which one (if
+    # any) is drilled into above. Always shows both Days to Clear and Sales
+    # Value together, whichever metric currently defines the bucket edges.
+    st.markdown("#### 📋 Bucket Totals")
+    totals_rows = []
+    for i in range(len(counts)):
+        sub = stat_df.loc[_bucket_mask(i)]
+        totals_rows.append({
+            "Bucket": bin_labels[i],
+            "Item Count": int(len(sub)),
+            "Avg Days to Clear": sub["days_to_clear"].mean(),
+            "Total Sales Value": sub["sales_value"].sum(),
+        })
+    totals_df = pd.DataFrame(totals_rows)
+    st.dataframe(
+        totals_df.style.format({"Avg Days to Clear": "{:,.1f}", "Total Sales Value": "{:,.0f}"}, na_rep="—"),
+        width="stretch",
+        hide_index=True,
+    )
+    st.download_button(
+        "⬇ Download Bucket Totals CSV",
+        totals_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"inventory_{metric_choice.lower().replace(' ', '_')}_bucket_totals.csv",
+        mime="text/csv",
+        key=f"inv_stat_totals_dl_{metric_choice}",
+    )
 
 
 _DEFAULT_WAREHOUSES = [

@@ -267,6 +267,33 @@ def _render_salesman_due_ar_stats(reports: dict, reports2: dict, sd_scope: str, 
         st.info("No customers with a defined value for this metric.")
         return
 
+    # ── Min/Max/Bins — same mechanism as Order Analytics (views/sales.py,
+    # views/collection.py's own 📈 Order Analytics mode). The range filter
+    # applies to everything below it: summary stats, chart, and bucket
+    # totals -- not just the chart.
+    mm1, mm2, mm3 = st.columns(3)
+    with mm1:
+        value_min = st.number_input(
+            "Min Value (optional)", value=None, placeholder="e.g. 1000", key=f"sd_stat_min_{metric_choice}"
+        )
+    with mm2:
+        value_max = st.number_input(
+            "Max Value (optional)", value=None, placeholder="e.g. 50000", key=f"sd_stat_max_{metric_choice}"
+        )
+    with mm3:
+        n_bins = st.number_input(
+            "Number of Bins", min_value=5, max_value=500, value=50, key=f"sd_stat_bins_{metric_choice}"
+        )
+
+    if value_min is not None:
+        stat_df = stat_df[stat_df[col] >= value_min]
+    if value_max is not None:
+        stat_df = stat_df[stat_df[col] <= value_max]
+
+    if stat_df.empty:
+        st.info("No customers in the specified value range.")
+        return
+
     vals = stat_df[col]
 
     # ── Summary stats ──────────────────────────────────────────────────────
@@ -283,22 +310,7 @@ def _render_salesman_due_ar_stats(reports: dict, reports2: dict, sd_scope: str, 
     c5.metric("Max", f"{vals.max():,.{decimals}f}")
 
     # ── Distribution + buckets ──────────────────────────────────────────────
-    clip_outliers = st.checkbox(
-        "Clip chart to 95th percentile",
-        value=True,
-        help="A handful of extreme customers (e.g. very old dormant balances) can otherwise "
-             "stretch equal-width buckets so far that almost everything lands in one giant "
-             "bucket. Summary stats above and the drill-down table always use the true, "
-             "unclipped values -- this only affects how the chart's buckets are drawn.",
-        key=f"sd_stat_clip_{metric_choice}",
-    )
-    n_bins = st.slider("Number of buckets", min_value=5, max_value=30, value=12, key=f"sd_stat_bins_{metric_choice}")
-
-    cap = vals.quantile(0.95) if clip_outliers else vals.max()
-    cap = max(cap, vals.min())
-    open_ended = cap < vals.max()
-    vals_for_bins = vals.clip(upper=cap) if open_ended else vals
-    counts, edges = np.histogram(vals_for_bins, bins=n_bins)
+    counts, edges = np.histogram(vals, bins=int(n_bins))
 
     # "Mode" for a continuous value rarely means anything as a literal repeat
     # -- report the modal histogram bucket instead.
@@ -307,20 +319,16 @@ def _render_salesman_due_ar_stats(reports: dict, reports2: dict, sd_scope: str, 
         f"Modal bucket (most customers): **{edges[modal_idx]:,.{decimals}f} – {edges[modal_idx+1]:,.{decimals}f}** "
         f"({counts[modal_idx]:,} customers)"
     )
-    if open_ended:
-        st.caption(
-            f"ℹ️ Chart capped at the 95th percentile ({cap:,.{decimals}f}); the last bucket "
-            f"includes everything at or above that, up to the true max of {vals.max():,.{decimals}f}."
-        )
 
-    bin_labels = [
-        f"{edges[i]:,.{decimals}f}+" if (open_ended and i == len(counts) - 1)
-        else f"{edges[i]:,.{decimals}f} – {edges[i+1]:,.{decimals}f}"
-        for i in range(len(counts))
-    ]
+    bin_labels = [f"{edges[i]:,.{decimals}f} – {edges[i+1]:,.{decimals}f}" for i in range(len(counts))]
     fig = go.Figure(data=[go.Bar(x=bin_labels, y=counts)])
     fig.update_layout(xaxis_title=metric_choice, yaxis_title="Customer count", xaxis_tickangle=-40)
     st.plotly_chart(fig, width="stretch")
+
+    def _bucket_mask(idx: int) -> pd.Series:
+        lo, hi = edges[idx], edges[idx + 1]
+        is_last = idx == len(counts) - 1
+        return (vals >= lo) & (vals <= hi if is_last else vals < hi)
 
     # ── Drill-down: pick a bucket, see the customers in it ──────────────────
     bucket_options = ["— select a bucket —"] + [
@@ -333,12 +341,7 @@ def _render_salesman_due_ar_stats(reports: dict, reports2: dict, sd_scope: str, 
     )
     if bucket_choice != "— select a bucket —":
         idx = bucket_options.index(bucket_choice) - 1
-        lo, hi = edges[idx], edges[idx + 1]
-        is_last = idx == len(counts) - 1
-        if open_ended and is_last:
-            mask = vals >= lo
-        else:
-            mask = (vals >= lo) & (vals <= hi if is_last else vals < hi)
+        mask = _bucket_mask(idx)
 
         id_cols = (["ZID"] if combined else []) + [
             "Customer Code", "Customer Name", "Area", "City",
@@ -363,6 +366,34 @@ def _render_salesman_due_ar_stats(reports: dict, reports2: dict, sd_scope: str, 
             mime="text/csv",
             key=f"sd_stat_dl_{metric_choice}",
         )
+
+    # ── Bucket Totals — every bucket at once, regardless of which one (if
+    # any) is drilled into above. Always shows both AR Balance and Days
+    # Since Last Sale together, whichever metric currently defines the
+    # bucket edges.
+    st.markdown("#### 📋 Bucket Totals")
+    totals_rows = []
+    for i in range(len(counts)):
+        sub = stat_df.loc[_bucket_mask(i)]
+        totals_rows.append({
+            "Bucket": bin_labels[i],
+            "Customer Count": int(len(sub)),
+            "Total Balance": sub["AR Balance"].sum(),
+            "Avg Days Since Last Sale": sub["Days Since Last Sale"].mean(),
+        })
+    totals_df = pd.DataFrame(totals_rows)
+    st.dataframe(
+        totals_df.style.format({"Total Balance": "{:,.0f}", "Avg Days Since Last Sale": "{:,.0f}"}, na_rep="—"),
+        width="stretch",
+        hide_index=True,
+    )
+    st.download_button(
+        "⬇ Download Bucket Totals CSV",
+        totals_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"salesman_due_ar_{metric_choice.lower().replace(' ', '_')}_bucket_totals.csv",
+        mime="text/csv",
+        key=f"sd_stat_totals_dl_{metric_choice}",
+    )
 
 
 @timed
