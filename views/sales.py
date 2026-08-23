@@ -430,24 +430,27 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
             if _po_choice != "— select a product —":
                 _po_code = _po_label_to_code[_po_choice]
 
-                # Order-level discount total -- summed across EVERY product on
-                # each order, not just the one selected here. Verified against
-                # real Postgres this reconciles exactly to opdor.xdtdisc (the
-                # ERP's own order-header discount total).
-                _po_order_disc = (
-                    _oa_data.groupby("voucher", as_index=False)["proddiscount"]
-                    .sum()
-                    .rename(columns={"proddiscount": "Discount (Order Total)"})
+                # Order-level totals -- summed across EVERY product on each
+                # order, not just the one selected here. Verified against real
+                # Postgres these reconcile exactly to opdor.xdtdisc / opdor.xtotamt
+                # (the ERP's own order-header discount and grand-total rollups).
+                _po_order_totals = (
+                    _oa_data.groupby("voucher", as_index=False)
+                    .agg(**{
+                        "Discount (Order Total)": ("proddiscount", "sum"),
+                        "Total Order Amount": ("totalsales", "sum"),
+                    })
                 )
 
                 _po_lines = _oa_data[_oa_data["itemcode"].astype(str) == str(_po_code)].copy()
                 if _po_lines.empty:
                     st.info("No orders found for this product.")
                 else:
-                    _po_lines = _po_lines.merge(_po_order_disc, on="voucher", how="left")
+                    _po_lines = _po_lines.merge(_po_order_totals, on="voucher", how="left")
                     _po_table = (
                         _po_lines[["date", "voucher", "cusname", "area", "quantity",
-                                   "altsales", "proddiscount", "Discount (Order Total)", "totalsales"]]
+                                   "altsales", "proddiscount", "Discount (Order Total)",
+                                   "Total Order Amount", "totalsales"]]
                         .rename(columns={
                             "date": "Date", "voucher": "Voucher", "cusname": "Customer", "area": "Area",
                             "quantity": "Quantity", "altsales": "Altsales", "proddiscount": "Discount (Product)",
@@ -460,7 +463,8 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                     st.dataframe(
                         _po_table.style.format({
                             "Quantity": "{:,.2f}", "Altsales": "{:,.0f}", "Discount (Product)": "{:,.0f}",
-                            "Discount (Order Total)": "{:,.0f}", "Final Line Amount": "{:,.0f}",
+                            "Discount (Order Total)": "{:,.0f}", "Total Order Amount": "{:,.0f}",
+                            "Final Line Amount": "{:,.0f}",
                         }, na_rep="—"),
                         column_config={"Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD")},
                         width="stretch",
