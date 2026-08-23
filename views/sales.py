@@ -336,7 +336,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
 
         sub_mode = st.radio(
             "Sub-section",
-            ["Order Size Distribution", "Return Size Distribution", "Rolling Average"],
+            ["Order Size Distribution", "Return Size Distribution", "Rolling Average", "Product Orders"],
             horizontal=True, key="oa_sub",
         )
 
@@ -405,6 +405,74 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                     """)
             else:
                 st.info("Select at least one rolling window.")
+
+        elif sub_mode == "Product Orders":
+            st.caption(
+                "Pick one product to see every order it appears in — its own line discount "
+                "alongside that order's total discount across every product on it."
+            )
+
+            _po_products = (
+                _oa_data[["itemcode", "itemname"]]
+                .dropna(subset=["itemcode"])
+                .drop_duplicates()
+                .assign(label=lambda d: d["itemcode"].astype(str) + " — " + d["itemname"].astype(str))
+                .sort_values("label")
+            )
+            _po_label_to_code = dict(zip(_po_products["label"], _po_products["itemcode"]))
+
+            _po_choice = st.selectbox(
+                "Product",
+                ["— select a product —"] + _po_products["label"].tolist(),
+                key="oa_po_product",
+            )
+
+            if _po_choice != "— select a product —":
+                _po_code = _po_label_to_code[_po_choice]
+
+                # Order-level discount total -- summed across EVERY product on
+                # each order, not just the one selected here. Verified against
+                # real Postgres this reconciles exactly to opdor.xdtdisc (the
+                # ERP's own order-header discount total).
+                _po_order_disc = (
+                    _oa_data.groupby("voucher", as_index=False)["proddiscount"]
+                    .sum()
+                    .rename(columns={"proddiscount": "Discount (Order Total)"})
+                )
+
+                _po_lines = _oa_data[_oa_data["itemcode"].astype(str) == str(_po_code)].copy()
+                if _po_lines.empty:
+                    st.info("No orders found for this product.")
+                else:
+                    _po_lines = _po_lines.merge(_po_order_disc, on="voucher", how="left")
+                    _po_table = (
+                        _po_lines[["date", "voucher", "cusname", "area", "quantity",
+                                   "altsales", "proddiscount", "Discount (Order Total)", "totalsales"]]
+                        .rename(columns={
+                            "date": "Date", "voucher": "Voucher", "cusname": "Customer", "area": "Area",
+                            "quantity": "Quantity", "altsales": "Altsales", "proddiscount": "Discount (Product)",
+                            "totalsales": "Final Line Amount",
+                        })
+                        .sort_values("Date", ascending=False)
+                        .reset_index(drop=True)
+                    )
+                    st.caption(f"**{len(_po_table):,}** order(s) for **{_po_choice}**.")
+                    st.dataframe(
+                        _po_table.style.format({
+                            "Quantity": "{:,.2f}", "Altsales": "{:,.0f}", "Discount (Product)": "{:,.0f}",
+                            "Discount (Order Total)": "{:,.0f}", "Final Line Amount": "{:,.0f}",
+                        }, na_rep="—"),
+                        column_config={"Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD")},
+                        width="stretch",
+                        hide_index=True,
+                    )
+                    st.download_button(
+                        "⬇ Download CSV",
+                        _po_table.to_csv(index=False).encode("utf-8"),
+                        file_name=f"product_orders_{_po_code}.csv",
+                        mime="text/csv",
+                        key="oa_po_dl",
+                    )
 
     elif analysis_mode == "👥 Customer Cycles":
         _cc_partner = _partner_s if (str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty) else None

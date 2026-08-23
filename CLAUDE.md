@@ -445,6 +445,18 @@ Same design as Inventory Analysis's Statistical Analysis mode (mean/median/std/m
 
 ---
 
+## Sales Analysis — Order Analytics → "Product Orders" (`views/sales.py`, `sub_mode == "Product Orders"`)
+
+A 4th `oa_sub` option alongside Order Size Distribution / Return Size Distribution / Rolling Average. Single-product selectbox ("Code — Name") at the top; picking one renders every order line for that product below. **Needs zero new SQL** — built entirely from `_oa_data` (the `mv_sales_line_items` pull already loaded for the rest of Order Analytics, respecting the same cross-ZID scope toggle), via a plain pandas filter + groupby. Self-contained: does not participate in the page's separate "Filter by" (Area/Salesman/Product Group/Customer) radio — that's a different, coarser filter used by the distribution/rolling-average charts.
+
+Columns: Date, Voucher, Customer, Area, Quantity, Altsales (gross), **Discount (Product)**, **Discount (Order Total)**, Final Line Amount. No Salesman column — deliberately dropped per what was asked.
+
+- **Discount (Product)** = `proddiscount` (`opddt.xdtdisc`) on that product's own line within the order.
+- **Discount (Order Total)** = `SUM(proddiscount)` grouped by `voucher` **across every product on that order**, not just the selected one — a second, unfiltered pass over `_oa_data`. Verified against real Postgres this reconciles exactly to `opdor.xdtdisc` (the ERP's own order-header discount rollup) for real multi-line orders, e.g. order `DO--508670` (53 line items across many different products): computed `80502.63` == `opdor.xdtdisc` `80502.63` to the cent. `opdor.xdtwotax`/`opdor.xtotamt` were separately confirmed to equal `SUM(opddt.xdtwotax)`/`SUM(opddt.xlineamt)` the same way — `opdor`'s header totals are pure rollups of its `opddt` lines, not an independent number.
+- **Final Line Amount** = `totalsales` (`opddt.xlineamt`), the net amount for that product's own line — already equals `Altsales − Discount (Product)` (same relationship as the `final_sales` column `processing/common.py::data_copy_add_columns` derives elsewhere, just sourced here from the DB's own pre-computed column instead of recomputing it).
+
+---
+
 ## Git / Deployment
 
 - **Main branch**: `main` — always deployable. Feature branches merged to main when approved.
