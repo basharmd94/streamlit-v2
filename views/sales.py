@@ -630,6 +630,116 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                                     "something negotiated per order or customer."
                                 )
 
+                        # ── Quantity-Tier Revenue Simulation ─────────────────────
+                        st.markdown("#### 🧮 Quantity-Tier Revenue Simulation")
+                        st.caption(
+                            "Define up to 5 quantity tiers — the price applies to every unit once an "
+                            "order's total quantity (paid + free under the old system) reaches that "
+                            "threshold. Leave a tier's Qty at 0 to disable it. Every historical order in "
+                            "the Deal Pattern Distribution above (including plain full-price ones) is "
+                            "re-priced at its own total quantity's applicable tier and compared to what "
+                            "it actually earned."
+                        )
+
+                        _tier_qty_defaults = [1, 12, 24, 0, 0]
+                        _tier_price_defaults = [170.0, 156.0, 145.0, 0.0, 0.0]
+                        _tq_cols = st.columns(5)
+                        _tier_qtys = [
+                            _tq_cols[i].number_input(
+                                f"Tier {i+1} Qty", min_value=0, value=_tier_qty_defaults[i], step=1,
+                                key=f"oa_po_tier_qty_{i}",
+                            )
+                            for i in range(5)
+                        ]
+                        _tp_cols = st.columns(5)
+                        _tier_prices = [
+                            _tp_cols[i].number_input(
+                                f"Tier {i+1} Price", min_value=0.0, value=_tier_price_defaults[i], step=0.5,
+                                key=f"oa_po_tier_price_{i}",
+                            )
+                            for i in range(5)
+                        ]
+                        _tiers = sorted(
+                            {(q, p) for q, p in zip(_tier_qtys, _tier_prices) if q > 0 and p > 0},
+                            key=lambda t: t[0],
+                        )
+
+                        if not _tiers:
+                            st.info("Enter at least one tier (Qty > 0 and Price > 0) to run the simulation.")
+                        else:
+                            def _tier_price_for_qty(q, tiers_asc):
+                                price = None
+                                for th, p in tiers_asc:
+                                    if q >= th:
+                                        price = p
+                                    else:
+                                        break
+                                return price
+
+                            _sim = _po_patterns.copy()
+                            _sim["Total Qty (per order)"] = _sim["Paid Qty"] + _sim["Free Qty"]
+                            _sim["Tier Price"] = _sim["Total Qty (per order)"].apply(
+                                lambda q: _tier_price_for_qty(q, _tiers)
+                            )
+                            _no_tier_mask = _sim["Tier Price"].isna()
+                            # Orders whose total qty falls below every defined tier have no new-system
+                            # price -- fall back to their actual (old-system) revenue for those rather
+                            # than silently excluding them from the comparison, and call out the count.
+                            _sim["Simulated Revenue (New)"] = np.where(
+                                _no_tier_mask,
+                                _sim["Total Revenue"],
+                                _sim["Tier Price"] * _sim["Total Qty Sold"],
+                            )
+                            _sim["Revenue Delta"] = _sim["Simulated Revenue (New)"] - _sim["Total Revenue"]
+                            _sim["% Change"] = np.where(
+                                _sim["Total Revenue"] != 0,
+                                100 * _sim["Revenue Delta"] / _sim["Total Revenue"],
+                                np.nan,
+                            )
+
+                            if _no_tier_mask.any():
+                                st.caption(
+                                    f"⚠️ {int(_sim.loc[_no_tier_mask, 'Orders'].sum()):,} order(s) have a "
+                                    f"total quantity below every defined tier — their old-system revenue "
+                                    f"was carried through unchanged in the comparison below."
+                                )
+
+                            _actual_total = _sim["Total Revenue"].sum()
+                            _sim_total = _sim["Simulated Revenue (New)"].sum()
+                            _delta = _sim_total - _actual_total
+                            _delta_pct = 100 * _delta / _actual_total if _actual_total else None
+
+                            s1, s2, s3, s4 = st.columns(4)
+                            s1.metric("Actual Revenue (Old System)", f"{_actual_total:,.0f}")
+                            s2.metric("Simulated Revenue (New System)", f"{_sim_total:,.0f}")
+                            s3.metric("Revenue Delta", f"{_delta:,.0f}")
+                            s4.metric("% Change", f"{_delta_pct:+.1f}%" if _delta_pct is not None else "—")
+
+                            _sim_display = _sim[[
+                                "Paid Qty", "Free Qty", "Total Qty (per order)", "Orders",
+                                "Total Qty Sold", "Total Revenue", "Tier Price",
+                                "Simulated Revenue (New)", "Revenue Delta", "% Change",
+                            ]].rename(columns={"Total Revenue": "Actual Revenue (Old)"})
+
+                            st.dataframe(
+                                _sim_display.style.format({
+                                    "Paid Qty": "{:,.0f}", "Free Qty": "{:,.0f}",
+                                    "Total Qty (per order)": "{:,.0f}", "Orders": "{:,.0f}",
+                                    "Total Qty Sold": "{:,.0f}", "Actual Revenue (Old)": "{:,.0f}",
+                                    "Tier Price": "{:,.2f}", "Simulated Revenue (New)": "{:,.0f}",
+                                    "Revenue Delta": "{:,.0f}", "% Change": "{:+.1f}%",
+                                }, na_rep="—"),
+                                width="stretch",
+                                hide_index=True,
+                            )
+                            st.download_button(
+                                "⬇ Download CSV",
+                                _sim_display.to_csv(index=False).encode("utf-8"),
+                                file_name=f"product_orders_tier_simulation_{_po_code}.csv",
+                                mime="text/csv",
+                                key="oa_po_sim_dl",
+                            )
+
     elif analysis_mode == "👥 Customer Cycles":
         _cc_partner = _partner_s if (str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty) else None
         _render_customer_cycles(filtered_data, partner_df=_cc_partner, zid_str=str(zid))
