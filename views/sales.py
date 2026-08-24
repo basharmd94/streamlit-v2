@@ -30,6 +30,17 @@ def _load_partner_sales(partner_zid: str, years: tuple, months: tuple):
     return proc_s, proc_r
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_discount_detail(zid: str) -> pd.DataFrame:
+    """Raw opddt/opdor discount-mechanics detail (xdisc%, xdisval, xdtdisc) --
+    not exposed by mv_sales_line_items/Analytics('sales'). No date filter,
+    same pattern as the sales/return loaders -- callers slice by date
+    in-memory. See core/queries.py::get_sales_discount_detail."""
+    from core.analytics import Analytics
+    df = Analytics("sales_discount_detail", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
 @timed
 def display_overall_sales_analysis_page(current_page, zid, data_dict):
     st.title("Overall Sales Analysis")
@@ -548,6 +559,76 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
                             mime="text/csv",
                             key="oa_po_patterns_dl",
                         )
+
+                        # ── Discount Characteristics: MRP Discount vs Honour Discount ──
+                        # A separate, independent pair of levers from the free-goods
+                        # split above -- mv_sales_line_items doesn't expose
+                        # xdisc/xdisval/xdtcomm, so this pulls raw opddt/opdor
+                        # directly. Confirmed on real data these two rarely pair on
+                        # the same line (24 of 1,444 free-goods deals also carry an
+                        # Honour Discount) and neither correlates with order value --
+                        # both behave as close to a fixed, per-product rate.
+                        st.markdown("#### 🏷️ Discount Characteristics")
+                        _dd_all = _load_discount_detail(str(zid))
+                        if _dd_all.empty:
+                            st.info("No discount-mechanics detail available for this ZID.")
+                        else:
+                            _dd_all = _dd_all.copy()
+                            _dd_all["date"] = pd.to_datetime(_dd_all["date"], errors="coerce")
+                            _dd_dated = _dd_all[_dd_all["date"].notna()]
+                            _dd_max = _dd_dated["date"].max() if not _dd_dated.empty else None
+                            _dd_scope = (
+                                _dd_dated[_dd_dated["date"] > (_dd_max - pd.DateOffset(months=_po_months))]
+                                if _dd_max is not None else _dd_dated.iloc[0:0]
+                            )
+                            _dd_lines = _dd_scope[_dd_scope["itemcode"].astype(str) == str(_po_code)].copy()
+
+                            if _dd_lines.empty:
+                                st.info("No discount-mechanics detail for this product in the selected time range.")
+                            else:
+                                for c in ["quantity", "disc_pct", "altsales", "mrp_disc_amt", "honour_disc_amt"]:
+                                    _dd_lines[c] = pd.to_numeric(_dd_lines[c], errors="coerce")
+
+                                # MRP Discount % -- applies per-line regardless of
+                                # free/paid status (it's a fixed BDT/unit gap between
+                                # xprice and xrate for this item), so every line
+                                # (both the paid row and the free row of a deal)
+                                # contributes to the same estimate.
+                                _dd_lines["mrp_pct"] = np.where(
+                                    _dd_lines["altsales"] > 0,
+                                    _dd_lines["mrp_disc_amt"] / _dd_lines["altsales"] * 100,
+                                    np.nan,
+                                )
+                                # Honour Discount lines: partial (non-free, non-zero)
+                                # xdisc -- the real ERP field, not a proxy.
+                                _dd_honour = _dd_lines[(_dd_lines["disc_pct"] > 0.5) & (_dd_lines["disc_pct"] < 99)]
+
+                                _mrp_mean = _dd_lines["mrp_pct"].mean()
+                                _mrp_std = _dd_lines["mrp_pct"].std() if _dd_lines["mrp_pct"].notna().sum() > 1 else None
+                                _hon_pct_of_lines = 100 * len(_dd_honour) / len(_dd_lines)
+                                _hon_mean = _dd_honour["disc_pct"].mean() if len(_dd_honour) else None
+                                _hon_std = _dd_honour["disc_pct"].std() if len(_dd_honour) > 1 else None
+
+                                d1, d2, d3, d4 = st.columns(4)
+                                d1.metric("MRP Discount % (mean)", f"{_mrp_mean:.2f}%" if pd.notna(_mrp_mean) else "—")
+                                d2.metric("MRP Discount % (std)", f"{_mrp_std:.2f}" if _mrp_std is not None else "—")
+                                d3.metric(
+                                    "Lines with Honour Discount",
+                                    f"{len(_dd_honour):,} ({_hon_pct_of_lines:.0f}% of lines)",
+                                )
+                                d4.metric(
+                                    "Honour Discount % (mean ± std)",
+                                    f"{_hon_mean:.2f} ± {_hon_std:.2f}" if _hon_mean is not None else "—",
+                                )
+                                st.caption(
+                                    "**MRP Discount** = per-item structural markdown from MRP price to "
+                                    "wholesale rate (GL `07080001`), applied to every line regardless of "
+                                    "free/paid status. **Honour Discount** = the partial (non-100%) discount "
+                                    "lever on paid lines (GL `07080002`) — rarely paired with a free-goods "
+                                    "line on the same item. A tight std relative to the mean for either "
+                                    "indicates this product's discount is close to a fixed rate rather than "
+                                    "something negotiated per order or customer."
+                                )
 
     elif analysis_mode == "👥 Customer Cycles":
         _cc_partner = _partner_s if (str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty) else None

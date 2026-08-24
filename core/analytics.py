@@ -50,6 +50,7 @@ class Analytics:
 
         query_map = {
             "sales":            queries.get_sales_data,
+            "sales_discount_detail": queries.get_sales_discount_detail,
             "sales_7day":       queries.get_sales_7day,
             "customer_last_do_items": queries.get_customer_last_do_items,
             "return":           queries.get_return_data,
