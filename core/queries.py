@@ -135,6 +135,43 @@ def get_sales_data(filters=None):
     return query, tuple(params)
 
 
+def get_sales_discount_detail(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """
+    Raw opddt/opdor discount-mechanics detail, per line: xdisc (%), xdtwotax
+    (wholesale-rate gross), xdisval (MRP-Discount amount), xdtdisc
+    (Honour-Discount amount). NOT exposed by mv_sales_line_items -- needed
+    to tell apart three separate discount levers that all ultimately land
+    somewhere in altsales/proddiscount: free-goods lines (xdisc >= ~99),
+    Honour Discount (xdisc between 0 and ~99, GL 07080002), and MRP Discount
+    (a per-item structural markdown baked into xrate vs xprice, GL 07080001,
+    xdisval = xdtcomm_per_unit * xqty). Confirmed against a real ERP pull
+    (order DO--058487) and live Postgres for ZID 100005 (Zepto) specifically
+    -- other ZIDs typically have xdisval/xdtcomm = 0 throughout.
+
+    No date filter -- pulls full history for the ZID, same pattern as
+    get_sales_data/mv_sales_line_items, so callers slice by date in Python
+    (e.g. the "Time Range (months)" slider in Sales Analysis -> Order
+    Analytics -> Product Orders) without a repeat DB round trip per window
+    change.
+    """
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            o.xdornum AS voucher,
+            o.xdate   AS date,
+            d.xitem   AS itemcode,
+            d.xqty    AS quantity,
+            d.xdisc   AS disc_pct,
+            d.xdtwotax AS altsales,
+            d.xdisval AS mrp_disc_amt,
+            d.xdtdisc AS honour_disc_amt
+        FROM opdor o
+        JOIN opddt d ON o.zid = d.zid AND o.xdornum = d.xdornum
+        WHERE o.zid = %s
+    """
+    return sql, (zid,)
+
+
 def get_sales_7day(filters=None):
     """Last 180 calendar days of sales line items from mv_sales_line_items.
 
