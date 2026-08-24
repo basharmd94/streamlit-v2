@@ -408,8 +408,9 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
 
         elif sub_mode == "Product Orders":
             st.caption(
-                "Pick one product to see every order it appears in — its own line discount "
-                "alongside that order's total discount across every product on it."
+                "Characterizes the current free-goods discount model for one product: what "
+                "paid+free quantity combinations are actually given, and the resulting "
+                "effective price per unit — the groundwork for designing quantity-tier pricing."
             )
 
             _po_products = (
@@ -421,121 +422,132 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
             )
             _po_label_to_code = dict(zip(_po_products["label"], _po_products["itemcode"]))
 
-            _po_choice = st.selectbox(
-                "Product",
-                ["— select a product —"] + _po_products["label"].tolist(),
-                key="oa_po_product",
-            )
+            _po_c1, _po_c2 = st.columns([2, 1])
+            with _po_c1:
+                _po_choice = st.selectbox(
+                    "Product",
+                    ["— select a product —"] + _po_products["label"].tolist(),
+                    key="oa_po_product",
+                )
+            with _po_c2:
+                _po_months = st.slider(
+                    "Time Range (months)", min_value=1, max_value=12, value=1, key="oa_po_months"
+                )
 
             if _po_choice != "— select a product —":
                 _po_code = _po_label_to_code[_po_choice]
 
-                # Order-level totals -- summed across EVERY product on each
-                # order, not just the one selected here. Verified against real
-                # Postgres these reconcile exactly to opdor.xdtdisc / opdor.xappamt
-                # (the ERP's own order-header discount and true AR/grand-total).
-                #
-                # Uses final_sales (= altsales - proddiscount, already computed by
-                # common.data_copy_add_columns), NOT totalsales/opddt.xlineamt.
-                # For 100005 specifically, xlineamt double-subtracts the item-wise
-                # MRP-discount attribution (xdisval) -- confirmed against a real
-                # ERP data pull (order DO--058487): xlineamt = xdtwotax - xdtdisc
-                # - xdisval, while true AR = SUM(xdtwotax - xdtdisc) with NO
-                # xdisval term. final_sales already matches AR exactly and is
-                # mathematically identical to totalsales for every other ZID
-                # (verified separately against 100001), so this is a safe
-                # universal fix rather than a ZID-conditional branch.
-                _po_order_totals = (
-                    _oa_data.groupby("voucher", as_index=False)
-                    .agg(**{
-                        "Discount (Order Total)": ("proddiscount", "sum"),
-                        "Total Order Amount": ("final_sales", "sum"),
-                    })
-                )
-
-                _po_lines = _oa_data[_oa_data["itemcode"].astype(str) == str(_po_code)].copy()
-                if _po_lines.empty:
-                    st.info("No orders found for this product.")
+                # Trailing N months, anchored to the latest date actually present in
+                # the already-loaded (sidebar-scoped) sales data -- not "today" --
+                # since the sidebar's own year/month selection controls what's
+                # loaded at all; this is a pure in-memory re-slice of that, no new
+                # query, same pattern as Customer Support's 90-Day Activity slider.
+                _po_dated = _oa_data[_oa_data["date"].notna()]
+                if _po_dated.empty:
+                    st.info("No dated sales rows available.")
                 else:
-                    _po_lines = _po_lines.merge(_po_order_totals, on="voucher", how="left")
-                    _po_table = (
-                        _po_lines[["date", "voucher", "cusid", "cusname", "area", "quantity",
-                                   "altsales", "proddiscount", "Discount (Order Total)",
-                                   "Total Order Amount", "final_sales"]]
-                        .rename(columns={
-                            "date": "Date", "voucher": "Voucher", "cusid": "Customer Code",
-                            "cusname": "Customer", "area": "Area", "quantity": "Quantity",
-                            "altsales": "Altsales", "proddiscount": "Discount (Product)",
-                            "final_sales": "Final Line Amount",
-                        })
-                        .sort_values("Date", ascending=False)
-                        .reset_index(drop=True)
-                    )
-                    _po_fmt = {
-                        "Quantity": "{:,.2f}", "Altsales": "{:,.0f}", "Discount (Product)": "{:,.0f}",
-                        "Discount (Order Total)": "{:,.0f}", "Total Order Amount": "{:,.0f}",
-                        "Final Line Amount": "{:,.0f}",
-                    }
-                    _po_date_col_cfg = {"Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD")}
-
-                    st.caption(f"**{len(_po_table):,}** order line(s) for **{_po_choice}**.")
-                    st.dataframe(
-                        _po_table.style.format(_po_fmt, na_rep="—"),
-                        column_config=_po_date_col_cfg,
-                        width="stretch",
-                        hide_index=True,
-                    )
-                    st.download_button(
-                        "⬇ Download CSV",
-                        _po_table.to_csv(index=False).encode("utf-8"),
-                        file_name=f"product_orders_{_po_code}.csv",
-                        mime="text/csv",
-                        key="oa_po_dl",
+                    _po_max_date = _po_dated["date"].max()
+                    _po_cutoff = _po_max_date - pd.DateOffset(months=_po_months)
+                    _po_scope = _po_dated[_po_dated["date"] > _po_cutoff]
+                    st.caption(
+                        f"Window: **{_po_cutoff.date()}** to **{_po_max_date.date()}** "
+                        f"({_po_months} month{'s' if _po_months != 1 else ''} of currently loaded data)."
                     )
 
-                    # ── Grouped by voucher — one row per order ───────────────
-                    # A product can appear on >1 line within the same order; this
-                    # collapses those into a single row per voucher. Date/Customer
-                    # Code/Customer/Area are identical across a voucher's own lines
-                    # so "first" is a safe pick, not an aggregation choice. Discount
-                    # (Order Total) and Total Order Amount are already order-level
-                    # figures merged onto every line above -- summing them would
-                    # multiply-count, so they're also just carried through via
-                    # "first" rather than summed like the per-product columns.
-                    st.markdown("#### 📦 Grouped by Order")
-                    _po_grouped = (
-                        _po_table.groupby("Voucher", as_index=False).agg({
-                            "Date": "first",
-                            "Customer Code": "first",
-                            "Customer": "first",
-                            "Area": "first",
-                            "Quantity": "sum",
-                            "Altsales": "sum",
-                            "Discount (Product)": "sum",
-                            "Discount (Order Total)": "first",
-                            "Total Order Amount": "first",
-                            "Final Line Amount": "sum",
-                        })
-                        [["Date", "Voucher", "Customer Code", "Customer", "Area", "Quantity",
-                          "Altsales", "Discount (Product)", "Discount (Order Total)",
-                          "Total Order Amount", "Final Line Amount"]]
-                        .sort_values("Date", ascending=False)
-                        .reset_index(drop=True)
-                    )
-                    st.caption(f"**{len(_po_grouped):,}** order(s) for **{_po_choice}**.")
-                    st.dataframe(
-                        _po_grouped.style.format(_po_fmt, na_rep="—"),
-                        column_config=_po_date_col_cfg,
-                        width="stretch",
-                        hide_index=True,
-                    )
-                    st.download_button(
-                        "⬇ Download CSV",
-                        _po_grouped.to_csv(index=False).encode("utf-8"),
-                        file_name=f"product_orders_{_po_code}_grouped.csv",
-                        mime="text/csv",
-                        key="oa_po_grouped_dl",
-                    )
+                    _po_lines = _po_scope[_po_scope["itemcode"].astype(str) == str(_po_code)].copy()
+                    if _po_lines.empty:
+                        st.info("No orders found for this product in the selected time range.")
+                    else:
+                        # A free-goods line is recorded as its own opddt row with a
+                        # (near-)100% product discount, separate from the paid
+                        # quantity's own row on the same voucher -- confirmed
+                        # against a real ERP pull (order DO--058487, item
+                        # FZ000030): opddt.xdisc = 100.00 marks it exactly.
+                        # mv_sales_line_items doesn't expose xdisc directly, so
+                        # proddiscount >= 99% of altsales is used as the proxy.
+                        _po_lines["is_free_line"] = _po_lines["proddiscount"] >= _po_lines["altsales"] * 0.99
+                        _po_lines["paid_qty_line"] = np.where(_po_lines["is_free_line"], 0.0, _po_lines["quantity"])
+                        _po_lines["free_qty_line"] = np.where(_po_lines["is_free_line"], _po_lines["quantity"], 0.0)
+
+                        # Collapse to one row per order (voucher) for this product --
+                        # the same product can appear on >1 line within one order
+                        # (a paid line + a separate free line), so this is the
+                        # deal-level unit of analysis, not the raw line.
+                        _po_deals = _po_lines.groupby("voucher", as_index=False).agg(
+                            **{
+                                "Paid Qty": ("paid_qty_line", "sum"),
+                                "Free Qty": ("free_qty_line", "sum"),
+                                "Altsales": ("altsales", "sum"),
+                                # final_sales (= altsales - proddiscount), NOT
+                                # totalsales/opddt.xlineamt -- see the fix above.
+                                "Revenue": ("final_sales", "sum"),
+                            }
+                        )
+                        _po_deals = _po_deals[(_po_deals["Paid Qty"] + _po_deals["Free Qty"]) > 0].copy()
+                        _po_deals["Total Qty"] = _po_deals["Paid Qty"] + _po_deals["Free Qty"]
+                        _po_deals["Eff Price/Unit"] = _po_deals["Revenue"] / _po_deals["Total Qty"]
+                        _po_deals["Has Free"] = _po_deals["Free Qty"] > 0
+
+                        # ── Summary metrics ──────────────────────────────────────
+                        n_orders = len(_po_deals)
+                        n_free = int(_po_deals["Has Free"].sum())
+                        pct_free = 100 * n_free / n_orders if n_orders else 0.0
+                        eff_no_free = _po_deals.loc[~_po_deals["Has Free"], "Eff Price/Unit"]
+                        eff_with_free = _po_deals.loc[_po_deals["Has Free"], "Eff Price/Unit"]
+                        _reduction = None
+                        if len(eff_no_free) and len(eff_with_free) and eff_no_free.mean():
+                            _reduction = 100 * (1 - eff_with_free.mean() / eff_no_free.mean())
+
+                        m1, m2, m3, m4, m5 = st.columns(5)
+                        m1.metric("Orders", f"{n_orders:,}")
+                        m2.metric("With Free Goods", f"{n_free:,} ({pct_free:.0f}%)")
+                        m3.metric("Avg Price — No Free", f"{eff_no_free.mean():,.2f}" if len(eff_no_free) else "—")
+                        m4.metric("Avg Price — With Free", f"{eff_with_free.mean():,.2f}" if len(eff_with_free) else "—")
+                        m5.metric("Price Reduction from Free Goods", f"{_reduction:.1f}%" if _reduction is not None else "—")
+
+                        # ── Deal pattern distribution ────────────────────────────
+                        st.markdown("#### 📦 Deal Pattern Distribution")
+                        st.caption(
+                            "One row per distinct (Paid Qty, Free Qty) combination actually "
+                            "observed for this product in the window — including plain "
+                            "full-price orders (Free Qty = 0)."
+                        )
+                        _po_patterns = _po_deals.groupby(["Paid Qty", "Free Qty"], as_index=False).agg(
+                            **{
+                                "Orders": ("voucher", "count"),
+                                "Total Qty Sold": ("Total Qty", "sum"),
+                                "Total Revenue": ("Revenue", "sum"),
+                                "Avg Eff Price/Unit": ("Eff Price/Unit", "mean"),
+                            }
+                        )
+                        _po_patterns["Free % of Qty"] = (
+                            100 * _po_patterns["Free Qty"] / (_po_patterns["Paid Qty"] + _po_patterns["Free Qty"])
+                        ).round(1)
+                        _po_patterns = (
+                            _po_patterns[[
+                                "Paid Qty", "Free Qty", "Free % of Qty", "Orders",
+                                "Total Qty Sold", "Total Revenue", "Avg Eff Price/Unit",
+                            ]]
+                            .sort_values("Orders", ascending=False)
+                            .reset_index(drop=True)
+                        )
+
+                        st.dataframe(
+                            _po_patterns.style.format({
+                                "Paid Qty": "{:,.0f}", "Free Qty": "{:,.0f}", "Free % of Qty": "{:.1f}%",
+                                "Orders": "{:,.0f}", "Total Qty Sold": "{:,.0f}",
+                                "Total Revenue": "{:,.0f}", "Avg Eff Price/Unit": "{:,.2f}",
+                            }, na_rep="—"),
+                            width="stretch",
+                            hide_index=True,
+                        )
+                        st.download_button(
+                            "⬇ Download CSV",
+                            _po_patterns.to_csv(index=False).encode("utf-8"),
+                            file_name=f"product_orders_deal_patterns_{_po_code}.csv",
+                            mime="text/csv",
+                            key="oa_po_patterns_dl",
+                        )
 
     elif analysis_mode == "👥 Customer Cycles":
         _cc_partner = _partner_s if (str(zid) in _CROSS_ZID_PAIR and not _partner_s.empty) else None
