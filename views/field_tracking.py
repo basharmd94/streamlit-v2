@@ -256,7 +256,7 @@ def _render_field_tracking_monthly(ft_zids, sp_df, pdk):
         ),
         map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
         tooltip={"text": "{tooltip}"},
-    ), width="stretch")
+    ), use_container_width=True)
 
     # ── Legend ────────────────────────────────────────────────────────────────
     if use_gradient and all_dates:
@@ -606,7 +606,7 @@ def _render_field_tracking(zid):
         map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
         tooltip={"text": "{tooltip}"},
     )
-    st.pydeck_chart(deck, width="stretch")
+    st.pydeck_chart(deck, use_container_width=True)
 
     # ── Legend ────────────────────────────────────────────────────────────────
     legend_items = []
