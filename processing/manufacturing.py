@@ -554,3 +554,119 @@ def compute_warehouse_flow(flow_df: pd.DataFrame, zid: str, start: pd.Timestamp,
         "sales_value_end":   _bal(sales_wh, end, "net_val"),
         "total_sold_value":  -_window(sales_wh, ["DO--"], "net_val"),
     }
+
+
+# Both sides' "other" exclusion use the SAME full superset of every known
+# doctype (RE--/TO--/DO--/SR--), not just the doctypes that side "normally"
+# sees -- required for the 100009 merged-warehouse case (fg == sales), where
+# a plain RE--/TO--/DO--/SR-- exclusion per side would double-count: e.g.
+# RE-- is already tracked as fg_mo_added_qty, so it must ALSO be excluded
+# from sales_other_qty there, not just fg_other_qty, since fg and sales are
+# literally the same warehouse for that entity. Confirmed against real
+# Postgres this was a real bug before the fix (a 100009 item's RE-- receipt
+# was appearing in both fg_mo_added_qty AND sales_other_qty). For the two
+# entities with a genuinely separate FG/Sales warehouse, RE--/SR-- simply
+# never occur on the "wrong" side anyway, so the wider exclusion is a no-op
+# there.
+_FG_OTHER_EXCLUDE = {"RE--", "TO--", "DO--", "SR--"}
+_SALES_OTHER_EXCLUDE = {"RE--", "TO--", "DO--", "SR--"}
+
+_FLOW_PRODUCT_COLS = [
+    "itemcode", "itemname", "itemgroup",
+    "fg_opening_qty", "fg_mo_added_qty", "fg_transferred_out_qty", "fg_other_qty", "fg_closing_qty",
+    "sales_opening_qty", "sales_transferred_in_qty", "sales_returns_qty", "sales_do_sold_qty",
+    "sales_other_qty", "sales_closing_qty",
+]
+
+
+def compute_warehouse_flow_by_product(flow_df: pd.DataFrame, zid: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """
+    Per-product warehouse-flow breakdown, one row per item with any opening
+    balance, window activity, or closing balance in the FG or Sales
+    warehouse group. Same formulas/doctype semantics as
+    compute_warehouse_flow, just grouped by itemcode as well as warehouse.
+
+    **Sales: Returns** (SR--) is broken out of "Other Movements" as its own
+    column -- confirmed against real Postgres this doctype is always
+    xsign = +1 (increases inventory) across all three entities, i.e.
+    genuinely a return-driven stock increase, never a decrease.
+    """
+    if flow_df is None or flow_df.empty or WAREHOUSE_GROUPS.get(str(zid)) is None:
+        return pd.DataFrame(columns=_FLOW_PRODUCT_COLS)
+
+    d = flow_df.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    d = d[d["date"].notna()]
+    d["net_qty"] = pd.to_numeric(d["net_qty"], errors="coerce").fillna(0.0)
+    d["itemcode"] = d["itemcode"].astype(str)
+
+    groups = WAREHOUSE_GROUPS[str(zid)]
+    rm_wh, fg_wh, sales_wh = groups["rm"], groups["fg"], groups["sales"]
+    same_wh = set(fg_wh) == set(sales_wh)
+    day_before_start = start - pd.Timedelta(days=1)
+
+    def _bal(wh_list, up_to):
+        sub = d[d["warehouse"].isin(wh_list) & (d["date"] <= up_to)]
+        return sub.groupby("itemcode")["net_qty"].sum()
+
+    def _window(wh_list, doctypes):
+        m = d["warehouse"].isin(wh_list) & d["doctype"].isin(doctypes) & (d["date"] >= start) & (d["date"] <= end)
+        return d.loc[m].groupby("itemcode")["net_qty"].sum()
+
+    def _window_other(wh_list, exclude):
+        m = d["warehouse"].isin(wh_list) & (~d["doctype"].isin(exclude)) & (d["date"] >= start) & (d["date"] <= end)
+        return d.loc[m].groupby("itemcode")["net_qty"].sum()
+
+    _empty = pd.Series(dtype=float)
+    fg_opening           = _bal(fg_wh, day_before_start)
+    fg_mo_added          = _window(fg_wh, ["RE--"])
+    fg_transferred_out   = _empty if same_wh else -_window(fg_wh, ["TO--"])
+    fg_other             = _window_other(fg_wh, _FG_OTHER_EXCLUDE)
+    fg_closing           = _bal(fg_wh, end)
+    sales_opening        = _bal(sales_wh, day_before_start)
+    sales_transferred_in = _empty if same_wh else _window(sales_wh, ["TO--"])
+    sales_returns        = _window(sales_wh, ["SR--"])
+    sales_do_sold        = -_window(sales_wh, ["DO--"])
+    sales_other          = _window_other(sales_wh, _SALES_OTHER_EXCLUDE)
+    sales_closing        = _bal(sales_wh, end)
+
+    all_items = sorted(set().union(
+        fg_opening.index, fg_mo_added.index, fg_transferred_out.index, fg_other.index, fg_closing.index,
+        sales_opening.index, sales_transferred_in.index, sales_returns.index, sales_do_sold.index,
+        sales_other.index, sales_closing.index,
+    ))
+    if not all_items:
+        return pd.DataFrame(columns=_FLOW_PRODUCT_COLS)
+
+    out = pd.DataFrame(index=pd.Index(all_items, name="itemcode"))
+    out["fg_opening_qty"]           = fg_opening
+    out["fg_mo_added_qty"]          = fg_mo_added
+    out["fg_transferred_out_qty"]   = fg_transferred_out
+    out["fg_other_qty"]             = fg_other
+    out["fg_closing_qty"]           = fg_closing
+    out["sales_opening_qty"]        = sales_opening
+    out["sales_transferred_in_qty"] = sales_transferred_in
+    out["sales_returns_qty"]        = sales_returns
+    out["sales_do_sold_qty"]        = sales_do_sold
+    out["sales_other_qty"]          = sales_other
+    out["sales_closing_qty"]        = sales_closing
+    out = out.fillna(0.0).reset_index()
+
+    # Item name/group lookup -- last non-null value seen for that itemcode
+    # across the pulled history (a name change over the years is rare and
+    # not worth resolving to a specific point in time here).
+    meta = (
+        d[["itemcode", "itemname", "itemgroup"]]
+        .dropna(subset=["itemname"])
+        .drop_duplicates("itemcode", keep="last")
+    )
+    out = out.merge(meta, on="itemcode", how="left")
+    out["itemname"] = out["itemname"].fillna("")
+    out["itemgroup"] = out["itemgroup"].fillna("")
+
+    # Drop items with genuinely nothing going on (no balance, no movement
+    # anywhere in the window) -- not worth a row.
+    numeric_cols = [c for c in _FLOW_PRODUCT_COLS if c not in ("itemcode", "itemname", "itemgroup")]
+    out = out[out[numeric_cols].abs().sum(axis=1) > 1e-9]
+
+    return out[_FLOW_PRODUCT_COLS].sort_values("itemname").reset_index(drop=True)
