@@ -552,6 +552,7 @@ python auth/setup_db.py   # auth table setup; sys.path fix included, works from 
 7. **`pages/` folder name** triggers Streamlit's built-in multi-page nav — keep `views/`.
 8. **`stock_flow` itemcode mismatches**: apply the packcode CASE in SQL and merge on `["warehouse","itemcode"]` only.
 9. **`database.ini`/`global_db.ini` not present in git worktrees** (gitignored) — copy manually after checkout, or login fails silently with no error.
+10. **TOTAL row + `.style.format()`**: a manually-built `dict`-based TOTAL row (`{c: "" for c in df.columns}`, then overwriting some cells) crashes at render time (`ValueError: Unknown format code 'f' for object of type 'str'`) if any column left at its `""` default is ALSO covered by a numeric format spec — e.g. a column deliberately excluded from being summed (like a per-unit cost, where "total" is meaningless). The exception surfaces deep in Streamlit/pandas Styler internals (`_translate_body`), not at the `.style.format()` call itself, so a bare `try/except` around that call won't catch it. Fix: use `np.nan` (not `""`) for any TOTAL-row cell in a numerically-formatted column that has no real value — `na_rep` in `.style.format(fmt, na_rep=...)` renders it cleanly instead.
 
 ## graphify
 

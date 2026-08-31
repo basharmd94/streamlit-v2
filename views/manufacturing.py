@@ -1,5 +1,6 @@
 import calendar
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -735,8 +736,13 @@ def _render_flow_seven_day_target(zid: str, flow_raw: pd.DataFrame):
     if not disp.empty:
         total_row = {c: "" for c in disp.columns}
         total_row["Item Code"] = "─── TOTAL ───"
+        # np.nan, not "" -- these columns still get the {:,.2f}/{:,.0f} numeric
+        # format applied to every row including this one, and formatting a
+        # literal string with a numeric format code crashes; na_rep handles
+        # NaN cleanly (renders as "—") without touching the format string.
+        total_row["Est. Unit Cost"] = np.nan
         for c in qty_cols:
-            if c not in ("Est. Unit Cost",):  # a summed "average unit cost" isn't meaningful
+            if c != "Est. Unit Cost":  # a summed "average unit cost" isn't meaningful
                 total_row[c] = disp[c].sum(skipna=True)
         disp_with_total = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
     else:
