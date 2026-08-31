@@ -557,12 +557,40 @@ def _render_mo_detail(zid: str, mo_header: pd.DataFrame, mo_lines: pd.DataFrame)
 def _render_warehouse_flow(zid: str):
     st.subheader("🔄 Warehouse Flow")
     st.caption(
-        "Per-product flow of goods over a date range you choose: Raw Material → (MO) → Finished "
-        "Goods warehouse → (transfer) → Sales Store → (DO) → market. Raw Material warehouse itself "
-        "is excluded from the flow table (per what was asked) but its BDT value still shows below, "
-        "alongside Finished Goods value."
+        "Per-product flow of goods: Raw Material → (MO) → Finished Goods warehouse → (transfer) → "
+        "Sales Store → (DO) → market. Raw Material warehouse itself is excluded from the flow "
+        "table(s) below (per what was asked) but its BDT value still shows alongside Finished Goods "
+        "value in each mode."
     )
 
+    with st.spinner("Loading warehouse movement history…"):
+        flow_raw = _load_manufacturing_flow(str(zid))
+
+    if flow_raw.empty:
+        st.info("No warehouse movement data found for this business.")
+        return
+
+    groups = mfg.WAREHOUSE_GROUPS.get(str(zid), {})
+    same_wh = set(groups.get("fg", [])) == set(groups.get("sales", []))
+    if same_wh:
+        st.info(
+            "This business has no separate Sales Store warehouse — Delivery Orders are issued "
+            "directly out of the Finished Goods warehouse, so Transferred is always 0 and both "
+            "warehouses' opening/closing figures below are identical by construction, not an error."
+        )
+
+    flow_mode = st.radio(
+        "Mode",
+        ["📅 Choice Timeline", "📦 7-Day Stock Target"],
+        horizontal=True, key="mfg_flow_mode",
+    )
+    if flow_mode == "📅 Choice Timeline":
+        _render_flow_choice_timeline(zid, flow_raw)
+    else:
+        _render_flow_seven_day_target(zid, flow_raw)
+
+
+def _render_flow_choice_timeline(zid: str, flow_raw: pd.DataFrame):
     today = pd.Timestamp.today().normalize()
     default_start = today.replace(day=1)
     date_range = st.date_input(
@@ -577,22 +605,7 @@ def _render_warehouse_flow(zid: str):
         return
     st.caption(f"Window: **{start.date()}** to **{end.date()}**.")
 
-    with st.spinner("Loading warehouse movement history…"):
-        flow_raw = _load_manufacturing_flow(str(zid))
-
-    if flow_raw.empty:
-        st.info("No warehouse movement data found for this business.")
-        return
-
     r = mfg.compute_warehouse_flow(flow_raw, str(zid), start, end)
-    groups = mfg.WAREHOUSE_GROUPS.get(str(zid), {})
-    same_wh = set(groups.get("fg", [])) == set(groups.get("sales", []))
-    if same_wh:
-        st.info(
-            "This business has no separate Sales Store warehouse — Delivery Orders are issued "
-            "directly out of the Finished Goods warehouse, so Transferred is always 0 and both "
-            "warehouses' opening/closing figures below are identical by construction, not an error."
-        )
 
     st.markdown("**Finished Goods Warehouse → Sales Store flow — per product**")
     flow_by_product = mfg.compute_warehouse_flow_by_product(flow_raw, str(zid), start, end)
@@ -678,6 +691,101 @@ def _render_warehouse_flow(zid: str):
         "All values are inventory-cost basis (`imtrn.xval`), not sales revenue — consistent with "
         "how the Raw Material / Finished Goods values above are computed. 'Total Sold' is the COGS "
         "value of everything that left via DO in this window, not the amount billed to customers."
+    )
+
+
+def _render_flow_seven_day_target(zid: str, flow_raw: pd.DataFrame):
+    st.caption(
+        "Trailing 3 months, split into non-overlapping 7-day segments (walking backward from "
+        "today); each metric is averaged across those segments — a 'typical week' for this product. "
+        "**Stock Target (Qty)** = average 7-day Sold (DO) — the amount that should sit in the Sales "
+        "Store at all times to cover one week of average demand."
+    )
+
+    prod, summary = mfg.compute_seven_day_stock_target(flow_raw, str(zid), months_back=3)
+    if prod.empty:
+        st.info("Not enough history (need at least 7 days in the trailing 3 months) to compute this.")
+        return
+
+    st.caption(
+        f"Window: **{summary['window_start'].date()}** to **{summary['window_end'].date()}** "
+        f"({summary['n_segments']} × 7-day segments)."
+    )
+
+    col_map = {
+        "itemcode": "Item Code", "itemname": "Item Name", "itemgroup": "Item Group",
+        "fg_opening_qty_avg": "FG Opening (avg/7d)", "fg_mo_added_qty_avg": "FG: MO Added (avg/7d)",
+        "sales_returns_qty_avg": "Sales: Returns (avg/7d)", "sales_do_sold_qty_avg": "Sales: Sold DO (avg/7d)",
+        "sales_other_qty_avg": "Sales: Other (avg/7d)", "sales_closing_qty_avg": "Sales Closing (avg/7d)",
+        "stock_target_qty": "Stock Target (Qty)", "unit_cost": "Est. Unit Cost", "target_value": "Target Value (BDT)",
+    }
+    disp = prod.rename(columns=col_map)[list(col_map.values())]
+
+    search = st.text_input("Search item code or name", "", key="mfg_7d_search")
+    if search:
+        mask = (
+            disp["Item Code"].str.contains(search, case=False, na=False)
+            | disp["Item Name"].str.contains(search, case=False, na=False)
+        )
+        disp = disp[mask]
+
+    qty_cols = [c for c in col_map.values() if c not in ("Item Code", "Item Name", "Item Group")]
+    st.caption(f"{len(disp):,} product(s) with any activity in the window.")
+
+    if not disp.empty:
+        total_row = {c: "" for c in disp.columns}
+        total_row["Item Code"] = "─── TOTAL ───"
+        for c in qty_cols:
+            if c not in ("Est. Unit Cost",):  # a summed "average unit cost" isn't meaningful
+                total_row[c] = disp[c].sum(skipna=True)
+        disp_with_total = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
+    else:
+        disp_with_total = disp
+
+    fmt = {c: "{:,.2f}" for c in qty_cols}
+    fmt["Est. Unit Cost"] = "{:,.2f}"
+    fmt["Target Value (BDT)"] = "{:,.0f}"
+    st.dataframe(_fmt(disp_with_total, fmt), width="stretch", hide_index=True)
+    n_no_cost = summary["n_items_no_cost_basis"]
+    if n_no_cost:
+        st.caption(
+            f"⚠️ {n_no_cost:,} product(s) had no MO receipt in this window, so no cost basis is "
+            f"available — they still show a real Stock Target (Qty) above, just no BDT value."
+        )
+    st.download_button(
+        "⬇ Download 7-Day Stock Target CSV",
+        disp.to_csv(index=False).encode("utf-8"),
+        file_name=f"seven_day_stock_target_{zid}.csv",
+        mime="text/csv",
+        key="dl_mfg_7d_target",
+    )
+
+    st.markdown("---")
+    st.markdown("**💰 Current vs. Target (BDT, 7-day basis)**")
+    st.caption(
+        "The 'New/Target' figure is the SAME number in both comparisons below — one week of average "
+        "demand, valued at each product's own MO receipt cost, summed across every product with a "
+        "cost basis. It answers two different questions from the same target: how much should be "
+        "*produced* per week to keep up with demand, and how much should be *standing in the Sales "
+        "Store* at any given moment as a buffer — under a constant-7-day-buffer assumption, those are "
+        "the same quantity."
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Production (MO) value, per 7 days**")
+        st.metric("Current (avg actual)", f"{summary['current_mo_value_7d']:,.0f}")
+        st.metric("New (target)", f"{summary['new_mo_value_7d']:,.0f}")
+        st.metric("Difference", f"{summary['new_mo_value_7d'] - summary['current_mo_value_7d']:+,.0f}")
+    with c2:
+        st.markdown("**Sales Store FG value, standing**")
+        st.metric("Current (avg actual)", f"{summary['current_fg_value_7d']:,.0f}")
+        st.metric("New (target)", f"{summary['new_fg_value_7d']:,.0f}")
+        st.metric("Difference", f"{summary['new_fg_value_7d'] - summary['current_fg_value_7d']:+,.0f}")
+    st.caption(
+        "All values are inventory-cost basis (`imtrn.xval`), not sales revenue, consistent with the "
+        "rest of this page. 'Current' is the average actually observed per 7-day segment over the "
+        "trailing 3 months; 'New/Target' is the steady-state figure needed to always hold 7 days of "
+        "stock. A positive Difference means the target is higher than what's currently happening."
     )
 
 

@@ -670,3 +670,180 @@ def compute_warehouse_flow_by_product(flow_df: pd.DataFrame, zid: str, start: pd
     out = out[out[numeric_cols].abs().sum(axis=1) > 1e-9]
 
     return out[_FLOW_PRODUCT_COLS].sort_values("itemname").reset_index(drop=True)
+
+
+# ── 7-Day Stock Target ─────────────────────────────────────────────────────────
+# Goal: how much finished goods should sit in the Sales Store, per product, to
+# always cover 7 days of demand. Trailing 3 (completed-relative-to-today)
+# months, split into non-overlapping 7-day segments walking backward from
+# today, each of the 6 requested metrics computed per segment then averaged
+# across segments -- a "typical week" for this product. Every balance
+# (opening/closing) is recomputed from a fresh true cumulative sum per segment
+# boundary (not rolled forward incrementally) to reuse the exact same,
+# already-verified _bal-style logic as compute_warehouse_flow_by_product,
+# rather than risk a new class of Series-alignment bug for a modest perf cost.
+
+_SEVEN_DAY_PRODUCT_COLS = [
+    "itemcode", "itemname", "itemgroup",
+    "fg_opening_qty_avg", "fg_mo_added_qty_avg", "sales_returns_qty_avg",
+    "sales_do_sold_qty_avg", "sales_other_qty_avg", "sales_closing_qty_avg",
+    "stock_target_qty", "unit_cost", "target_value",
+]
+
+
+def _avg_across_segments(series_list: list) -> pd.Series:
+    """Per-item average of a list of per-segment pd.Series (one per 7-day
+    segment) -- concat aligns on the union of itemcodes automatically,
+    missing entries (item had no activity that segment) treated as 0."""
+    if not series_list:
+        return pd.Series(dtype=float)
+    stacked = pd.concat(series_list, axis=1).fillna(0.0)
+    return stacked.mean(axis=1)
+
+
+def compute_seven_day_stock_target(flow_df: pd.DataFrame, zid: str, months_back: int = 3) -> tuple:
+    """
+    Returns (per_product_df, summary_dict).
+
+    per_product_df: one row per item with any activity in the window --
+    FG Opening / FG: MO Added / Sales: Returns / Sales: Sold (DO) /
+    Sales: Other / Sales Closing, each averaged per 7-day segment, plus:
+      - stock_target_qty = avg 7-day Sold (DO) qty -- the amount that should
+        sit in the Sales Store to cover one typical week of demand.
+      - unit_cost = SUM(net_val)/SUM(net_qty) for MO receipts (RE--) in the
+        FG warehouse across the WHOLE window (not per-segment) -- the same
+        imtrn.xval cost basis used throughout this feature (not
+        compute_mo_cost's separate BOM-material-only cost_per_unit, a
+        different costing methodology used elsewhere on this page).
+        Undefined (NaN) for items with no MO receipt in the window.
+      - target_value = stock_target_qty * unit_cost.
+
+    summary_dict: entity-wide aggregates for the "outside the table" figures.
+    """
+    empty_df = pd.DataFrame(columns=_SEVEN_DAY_PRODUCT_COLS)
+    empty_summary = {
+        "n_segments": 0, "window_start": None, "window_end": None,
+        "current_mo_value_7d": 0.0, "new_mo_value_7d": 0.0,
+        "current_fg_value_7d": 0.0, "new_fg_value_7d": 0.0,
+        "n_items_no_cost_basis": 0,
+    }
+    groups = WAREHOUSE_GROUPS.get(str(zid))
+    if groups is None or flow_df is None or flow_df.empty:
+        return empty_df, empty_summary
+
+    d = flow_df.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    d = d[d["date"].notna()]
+    d["net_qty"] = pd.to_numeric(d["net_qty"], errors="coerce").fillna(0.0)
+    d["net_val"] = pd.to_numeric(d["net_val"], errors="coerce").fillna(0.0)
+    d["itemcode"] = d["itemcode"].astype(str)
+
+    fg_wh, sales_wh = groups["fg"], groups["sales"]
+
+    overall_end = pd.Timestamp.today().normalize()
+    approx_start = overall_end - pd.DateOffset(months=months_back)
+    n_segments = (overall_end - approx_start).days // 7
+    if n_segments < 1:
+        return empty_df, empty_summary
+
+    segments = []
+    seg_end = overall_end
+    for _ in range(n_segments):
+        seg_start = seg_end - pd.Timedelta(days=6)
+        segments.append((seg_start, seg_end))
+        seg_end = seg_start - pd.Timedelta(days=1)
+    segments.reverse()  # chronological order
+    window_start, window_end = segments[0][0], segments[-1][1]
+
+    def _bal(wh_list, up_to, col="net_qty"):
+        sub = d[d["warehouse"].isin(wh_list) & (d["date"] <= up_to)]
+        return sub.groupby("itemcode")[col].sum()
+
+    def _window(wh_list, doctypes, seg_start, seg_end, col="net_qty"):
+        m = d["warehouse"].isin(wh_list) & d["doctype"].isin(doctypes) & (d["date"] >= seg_start) & (d["date"] <= seg_end)
+        return d.loc[m].groupby("itemcode")[col].sum()
+
+    def _window_other(wh_list, exclude, seg_start, seg_end):
+        m = d["warehouse"].isin(wh_list) & (~d["doctype"].isin(exclude)) & (d["date"] >= seg_start) & (d["date"] <= seg_end)
+        return d.loc[m].groupby("itemcode")["net_qty"].sum()
+
+    fg_open_segs, mo_added_segs, mo_added_val_segs = [], [], []
+    returns_segs, do_sold_segs, other_segs = [], [], []
+    sales_close_segs, sales_close_val_segs = [], []
+
+    for seg_start, seg_end in segments:
+        seg_before = seg_start - pd.Timedelta(days=1)
+        fg_open_segs.append(_bal(fg_wh, seg_before))
+        mo_added_segs.append(_window(fg_wh, ["RE--"], seg_start, seg_end))
+        mo_added_val_segs.append(_window(fg_wh, ["RE--"], seg_start, seg_end, "net_val"))
+        returns_segs.append(_window(sales_wh, ["SR--"], seg_start, seg_end))
+        do_sold_segs.append(-_window(sales_wh, ["DO--"], seg_start, seg_end))
+        other_segs.append(_window_other(sales_wh, _SALES_OTHER_EXCLUDE, seg_start, seg_end))
+        sales_close_segs.append(_bal(sales_wh, seg_end))
+        sales_close_val_segs.append(_bal(sales_wh, seg_end, "net_val"))
+
+    avg_fg_open    = _avg_across_segments(fg_open_segs)
+    avg_mo_added   = _avg_across_segments(mo_added_segs)
+    avg_returns    = _avg_across_segments(returns_segs)
+    avg_do_sold    = _avg_across_segments(do_sold_segs)
+    avg_other      = _avg_across_segments(other_segs)
+    avg_sales_close = _avg_across_segments(sales_close_segs)
+
+    all_items = sorted(set().union(
+        avg_fg_open.index, avg_mo_added.index, avg_returns.index,
+        avg_do_sold.index, avg_other.index, avg_sales_close.index,
+    ))
+    if not all_items:
+        return empty_df, empty_summary
+
+    out = pd.DataFrame(index=pd.Index(all_items, name="itemcode"))
+    out["fg_opening_qty_avg"]    = avg_fg_open
+    out["fg_mo_added_qty_avg"]   = avg_mo_added
+    out["sales_returns_qty_avg"] = avg_returns
+    out["sales_do_sold_qty_avg"] = avg_do_sold
+    out["sales_other_qty_avg"]   = avg_other
+    out["sales_closing_qty_avg"] = avg_sales_close
+    out = out.fillna(0.0)
+    out["stock_target_qty"] = out["sales_do_sold_qty_avg"].clip(lower=0.0)
+
+    # Unit cost from the whole window's actual MO receipts (not per-segment) --
+    # a single window-long ratio is more stable than averaging 12+ noisy
+    # per-segment ratios, and only the total qty/val matters for a ratio.
+    mo_val_total = _window(fg_wh, ["RE--"], window_start, window_end, "net_val")
+    mo_qty_total = _window(fg_wh, ["RE--"], window_start, window_end, "net_qty")
+    unit_cost = (mo_val_total / mo_qty_total.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+    out["unit_cost"] = unit_cost
+    out["target_value"] = out["stock_target_qty"] * out["unit_cost"]
+
+    out = out.reset_index()
+    meta = (
+        d[["itemcode", "itemname", "itemgroup"]]
+        .dropna(subset=["itemname"])
+        .drop_duplicates("itemcode", keep="last")
+    )
+    out = out.merge(meta, on="itemcode", how="left")
+    out["itemname"] = out["itemname"].fillna("")
+    out["itemgroup"] = out["itemgroup"].fillna("")
+
+    numeric_cols = [c for c in _SEVEN_DAY_PRODUCT_COLS if c not in ("itemcode", "itemname", "itemgroup", "unit_cost", "target_value")]
+    out = out[out[numeric_cols].abs().sum(axis=1) > 1e-9]
+    out = out[_SEVEN_DAY_PRODUCT_COLS].sort_values("itemname").reset_index(drop=True)
+
+    # ── Summary (entity-wide, "outside the table") ──────────────────────────
+    current_mo_value_7d = float(np.mean([s.sum() for s in mo_added_val_segs])) if mo_added_val_segs else 0.0
+    current_fg_value_7d = float(np.mean([s.sum() for s in sales_close_val_segs])) if sales_close_val_segs else 0.0
+    # New/target value: the SAME number answers two different questions --
+    # "how much should we produce per week to replenish demand" (steady-state
+    # production rate) and "how much stock should be standing in the Sales
+    # Store at any moment" (buffer size) are numerically identical under a
+    # constant-7-day-buffer assumption (both = one week of demand, at cost).
+    new_value_7d = float(out["target_value"].sum(skipna=True))
+    n_no_cost = int(out["unit_cost"].isna().sum())
+
+    summary = {
+        "n_segments": len(segments), "window_start": window_start, "window_end": window_end,
+        "current_mo_value_7d": current_mo_value_7d, "new_mo_value_7d": new_value_7d,
+        "current_fg_value_7d": current_fg_value_7d, "new_fg_value_7d": new_value_7d,
+        "n_items_no_cost_basis": n_no_cost,
+    }
+    return out, summary
