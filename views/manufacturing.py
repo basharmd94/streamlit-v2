@@ -557,10 +557,10 @@ def _render_mo_detail(zid: str, mo_header: pd.DataFrame, mo_lines: pd.DataFrame)
 def _render_warehouse_flow(zid: str):
     st.subheader("🔄 Warehouse Flow")
     st.caption(
-        "Entity-wide flow of goods (all products combined) over a date range you choose: "
-        "Raw Material → (MO) → Finished Goods warehouse → (transfer) → Sales Store → (DO) → market. "
-        "Raw Material warehouse itself is excluded from the flow table (per what was asked) but its "
-        "BDT value still shows below, alongside Finished Goods value."
+        "Per-product flow of goods over a date range you choose: Raw Material → (MO) → Finished "
+        "Goods warehouse → (transfer) → Sales Store → (DO) → market. Raw Material warehouse itself "
+        "is excluded from the flow table (per what was asked) but its BDT value still shows below, "
+        "alongside Finished Goods value."
     )
 
     today = pd.Timestamp.today().normalize()
@@ -594,41 +594,68 @@ def _render_warehouse_flow(zid: str):
             "warehouses' opening/closing figures below are identical by construction, not an error."
         )
 
-    st.markdown("**Finished Goods Warehouse → Sales Store flow**")
-    row = {
-        "FG Opening":            r["fg_opening_qty"],
-        "FG: MO Added":          r["fg_mo_added_qty"],
-        "FG: Transferred Out":   r["fg_transferred_out_qty"],
-        "FG: Other Movements":   r["fg_other_qty"],
-        "FG Closing":            r["fg_closing_qty"],
-        "Sales Opening":         r["sales_opening_qty"],
-        "Sales: Transferred In": r["sales_transferred_in_qty"],
-        "Sales: Sold (DO)":      r["sales_do_sold_qty"],
-        "Sales: Other Movements": r["sales_other_qty"],
-        "Sales Closing":         r["sales_closing_qty"],
-    }
-    flow_table = pd.DataFrame([row])
-    st.dataframe(
-        _fmt(flow_table, {c: "{:,.2f}" for c in row}),
-        width="stretch", hide_index=True,
-    )
-    st.caption(
-        "**Transferred Out** (FG side) and **Transferred In** (Sales side) are measured "
-        "independently, not derived from one another — the two legs of a transfer voucher don't "
-        "always post within the same window (confirmed on real data: a 3-month window where "
-        "473,174 units left the FG side but only 238,572 had arrived at Sales by the window's end — "
-        "a real timing lag, not a data error). **Other Movements** covers every doctype besides "
-        "MO receipt (`RE--`), transfer (`TO--`), and DO (`DO--`) — e.g. sales returns, issues, "
-        "adjustments — included so Opening + inflows − outflows + Other reconciles exactly to "
-        "Closing (verified against real Postgres with zero residual)."
-    )
-    st.download_button(
-        "⬇ Download Warehouse Flow CSV",
-        flow_table.to_csv(index=False).encode("utf-8"),
-        file_name=f"warehouse_flow_{zid}_{start.date()}_{end.date()}.csv",
-        mime="text/csv",
-        key="dl_mfg_warehouse_flow",
-    )
+    st.markdown("**Finished Goods Warehouse → Sales Store flow — per product**")
+    flow_by_product = mfg.compute_warehouse_flow_by_product(flow_raw, str(zid), start, end)
+    if flow_by_product.empty:
+        st.info("No product movement found in this window.")
+    else:
+        col_map = {
+            "itemcode": "Item Code", "itemname": "Item Name", "itemgroup": "Item Group",
+            "fg_opening_qty": "FG Opening", "fg_mo_added_qty": "FG: MO Added",
+            "fg_transferred_out_qty": "FG: Transferred Out", "fg_other_qty": "FG: Other",
+            "fg_closing_qty": "FG Closing",
+            "sales_opening_qty": "Sales Opening", "sales_transferred_in_qty": "Sales: Transferred In",
+            "sales_returns_qty": "Sales: Returns", "sales_do_sold_qty": "Sales: Sold (DO)",
+            "sales_other_qty": "Sales: Other", "sales_closing_qty": "Sales Closing",
+        }
+        flow_disp = flow_by_product.rename(columns=col_map)[list(col_map.values())]
+
+        search = st.text_input("Search item code or name", "", key="mfg_flow_search")
+        if search:
+            mask = (
+                flow_disp["Item Code"].str.contains(search, case=False, na=False)
+                | flow_disp["Item Name"].str.contains(search, case=False, na=False)
+            )
+            flow_disp = flow_disp[mask]
+
+        qty_cols = [c for c in col_map.values() if c not in ("Item Code", "Item Name", "Item Group")]
+        st.caption(f"{len(flow_disp):,} product(s) with any opening balance or activity in this window.")
+
+        # TOTAL row -- summed directly from the (possibly search-filtered)
+        # displayed rows, so it can never silently disagree with what's shown.
+        if not flow_disp.empty:
+            total_row = {c: "" for c in flow_disp.columns}
+            total_row["Item Code"] = "─── TOTAL ───"
+            for c in qty_cols:
+                total_row[c] = flow_disp[c].sum()
+            flow_with_total = pd.concat([flow_disp, pd.DataFrame([total_row])], ignore_index=True)
+        else:
+            flow_with_total = flow_disp
+
+        st.dataframe(
+            _fmt(flow_with_total, {c: "{:,.2f}" for c in qty_cols}),
+            width="stretch", hide_index=True,
+        )
+        st.caption(
+            "**Transferred Out** (FG side) and **Transferred In** (Sales side) are measured "
+            "independently, not derived from one another — the two legs of a transfer voucher don't "
+            "always post within the same window (confirmed on real data: a 3-month window where "
+            "473,174 units left the FG side but only 238,572 had arrived at Sales by the window's end "
+            "across the whole business — a real timing lag, not a data error). **Sales: Returns** "
+            "(`SR--`) is broken out on its own — confirmed against real Postgres this doctype is "
+            "always a positive (inventory-increasing) movement across all three entities, i.e. "
+            "genuinely a return-driven stock increase. **Other** covers every remaining doctype (e.g. "
+            "issues, adjustments) — included so Opening + inflows − outflows + Other reconciles "
+            "exactly to Closing, verified per-item against real Postgres with zero residual for all "
+            "three entities."
+        )
+        st.download_button(
+            "⬇ Download Warehouse Flow CSV",
+            flow_disp.to_csv(index=False).encode("utf-8"),
+            file_name=f"warehouse_flow_{zid}_{start.date()}_{end.date()}.csv",
+            mime="text/csv",
+            key="dl_mfg_warehouse_flow",
+        )
 
     st.markdown("---")
     st.markdown("**💰 Inventory Value (BDT)**")
