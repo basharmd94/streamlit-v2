@@ -486,6 +486,28 @@ Orders whose total quantity falls below every defined tier (e.g. a 1-tier setup 
 
 ---
 
+## Manufacturing Analysis — "🔄 Warehouse Flow" (`views/manufacturing.py::_render_warehouse_flow`)
+
+An 8th `mfg_view_mode` radio option alongside FG Costing / FG Cost History / RM Rate Trend / RM Requirement / RM Stock Coverage / BOM Variance / MO Detail — for the same 3 entities (`_MANUFACTURING_ZIDS` = 100000/100005/100009). Entity-wide (all products combined, not per-item) flow across a user-chosen `st.date_input` date range: `Raw Material → (MO) → Finished Goods warehouse → (transfer) → Sales Store → (DO) → market`. Independent of MO header/detail data, so it runs *before* the page's MO-empty early-return, not after.
+
+One new query, `core/queries.py::get_manufacturing_flow_detail` (registered `"manufacturing_flow_detail"`) — raw `imtrn` rows summed across every item, grouped by `(warehouse, doctype, date)` only (no `caitem` join needed since nothing is broken out per-product), scoped to a fixed warehouse list passed via `filters["warehouses"]`. Full history, no date filter in SQL — `views/manufacturing.py::_load_manufacturing_flow` caches it once per ZID and `processing/manufacturing.py::compute_warehouse_flow` slices an arbitrary date range out of it in Python (opening = sum before start, closing = sum through end), so changing the date picker never re-queries.
+
+**Real warehouse names and movement doctypes** (`processing/manufacturing.py::WAREHOUSE_GROUPS`), confirmed against live Postgres `imtrn` — not guessed:
+- `RE--` = MO receipt into the FG warehouse — confirmed `xdocnum` on these rows literally equals the MO number (e.g. `MO--004946`).
+- `TO--` = inter-warehouse transfer, both directions (a warehouse can show `TO--` inflow *and* outflow in the same window).
+- `DO--` = delivery order (sale to market), always outbound from the Sales Store.
+- **100000**: RM = `Raw Material Store`; FG = `Finished Goods Store` **+ `Manufacturing Store`** combined as one pool — ~17% of MO receipts land in `Manufacturing Store` instead of the main FG store; combining them nets out the internal `TO--` transfers between the two automatically (verified: `fg_other_qty` comes out to exactly `0.00`). Sales = `Sales Warehouse GI`.
+- **100005**: RM = `Raw Metrial Warehouse Zepto` — **"Metrial" is the real (misspelled) name in the ERP**, not a typo to fix. FG = `Finished Goods Warehouse Zepto`. Sales = `Sales Warehouse(Zepto)`.
+- **100009**: RM = `Raw Material Store Packaging`. FG = Sales = `Finished Goods Store Packaging` — **100009 has no separate sales warehouse at all** (captive packaging entity, no sales team per the Project Overview above) — its `DO--` sales draw directly out of the FG store. The view detects `fg == sales` and shows an explanatory `st.info`; **Transferred is always `0` and both warehouses' opening/closing figures are identical by construction**, not a bug.
+
+**"Transferred Out" (FG side) and "Transferred In" (Sales side) are measured independently, not derived from one another** — found and fixed a real modeling mistake during verification: the two legs of a `TO--` transfer voucher don't necessarily post within the same window. Confirmed on real 100000 data, a 3-month window: **473,174** units left the FG side via `TO--` but only **238,572** had arrived at the Sales side by the window's end — a genuine timing lag between the source and destination legs, not a bug. Using only one "Transferred" figure (either side) would make the *other* section's arithmetic fail to reconcile.
+
+**"Other Movements" columns** (FG and Sales, each) cover every doctype besides `RE--`/`TO--`/`DO--` — e.g. `SR--` (sales returns), `ISS-` (issues), `RECA`, and (at 100005's Sales warehouse specifically) dozens of small legacy numeric doctypes (`0001`–`0029`) tied to now-inactive regional Depot warehouses from ~2020–2024. Added specifically so `Opening + inflows − outflows + Other == Closing` reconciles **exactly** — verified against real Postgres for all three entities with zero residual (`Closing` itself is always computed independently as a true cumulative balance, not derived arithmetically, so the reconciliation check is a genuine correctness proof, not a tautology).
+
+**Value figures (BDT)** are inventory-cost basis throughout (`imtrn.xval`, i.e. `stockvalue`-equivalent), **not sales revenue** — RM value start/end, FG warehouse value start/end, Sales Store value start/end, and "Total Sold in Period" (the COGS value of everything that left via `DO--` in the window, not the amount billed to customers) all use the same cost basis for internal consistency, explicitly captioned as such.
+
+---
+
 ## Git / Deployment
 
 - **Main branch**: `main` — always deployable. Feature branches merged to main when approved.

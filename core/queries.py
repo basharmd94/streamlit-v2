@@ -2336,6 +2336,43 @@ def get_mo_detail_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_manufacturing_flow_detail(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """
+    Warehouse-flow movement, summed across ALL items (Manufacturing Analysis
+    -> Warehouse Flow is an entity-wide aggregate, not per-product) -- one
+    row per (warehouse, doctype, date), so an arbitrary date range can be
+    sliced exactly in Python (opening = sum before start, closing = sum
+    through end, window flows = sum between) without re-querying per range
+    change. Scoped to a fixed warehouse list per entity (RM/FG/Sales -- see
+    processing/manufacturing.py::WAREHOUSE_GROUPS), passed via
+    filters["warehouses"]. No caitem join needed since items aren't broken
+    out. xdate < '2100-01-01' excludes the same data-entry-error sentinel
+    dates documented elsewhere for imtrn-derived tables.
+    """
+    zid = filters["zid"][0]
+    warehouses = filters.get("warehouses") or []
+    if not warehouses:
+        return (
+            "SELECT NULL::varchar AS warehouse, NULL::varchar AS doctype, "
+            "NULL::date AS date, NULL::numeric AS net_qty, NULL::numeric AS net_val "
+            "WHERE FALSE",
+            (zid,),
+        )
+    placeholders, wh_params = _build_in_clause(warehouses)
+    sql = f"""
+        SELECT
+            xwh AS warehouse,
+            xdoctype AS doctype,
+            xdate AS date,
+            SUM(xqty * xsign) AS net_qty,
+            SUM(xval * xsign) AS net_val
+        FROM imtrn
+        WHERE zid = %s AND xwh IN ({placeholders}) AND xdate < '2100-01-01'
+        GROUP BY xwh, xdoctype, xdate
+    """
+    return sql, tuple([zid] + list(wh_params))
+
+
 def get_admin_expense_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """Total Office & Administrative expense (GL ac_code prefix '06') per
     month, for allocating overhead across finished goods by their share of
