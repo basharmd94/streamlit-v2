@@ -92,6 +92,7 @@ class Analytics:
             "prmst_simple":     queries.get_prmst_simple,
             "mo_header":        queries.get_mo_header_data,
             "mo_detail":        queries.get_mo_detail_data,
+            "manufacturing_flow_detail": queries.get_manufacturing_flow_detail,
             "admin_expense_monthly":    queries.get_admin_expense_monthly,
             "latest_sales_collection":  queries.get_latest_sales_collection,
             "gulshan_fg_rm_items":      queries.get_gulshan_fg_rm_items,

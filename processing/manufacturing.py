@@ -430,3 +430,127 @@ def compute_bom_variance(mo_lines: pd.DataFrame, start: pd.Timestamp, end: pd.Ti
     g["variance_pct"] = np.where(g["total_qtyord"] > 0, g["variance_qty"] / g["total_qtyord"] * 100, 0.0)
     g["over_consumption"] = g["variance_qty"] > 0
     return g.sort_values("variance_qty", ascending=False).reset_index(drop=True)[cols]
+
+
+# ── Warehouse Flow ───────────────────────────────────────────────────────────────
+# RM -> (MO) -> Finished Goods warehouse -> (transfer) -> Sales Store -> (DO) -> market.
+# Real warehouse names + movement doctypes, confirmed against live Postgres imtrn:
+#   RE-- : MO receipt into the FG warehouse (xdocnum literally = the MO number).
+#   TO-- : inter-warehouse transfer (both directions -- a warehouse can show
+#          TO-- inflow AND outflow; only the net across a group's boundary matters).
+#   DO-- : delivery order (sale to market), always outbound from the Sales Store.
+# 100000 groups "Finished Goods Store" + "Manufacturing Store" as one FG pool --
+# ~17% of MO receipts land in Manufacturing Store instead of the main FG store,
+# and combining them nets out the internal transfers between the two automatically.
+# 100009 has NO separate sales warehouse at all (captive packaging entity, no
+# sales team per CLAUDE.md) -- its DO-- sales draw directly from
+# "Finished Goods Store Packaging", so fg == sales for that entity; Transferred
+# is always 0 there and both closing balances are identical by construction,
+# not a bug.
+WAREHOUSE_GROUPS = {
+    "100000": {
+        "rm": ["Raw Material Store"],
+        "fg": ["Finished Goods Store", "Manufacturing Store"],
+        "sales": ["Sales Warehouse GI"],
+    },
+    "100005": {
+        # "Metrial" is the real (misspelled) warehouse name in the ERP.
+        "rm": ["Raw Metrial Warehouse Zepto"],
+        "fg": ["Finished Goods Warehouse Zepto"],
+        "sales": ["Sales Warehouse(Zepto)"],
+    },
+    "100009": {
+        "rm": ["Raw Material Store Packaging"],
+        "fg": ["Finished Goods Store Packaging"],
+        "sales": ["Finished Goods Store Packaging"],
+    },
+}
+
+_FLOW_KNOWN_DOCTYPES = {"RE--", "TO--", "DO--"}
+
+
+def all_flow_warehouses(zid: str) -> list:
+    """Every warehouse this feature needs for one ZID (RM+FG+Sales, deduped) --
+    the exact list to pass as filters["warehouses"] when loading
+    Analytics("manufacturing_flow_detail", ...)."""
+    groups = WAREHOUSE_GROUPS.get(str(zid), {})
+    seen, out = set(), []
+    for wh_list in groups.values():
+        for wh in wh_list:
+            if wh not in seen:
+                seen.add(wh)
+                out.append(wh)
+    return out
+
+
+def compute_warehouse_flow(flow_df: pd.DataFrame, zid: str, start: pd.Timestamp, end: pd.Timestamp) -> dict:
+    """
+    Entity-wide (all products combined) warehouse-flow summary for one date
+    range. flow_df: one row per (warehouse, doctype, date), net_qty/net_val
+    already summed across every item in SQL (see get_manufacturing_flow_detail).
+
+    Verified against real Postgres for all three entities: FG-section and
+    Sales-section each reconcile exactly (opening + inflows - outflows +
+    other == closing, zero residual) using this exact formula -- confirmed
+    the "Transferred" figure must be measured separately per side (FG's own
+    TO-- outbound vs Sales' own TO-- inbound), since the two legs of a
+    transfer voucher don't necessarily post within the same window (e.g.
+    100000, a 3-month window: 473,174 left the FG side but only 238,572
+    arrived at Sales in that same window -- a real timing lag, not a bug).
+    """
+    empty = {
+        "fg_opening_qty": 0.0, "fg_mo_added_qty": 0.0, "fg_transferred_out_qty": 0.0,
+        "fg_other_qty": 0.0, "fg_closing_qty": 0.0,
+        "sales_opening_qty": 0.0, "sales_transferred_in_qty": 0.0, "sales_do_sold_qty": 0.0,
+        "sales_other_qty": 0.0, "sales_closing_qty": 0.0,
+        "rm_value_start": 0.0, "rm_value_end": 0.0,
+        "fg_value_start": 0.0, "fg_value_end": 0.0,
+        "sales_value_start": 0.0, "sales_value_end": 0.0,
+        "total_sold_value": 0.0,
+    }
+    groups = WAREHOUSE_GROUPS.get(str(zid))
+    if groups is None or flow_df is None or flow_df.empty:
+        return empty
+
+    d = flow_df.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    d = d[d["date"].notna()]
+    d["net_qty"] = pd.to_numeric(d["net_qty"], errors="coerce").fillna(0.0)
+    d["net_val"] = pd.to_numeric(d["net_val"], errors="coerce").fillna(0.0)
+
+    rm_wh, fg_wh, sales_wh = groups["rm"], groups["fg"], groups["sales"]
+    same_wh = set(fg_wh) == set(sales_wh)
+    day_before_start = start - pd.Timedelta(days=1)
+
+    def _bal(wh_list, up_to, col="net_qty"):
+        return float(d.loc[d["warehouse"].isin(wh_list) & (d["date"] <= up_to), col].sum())
+
+    def _window(wh_list, doctypes, col="net_qty"):
+        m = d["warehouse"].isin(wh_list) & d["doctype"].isin(doctypes) & (d["date"] >= start) & (d["date"] <= end)
+        return float(d.loc[m, col].sum())
+
+    def _window_other(wh_list, col="net_qty"):
+        m = d["warehouse"].isin(wh_list) & (~d["doctype"].isin(_FLOW_KNOWN_DOCTYPES)) & (d["date"] >= start) & (d["date"] <= end)
+        return float(d.loc[m, col].sum())
+
+    return {
+        "fg_opening_qty":         _bal(fg_wh, day_before_start),
+        "fg_mo_added_qty":        _window(fg_wh, ["RE--"]),
+        "fg_transferred_out_qty": 0.0 if same_wh else -_window(fg_wh, ["TO--"]),
+        "fg_other_qty":           _window_other(fg_wh),
+        "fg_closing_qty":         _bal(fg_wh, end),
+
+        "sales_opening_qty":         _bal(sales_wh, day_before_start),
+        "sales_transferred_in_qty":  0.0 if same_wh else _window(sales_wh, ["TO--"]),
+        "sales_do_sold_qty":         -_window(sales_wh, ["DO--"]),
+        "sales_other_qty":           _window_other(sales_wh),
+        "sales_closing_qty":         _bal(sales_wh, end),
+
+        "rm_value_start":    _bal(rm_wh, day_before_start, "net_val"),
+        "rm_value_end":      _bal(rm_wh, end, "net_val"),
+        "fg_value_start":    _bal(fg_wh, day_before_start, "net_val"),
+        "fg_value_end":      _bal(fg_wh, end, "net_val"),
+        "sales_value_start": _bal(sales_wh, day_before_start, "net_val"),
+        "sales_value_end":   _bal(sales_wh, end, "net_val"),
+        "total_sold_value":  -_window(sales_wh, ["DO--"], "net_val"),
+    }
