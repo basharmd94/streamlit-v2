@@ -1986,10 +1986,11 @@ def _render_wf_template_send(phone_number: str) -> None:
 
     with st.expander("⚙️ Send request details"):
         st.caption(
-            "The template list gave us TWO real identifiers for this template — "
-            "WhatsFly's own `id`, and a longer `template_id` — either one is "
-            "getting sent below; if send comes back \"Message template not "
-            "found\", try clearing whichever one the API doesn't actually want."
+            "WhatsFly doesn't publish this contract anywhere (confirmed — checked "
+            "the build guide AND WhatsFly's own public docs site, neither specifies "
+            "it). \"Message template not found\" at HTTP 200 means the endpoint IS "
+            "responding, just not matching whatever we send it — pick a shape below "
+            "to try; both are real, grounded guesses, not arbitrary."
         )
         template_id_val = st.text_input(
             "Template ID (WhatsFly's `template_id` field)",
@@ -2013,31 +2014,56 @@ def _render_wf_template_send(phone_number: str) -> None:
             help=(
                 "WhatsFly generates a per-template send endpoint from the dashboard's "
                 "template picker — there's no single documented path for this call. "
-                "\"Message template not found\" with HTTP 200 means the endpoint IS "
-                "responding, just not matching the identifier — worth also trying "
-                "this endpoint with the template ID appended to the path, e.g. "
-                f"/whatsapp/send/template/{template_id_val or '<template_id>'}, "
+                "Also worth trying this endpoint with the template ID appended to the "
+                f"path, e.g. /whatsapp/send/template/{template_id_val or '<template_id>'}, "
                 "since the guide says the send path is generated per-template."
             ),
         )
 
-        default_payload = {
-            "template_id": template_id_val,
-            "template_name": template_name,
-            "language_code": language_code,
-            "variables": json.dumps(variables),
-        }
-        payload_key = f"wf_payload_json_{idx}"
+        payload_shape = st.radio(
+            "Payload shape to try",
+            ["Meta Cloud API style (nested template/components)", "Flat (template_id/template_name)"],
+            horizontal=True,
+            key=f"wf_payload_shape_{idx}",
+            help=(
+                "WhatsFly sits on top of Meta's official WhatsApp Cloud API (per the "
+                "guide's own Overview) — its real send call may just pass through "
+                "Meta's own well-documented template-message shape rather than a "
+                "WhatsFly-specific flat one. Worth trying both."
+            ),
+        )
+        if payload_shape.startswith("Meta"):
+            default_payload = {
+                "template": {
+                    "name": template_name,
+                    "language": {"code": language_code},
+                    "components": (
+                        [{"type": "body", "parameters": [{"type": "text", "text": v} for v in variables]}]
+                        if variables else []
+                    ),
+                },
+            }
+            shape_key = "meta"
+        else:
+            default_payload = {
+                "template_id": template_id_val,
+                "template_name": template_name,
+                "language_code": language_code,
+                "variables": json.dumps(variables),
+            }
+            shape_key = "flat"
+
+        payload_key = f"wf_payload_json_{idx}_{shape_key}"
         if payload_key not in st.session_state:
             st.session_state[payload_key] = json.dumps(default_payload, indent=2)
 
-        if st.button("↻ Rebuild payload from fields above", key=f"wf_rebuild_payload_{idx}"):
+        if st.button("↻ Rebuild payload from fields above", key=f"wf_rebuild_payload_{idx}_{shape_key}"):
             st.session_state[payload_key] = json.dumps(default_payload, indent=2)
             st.rerun()
 
         st.caption(
             "Request body that will be sent (merged with apiToken/phone_number_id/phone_number) "
-            "— edit directly if the real API expects different key names."
+            "— edit directly if the real API expects something different still."
         )
         payload_text = st.text_area("Payload JSON", key=payload_key, height=140)
 

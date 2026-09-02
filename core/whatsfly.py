@@ -16,6 +16,8 @@ every other *.ini in config/) via config.settings.get_whatsfly_params —
 never hardcoded, never committed.
 """
 
+import json
+
 import requests
 
 from config.settings import get_whatsfly_params
@@ -87,5 +89,12 @@ def send_template(phone_number: str, endpoint: str, extra_params: dict) -> reque
         "phone_number": phone_number,
     }
     payload.update(extra_params or {})
+    # requests can't form-encode a nested dict/list (e.g. a Meta Cloud API
+    # style `template: {name, language, components}` object) — it would get
+    # silently mangled into a Python repr string instead of JSON. This API's
+    # own convention elsewhere (assign-custom-fields' `custom_fields`) passes
+    # structured values as a JSON-encoded STRING inside a flat form field, so
+    # match that here rather than guessing between requests' data= vs json=.
+    payload = {k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in payload.items()}
     url = endpoint if endpoint.startswith("http") else f"{BASE_URL}{endpoint}"
     return requests.post(url, data=payload, timeout=_TIMEOUT)
