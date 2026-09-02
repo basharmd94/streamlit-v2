@@ -549,6 +549,10 @@ Once the account was actually wired up, plain-text session sends turned out to b
 
 The template-name/language/endpoint/payload-JSON send mechanics (unchanged from the first version) moved into a collapsed `st.expander("⚙️ Send request details")` now that the bubble preview is the primary visual — the Send button itself stays outside the expander, un-collapsed.
 
+### "Message template not found" (HTTP 200, `status:"0"`) — real send-time error, still open
+
+First real send attempt against a real template returned `{"status":"0","message":"Message template not found"}` at HTTP 200 — the endpoint itself responds, WhatsFly's own lookup just doesn't match whatever identifier the send call carries, even though that same template was correctly listed a moment earlier. Since the template-list response confirmed **two different real identifiers** (`id` vs. the longer `template_id`, see above) and it isn't yet known which one (if either) the send endpoint actually keys off, `default_payload` now sends **both** `template_id` and `template_name` (previously `template_name` only) so a working combination doesn't require a code change to try — `template_id_val` also has its own editable field in the expander for isolating which one the API wants. The endpoint field's help text now also suggests trying the ID appended to the path itself (`/whatsapp/send/template/<template_id>`), since the guide's own wording ("generated per-template from the dashboard picker") suggests the real path may not be flat at all. Not yet resolved — next step if still failing is pulling the real request straight from the WhatsFly dashboard's own template-send UI (network tab / any shown code snippet), per the guide's own suggested build order.
+
 ---
 
 ## Git / Deployment

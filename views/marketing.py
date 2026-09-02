@@ -1985,8 +1985,19 @@ def _render_wf_template_send(phone_number: str) -> None:
         st.caption("No {{n}} variables detected in this template's body.")
 
     with st.expander("⚙️ Send request details"):
+        st.caption(
+            "The template list gave us TWO real identifiers for this template — "
+            "WhatsFly's own `id`, and a longer `template_id` — either one is "
+            "getting sent below; if send comes back \"Message template not "
+            "found\", try clearing whichever one the API doesn't actually want."
+        )
+        template_id_val = st.text_input(
+            "Template ID (WhatsFly's `template_id` field)",
+            value=_wf_guess(template, ("template_id", "wa_template_id", "uuid")) or "",
+            key=f"wf_template_id_{idx}",
+        )
         template_name = st.text_input(
-            "Template name (as WhatsFly/Meta expects it)",
+            "Template name (`template_name`)",
             value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
             key=f"wf_template_name_{idx}",
         )
@@ -2002,11 +2013,16 @@ def _render_wf_template_send(phone_number: str) -> None:
             help=(
                 "WhatsFly generates a per-template send endpoint from the dashboard's "
                 "template picker — there's no single documented path for this call. "
-                "Paste the real one here (from the dashboard) if this default errors."
+                "\"Message template not found\" with HTTP 200 means the endpoint IS "
+                "responding, just not matching the identifier — worth also trying "
+                "this endpoint with the template ID appended to the path, e.g. "
+                f"/whatsapp/send/template/{template_id_val or '<template_id>'}, "
+                "since the guide says the send path is generated per-template."
             ),
         )
 
         default_payload = {
+            "template_id": template_id_val,
             "template_name": template_name,
             "language_code": language_code,
             "variables": json.dumps(variables),
