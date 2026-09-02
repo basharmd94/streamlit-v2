@@ -1,9 +1,12 @@
+import json
 import re
 import shutil
 import streamlit as st
 import pandas as pd
 import numpy as np
 from pathlib import Path
+
+from core import whatsfly
 
 from views.call_log_shared import render_call_log_panel as _render_call_log_panel
 from views.lead_call_log_shared import (
@@ -1693,10 +1696,286 @@ def _show_leads(zid: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 💬 WhatsFly Messaging — single-message test panel
+#
+# Build-phase scope only, per Whatsfly_Integration_docs/whatsfly-integration-guide.md:
+# send ONE message to ONE number chosen by hand and look at the raw feedback.
+# No receive-side / webhook handling here — that's a separate always-on
+# FastAPI service, a later phase, and explicitly not this Streamlit app.
+# Account-wide (one WhatsApp Business number), so this doesn't take zid.
+# ---------------------------------------------------------------------------
+
+def _wf_guess(d: dict, keys: tuple) -> str | None:
+    for k in keys:
+        v = d.get(k) if isinstance(d, dict) else None
+        if v:
+            return str(v)
+    return None
+
+
+def _wf_normalize_templates(raw) -> list:
+    """WhatsFly's exact template-list response shape isn't confirmed yet
+    against the live account, so this tries the common wrapper keys and
+    falls back to treating the payload itself as the list (or a single
+    template) — the raw-JSON expander in the UI always shows the real thing
+    alongside this, so a wrong guess here is visible, not silent."""
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("data", "templates", "result", "results", "list"):
+            val = raw.get(key)
+            if isinstance(val, list):
+                return val
+        if any(k in raw for k in ("template_name", "name", "elementName")):
+            return [raw]
+    return []
+
+
+def _wf_template_label(t: dict, i: int) -> str:
+    if not isinstance(t, dict):
+        return f"Template {i + 1}"
+    name = _wf_guess(t, ("template_name", "name", "elementName")) or f"Template {i + 1}"
+    lang = _wf_guess(t, ("language", "language_code", "lang"))
+    status = _wf_guess(t, ("status", "template_status"))
+    label = name
+    if lang:
+        label += f" ({lang})"
+    if status:
+        label += f" — {status}"
+    return label
+
+
+def _wf_extract_body_text(t: dict) -> str:
+    """Best-effort scan for the template's body copy so {{1}}/{{2}}-style
+    placeholders can be counted — real key name unconfirmed against a live
+    response, so this checks common candidates, then Meta Cloud API's own
+    `components: [{type: BODY, text: ...}]` shape, then a recursive fallback
+    scan for any string containing '{{'."""
+    if not isinstance(t, dict):
+        return ""
+    for key in ("body", "body_text", "message", "text", "template_text"):
+        v = t.get(key)
+        if isinstance(v, str) and v.strip():
+            return v
+
+    components = t.get("components")
+    if isinstance(components, list):
+        for comp in components:
+            if isinstance(comp, dict) and str(comp.get("type", "")).upper() == "BODY":
+                v = comp.get("text")
+                if isinstance(v, str) and v.strip():
+                    return v
+
+    def _scan(node):
+        if isinstance(node, str) and "{{" in node:
+            return node
+        if isinstance(node, dict):
+            for v in node.values():
+                found = _scan(v)
+                if found:
+                    return found
+        if isinstance(node, list):
+            for v in node:
+                found = _scan(v)
+                if found:
+                    return found
+        return None
+
+    return _scan(t) or ""
+
+
+def _wf_variable_count(body_text: str) -> int:
+    matches = re.findall(r"\{\{\s*(\d+)\s*\}\}", body_text or "")
+    return max((int(m) for m in matches), default=0)
+
+
+def _render_wf_response(resp) -> None:
+    st.markdown("---")
+    st.markdown(f"**HTTP status:** `{resp.status_code}`")
+    try:
+        body = resp.json()
+    except ValueError:
+        st.code(resp.text or "(empty response body)")
+        return
+
+    # response envelope inconsistency per the build guide: most endpoints
+    # return status as the STRING "1"/"0", catalog endpoints return a
+    # boolean — handle both rather than assuming one.
+    status_val = body.get("status") if isinstance(body, dict) else None
+    is_ok = status_val in ("1", 1, True) or (resp.ok and status_val is None)
+    if is_ok:
+        st.success("Sent — see raw response below for the details WhatsFly returned.")
+    else:
+        st.error("WhatsFly reported an error — see raw response below.")
+    st.json(body)
+
+
+def _render_wf_text_send(phone_number: str) -> None:
+    st.caption(
+        "Session message — only works within 24h of the recipient last "
+        "messaging the business number. Use this after the rep messages "
+        "in first (the guide's suggested first-test shortcut)."
+    )
+    message = st.text_area("Message", key="wf_text_message", height=100)
+    if st.button("📤 Send Text Message", key="wf_send_text_btn"):
+        if not phone_number.strip():
+            st.error("Enter a recipient phone number first.")
+            return
+        if not message.strip():
+            st.error("Message is empty.")
+            return
+        with st.spinner("Sending…"):
+            try:
+                resp = whatsfly.send_text(phone_number.strip(), message)
+            except Exception as e:
+                st.error(f"Send failed: {e}")
+                return
+        _render_wf_response(resp)
+
+
+def _render_wf_template_send(phone_number: str) -> None:
+    if st.button("🔄 Load / Refresh Templates", key="wf_refresh_templates_btn"):
+        st.session_state.pop("_wf_templates_raw", None)
+
+    if "_wf_templates_raw" not in st.session_state:
+        with st.spinner("Fetching templates…"):
+            try:
+                st.session_state["_wf_templates_raw"] = whatsfly.get_templates()
+            except Exception as e:
+                st.error(f"Couldn't fetch templates: {e}")
+                return
+
+    raw = st.session_state["_wf_templates_raw"]
+    with st.expander("🔍 Raw template list response"):
+        st.json(raw)
+
+    templates = _wf_normalize_templates(raw)
+    if not templates:
+        st.warning("No templates found in the response above — expand it to see the actual shape returned.")
+        return
+
+    labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
+    idx = st.selectbox(
+        "Template", range(len(templates)), format_func=lambda i: labels[i], key="wf_template_idx"
+    )
+    template = templates[idx]
+
+    with st.expander("🔍 Selected template (raw)"):
+        st.json(template)
+
+    body_text = _wf_extract_body_text(template)
+    n_vars = _wf_variable_count(body_text)
+    if body_text:
+        st.caption(f"Template body: {body_text}")
+
+    variables = []
+    if n_vars:
+        st.markdown(f"**{n_vars} variable(s) detected** — fill in the values for this send:")
+        cols = st.columns(min(n_vars, 4))
+        for i in range(n_vars):
+            with cols[i % len(cols)]:
+                variables.append(st.text_input(f"{{{{{i + 1}}}}}", key=f"wf_var_{idx}_{i}"))
+
+    template_name = st.text_input(
+        "Template name (as WhatsFly/Meta expects it)",
+        value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
+        key=f"wf_template_name_{idx}",
+    )
+    language_code = st.text_input(
+        "Language code",
+        value=_wf_guess(template, ("language", "language_code", "lang")) or "en",
+        key=f"wf_lang_{idx}",
+    )
+    endpoint = st.text_input(
+        "Send endpoint",
+        value="/whatsapp/send/template",
+        key="wf_endpoint",
+        help=(
+            "WhatsFly generates a per-template send endpoint from the dashboard's "
+            "template picker — there's no single documented path for this call. "
+            "Paste the real one here (from the dashboard) if this default errors."
+        ),
+    )
+
+    default_payload = {
+        "template_name": template_name,
+        "language_code": language_code,
+        "variables": json.dumps(variables),
+    }
+    payload_key = f"wf_payload_json_{idx}"
+    if payload_key not in st.session_state:
+        st.session_state[payload_key] = json.dumps(default_payload, indent=2)
+
+    if st.button("↻ Rebuild payload from fields above", key=f"wf_rebuild_payload_{idx}"):
+        st.session_state[payload_key] = json.dumps(default_payload, indent=2)
+        st.rerun()
+
+    st.caption(
+        "Request body that will be sent (merged with apiToken/phone_number_id/phone_number) "
+        "— edit directly if the real API expects different key names."
+    )
+    payload_text = st.text_area("Payload JSON", key=payload_key, height=140)
+
+    if st.button("📤 Send Template Message", key="wf_send_template_btn"):
+        if not phone_number.strip():
+            st.error("Enter a recipient phone number first.")
+            return
+        try:
+            extra_params = json.loads(payload_text)
+        except json.JSONDecodeError as e:
+            st.error(f"Payload isn't valid JSON: {e}")
+            return
+        with st.spinner("Sending…"):
+            try:
+                resp = whatsfly.send_template(phone_number.strip(), endpoint.strip(), extra_params)
+            except Exception as e:
+                st.error(f"Send failed: {e}")
+                return
+        _render_wf_response(resp)
+
+
+def _show_whatsfly_messaging() -> None:
+    st.subheader("💬 WhatsFly — Send Test Message")
+    st.caption(
+        "Single-message test phase: send one message to one number and see what "
+        "comes back. No reply/webhook handling here yet — that's a separate "
+        "FastAPI service, a later phase (see Whatsfly_Integration_docs/)."
+    )
+
+    try:
+        whatsfly.get_credentials()
+    except whatsfly.WhatsFlyConfigError as e:
+        st.warning(str(e))
+        return
+
+    msg_type = st.radio(
+        "Message type",
+        ["Approved Template", "Plain Text (session message)"],
+        horizontal=True,
+        key="wf_msg_type",
+    )
+    phone_number = st.text_input(
+        "Recipient phone number",
+        key="wf_phone_number",
+        help="Country code + digits only — no '+', no spaces, e.g. 8801XXXXXXXXX.",
+    )
+
+    st.markdown("---")
+
+    if msg_type.startswith("Plain Text"):
+        _render_wf_text_send(phone_number)
+    else:
+        _render_wf_template_send(phone_number)
+
+
+# ---------------------------------------------------------------------------
 # public entry point
 # ---------------------------------------------------------------------------
 
-_PRODUCT_ONLY_MODES = {"📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads"}
+_PRODUCT_ONLY_MODES = {
+    "📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads",
+    "💬 WhatsFly Messaging",
+}
 
 
 def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_years: list):
@@ -1712,6 +1991,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "📈 High Stock Marketing",
             "🖼️ Media Library",
             "🎣 Leads",
+            "💬 WhatsFly Messaging",
         ],
         horizontal=True,
         label_visibility="collapsed",
@@ -1732,6 +2012,8 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             _show_inactive_outreach(str(zid), proj, sales_raw)
         elif mode == "🎣 Leads":
             _show_leads(str(zid))
+        elif mode == "💬 WhatsFly Messaging":
+            _show_whatsfly_messaging()
         else:
             _show_high_stock_marketing(str(zid), proj)
         return
