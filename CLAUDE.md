@@ -565,6 +565,17 @@ First real send attempt against a real template returned `{"status":"0","message
 
 Not yet resolved which shape (or neither) the real API wants — next concrete step if both still fail is pulling the actual request straight from the WhatsFly dashboard's own template-send/broadcast UI (browser network tab), since that's the only place the real contract exists.
 
+### Contract confirmed via a real dashboard-generated example — and a genuine naming trap
+
+The user pulled the actual GET/curl example straight from the WhatsFly dashboard's template picker (exactly per the guide's own suggested step 2). Confirmed for real:
+
+- **Endpoint**: `POST /whatsapp/send/template` — the flat-shape guess was right all along; this is now the default `payload_shape` (reordered ahead of the Meta Cloud API style option, kept only as a fallback).
+- **Params**: `apiToken`, `phone_number_id`, `template_id`, `phone_number` — flat, no nesting.
+- **The naming trap**: the send param is called `template_id`, but its value must be WhatsFly's **short internal `id`** field (e.g. `435966`) — **not** the longer `template_id` field the template-*list* response returns for that same template (a genuinely different, much longer number). Two API surfaces reuse the same field name for two different values. `template_id_val`'s default now guesses `("id", "template_id", ...)` in that order (`id` first) instead of the old `("template_id", ...)` — fixed directly from this real example, not inferred.
+- `language_code`/`template_name` weren't present in the confirmed minimal example (the test template apparently needs neither) — kept in the payload as optional/harmless rather than removed, since a different template might need them; captioned as unconfirmed-but-optional rather than presented as required.
+
+**Next real error hit, once the shape was right**: `{"status":"0","message":"Unsupported post request. Object with ID '<phone_number_id>' does not exist, cannot be loaded due to missing permissions, or does not support this operation..."}` — this is a **Meta Graph API-level** rejection, not a WhatsFly-level "template not found" anymore, which is itself confirmation the request shape is now correct: WhatsFly accepted it and proxied straight through to Meta, and Meta rejected the configured `phone_number_id` specifically. `_render_wf_response` now pattern-matches `"does not exist"` + `"graph-api"` in the error message and surfaces a targeted `st.info` pointing at WhatsFly dashboard/Meta Business Manager permissions rather than the request shape — there's nothing left to fix in this Streamlit panel for that specific error; it's an account/WABA-configuration issue on WhatsFly's or Meta's side.
+
 ---
 
 ## Git / Deployment

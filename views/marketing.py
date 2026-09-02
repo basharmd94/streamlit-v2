@@ -1901,6 +1901,16 @@ def _render_wf_response(resp) -> None:
         st.success("Sent — see raw response below for the details WhatsFly returned.")
     else:
         st.error("WhatsFly reported an error — see raw response below.")
+        err_msg = str(body.get("message", "")) if isinstance(body, dict) else ""
+        if "does not exist" in err_msg and "graph-api" in err_msg.lower():
+            st.info(
+                "This is a **Meta Graph API-level** error, not a request-shape problem — "
+                "the request reached Meta's backend and Meta itself rejected "
+                "`phone_number_id`. Nothing left to fix in this panel; check WhatsFly's "
+                "dashboard (is the number still connected?) or Meta Business Manager "
+                "(permissions on the System User / app for this WABA number), or ask "
+                "WhatsFly support directly, quoting this exact message."
+            )
     st.json(body)
 
 
@@ -1986,24 +1996,24 @@ def _render_wf_template_send(phone_number: str) -> None:
 
     with st.expander("⚙️ Send request details"):
         st.caption(
-            "WhatsFly doesn't publish this contract anywhere (confirmed — checked "
-            "the build guide AND WhatsFly's own public docs site, neither specifies "
-            "it). \"Message template not found\" at HTTP 200 means the endpoint IS "
-            "responding, just not matching whatever we send it — pick a shape below "
-            "to try; both are real, grounded guesses, not arbitrary."
+            "**Confirmed via a real dashboard-generated example**: endpoint is "
+            "`POST /whatsapp/send/template` with flat params — but its `template_id` "
+            "param is a naming trap: it wants WhatsFly's short internal **`id`** "
+            "(e.g. `435966`), NOT the longer `template_id` field the template-list "
+            "response itself returns for the same template. Defaulted below accordingly."
         )
         template_id_val = st.text_input(
-            "Template ID (WhatsFly's `template_id` field)",
-            value=_wf_guess(template, ("template_id", "wa_template_id", "uuid")) or "",
+            "Template ID for send (WhatsFly's short `id` — confirmed, not the list's `template_id`)",
+            value=_wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or "",
             key=f"wf_template_id_{idx}",
         )
         template_name = st.text_input(
-            "Template name (`template_name`)",
+            "Template name (`template_name` — not in the confirmed minimal example, kept optional)",
             value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
             key=f"wf_template_name_{idx}",
         )
         language_code = st.text_input(
-            "Language code",
+            "Language code (not in the confirmed minimal example, kept optional)",
             value=_wf_guess(template, ("language", "language_code", "lang")) or "en",
             key=f"wf_lang_{idx}",
         )
@@ -2011,25 +2021,19 @@ def _render_wf_template_send(phone_number: str) -> None:
             "Send endpoint",
             value="/whatsapp/send/template",
             key="wf_endpoint",
-            help=(
-                "WhatsFly generates a per-template send endpoint from the dashboard's "
-                "template picker — there's no single documented path for this call. "
-                "Also worth trying this endpoint with the template ID appended to the "
-                f"path, e.g. /whatsapp/send/template/{template_id_val or '<template_id>'}, "
-                "since the guide says the send path is generated per-template."
-            ),
+            help="Confirmed via a real dashboard-generated curl/GET example — this is the actual path.",
         )
 
         payload_shape = st.radio(
             "Payload shape to try",
-            ["Meta Cloud API style (nested template/components)", "Flat (template_id/template_name)"],
+            ["Flat (template_id/template_name)", "Meta Cloud API style (nested template/components)"],
             horizontal=True,
             key=f"wf_payload_shape_{idx}",
             help=(
-                "WhatsFly sits on top of Meta's official WhatsApp Cloud API (per the "
-                "guide's own Overview) — its real send call may just pass through "
-                "Meta's own well-documented template-message shape rather than a "
-                "WhatsFly-specific flat one. Worth trying both."
+                "Flat is confirmed correct in structure via a real dashboard-generated "
+                "example (apiToken/phone_number_id/template_id/phone_number). Meta "
+                "Cloud API style is kept as a fallback in case a template ever needs "
+                "variables/language passed in a way the flat shape doesn't support."
             ),
         )
         if payload_shape.startswith("Meta"):
