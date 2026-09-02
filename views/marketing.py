@@ -1715,15 +1715,17 @@ def _wf_guess(d: dict, keys: tuple) -> str | None:
 
 
 def _wf_normalize_templates(raw) -> list:
-    """WhatsFly's exact template-list response shape isn't confirmed yet
-    against the live account, so this tries the common wrapper keys and
-    falls back to treating the payload itself as the list (or a single
-    template) — the raw-JSON expander in the UI always shows the real thing
-    alongside this, so a wrong guess here is visible, not silent."""
+    """WhatsFly's real shape (confirmed against the live account):
+    {"status": "1", "message": [ {id, template_id, template_name, ...}, ... ]}
+    — the template list sits under "message", not "data"/"templates"/etc.
+    (a genuinely surprising key name — "message" doubling as the payload
+    array, not an error string). Every other common wrapper key is still
+    tried too, plus a bare-list / single-template fallback, since this is
+    all reverse-engineered from one account's response, not documented."""
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
-        for key in ("data", "templates", "result", "results", "list"):
+        for key in ("message", "data", "templates", "result", "results", "list"):
             val = raw.get(key)
             if isinstance(val, list):
                 return val
@@ -1732,32 +1734,36 @@ def _wf_normalize_templates(raw) -> list:
     return []
 
 
-def _wf_extract_id(t: dict) -> str | None:
-    return _wf_guess(t, ("id", "template_id", "wa_template_id", "uuid"))
-
-
 def _wf_template_label(t: dict, i: int) -> str:
     if not isinstance(t, dict):
         return f"Template {i + 1}"
-    tid = _wf_extract_id(t)
+    tid = _wf_guess(t, ("id",))
     name = _wf_guess(t, ("template_name", "name", "elementName")) or f"Template {i + 1}"
+    category = _wf_guess(t, ("template_category", "category"))
     lang = _wf_guess(t, ("language", "language_code", "lang"))
-    status = _wf_guess(t, ("status", "template_status"))
-    label = f"{tid} — {name}" if tid else name
+    label = f"{name} (id {tid})" if tid else name
+    if category:
+        label += f" — {category}"
     if lang:
         label += f" ({lang})"
-    if status:
-        label += f" — {status}"
     return label
 
 
 def _wf_templates_table(templates: list) -> pd.DataFrame:
-    """The 'what can we actually access' check — Template ID + Name front
-    and center, per what was asked, plus language/status for context."""
+    """The 'what can we actually access' check. Confirmed real fields on the
+    live account: id (WhatsFly's own internal row id), template_id (the
+    long numeric Meta-style id), template_name, template_type,
+    template_category — language/status kept as a guessed fallback in case
+    a template on this account ever carries them, since the API's Get
+    Template docs describe an approval `status` this particular response
+    didn't happen to include."""
     rows = [
         {
-            "Template ID": _wf_extract_id(t) or "—",
+            "ID": _wf_guess(t, ("id",)) or "—",
+            "Template ID": _wf_guess(t, ("template_id", "wa_template_id", "uuid")) or "—",
             "Name": _wf_guess(t, ("template_name", "name", "elementName")) or "—",
+            "Category": _wf_guess(t, ("template_category", "category")) or "—",
+            "Type": _wf_guess(t, ("template_type", "type")) or "—",
             "Language": _wf_guess(t, ("language", "language_code", "lang")) or "—",
             "Status": _wf_guess(t, ("status", "template_status")) or "—",
         }
