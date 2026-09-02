@@ -537,6 +537,16 @@ Single-message test panel, per `Whatsfly_Integration_docs/whatsfly-integration-g
 - **Response envelope handled both ways**, matching the guide's own documented inconsistency: most endpoints return `status` as the **string** `"1"`/`"0"`, catalog endpoints return a **boolean** — `_render_wf_response` checks `status_val in ("1", 1, True)` before falling back to the HTTP status code, and always shows the full raw JSON underneath regardless of the derived ✅/❌, since seeing the actual response *is* the point of this phase.
 - **Account-wide, not per-ZID** — one WhatsApp Business number across the whole group, so `_show_whatsfly_messaging()` takes no `zid` argument, unlike its `_PRODUCT_ONLY_MODES` siblings.
 
+### Template selection + beautified/live preview (built once real credentials were connected)
+
+Once the account was actually wired up, plain-text session sends turned out to be a dead end for testing (24h-window rule per the guide), so the template path became the primary flow. `_wf_templates_table` renders the "what can we actually access" check that was asked for — Template ID + Name + Language + Status, one row per template, always visible (not buried in the raw-JSON expander) — and `_wf_template_label` prefixes the picker's options with the same ID for the same reason. `_wf_extract_id` tries `id`/`template_id`/`wa_template_id`/`uuid`, same defensive multi-key-guess pattern as everything else here since the real field name isn't confirmed.
+
+`_wf_extract_components` (replacing the old `_wf_extract_body_text`) pulls HEADER/BODY/FOOTER separately from Meta's `components: [...]` shape (falling back to flat `body`/`text`/etc. keys, then a recursive `{{`-scan, same fallback chain as before) — `_wf_render_bubble` renders all three as a WhatsApp-style chat bubble (`_wf_format_whatsapp_markup` converts WhatsApp's own `*bold*`/`_italic_`/`~strike~`/`` ```mono``` `` into HTML, **after** `html.escape()`-ing the source text first — verified this neutralizes an injected `<script>` tag in a template body rather than rendering it, since template copy is technically user-influenced content once real templates are in play). Variable detection/inputs are scoped to the **body** only (matches "the template body" from what was asked) — header/footer are shown as static context, not counted for `{{n}}` inputs, even if a `{{n}}` happened to appear there.
+
+**Live "edit input within the template body"**: `_wf_substitute_preview` re-renders the already-formatted body HTML with each `{{n}}` replaced by its entered value (highlighted yellow) or a dimmed `[n]` placeholder if still blank — called on every rerun, so the second bubble shown below the variable inputs updates as you type, letting you see the actual message forming rather than a set of disconnected boxes. Verified the `{{n}}` regex still matches correctly after `_wf_format_whatsapp_markup`'s `html.escape()` pass (escaping only touches `&<>"'`, never `{`/`}`), including when a placeholder sits inside `*bold*` markup.
+
+The template-name/language/endpoint/payload-JSON send mechanics (unchanged from the first version) moved into a collapsed `st.expander("⚙️ Send request details")` now that the bubble preview is the primary visual — the Send button itself stays outside the expander, un-collapsed.
+
 ---
 
 ## Git / Deployment

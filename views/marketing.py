@@ -1,3 +1,4 @@
+import html as _html
 import json
 import re
 import shutil
@@ -1731,13 +1732,18 @@ def _wf_normalize_templates(raw) -> list:
     return []
 
 
+def _wf_extract_id(t: dict) -> str | None:
+    return _wf_guess(t, ("id", "template_id", "wa_template_id", "uuid"))
+
+
 def _wf_template_label(t: dict, i: int) -> str:
     if not isinstance(t, dict):
         return f"Template {i + 1}"
+    tid = _wf_extract_id(t)
     name = _wf_guess(t, ("template_name", "name", "elementName")) or f"Template {i + 1}"
     lang = _wf_guess(t, ("language", "language_code", "lang"))
     status = _wf_guess(t, ("status", "template_status"))
-    label = name
+    label = f"{tid} — {name}" if tid else name
     if lang:
         label += f" ({lang})"
     if status:
@@ -1745,48 +1751,130 @@ def _wf_template_label(t: dict, i: int) -> str:
     return label
 
 
-def _wf_extract_body_text(t: dict) -> str:
-    """Best-effort scan for the template's body copy so {{1}}/{{2}}-style
-    placeholders can be counted — real key name unconfirmed against a live
-    response, so this checks common candidates, then Meta Cloud API's own
-    `components: [{type: BODY, text: ...}]` shape, then a recursive fallback
-    scan for any string containing '{{'."""
+def _wf_templates_table(templates: list) -> pd.DataFrame:
+    """The 'what can we actually access' check — Template ID + Name front
+    and center, per what was asked, plus language/status for context."""
+    rows = [
+        {
+            "Template ID": _wf_extract_id(t) or "—",
+            "Name": _wf_guess(t, ("template_name", "name", "elementName")) or "—",
+            "Language": _wf_guess(t, ("language", "language_code", "lang")) or "—",
+            "Status": _wf_guess(t, ("status", "template_status")) or "—",
+        }
+        for t in templates
+    ]
+    return pd.DataFrame(rows)
+
+
+def _wf_extract_components(t: dict) -> dict:
+    """Best-effort pull of header/body/footer text from a template entry so
+    the send panel can render a beautified preview. Real key names aren't
+    confirmed against a live WhatsFly response, so this checks common flat
+    keys first, then Meta Cloud API's own
+    `components: [{type: HEADER/BODY/FOOTER, text: ...}]` shape, then a
+    recursive fallback scan for any string containing '{{' (for the body)."""
+    out = {"header": None, "body": "", "footer": None}
     if not isinstance(t, dict):
-        return ""
+        return out
+
     for key in ("body", "body_text", "message", "text", "template_text"):
         v = t.get(key)
         if isinstance(v, str) and v.strip():
-            return v
+            out["body"] = v
+            break
 
     components = t.get("components")
     if isinstance(components, list):
         for comp in components:
-            if isinstance(comp, dict) and str(comp.get("type", "")).upper() == "BODY":
-                v = comp.get("text")
-                if isinstance(v, str) and v.strip():
-                    return v
+            if not isinstance(comp, dict):
+                continue
+            ctype = str(comp.get("type", "")).upper()
+            text = comp.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            if ctype == "HEADER" and not out["header"]:
+                out["header"] = text
+            elif ctype == "BODY" and not out["body"]:
+                out["body"] = text
+            elif ctype == "FOOTER" and not out["footer"]:
+                out["footer"] = text
 
-    def _scan(node):
-        if isinstance(node, str) and "{{" in node:
-            return node
-        if isinstance(node, dict):
-            for v in node.values():
-                found = _scan(v)
-                if found:
-                    return found
-        if isinstance(node, list):
-            for v in node:
-                found = _scan(v)
-                if found:
-                    return found
-        return None
+    if not out["body"]:
+        def _scan(node):
+            if isinstance(node, str) and "{{" in node:
+                return node
+            if isinstance(node, dict):
+                for v in node.values():
+                    found = _scan(v)
+                    if found:
+                        return found
+            if isinstance(node, list):
+                for v in node:
+                    found = _scan(v)
+                    if found:
+                        return found
+            return None
 
-    return _scan(t) or ""
+        out["body"] = _scan(t) or ""
+
+    return out
 
 
 def _wf_variable_count(body_text: str) -> int:
     matches = re.findall(r"\{\{\s*(\d+)\s*\}\}", body_text or "")
     return max((int(m) for m in matches), default=0)
+
+
+def _wf_format_whatsapp_markup(text: str) -> str:
+    """WhatsApp's own lightweight markup (*bold*, _italic_, ~strike~,
+    ```mono```) turned into HTML for the beautified preview bubble. Escapes
+    the source text first so template copy can never inject arbitrary HTML."""
+    escaped = _html.escape(text or "")
+    escaped = re.sub(r"\*(.+?)\*", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"_(.+?)_", r"<i>\1</i>", escaped)
+    escaped = re.sub(r"~(.+?)~", r"<s>\1</s>", escaped)
+    escaped = re.sub(r"```(.+?)```", r"<code>\1</code>", escaped, flags=re.DOTALL)
+    return escaped.replace("\n", "<br>")
+
+
+def _wf_substitute_preview(body_html: str, variables: list) -> str:
+    """Drops the entered variable values into the already-formatted body
+    HTML in place of {{n}} — highlighted where filled in, dimmed as a `[n]`
+    hint where still blank — so the bubble below updates live as inputs are
+    typed into. `{{`/`}}` survive _wf_format_whatsapp_markup's html.escape
+    untouched, so this regex still matches after that pass."""
+    def _sub(m):
+        n = int(m.group(1))
+        val = variables[n - 1].strip() if 0 < n <= len(variables) and variables[n - 1] else ""
+        if val:
+            return (
+                '<span style="background:#FFF3B0;border-radius:3px;padding:0 3px;">'
+                f'{_html.escape(val)}</span>'
+            )
+        return f'<span style="color:#7a8a99;font-style:italic;">[{n}]</span>'
+
+    return re.sub(r"\{\{\s*(\d+)\s*\}\}", _sub, body_html)
+
+
+def _wf_render_bubble(header: str | None, body_html: str, footer: str | None) -> None:
+    parts = []
+    if header:
+        parts.append(
+            f'<div style="font-weight:700;margin-bottom:6px;">'
+            f'{_wf_format_whatsapp_markup(header)}</div>'
+        )
+    parts.append(f'<div>{body_html}</div>')
+    if footer:
+        parts.append(
+            f'<div style="color:#5B7083;font-size:12px;margin-top:8px;">'
+            f'{_wf_format_whatsapp_markup(footer)}</div>'
+        )
+    st.markdown(
+        '<div style="background:#DCF8C6;border:1px solid #B4E2A0;border-radius:10px;'
+        'padding:12px 16px;color:#111;max-width:560px;font-size:15px;line-height:1.45;">'
+        + "".join(parts) + '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_wf_response(resp) -> None:
@@ -1854,67 +1942,82 @@ def _render_wf_template_send(phone_number: str) -> None:
         st.warning("No templates found in the response above — expand it to see the actual shape returned.")
         return
 
+    st.markdown(f"**{len(templates)} template(s) available on this account:**")
+    st.dataframe(_wf_templates_table(templates), width="stretch", hide_index=True)
+
     labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
     idx = st.selectbox(
-        "Template", range(len(templates)), format_func=lambda i: labels[i], key="wf_template_idx"
+        "Select a template to send", range(len(templates)), format_func=lambda i: labels[i], key="wf_template_idx"
     )
     template = templates[idx]
 
     with st.expander("🔍 Selected template (raw)"):
         st.json(template)
 
-    body_text = _wf_extract_body_text(template)
+    comps = _wf_extract_components(template)
+    body_text = comps["body"]
     n_vars = _wf_variable_count(body_text)
+    body_html = _wf_format_whatsapp_markup(body_text)
+
+    st.markdown("**Template Preview**")
     if body_text:
-        st.caption(f"Template body: {body_text}")
+        _wf_render_bubble(comps["header"], body_html, comps["footer"])
+    else:
+        st.caption("No body text found for this template — check the raw JSON above to see the actual shape returned.")
 
     variables = []
     if n_vars:
-        st.markdown(f"**{n_vars} variable(s) detected** — fill in the values for this send:")
+        st.markdown(f"**Fill in {n_vars} variable(s)** — the preview below updates as you type:")
         cols = st.columns(min(n_vars, 4))
         for i in range(n_vars):
             with cols[i % len(cols)]:
-                variables.append(st.text_input(f"{{{{{i + 1}}}}}", key=f"wf_var_{idx}_{i}"))
+                variables.append(st.text_input(f"Variable {{{{{i + 1}}}}}", key=f"wf_var_{idx}_{i}"))
 
-    template_name = st.text_input(
-        "Template name (as WhatsFly/Meta expects it)",
-        value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
-        key=f"wf_template_name_{idx}",
-    )
-    language_code = st.text_input(
-        "Language code",
-        value=_wf_guess(template, ("language", "language_code", "lang")) or "en",
-        key=f"wf_lang_{idx}",
-    )
-    endpoint = st.text_input(
-        "Send endpoint",
-        value="/whatsapp/send/template",
-        key="wf_endpoint",
-        help=(
-            "WhatsFly generates a per-template send endpoint from the dashboard's "
-            "template picker — there's no single documented path for this call. "
-            "Paste the real one here (from the dashboard) if this default errors."
-        ),
-    )
+        st.markdown("**Message Preview (with your edits)**")
+        _wf_render_bubble(comps["header"], _wf_substitute_preview(body_html, variables), comps["footer"])
+    else:
+        st.caption("No {{n}} variables detected in this template's body.")
 
-    default_payload = {
-        "template_name": template_name,
-        "language_code": language_code,
-        "variables": json.dumps(variables),
-    }
-    payload_key = f"wf_payload_json_{idx}"
-    if payload_key not in st.session_state:
-        st.session_state[payload_key] = json.dumps(default_payload, indent=2)
+    with st.expander("⚙️ Send request details"):
+        template_name = st.text_input(
+            "Template name (as WhatsFly/Meta expects it)",
+            value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
+            key=f"wf_template_name_{idx}",
+        )
+        language_code = st.text_input(
+            "Language code",
+            value=_wf_guess(template, ("language", "language_code", "lang")) or "en",
+            key=f"wf_lang_{idx}",
+        )
+        endpoint = st.text_input(
+            "Send endpoint",
+            value="/whatsapp/send/template",
+            key="wf_endpoint",
+            help=(
+                "WhatsFly generates a per-template send endpoint from the dashboard's "
+                "template picker — there's no single documented path for this call. "
+                "Paste the real one here (from the dashboard) if this default errors."
+            ),
+        )
 
-    if st.button("↻ Rebuild payload from fields above", key=f"wf_rebuild_payload_{idx}"):
-        st.session_state[payload_key] = json.dumps(default_payload, indent=2)
-        st.rerun()
+        default_payload = {
+            "template_name": template_name,
+            "language_code": language_code,
+            "variables": json.dumps(variables),
+        }
+        payload_key = f"wf_payload_json_{idx}"
+        if payload_key not in st.session_state:
+            st.session_state[payload_key] = json.dumps(default_payload, indent=2)
 
-    st.caption(
-        "Request body that will be sent (merged with apiToken/phone_number_id/phone_number) "
-        "— edit directly if the real API expects different key names."
-    )
-    payload_text = st.text_area("Payload JSON", key=payload_key, height=140)
+        if st.button("↻ Rebuild payload from fields above", key=f"wf_rebuild_payload_{idx}"):
+            st.session_state[payload_key] = json.dumps(default_payload, indent=2)
+            st.rerun()
+
+        st.caption(
+            "Request body that will be sent (merged with apiToken/phone_number_id/phone_number) "
+            "— edit directly if the real API expects different key names."
+        )
+        payload_text = st.text_area("Payload JSON", key=payload_key, height=140)
 
     if st.button("📤 Send Template Message", key="wf_send_template_btn"):
         if not phone_number.strip():
