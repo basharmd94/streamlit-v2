@@ -39,6 +39,80 @@ def calculate_summary_statistics(filtered_data, filtered_data_r):
     }
 
 @timed
+def calculate_legacy_summary_statistics(legacy_df: pd.DataFrame) -> dict:
+    """Same 12-key shape as calculate_summary_statistics, so
+    display_summary_statistics can render it identically -- built from
+    core/queries.py::get_legacy_sales_summary's one-row aggregate (the
+    legacy email-report scripts' own sale/return netting logic, faithfully
+    reproduced including their (xordernum,xitem)-match fan-out and
+    sale-month-based return netting). See that query's docstring and
+    CLAUDE.md's "Legacy Sales Report" section for the full methodology.
+
+    "Total Sales"/"Total Returns" here are NOT independently comparable to
+    the normal summary's own Total Sales/Total Returns -- only Net Sales
+    (= Total Sales - Total Returns in both) is a fair apples-to-apples
+    figure, since a return here is only counted at all if it matched an
+    (xordernum,xitem) sale line in the requested period, unlike the normal
+    pipeline's period-actual return total.
+    """
+    if legacy_df is None or legacy_df.empty:
+        row = {}
+    else:
+        row = legacy_df.iloc[0].to_dict()
+
+    def _f(key):
+        return float(row.get(key) or 0.0)
+
+    def _i(key):
+        return int(row.get(key) or 0)
+
+    return {
+        "Total Sales": round(_f("total_sales"), 2),
+        "Total Returns": round(_f("total_returns"), 2),
+        "Net Sales": round(_f("net_sales"), 2),
+        "Number of Orders": _i("num_orders"),
+        "Number of Returns": _i("num_returns"),
+        "Number of Customers": _i("num_customers"),
+        "Number of Customer Returned": _i("num_customers_returned"),
+        "Number of Products": _i("num_products"),
+        "Number of Products Returned": _i("num_products_returned"),
+        "Units Sold": round(_f("units_sold"), 2),
+        "Units Returned": round(_f("units_returned"), 2),
+        "Net Units Sold": round(_f("net_units_sold"), 2),
+    }
+
+
+@timed
+def display_summary_statistics_body(stats):
+    """The actual 3-column stat grid, with no sidebar title -- factored out
+    of display_summary_statistics so a second stats table (e.g. the legacy
+    comparison table) can reuse the identical layout without re-emitting
+    the page's sidebar title a second time."""
+    col1, col2, col3 = st.columns(3)
+
+    # Split stats into three parts
+    stats_items = list(stats.items())
+    first_third = stats_items[:len(stats_items)//3]
+    second_third = stats_items[len(stats_items)//3:2*len(stats_items)//3]
+    third_third = stats_items[2*len(stats_items)//3:]
+
+    # Display first third of stats in first column
+    with col1:
+        for stat_name, value in first_third:
+            st.markdown(f"**{stat_name}:** {value:,.2f}")
+
+    # Display second third of stats in second column
+    with col2:
+        for stat_name, value in second_third:
+            st.markdown(f"**{stat_name}:** {value:,.2f}")
+
+    # Display third third of stats in third column
+    with col3:
+        for stat_name, value in third_third:
+            st.markdown(f"**{stat_name}:** {value:,.2f}")
+
+
+@timed
 def display_summary_statistics(stats):
     """
     Display summary statistics in the Streamlit app.
@@ -47,30 +121,7 @@ def display_summary_statistics(stats):
     - stats: Dictionary containing the summary statistics.
     """
     st.sidebar.title("Overall Sales Analysis")
-    
-    # Create a grid-like layout with three columns
-    col1, col2, col3 = st.columns(3)
-    
-    # Split stats into three parts
-    stats_items = list(stats.items())
-    first_third = stats_items[:len(stats_items)//3]
-    second_third = stats_items[len(stats_items)//3:2*len(stats_items)//3]
-    third_third = stats_items[2*len(stats_items)//3:]
-    
-    # Display first third of stats in first column
-    with col1:
-        for stat_name, value in first_third:
-            st.markdown(f"**{stat_name}:** {value:,.2f}")
-    
-    # Display second third of stats in second column
-    with col2:
-        for stat_name, value in second_third:
-            st.markdown(f"**{stat_name}:** {value:,.2f}")
-    
-    # Display third third of stats in third column
-    with col3:
-        for stat_name, value in third_third:
-            st.markdown(f"**{stat_name}:** {value:,.2f}")
+    display_summary_statistics_body(stats)
 
 @timed
 def display_cross_relation_pivot(filtered_data, filtered_data_r, current_page):

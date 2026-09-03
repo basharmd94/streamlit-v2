@@ -31,6 +31,19 @@ def _load_partner_sales(partner_zid: str, years: tuple, months: tuple):
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
+def _load_legacy_summary(zid: str, years: tuple, months: tuple) -> pd.DataFrame:
+    """One-row aggregate from core/queries.py::get_legacy_sales_summary --
+    the legacy email-report scripts' own sale/return netting logic,
+    computed server-side in SQL for the same (year, month) scope currently
+    loaded for the rest of Overall Sales Analysis. See CLAUDE.md's "Legacy
+    Sales Report" section."""
+    from core.analytics import Analytics
+    filters = {"year": list(years), "month": list(months)}
+    df = Analytics("legacy_sales_summary", zid=zid, filters=filters).data
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def _load_discount_detail(zid: str) -> pd.DataFrame:
     """Raw opddt/opdor discount-mechanics detail (xdisc%, xdisval, xdtdisc) --
     not exposed by mv_sales_line_items/Analytics('sales'). No date filter,
@@ -127,6 +140,31 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
             overall_sales.display_entity_metric_pivot(filtered_data, filtered_data_r, current_page)
         else:
             overall_sales.display_cross_relation_pivot(filtered_data, filtered_data_r, current_page)
+
+        # Legacy sales report — same email-script logic as the standalone
+        # HM_15/H_15 scripts, for the exact same year/month scope already
+        # loaded above, so the two summary tables sit side by side and can
+        # be compared directly. See CLAUDE.md "Legacy Sales Report".
+        st.markdown("---")
+        st.subheader("🗄️ Legacy Sales Report (email-script logic)")
+        st.caption(
+            "Reproduces the HM_15/H_15 monthly email reports' own sale/return netting "
+            "exactly (including their known quirks) for comparison against the summary "
+            "above — **not** a corrected or recommended figure. A return here only nets "
+            "against the month its *original sale* happened (matched by order+item), not "
+            "the month the return itself happened, and RECT-type (mobile-app) returns are "
+            "excluded entirely — both different from the summary above. Only **Net Sales** "
+            "is a fair like-for-like comparison; Total Sales/Total Returns individually are "
+            "not, since a return only counts here if it matched a sale line in this exact scope."
+        )
+        _legacy_years = tuple(sorted(filtered_data["year"].dropna().unique().astype(int).tolist()))
+        _legacy_months = tuple(sorted(filtered_data["month"].dropna().unique().astype(int).tolist()))
+        if _legacy_years and _legacy_months:
+            legacy_df = _load_legacy_summary(str(zid), _legacy_years, _legacy_months)
+            legacy_stats = overall_sales.calculate_legacy_summary_statistics(legacy_df)
+            overall_sales.display_summary_statistics_body(legacy_stats)
+        else:
+            st.info("No year/month currently loaded to compare.")
 
     elif analysis_mode == "Comparison":
         all_years = sorted(filtered_data["year"].dropna().unique().astype(int).tolist())

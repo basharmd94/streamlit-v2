@@ -172,6 +172,102 @@ def get_sales_discount_detail(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_legacy_sales_summary(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Reproduces the legacy email-report scripts' own sales/return netting
+    logic, in SQL, for direct comparison against Overall Sales Analysis'
+    normal (mv_sales_line_items) numbers -- see CLAUDE.md "Legacy Sales
+    Report" section for the full methodology writeup.
+
+    Deliberately NOT the app's usual final_sales/get_return_data pipeline:
+    - Revenue = raw opddt.xlineamt (not altsales-proddiscount) -- confirmed
+      empirically these are ~identical for every ZID here, so this isn't
+      the source of any gap, but it's what the legacy script actually sums.
+    - A return line is matched to a sale line by (xordernum, xitem) alone
+      -- the legacy script's own join key -- and netted against whichever
+      MONTH THE ORIGINAL SALE fell in, not the return's own date. This is
+      a real, faithfully-reproduced quirk (not a bug fixed here): a sale
+      returned in a different month still nets against the sale's month.
+    - Faithfully reproduces the legacy script's own fan-out bug: if a
+      single (xordernum, xitem) has more than one matching return line
+      (e.g. two partial credit notes), the SQL LEFT JOIN duplicates the
+      sale row per match, exactly like the original script's pandas merge
+      -- confirmed against real data this inflates the total (e.g. HMBR
+      August 2026: +16,760) versus a de-duplicated join.
+    - RECT-type returns (the mobile-app / imtemptrn path) are excluded
+      entirely, matching the legacy scripts' own behavior of reporting
+      those in a separate sheet rather than netting them into this total.
+    - ZID 100005 (Zepto) exception: the legacy script reads xordernum/xitem
+      from opord/opodt, NOT opdor/opddt (what every other ZID's script, and
+      the rest of this app, uses) -- confirmed these hold the exact same
+      order set but different opord.xtotamt/opdor.xtotamt header values;
+      the line-level xlineamt this query actually sums was confirmed to
+      match final_sales closely regardless, so this table swap doesn't
+      corrupt the totals in practice, but it's a real, separate landmine.
+
+    filters: zid (required), year (list, optional), month (list, optional)
+    -- both filtered against the SALE's own date, i.e. the same year/month
+    scope currently loaded for the rest of Overall Sales Analysis.
+    """
+    zid = str(filters["zid"][0])
+    if zid == "100005":
+        order_tbl, detail_tbl, qty_col = "opord", "opodt", "xqtydel"
+    else:
+        order_tbl, detail_tbl, qty_col = "opdor", "opddt", "xqty"
+
+    params = [zid, zid]
+    year_filter = ""
+    if filters.get("year"):
+        ph, yparams = _build_in_clause(filters["year"])
+        year_filter = f" AND syear IN ({ph})"
+        params.extend(yparams)
+    month_filter = ""
+    if filters.get("month"):
+        ph, mparams = _build_in_clause(filters["month"])
+        month_filter = f" AND smonth IN ({ph})"
+        params.extend(mparams)
+
+    sql = f"""
+        WITH sale_lines AS (
+            SELECT
+                d.xordernum, d.xitem, d.{qty_col} AS xqty, d.xlineamt,
+                o.xcus, o.xsp,
+                EXTRACT(YEAR FROM o.xdate)::int  AS syear,
+                EXTRACT(MONTH FROM o.xdate)::int AS smonth
+            FROM {detail_tbl} d
+            JOIN {order_tbl} o ON d.xordernum = o.xordernum AND o.zid = d.zid
+            WHERE d.zid = %s
+        ),
+        ret_lines AS (
+            SELECT crn.xordernum, cdt.xitem, cdt.xqty AS xqtyreturn,
+                   cdt.xlineamt AS xlineamtreturn, crn.xcrnnum
+            FROM opcdt cdt
+            JOIN opcrn crn ON cdt.xcrnnum = crn.xcrnnum AND crn.zid = cdt.zid
+            WHERE cdt.zid = %s
+        ),
+        joined AS (
+            SELECT sl.*, rl.xqtyreturn, rl.xlineamtreturn, rl.xcrnnum
+            FROM sale_lines sl
+            LEFT JOIN ret_lines rl ON sl.xordernum = rl.xordernum AND sl.xitem = rl.xitem
+            WHERE 1=1{year_filter}{month_filter}
+        )
+        SELECT
+            COALESCE(SUM(xlineamt), 0)                                        AS total_sales,
+            COALESCE(SUM(xlineamtreturn), 0)                                  AS total_returns,
+            COALESCE(SUM(xlineamt) - SUM(xlineamtreturn), 0)                  AS net_sales,
+            COUNT(DISTINCT xordernum)                                         AS num_orders,
+            COUNT(DISTINCT xcrnnum)                                           AS num_returns,
+            COUNT(DISTINCT xcus)                                              AS num_customers,
+            COUNT(DISTINCT xcus)  FILTER (WHERE xlineamtreturn IS NOT NULL AND xlineamtreturn <> 0) AS num_customers_returned,
+            COUNT(DISTINCT xitem)                                             AS num_products,
+            COUNT(DISTINCT xitem) FILTER (WHERE xlineamtreturn IS NOT NULL AND xlineamtreturn <> 0) AS num_products_returned,
+            COALESCE(SUM(xqty), 0)                                            AS units_sold,
+            COALESCE(SUM(xqtyreturn), 0)                                      AS units_returned,
+            COALESCE(SUM(xqty) - SUM(xqtyreturn), 0)                          AS net_units_sold
+        FROM joined
+    """
+    return sql, tuple(params)
+
+
 def get_sales_7day(filters=None):
     """Last 180 calendar days of sales line items from mv_sales_line_items.
 
