@@ -157,14 +157,20 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
             "is a fair like-for-like comparison; Total Sales/Total Returns individually are "
             "not, since a return only counts here if it matched a sale line in this exact scope."
         )
-        _legacy_years = tuple(sorted(filtered_data["year"].dropna().unique().astype(int).tolist()))
-        _legacy_months = tuple(sorted(filtered_data["month"].dropna().unique().astype(int).tolist()))
-        if _legacy_years and _legacy_months:
-            legacy_df = _load_legacy_summary(str(zid), _legacy_years, _legacy_months)
-            legacy_stats = overall_sales.calculate_legacy_summary_statistics(legacy_df)
-            overall_sales.display_summary_statistics_body(legacy_stats)
-        else:
-            st.info("No year/month currently loaded to compare.")
+        if st.button("📥 Load Legacy Sales Report", key="os_load_legacy_btn"):
+            _legacy_years = tuple(sorted(filtered_data["year"].dropna().unique().astype(int).tolist()))
+            _legacy_months = tuple(sorted(filtered_data["month"].dropna().unique().astype(int).tolist()))
+            if _legacy_years and _legacy_months:
+                legacy_df = _load_legacy_summary(str(zid), _legacy_years, _legacy_months)
+                st.session_state["_os_legacy_stats"] = overall_sales.calculate_legacy_summary_statistics(legacy_df)
+            else:
+                st.session_state["_os_legacy_stats"] = None
+                st.warning("No year/month currently loaded to compare.")
+
+        # Stays on screen until the button is clicked again (e.g. after changing
+        # the sidebar's year/month) -- not cleared just by an unrelated rerun.
+        if st.session_state.get("_os_legacy_stats"):
+            overall_sales.display_summary_statistics_body(st.session_state["_os_legacy_stats"])
 
     elif analysis_mode == "Comparison":
         all_years = sorted(filtered_data["year"].dropna().unique().astype(int).tolist())

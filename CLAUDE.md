@@ -460,6 +460,8 @@ A second summary-stats table, same visual layout as the existing top-of-page one
 
 `processing/overall_sales.py::calculate_legacy_summary_statistics` maps the query's one-row aggregate into the exact same 12-key dict shape as `calculate_summary_statistics`, so `display_summary_statistics_body` renders both identically. **Only `Net Sales` is a fair like-for-like comparison** between the two tables — `Total Sales`/`Total Returns` individually are not, since this table's "return" is only counted at all when it matched a sale line in the requested scope (order-matched), unlike the normal pipeline's period-actual return total — captioned explicitly in the UI. Scope (year/month) is whatever's already loaded for the rest of Overall Sales Analysis (`filtered_data["year"/"month"].unique()`), not a separate picker — the two tables are always describing the same period by construction.
 
+**Behind an explicit "📥 Load Legacy Sales Report" button**, not loaded on every page render — same `st.session_state["_os_legacy_stats"]`-persisted pattern as Collection Analysis → Overview's "Load Data" button: the result stays on screen across unrelated reruns until the button is clicked again (e.g. after changing the sidebar's year/month), rather than firing an extra DB round trip on every Overview page load.
+
 ---
 
 ## Sales Analysis — Order Analytics → "Product Orders" (`views/sales.py`, `sub_mode == "Product Orders"`)
