@@ -78,7 +78,7 @@ def compute_salesman_scores(rows_df: pd.DataFrame) -> pd.DataFrame:
 
     Score (0-100, higher is better):
       +45 x min(net_sales/target, 100%)        — 0 if target is unset (<=0)
-      +45 x min(coll/sales, 100%)               — 0 if sales is 0
+      +45 x min(coll/net_sales, 100%)           — 0 if net_sales is 0
       +5  x peer-relative(uniq_prods)
       +5  x peer-relative(uniq_cust)
       -6  x peer-relative(return% = (sales-net_sales)/sales)   [30% of the 20% negative bucket]
@@ -95,7 +95,7 @@ def compute_salesman_scores(rows_df: pd.DataFrame) -> pd.DataFrame:
     pct_target = np.where(d["has_target"], d["net_sales"] / d["target"].replace(0, np.nan), 0.0)
     d["score_target"] = np.clip(pct_target, 0.0, 1.0) * 45.0
 
-    pct_coll = np.where(d["sales"] > 0, d["coll"] / d["sales"].replace(0, np.nan), 0.0)
+    pct_coll = np.where(d["net_sales"] > 0, d["coll"] / d["net_sales"].replace(0, np.nan), 0.0)
     d["score_collection"] = np.clip(pct_coll, 0.0, 1.0) * 45.0
 
     d["score_products"] = _peer_relative(d["uniq_prods"]) * 5.0
