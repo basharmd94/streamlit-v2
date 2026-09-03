@@ -216,7 +216,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         pct_tgt = round(net_sales / target * 100, 1) if target > 0 else None
 
         coll = round(float(coll_by_sp.get(spid, 0.0)), 0)
-        pct_coll = round(coll / sales * 100, 1) if sales > 0 else None
+        pct_coll = round(coll / net_sales * 100, 1) if net_sales > 0 else None
 
         uc_mo = int(sp_mo["cusid"].nunique()) if "cusid" in sp_mo.columns else 0
         up_mo = int(sp_mo["itemcode"].nunique()) if "itemcode" in sp_mo.columns else 0
@@ -287,7 +287,7 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
 
     newest_asof = "as of today" if is_current else f"as of {mo_end_full.strftime('%b %d')}"
     st.caption(
-        f"**Score** (0–100, sorted lowest first): 45% Sales vs Target + 45% Collection vs Sales "
+        f"**Score** (0–100, sorted lowest first): 45% Sales vs Target + 45% Collection vs Net Sales "
         f"(both capped at 100%) + 5% Products Sold + 5% Customers Visited (both for {sel_label} only) "
         f"— the last two scored relative to the top salesman in this table — minus up to 20% in negative points, "
         f"also peer-relative: 6 pts for Return vs Sales %, 12 pts for the combined "
@@ -295,9 +295,9 @@ def _render_salesman_score(sales_df: pd.DataFrame, returns_df: pd.DataFrame, zid
         f"Rows highlighted red have no target set for {sel_label} — scored 0 on that 45% component. "
         f"Balance columns are point-in-time snapshots: {newest_label} is {newest_asof}, "
         f"{mid_label} and {oldest_label} are as of their own month-end.  \n"
-        f"ℹ️ **% Collection** (column & score component) = Collection ÷ MTD Sales — "
-        f"the 1.02 buffer has been removed (previously Collection ÷ (MTD Sales × 1.02)). "
-        f"All Salesmen Overview retains the old formula."
+        f"ℹ️ **% Collection** (column & score component) = Collection ÷ Net Sales, straight percentage — "
+        f"same formula as All Salesmen Overview's % Collection column now (both previously used "
+        f"gross Sales, and this one also previously had a 1.02 buffer)."
     )
 
     st.download_button(
