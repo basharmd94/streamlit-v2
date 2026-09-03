@@ -1706,6 +1706,13 @@ def _show_leads(zid: str) -> None:
 # Account-wide (one WhatsApp Business number), so this doesn't take zid.
 # ---------------------------------------------------------------------------
 
+# Confirmed real convention across this account's templates so far (both real
+# dashboard examples used exactly this pair, in this order) — positional
+# default for {{1}}/{{2}}'s variable NAME. A 3rd+ variable has no confirmed
+# name yet, so it stays blank rather than guessing further.
+_WF_DEFAULT_VAR_NAMES = ["CUSNAME", "CUSCODE"]
+
+
 def _wf_guess(d: dict, keys: tuple) -> str | None:
     for k in keys:
         v = d.get(k) if isinstance(d, dict) else None
@@ -2003,18 +2010,23 @@ def _render_wf_template_send(phone_number: str) -> None:
     named_variables = []  # list of (name, value) — WhatsFly keys each variable by its
     # own template-defined NAME (e.g. "CUSNAME"), confirmed via a real dashboard
     # example (`templateVariable-CUSNAME-1=...`) — NOT a numbered/positional array.
+    # {{1}}/{{2}} default to CUSNAME/CUSCODE — confirmed the real convention across
+    # this account's templates (both real examples used exactly this pair, in this
+    # order); a 3rd+ variable has no confirmed name yet, so stays blank.
     if n_vars:
         st.markdown(f"**Fill in {n_vars} variable(s)** — the preview below updates as you type:")
         st.caption(
-            "Confirmed via a real dashboard example: each variable needs its own "
-            "**name** (the template's own placeholder label, e.g. `CUSNAME` — check "
-            "WhatsFly's dashboard/template definition for the exact spelling) — not "
-            "just a value. Sent as `templateVariable-<name>-<n>` per variable."
+            "Name defaults to this account's confirmed convention (`CUSNAME`/`CUSCODE` "
+            "for `{{1}}`/`{{2}}`) — override if a template uses something else. Sent "
+            "as `templateVariable-<name>-<n>` per variable, per a real dashboard example."
         )
         for i in range(n_vars):
             c1, c2 = st.columns([1, 2])
             with c1:
-                vname = st.text_input(f"Name for {{{{{i + 1}}}}}", key=f"wf_varname_{idx}_{i}")
+                default_name = _WF_DEFAULT_VAR_NAMES[i] if i < len(_WF_DEFAULT_VAR_NAMES) else ""
+                vname = st.text_input(
+                    f"Name for {{{{{i + 1}}}}}", value=default_name, key=f"wf_varname_{idx}_{i}"
+                )
             with c2:
                 vval = st.text_input(f"Value for {{{{{i + 1}}}}}", key=f"wf_var_{idx}_{i}")
             named_variables.append((vname, vval))
