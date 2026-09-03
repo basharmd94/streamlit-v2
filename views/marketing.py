@@ -2000,16 +2000,29 @@ def _render_wf_template_send(phone_number: str) -> None:
     else:
         st.caption("No body text found for this template — check the raw JSON above to see the actual shape returned.")
 
-    variables = []
+    named_variables = []  # list of (name, value) — WhatsFly keys each variable by its
+    # own template-defined NAME (e.g. "CUSNAME"), confirmed via a real dashboard
+    # example (`templateVariable-CUSNAME-1=...`) — NOT a numbered/positional array.
     if n_vars:
         st.markdown(f"**Fill in {n_vars} variable(s)** — the preview below updates as you type:")
-        cols = st.columns(min(n_vars, 4))
+        st.caption(
+            "Confirmed via a real dashboard example: each variable needs its own "
+            "**name** (the template's own placeholder label, e.g. `CUSNAME` — check "
+            "WhatsFly's dashboard/template definition for the exact spelling) — not "
+            "just a value. Sent as `templateVariable-<name>-<n>` per variable."
+        )
         for i in range(n_vars):
-            with cols[i % len(cols)]:
-                variables.append(st.text_input(f"Variable {{{{{i + 1}}}}}", key=f"wf_var_{idx}_{i}"))
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                vname = st.text_input(f"Name for {{{{{i + 1}}}}}", key=f"wf_varname_{idx}_{i}")
+            with c2:
+                vval = st.text_input(f"Value for {{{{{i + 1}}}}}", key=f"wf_var_{idx}_{i}")
+            named_variables.append((vname, vval))
 
         st.markdown("**Message Preview (with your edits)**")
-        _wf_render_bubble(comps["header"], _wf_substitute_preview(body_html, variables), comps["footer"])
+        _wf_render_bubble(
+            comps["header"], _wf_substitute_preview(body_html, [v for _, v in named_variables]), comps["footer"]
+        )
     else:
         st.caption("No {{n}} variables detected in this template's body.")
 
@@ -2033,16 +2046,12 @@ def _render_wf_template_send(phone_number: str) -> None:
             key=f"wf_header_img_url_{idx}",
         )
         st.caption(
-            "Feeds into the payload below once a shape is picked. Flat shape now also "
-            "sends `media_type: \"image\"` alongside `media_id`/`media_url` — that trio "
-            "is this same API's own documented convention on send/interactive-buttons "
-            "and send/file, so \"received UNKNOWN\" was very likely media_type simply "
-            "missing before, not the id/url themselves. If you already have this "
-            "template's payload box open from before this fix, hit Rebuild to pick it "
-            "up. Meta Cloud API style's `header` component is real Meta documentation, "
-            "but the send endpoint appears to key its own template lookup off the flat "
-            "top-level `template_id` field — a payload built only as nested "
-            "`template.name` (no flat template_id) got \"Message template not found\"."
+            "**Confirmed via a real dashboard example** (image-header template): the "
+            "flat shape wants a plain **`template_header_media_url`** field — a hosted "
+            "URL, not a media id and not `media_type` (both of those were wrong guesses, "
+            "now removed from the default). The uploaded image's own hosted URL feeds "
+            "this automatically; the manual-URL box below is the same field if you'd "
+            "rather skip uploading."
         )
 
         if uploaded_file is not None:
@@ -2095,16 +2104,6 @@ def _render_wf_template_send(phone_number: str) -> None:
             value=_wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or "",
             key=f"wf_template_id_{idx}",
         )
-        template_name = st.text_input(
-            "Template name (`template_name` — not in the confirmed minimal example, kept optional)",
-            value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
-            key=f"wf_template_name_{idx}",
-        )
-        language_code = st.text_input(
-            "Language code (not in the confirmed minimal example, kept optional)",
-            value=_wf_guess(template, ("language", "language_code", "lang")) or "en",
-            key=f"wf_lang_{idx}",
-        )
         endpoint = st.text_input(
             "Send endpoint",
             value="/whatsapp/send/template",
@@ -2114,14 +2113,18 @@ def _render_wf_template_send(phone_number: str) -> None:
 
         payload_shape = st.radio(
             "Payload shape to try",
-            ["Flat (template_id/template_name)", "Meta Cloud API style (nested template/components)"],
+            ["Flat (template_id + templateVariable-<name>-<n>)", "Meta Cloud API style (nested template/components)"],
             horizontal=True,
             key=f"wf_payload_shape_{idx}",
             help=(
-                "Flat is confirmed correct in structure via a real dashboard-generated "
-                "example (apiToken/phone_number_id/template_id/phone_number). Meta "
-                "Cloud API style is kept as a fallback in case a template ever needs "
-                "variables/language passed in a way the flat shape doesn't support."
+                "Flat is confirmed via TWO real dashboard-generated examples now "
+                "(text-only, and this image-header one) — templateVariable-<name>-<n> "
+                "per variable, template_header_media_url for the header image, no "
+                "template_name/language_code in either real example. Meta Cloud API "
+                "style is kept only as a fallback; the send endpoint appears to key "
+                "its own template lookup off the flat template_id specifically, so "
+                "this shape (no flat template_id) got \"Message template not found\" "
+                "on a real attempt."
             ),
         )
         header_image_param = (
@@ -2131,11 +2134,22 @@ def _render_wf_template_send(phone_number: str) -> None:
         )
 
         if payload_shape.startswith("Meta"):
+            template_name = st.text_input(
+                "Template name (`template.name` — required for this shape only)",
+                value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
+                key=f"wf_template_name_{idx}",
+            )
+            language_code = st.text_input(
+                "Language code",
+                value=_wf_guess(template, ("language", "language_code", "lang")) or "en",
+                key=f"wf_lang_{idx}",
+            )
             components = []
             if header_image_param:
                 components.append({"type": "header", "parameters": [{"type": "image", "image": header_image_param}]})
-            if variables:
-                components.append({"type": "body", "parameters": [{"type": "text", "text": v} for v in variables]})
+            body_values = [v for _, v in named_variables]
+            if body_values:
+                components.append({"type": "body", "parameters": [{"type": "text", "text": v} for v in body_values]})
             default_payload = {
                 "template": {
                     "name": template_name,
@@ -2145,22 +2159,18 @@ def _render_wf_template_send(phone_number: str) -> None:
             }
             shape_key = "meta"
         else:
-            default_payload = {
-                "template_id": template_id_val,
-                "template_name": template_name,
-                "language_code": language_code,
-                "variables": json.dumps(variables),
-            }
-            if header_media_id:
-                default_payload["media_id"] = header_media_id
+            # Confirmed via a real dashboard example against an image-header,
+            # named-variable template — templateVariable-<name>-<n> per variable
+            # (NOT a numbered/generic array), template_header_media_url as a plain
+            # hosted URL (NOT media_id/media_url/media_type, all wrong guesses from
+            # the first attempt). template_name/language_code weren't present in
+            # either real example, so dropped from the default entirely.
+            default_payload = {"template_id": template_id_val}
+            for i, (vname, vval) in enumerate(named_variables):
+                if vname.strip():
+                    default_payload[f"templateVariable-{vname.strip()}-{i + 1}"] = vval
             if header_media_url:
-                default_payload["media_url"] = header_media_url
-            if header_media_id or header_media_url:
-                # Confirmed field name from this same API's send/interactive-buttons
-                # and send/file endpoints, both of which pair media_url/media_id
-                # with media_type — "Format mismatch, expected IMAGE, received
-                # UNKNOWN" is almost certainly this field missing, not the id/url.
-                default_payload["media_type"] = "image"
+                default_payload["template_header_media_url"] = header_media_url
             shape_key = "flat"
 
         payload_key = f"wf_payload_json_{idx}_{shape_key}"
