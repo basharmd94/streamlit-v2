@@ -1831,6 +1831,25 @@ def _wf_variable_count(body_text: str) -> int:
     return max((int(m) for m in matches), default=0)
 
 
+def _wf_extract_media_ref(resp) -> tuple:
+    """Best-effort media id/url extraction from the upload/media response —
+    shape unconfirmed against the live account (first real use of this
+    endpoint), same defensive multi-key-guess stance as templates. Unwraps a
+    `message`/`data`/`result` wrapper dict first, since this account already
+    confirmed "message" as its payload-wrapper key for the template list."""
+    if not isinstance(resp, dict):
+        return None, None
+    node = resp
+    for key in ("message", "data", "result"):
+        v = resp.get(key)
+        if isinstance(v, dict):
+            node = v
+            break
+    media_id = _wf_guess(node, ("id", "media_id", "mediaId", "media_hash"))
+    media_url = _wf_guess(node, ("url", "media_url", "link", "file_url"))
+    return media_id, media_url
+
+
 def _wf_format_whatsapp_markup(text: str) -> str:
     """WhatsApp's own lightweight markup (*bold*, _italic_, ~strike~,
     ```mono```) turned into HTML for the beautified preview bubble. Escapes
@@ -1994,6 +2013,70 @@ def _render_wf_template_send(phone_number: str) -> None:
     else:
         st.caption("No {{n}} variables detected in this template's body.")
 
+    has_image_header = st.checkbox(
+        "🖼️ This template's header is an image",
+        key=f"wf_has_img_header_{idx}",
+        help=(
+            "Not auto-detected — this account's template-list response doesn't "
+            "expose header format, so check it manually against the template "
+            "and flip this on. Meta requires JPEG/PNG, 5MB max, for image headers."
+        ),
+    )
+    header_media_id = None
+    header_media_url = None
+    if has_image_header:
+        uploaded_file = st.file_uploader(
+            "Attach header image", type=["jpg", "jpeg", "png"], key=f"wf_header_img_{idx}"
+        )
+        manual_url = st.text_input(
+            "…or paste an already-hosted image URL instead",
+            key=f"wf_header_img_url_{idx}",
+        )
+        st.caption(
+            "Feeds into the payload below once a shape is picked. Meta Cloud API "
+            "style uses its real, documented `header` component — a well-grounded "
+            "guess. The flat shape's `media_id`/`media_url` fields are NOT confirmed "
+            "against this account (the one real example we have had no header image) "
+            "— check the raw response after sending to see if either lands."
+        )
+
+        if uploaded_file is not None:
+            st.image(uploaded_file, width=200)
+            file_sig = (uploaded_file.name, uploaded_file.size)
+            upload_cache_key = f"wf_header_upload_{idx}"
+            cached = st.session_state.get(upload_cache_key)
+            if not cached or cached.get("sig") != file_sig:
+                with st.spinner("Uploading image to WhatsFly…"):
+                    try:
+                        raw = whatsfly.upload_media(
+                            uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type or "image/jpeg"
+                        )
+                        mid, murl = _wf_extract_media_ref(raw)
+                        st.session_state[upload_cache_key] = {
+                            "sig": file_sig, "raw": raw, "media_id": mid, "media_url": murl, "error": None,
+                        }
+                    except Exception as e:
+                        st.session_state[upload_cache_key] = {"sig": file_sig, "raw": None, "error": str(e)}
+
+            cached = st.session_state.get(upload_cache_key)
+            if cached and cached.get("error"):
+                st.error(f"Upload failed: {cached['error']}")
+            elif cached and cached.get("raw") is not None:
+                with st.expander("🔍 Raw upload response"):
+                    st.json(cached["raw"])
+                if cached.get("media_id") or cached.get("media_url"):
+                    st.success(
+                        f"Uploaded — media_id: `{cached.get('media_id') or '—'}`, "
+                        f"url: `{cached.get('media_url') or '—'}`"
+                    )
+                    header_media_id = cached.get("media_id")
+                    header_media_url = cached.get("media_url")
+                else:
+                    st.warning("Uploaded, but couldn't find an id/url in the response — check the raw JSON above.")
+
+        if not header_media_id and not header_media_url and manual_url.strip():
+            header_media_url = manual_url.strip()
+
     with st.expander("⚙️ Send request details"):
         st.caption(
             "**Confirmed via a real dashboard-generated example**: endpoint is "
@@ -2036,15 +2119,23 @@ def _render_wf_template_send(phone_number: str) -> None:
                 "variables/language passed in a way the flat shape doesn't support."
             ),
         )
+        header_image_param = (
+            {"id": header_media_id} if header_media_id
+            else {"link": header_media_url} if header_media_url
+            else None
+        )
+
         if payload_shape.startswith("Meta"):
+            components = []
+            if header_image_param:
+                components.append({"type": "header", "parameters": [{"type": "image", "image": header_image_param}]})
+            if variables:
+                components.append({"type": "body", "parameters": [{"type": "text", "text": v} for v in variables]})
             default_payload = {
                 "template": {
                     "name": template_name,
                     "language": {"code": language_code},
-                    "components": (
-                        [{"type": "body", "parameters": [{"type": "text", "text": v} for v in variables]}]
-                        if variables else []
-                    ),
+                    "components": components,
                 },
             }
             shape_key = "meta"
@@ -2055,6 +2146,10 @@ def _render_wf_template_send(phone_number: str) -> None:
                 "language_code": language_code,
                 "variables": json.dumps(variables),
             }
+            if header_media_id:
+                default_payload["media_id"] = header_media_id
+            if header_media_url:
+                default_payload["media_url"] = header_media_url
             shape_key = "flat"
 
         payload_key = f"wf_payload_json_{idx}_{shape_key}"

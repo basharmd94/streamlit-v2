@@ -75,6 +75,23 @@ def send_text(phone_number: str, message: str) -> requests.Response:
     )
 
 
+def upload_media(file_bytes: bytes, filename: str, mime_type: str) -> dict:
+    """POST /whatsapp/upload/media (multipart) — field name must be exactly
+    `media_file` per the guide. Returns the raw JSON response; shape is
+    unconfirmed against the live account (first real use of this endpoint
+    here), same defensive stance as get_templates — caller should show it
+    raw so a wrong field-name guess when reading the id/url back is visible."""
+    creds = get_credentials()
+    resp = requests.post(
+        f"{BASE_URL}/whatsapp/upload/media",
+        data={"apiToken": creds["api_token"], "phone_number_id": creds["phone_number_id"]},
+        files={"media_file": (filename, file_bytes, mime_type)},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def send_template(phone_number: str, endpoint: str, extra_params: dict) -> requests.Response:
     """Generic template send. `endpoint` is whatever path (or full URL) the
     WhatsFly dashboard's template picker generated for the chosen template —
