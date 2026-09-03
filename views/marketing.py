@@ -2033,11 +2033,16 @@ def _render_wf_template_send(phone_number: str) -> None:
             key=f"wf_header_img_url_{idx}",
         )
         st.caption(
-            "Feeds into the payload below once a shape is picked. Meta Cloud API "
-            "style uses its real, documented `header` component — a well-grounded "
-            "guess. The flat shape's `media_id`/`media_url` fields are NOT confirmed "
-            "against this account (the one real example we have had no header image) "
-            "— check the raw response after sending to see if either lands."
+            "Feeds into the payload below once a shape is picked. Flat shape now also "
+            "sends `media_type: \"image\"` alongside `media_id`/`media_url` — that trio "
+            "is this same API's own documented convention on send/interactive-buttons "
+            "and send/file, so \"received UNKNOWN\" was very likely media_type simply "
+            "missing before, not the id/url themselves. If you already have this "
+            "template's payload box open from before this fix, hit Rebuild to pick it "
+            "up. Meta Cloud API style's `header` component is real Meta documentation, "
+            "but the send endpoint appears to key its own template lookup off the flat "
+            "top-level `template_id` field — a payload built only as nested "
+            "`template.name` (no flat template_id) got \"Message template not found\"."
         )
 
         if uploaded_file is not None:
@@ -2150,6 +2155,12 @@ def _render_wf_template_send(phone_number: str) -> None:
                 default_payload["media_id"] = header_media_id
             if header_media_url:
                 default_payload["media_url"] = header_media_url
+            if header_media_id or header_media_url:
+                # Confirmed field name from this same API's send/interactive-buttons
+                # and send/file endpoints, both of which pair media_url/media_id
+                # with media_type — "Format mismatch, expected IMAGE, received
+                # UNKNOWN" is almost certainly this field missing, not the id/url.
+                default_payload["media_type"] = "image"
             shape_key = "flat"
 
         payload_key = f"wf_payload_json_{idx}_{shape_key}"
