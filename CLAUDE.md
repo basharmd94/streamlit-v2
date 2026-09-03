@@ -178,7 +178,7 @@ Revenue -> Others Revenue -> MRP Discount -> **Adjusted Revenue (Pending)** -> C
 View mode radio: `["👤 Individual Salesman", "📊 All Salesmen Overview", "📈 Moving Average", "📦 Current Stock"]`
 
 - **Individual Salesman**: full current-year (Jan–Dec) target entry, defaults to current month. Metric cards incl. Daily Avg Sales (3M) = `total_3mo / wd_3mo`. Requires sidebar to include ≥3 prior months, else `last3` is empty and a warning shows. Inventory Coverage section at bottom.
-- **All Salesmen Overview**: per-salesman summary, Daily Required = `(target - mtd_sales) / remaining_wd`, Daily Avg (3M) = `total_3mo / wd_3mo`. Caption shows the exact 3M window + working-day count.
+- **All Salesmen Overview**: per-salesman summary, Daily Required = `(target - mtd_sales) / remaining_wd`, Daily Avg (3M) = `total_3mo / wd_3mo`. Caption shows the exact 3M window + working-day count. **`% Collection`** (both the current-month table in `_render_overview` and every prior-month expander table in `_render_prior_month_section`) = `MTD Collection / Net Sales × 100` — straight percentage, denominator is Net Sales (sales − returns), not gross Sales. Previously divided by `(1.02 × Sales)` (gross, with a `1.02` inflation factor) — explicit correction, both occurrences fixed identically. Distinct from Individual Salesman's `% Collection vs Target` metric card (`MTD Collection / Monthly Target`), which was already on a different formula and untouched by this fix.
 - **Current Stock**: source `final_items_view` (filtered by zid), columns Item ID/Name/Group/Stock, search filter, 1-hour TTL (`_load_final_items`).
 
 ### Working days & holidays
