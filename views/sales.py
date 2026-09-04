@@ -44,6 +44,35 @@ def _load_legacy_summary(zid: str, years: tuple, months: tuple) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
+def _load_legacy_audit_detail(zid: str, year: int, month: int):
+    """Row-level New-vs-Legacy detail for ONE month -- four queries feeding
+    processing/overall_sales.py::build_legacy_audit_tables. See CLAUDE.md's
+    "Legacy Sales Report -> Order/Return Detail Audit" section."""
+    from core.analytics import Analytics
+    filters = {"year": [year], "month": [month]}
+    new_orders = Analytics("new_order_detail", zid=zid, filters=filters).data
+    legacy_orders = Analytics("legacy_order_detail", zid=zid, filters=filters).data
+    new_returns = Analytics("new_return_detail", zid=zid, filters=filters).data
+    legacy_returns = Analytics("legacy_return_detail", zid=zid, filters=filters).data
+    return (
+        new_orders if new_orders is not None else pd.DataFrame(),
+        legacy_orders if legacy_orders is not None else pd.DataFrame(),
+        new_returns if new_returns is not None else pd.DataFrame(),
+        legacy_returns if legacy_returns is not None else pd.DataFrame(),
+    )
+
+
+def _build_audit_excel(order_audit: pd.DataFrame, return_audit: pd.DataFrame) -> bytes:
+    """In-memory .xlsx with the two audit tables as separate sheets."""
+    import io
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        order_audit.to_excel(writer, sheet_name="Order Comparison", index=False)
+        return_audit.to_excel(writer, sheet_name="Return Comparison", index=False)
+    return buf.getvalue()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def _load_discount_detail(zid: str) -> pd.DataFrame:
     """Raw opddt/opdor discount-mechanics detail (xdisc%, xdisval, xdtdisc) --
     not exposed by mv_sales_line_items/Analytics('sales'). No date filter,
@@ -157,9 +186,10 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
             "is a fair like-for-like comparison; Total Sales/Total Returns individually are "
             "not, since a return only counts here if it matched a sale line in this exact scope."
         )
+        _legacy_years = tuple(sorted(filtered_data["year"].dropna().unique().astype(int).tolist()))
+        _legacy_months = tuple(sorted(filtered_data["month"].dropna().unique().astype(int).tolist()))
+
         if st.button("📥 Load Legacy Sales Report", key="os_load_legacy_btn"):
-            _legacy_years = tuple(sorted(filtered_data["year"].dropna().unique().astype(int).tolist()))
-            _legacy_months = tuple(sorted(filtered_data["month"].dropna().unique().astype(int).tolist()))
             if _legacy_years and _legacy_months:
                 legacy_df = _load_legacy_summary(str(zid), _legacy_years, _legacy_months)
                 st.session_state["_os_legacy_stats"] = overall_sales.calculate_legacy_summary_statistics(legacy_df)
@@ -171,6 +201,72 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
         # the sidebar's year/month) -- not cleared just by an unrelated rerun.
         if st.session_state.get("_os_legacy_stats"):
             overall_sales.display_summary_statistics_body(st.session_state["_os_legacy_stats"])
+
+            # ── Order/Return Detail Audit — one specific month, transaction-level ──
+            st.markdown("---")
+            st.markdown("**🔎 Order/Return Detail Audit**")
+            st.caption(
+                "Pick one year + month (within what's currently loaded above) to compare "
+                "every individual order and return between the two systems side by side — "
+                "New Date/Amount next to Legacy Date/Amount per transaction, so a specific "
+                "discrepancy can be traced to the exact voucher causing it."
+            )
+            if _legacy_years and _legacy_months:
+                ac1, ac2, ac3 = st.columns([1, 1, 1])
+                with ac1:
+                    audit_year = st.selectbox("Year", _legacy_years, index=len(_legacy_years) - 1, key="os_audit_year")
+                with ac2:
+                    audit_month = st.selectbox(
+                        "Month", _legacy_months,
+                        format_func=lambda m: calendar.month_abbr[m],
+                        index=len(_legacy_months) - 1, key="os_audit_month",
+                    )
+                with ac3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    run_audit = st.button("🔍 Generate Comparison", key="os_run_audit_btn")
+
+                if run_audit:
+                    with st.spinner("Comparing transactions…"):
+                        new_o, legacy_o, new_r, legacy_r = _load_legacy_audit_detail(str(zid), int(audit_year), int(audit_month))
+                        order_audit, return_audit = overall_sales.build_legacy_audit_tables(new_o, legacy_o, new_r, legacy_r)
+                        st.session_state["_os_audit_tables"] = (order_audit, return_audit, audit_year, audit_month)
+
+                if st.session_state.get("_os_audit_tables"):
+                    order_audit, return_audit, aud_y, aud_m = st.session_state["_os_audit_tables"]
+                    st.markdown(f"Showing {calendar.month_abbr[int(aud_m)]} {int(aud_y)}:")
+
+                    n_mismatch_o = int((order_audit["Present In"] != "Both").sum() + (order_audit["Delta"].abs() > 0.01).sum())
+                    n_mismatch_r = int((return_audit["Present In"] != "Both").sum() + (return_audit["Delta"].abs() > 0.01).sum())
+                    mc1, mc2 = st.columns(2)
+                    mc1.metric("Orders — rows with a difference", n_mismatch_o, help="Present In != Both, or Delta != 0")
+                    mc2.metric("Returns — rows with a difference", n_mismatch_r, help="Present In != Both, or Delta != 0")
+
+                    st.markdown("*Order Comparison*")
+                    st.dataframe(
+                        order_audit.style.format({
+                            "New Amount": "{:,.2f}", "Legacy Amount": "{:,.2f}", "Delta": "{:,.2f}",
+                        }, na_rep="—"),
+                        width="stretch", hide_index=True,
+                    )
+
+                    st.markdown("*Return Comparison*")
+                    st.dataframe(
+                        return_audit.style.format({
+                            "New Amount": "{:,.2f}", "Legacy Amount": "{:,.2f}", "Delta": "{:,.2f}",
+                        }, na_rep="—"),
+                        width="stretch", hide_index=True,
+                    )
+
+                    excel_bytes = _build_audit_excel(order_audit, return_audit)
+                    st.download_button(
+                        "⬇ Download Order/Return Audit (Excel, 2 sheets)",
+                        data=excel_bytes,
+                        file_name=f"legacy_audit_{zid}_{int(aud_y)}_{int(aud_m):02d}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="os_download_audit_xlsx",
+                    )
+            else:
+                st.info("No year/month currently loaded to compare.")
 
     elif analysis_mode == "Comparison":
         all_years = sorted(filtered_data["year"].dropna().unique().astype(int).tolist())

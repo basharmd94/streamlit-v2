@@ -82,6 +82,60 @@ def calculate_legacy_summary_statistics(legacy_df: pd.DataFrame) -> dict:
     }
 
 
+def _presence(row, new_col, legacy_col) -> str:
+    has_new = pd.notna(row[new_col])
+    has_legacy = pd.notna(row[legacy_col])
+    if has_new and has_legacy:
+        return "Both"
+    return "New Only" if has_new else "Legacy Only"
+
+
+@timed
+def build_legacy_audit_tables(new_orders, legacy_orders, new_returns, legacy_returns):
+    """Row-level audit behind the Legacy Sales Report: outer-joins the
+    "new" and "legacy" per-order and per-return breakdowns for ONE month
+    so individual transactions -- not just the aggregate totals above --
+    can be compared and the differences traced to specific vouchers.
+
+    Orders are matched on `xordernum` -- the transactional unit BOTH
+    systems' return-matching keys on -- not `opddt.xdornum` (the "DO--..."
+    number the rest of this app calls "voucher"), which the legacy scripts
+    never reference at all; `do_numbers` is carried along as a reference
+    column so it's still cross-referenceable against the rest of the app.
+    Returns are matched on `xcrnnum` directly -- both systems use the
+    exact same field, no bridging needed. See CLAUDE.md "Legacy Sales
+    Report -> Order/Return Detail Audit" and the four
+    get_new_order_detail/get_legacy_order_detail/get_new_return_detail/
+    get_legacy_return_detail queries this is built from.
+    """
+    order_audit = new_orders.merge(legacy_orders, on="ordernum", how="outer")
+    order_audit["delta"] = order_audit["new_amount"].fillna(0) - order_audit["legacy_amount"].fillna(0)
+    order_audit["present_in"] = order_audit.apply(lambda r: _presence(r, "new_amount", "legacy_amount"), axis=1)
+    order_audit = order_audit.rename(columns={
+        "ordernum": "Order Number", "do_numbers": "DO Number(s)",
+        "new_date": "New Date", "new_amount": "New Amount",
+        "legacy_date": "Legacy Date", "legacy_amount": "Legacy Amount",
+        "delta": "Delta", "present_in": "Present In",
+    }).sort_values("Delta", key=abs, ascending=False).reset_index(drop=True)
+
+    return_audit = new_returns.merge(legacy_returns, on="revoucher", how="outer")
+    # Legacy-only rows never came from the RECT/credit-note "source" column
+    # above (get_legacy_return_detail structurally only ever matches
+    # opcdt/opcrn returns) -- backfill so every row still shows a source.
+    if "source" in return_audit.columns:
+        return_audit["source"] = return_audit["source"].fillna("Credit Note")
+    return_audit["delta"] = return_audit["new_amount"].fillna(0) - return_audit["legacy_amount"].fillna(0)
+    return_audit["present_in"] = return_audit.apply(lambda r: _presence(r, "new_amount", "legacy_amount"), axis=1)
+    return_audit = return_audit.rename(columns={
+        "revoucher": "Return Voucher", "source": "Source",
+        "new_date": "New Date", "new_amount": "New Amount",
+        "legacy_date": "Legacy Date", "legacy_amount": "Legacy Amount",
+        "delta": "Delta", "present_in": "Present In",
+    }).sort_values("Delta", key=abs, ascending=False).reset_index(drop=True)
+
+    return order_audit, return_audit
+
+
 @timed
 def display_summary_statistics_body(stats):
     """The actual 3-column stat grid, with no sidebar title -- factored out
