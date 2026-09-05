@@ -178,6 +178,7 @@ def setup_auth_tables():
             -- Purchase
             ('purchase', 'Home'),
             ('purchase', 'Purchase Analysis'),
+            ('purchase', 'Overall Sales Analysis'),
             ('purchase', 'Basket Analysis'),
             ('purchase', 'Distribution & Histograms'),
             ('purchase', 'Inventory Analysis'),
