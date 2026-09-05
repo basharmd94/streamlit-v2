@@ -41,6 +41,7 @@ visualization/common_v.py  # plot_histogram, plot_bar_chart (Plotly wrappers)
 data/                   # targets.json, public_holidays.json, warehouse_filters.json (gitignored runtime)
                         # hierarchy.json, ls_account_notes.json, labels.json (committed)
 db_sync/                # Standalone DB sync scripts (separate from the app)
+whatsapp_webhook/       # Standalone FastAPI service (separate from the app, see below)
 ```
 
 ### Critical folder rules
@@ -591,6 +592,17 @@ Same single-message test panel as WhatsFly Messaging above, but calls Meta's own
 - Header image: upload via Meta's own `/{phone_number_id}/media` endpoint → `image: {id: <media_id>}`, or a plain hosted URL fallback → `image: {link: ...}`.
 - **Response handling**: success = 2xx with no top-level `"error"` key (surfaces the `wamid...` message id); failure = a nested `error: {message, type, code, ...}` object, rendered directly rather than guessed at.
 - **Account-wide, not per-ZID**, same as WhatsFly Messaging.
+
+### WhatsApp Webhook Receiver (`whatsapp_webhook/`, standalone FastAPI service)
+
+The receive-side counterpart to Direct WhatsApp above — that panel only sends; a webhook is the only way delivery/read/failure status and inbound replies ever arrive (a send's own 200 response only means "Meta accepted the request"). A fully separate service, not part of the Streamlit app process: own FastAPI app, own `.env` credentials (`WHATSAPP_VERIFY_TOKEN`, `META_APP_SECRET`, distinct from `config/direct_whatsapp.ini`), and its **own Postgres database** (`schema.sql`, isolated from `da`) — though it shares the `streamlitEnv3.10.13` Python env rather than a dedicated venv. Build reference: `WhatsApp_Integration_docs/whatsapp-webhook-build.md`; run instructions: `whatsapp_webhook/README.md`.
+
+**Current phase**: local dev only, tunneled with ngrok, registered against Meta's sandbox app + test number. Production deployment (Windows Server 2016, reverse proxy, TLS, persistent service) is explicitly deferred.
+
+- **`main.py`**: GET `/webhook/whatsapp` echoes `hub.challenge` back once `hub.verify_token` matches (Meta's one-time verification handshake); POST verifies `X-Hub-Signature-256` (HMAC-SHA256 over the **raw** body, constant-time compare) before anything else — reject 403 on mismatch, this is the entire trust boundary. A verified payload gets logged to `webhook_events` synchronously (idempotency/audit backbone), then routed via a `BackgroundTask` so Meta gets its `200` immediately ("respond fast, process later"). Malformed JSON after a valid signature → `400` (Meta won't retry 4xx); a DB/processing failure inside the background task is caught and recorded as `processing_status='failed'`, never raised (the response already went out).
+- **`handlers.py`**: routes each `changes[].field` — `messages` (both shapes: inbound `messages[]` array and outbound `statuses[]` array in one field) gets full handling; the four `message_template_*`/`template_category_update` fields upsert into `templates`; everything else (`phone_number_quality_update`, `account_update`, etc.) lands in the generic `account_alerts` audit table rather than being dropped. Status events are deduped on `(wamid, status)` and only move `messages.current_status` forward (a rank guard: `sent < delivered < read`, `failed` terminal) since Meta's at-least-once delivery can replay an earlier status after a later one already landed.
+- **Known gap, documented in the README**: outbound sends via `core/direct_whatsapp.py` don't write into this database at send time (the two services aren't wired together yet) — so a status callback for one of those can arrive before this service has ever seen the message. `db.ensure_outbound_stub` creates a minimal placeholder `messages` row on first sight of an unrecognized `wamid` (`ON CONFLICT DO NOTHING`, so a future real send-side integration would just be a no-op here) — keeps the `message_status_events` FK intact without requiring that integration yet.
+- Verified via `fastapi.testclient.TestClient` against a mocked DB layer (no real Postgres needed) — verify handshake (correct/wrong token), signature rejection (including that a DB failure while logging the rejection still returns 403 rather than 500), the happy path, and malformed JSON all confirmed before shipping.
 
 ---
 
