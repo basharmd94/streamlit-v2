@@ -579,6 +579,18 @@ Single-message test panel, per `Whatsfly_Integration_docs/whatsfly-integration-g
 - **Response envelope handled both ways** (string `"1"`/`"0"` vs boolean, per the guide's own documented inconsistency) — `_render_wf_response` also pattern-matches Meta's generic "does not exist... graph-api" Graph API rejection (a real account/WABA-permission issue on WhatsFly's or Meta's side — invalid/deleted phone number ID, a token without permission on that WABA, incomplete Business Verification, or a disconnected integration partner — not a request-shape bug) and points at Meta Business Manager instead of the request shape.
 - **Account-wide, not per-ZID** — one WhatsApp Business number across the whole group, so `_show_whatsfly_messaging()` takes no `zid` argument.
 
+### Direct WhatsApp (`views/marketing.py` → "📨 Direct WhatsApp" mode)
+
+Same single-message test panel as WhatsFly Messaging above, but calls Meta's own WhatsApp Cloud API directly (`graph.facebook.com`) — no WhatsFly in between. Test-number-only, against a separate Meta test WABA + test number so it never touches the real WhatsFly-routed production number.
+
+- **Credentials**: `config/direct_whatsapp.ini` (gitignored, section `[direct_whatsapp]` with `access_token`/`phone_number_id`/`waba_id`, optional `graph_api_version` defaulting to `v21.0`) via `config/settings.py::get_direct_whatsapp_params()` — same never-raises-returns-`None` pattern as `get_whatsfly_params()`.
+- **`core/direct_whatsapp.py`** — thin client: `send_text`, `get_templates`, `send_template`, `upload_media`. Unlike `core/whatsfly.py`, this follows Meta's own **published, documented** Cloud API contract directly — no defensive multi-key guessing needed, since the shape isn't reverse-engineered.
+- **Simpler than the WhatsFly panel in two real ways, both because Meta's actual contract removes WhatsFly-specific quirks**: template variables are **positional only** (`template.components[].parameters[]`, no per-variable name/`templateVariable-<name>-<n>` — that convention was WhatsFly's own, not Meta's), and there's exactly **one** request shape (no "flat vs Meta Cloud API style" guessing radio) — `POST /{phone_number_id}/messages` with the nested `template: {name, language: {code}, components: [...]}` body.
+- **Reuses the WhatsFly panel's generic rendering helpers** (`_wf_format_whatsapp_markup`, `_wf_render_bubble`, `_wf_substitute_preview`, `_wf_variable_count`, `_wf_extract_components`) rather than duplicating them — those are plain WhatsApp-template markup/preview helpers, not WhatsFly-specific, and Meta's own template shape (`components: [{type, text}]`) is exactly what `_wf_extract_components` already parses.
+- Header image: upload via Meta's own `/{phone_number_id}/media` endpoint → `image: {id: <media_id>}`, or a plain hosted URL fallback → `image: {link: ...}`.
+- **Response handling**: success = 2xx with no top-level `"error"` key (surfaces the `wamid...` message id); failure = a nested `error: {message, type, code, ...}` object, rendered directly rather than guessed at.
+- **Account-wide, not per-ZID**, same as WhatsFly Messaging.
+
 ---
 
 ## Git / Deployment

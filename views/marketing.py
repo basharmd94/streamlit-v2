@@ -8,6 +8,7 @@ import numpy as np
 from pathlib import Path
 
 from core import whatsfly
+from core import direct_whatsapp
 
 from views.call_log_shared import render_call_log_panel as _render_call_log_panel
 from views.lead_call_log_shared import (
@@ -2252,12 +2253,326 @@ def _show_whatsfly_messaging() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 📨 Direct WhatsApp — single-message test panel, straight to Meta's own
+# WhatsApp Cloud API (graph.facebook.com), no WhatsFly in between.
+#
+# Same test-phase scope as WhatsFly Messaging above: send ONE message to ONE
+# number, pull templates, fill in variables, see the raw response — against
+# a separate Meta test WABA + test number (config/direct_whatsapp.ini), not
+# the real WhatsFly-routed production number. Reuses the generic
+# markup/preview helpers defined above (_wf_format_whatsapp_markup,
+# _wf_render_bubble, _wf_substitute_preview, _wf_variable_count,
+# _wf_extract_components) — those are plain WhatsApp-template rendering
+# helpers, not WhatsFly-specific, and Meta's own template shape
+# (top-level `components: [{type, text}]`) is exactly what
+# _wf_extract_components already parses.
+#
+# Unlike the WhatsFly panel, there's no per-variable NAME field or
+# payload-shape guessing here — Meta's Cloud API contract is officially
+# documented (not reverse-engineered), template variables are positional
+# only, and there's exactly one real request shape.
+# ---------------------------------------------------------------------------
+
+
+def _dwa_normalize_templates(raw) -> list:
+    """Meta's documented shape: {"data": [...], "paging": {...}}."""
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        val = raw.get("data")
+        if isinstance(val, list):
+            return val
+    return []
+
+
+def _dwa_template_label(t: dict, i: int) -> str:
+    if not isinstance(t, dict):
+        return f"Template {i + 1}"
+    name = t.get("name") or f"Template {i + 1}"
+    category = t.get("category")
+    lang = t.get("language")
+    label = name
+    if category:
+        label += f" — {category}"
+    if lang:
+        label += f" ({lang})"
+    return label
+
+
+def _dwa_templates_table(templates: list) -> pd.DataFrame:
+    rows = [
+        {
+            "ID": t.get("id", "—"),
+            "Name": t.get("name", "—"),
+            "Category": t.get("category", "—"),
+            "Language": t.get("language", "—"),
+            "Status": t.get("status", "—"),
+        }
+        for t in templates
+    ]
+    return pd.DataFrame(rows)
+
+
+def _render_dwa_response(resp) -> None:
+    st.markdown("---")
+    st.markdown(f"**HTTP status:** `{resp.status_code}`")
+    try:
+        body = resp.json()
+    except ValueError:
+        st.code(resp.text or "(empty response body)")
+        return
+
+    # Meta's own contract: success carries "messages": [{"id": "wamid...."}]
+    # and no "error" key; failure carries a nested "error": {message, type,
+    # code, error_subcode, fbtrace_id} and a non-2xx status.
+    is_ok = resp.ok and isinstance(body, dict) and "error" not in body
+    if is_ok:
+        st.success("Sent — see raw response below (look for the `wamid...` message id).")
+    else:
+        st.error("Meta rejected the request — see raw response below.")
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict) and err.get("message"):
+            st.info(
+                f"**{err.get('type', 'Error')} (code {err.get('code', '—')})**: {err['message']}"
+                + (f" — {err['error_data']['details']}" if isinstance(err.get("error_data"), dict) and err["error_data"].get("details") else "")
+            )
+    st.json(body)
+
+
+def _render_dwa_text_send(phone_number: str) -> None:
+    st.caption(
+        "Session message — only works within 24h of the recipient last "
+        "messaging the test number. A template message (below) is required "
+        "to start a new conversation."
+    )
+    message = st.text_area("Message", key="dwa_text_message", height=100)
+    if st.button("📤 Send Text Message", key="dwa_send_text_btn"):
+        if not phone_number.strip():
+            st.error("Enter a recipient phone number first.")
+            return
+        if not message.strip():
+            st.error("Message is empty.")
+            return
+        with st.spinner("Sending…"):
+            try:
+                resp = direct_whatsapp.send_text(phone_number.strip(), message)
+            except Exception as e:
+                st.error(f"Send failed: {e}")
+                return
+        _render_dwa_response(resp)
+
+
+def _render_dwa_template_send(phone_number: str) -> None:
+    if st.button("🔄 Load / Refresh Templates", key="dwa_refresh_templates_btn"):
+        st.session_state.pop("_dwa_templates_raw", None)
+
+    if "_dwa_templates_raw" not in st.session_state:
+        with st.spinner("Fetching templates…"):
+            try:
+                st.session_state["_dwa_templates_raw"] = direct_whatsapp.get_templates()
+            except Exception as e:
+                st.error(f"Couldn't fetch templates: {e}")
+                return
+
+    raw = st.session_state["_dwa_templates_raw"]
+    with st.expander("🔍 Raw template list response"):
+        st.json(raw)
+
+    templates = _dwa_normalize_templates(raw)
+    if not templates:
+        st.warning("No templates found in the response above — expand it to see the actual shape returned.")
+        return
+
+    st.markdown(f"**{len(templates)} template(s) available on this test WABA:**")
+    st.dataframe(_dwa_templates_table(templates), width="stretch", hide_index=True)
+
+    labels = [_dwa_template_label(t, i) for i, t in enumerate(templates)]
+    idx = st.selectbox(
+        "Select a template to send", range(len(templates)), format_func=lambda i: labels[i], key="dwa_template_idx"
+    )
+    template = templates[idx]
+
+    with st.expander("🔍 Selected template (raw)"):
+        st.json(template)
+
+    comps = _wf_extract_components(template)
+    body_text = comps["body"]
+    n_vars = _wf_variable_count(body_text)
+    body_html = _wf_format_whatsapp_markup(body_text)
+
+    st.markdown("**Template Preview**")
+    if body_text:
+        _wf_render_bubble(comps["header"], body_html, comps["footer"])
+    else:
+        st.caption("No body text found for this template — check the raw JSON above to see the actual shape returned.")
+
+    variable_values = []  # positional — Meta matches {{n}} to the nth entry
+    # of the body component's `parameters` list, no per-variable name.
+    if n_vars:
+        st.markdown(f"**Fill in {n_vars} variable(s)** — the preview below updates as you type:")
+        for i in range(n_vars):
+            vval = st.text_input(f"Value for {{{{{i + 1}}}}}", key=f"dwa_var_{idx}_{i}")
+            variable_values.append(vval)
+
+        st.markdown("**Message Preview (with your edits)**")
+        _wf_render_bubble(comps["header"], _wf_substitute_preview(body_html, variable_values), comps["footer"])
+    else:
+        st.caption("No {{n}} variables detected in this template's body.")
+
+    has_image_header = st.checkbox(
+        "🖼️ This template's header is an image",
+        key=f"dwa_has_img_header_{idx}",
+        help="Meta requires JPEG/PNG, 5MB max, for image headers.",
+    )
+    header_media_id = None
+    header_media_url = None
+    if has_image_header:
+        uploaded_file = st.file_uploader(
+            "Attach header image", type=["jpg", "jpeg", "png"], key=f"dwa_header_img_{idx}"
+        )
+        manual_url = st.text_input(
+            "…or paste an already-hosted image URL instead",
+            key=f"dwa_header_img_url_{idx}",
+        )
+        st.caption(
+            "Uploading goes through Meta's own `/media` endpoint and yields a "
+            "`media_id`, used as `image: {id: ...}` in the request — Meta also "
+            "accepts a plain hosted `image: {link: ...}` URL as a fallback, "
+            "which the manual-URL box below feeds instead."
+        )
+
+        if uploaded_file is not None:
+            st.image(uploaded_file, width=200)
+            file_sig = (uploaded_file.name, uploaded_file.size)
+            upload_cache_key = f"dwa_header_upload_{idx}"
+            cached = st.session_state.get(upload_cache_key)
+            if not cached or cached.get("sig") != file_sig:
+                with st.spinner("Uploading image to Meta…"):
+                    try:
+                        raw_upload = direct_whatsapp.upload_media(
+                            uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type or "image/jpeg"
+                        )
+                        mid = raw_upload.get("id") if isinstance(raw_upload, dict) else None
+                        st.session_state[upload_cache_key] = {
+                            "sig": file_sig, "raw": raw_upload, "media_id": mid, "error": None,
+                        }
+                    except Exception as e:
+                        st.session_state[upload_cache_key] = {"sig": file_sig, "raw": None, "error": str(e)}
+
+            cached = st.session_state.get(upload_cache_key)
+            if cached and cached.get("error"):
+                st.error(f"Upload failed: {cached['error']}")
+            elif cached and cached.get("raw") is not None:
+                with st.expander("🔍 Raw upload response"):
+                    st.json(cached["raw"])
+                if cached.get("media_id"):
+                    st.success(f"Uploaded — media_id: `{cached['media_id']}`")
+                    header_media_id = cached["media_id"]
+                else:
+                    st.warning("Uploaded, but no `id` found in the response — check the raw JSON above.")
+
+        if not header_media_id and manual_url.strip():
+            header_media_url = manual_url.strip()
+
+    components = []
+    if header_media_id:
+        components.append({"type": "header", "parameters": [{"type": "image", "image": {"id": header_media_id}}]})
+    elif header_media_url:
+        components.append({"type": "header", "parameters": [{"type": "image", "image": {"link": header_media_url}}]})
+    if variable_values:
+        components.append({"type": "body", "parameters": [{"type": "text", "text": v} for v in variable_values]})
+
+    with st.expander("⚙️ Send request details"):
+        st.caption(
+            "Meta's documented shape: `POST /{phone_number_id}/messages` with a "
+            "nested `template: {name, language: {code}, components: [...]}` body."
+        )
+        template_name_val = st.text_input(
+            "Template name", value=template.get("name", ""), key=f"dwa_template_name_{idx}",
+        )
+        language_code_val = st.text_input(
+            "Language code", value=template.get("language", "en_US") or "en_US", key=f"dwa_lang_{idx}",
+        )
+
+        components_key = f"dwa_components_json_{idx}"
+        if components_key not in st.session_state:
+            st.session_state[components_key] = json.dumps(components, indent=2)
+
+        if st.button("↻ Rebuild components from fields above", key=f"dwa_rebuild_components_{idx}"):
+            st.session_state[components_key] = json.dumps(components, indent=2)
+            st.rerun()
+
+        st.caption("`template.components` that will be sent — edit directly if needed.")
+        components_text = st.text_area("Components JSON", key=components_key, height=140)
+
+    if st.button("📤 Send Template Message", key="dwa_send_template_btn"):
+        if not phone_number.strip():
+            st.error("Enter a recipient phone number first.")
+            return
+        if not template_name_val.strip():
+            st.error("Template name is empty.")
+            return
+        try:
+            components_val = json.loads(components_text)
+        except json.JSONDecodeError as e:
+            st.error(f"Components isn't valid JSON: {e}")
+            return
+        with st.spinner("Sending…"):
+            try:
+                resp = direct_whatsapp.send_template(
+                    phone_number.strip(), template_name_val.strip(), language_code_val.strip(), components_val
+                )
+            except Exception as e:
+                st.error(f"Send failed: {e}")
+                return
+        _render_dwa_response(resp)
+
+
+def _show_direct_whatsapp_messaging() -> None:
+    st.subheader("📨 Direct WhatsApp — Send Test Message")
+    st.caption(
+        "Sends straight to Meta's WhatsApp Cloud API (graph.facebook.com) — no "
+        "WhatsFly in between. Same single-message test flow as WhatsFly "
+        "Messaging above, against a separate Meta test WABA + test number "
+        "(config/direct_whatsapp.ini), so nothing here touches the real "
+        "WhatsFly-routed production number."
+    )
+
+    try:
+        direct_whatsapp.get_credentials()
+    except direct_whatsapp.DirectWhatsAppConfigError as e:
+        st.warning(str(e))
+        return
+
+    msg_type = st.radio(
+        "Message type",
+        ["Approved Template", "Plain Text (session message)"],
+        horizontal=True,
+        key="dwa_msg_type",
+    )
+    phone_number = st.text_input(
+        "Recipient phone number",
+        key="dwa_phone_number",
+        help="Country code + digits only — no '+', no spaces, e.g. 8801XXXXXXXXX. "
+             "A Meta test number can only message numbers added to its recipient "
+             "list in the Meta App Dashboard.",
+    )
+
+    st.markdown("---")
+
+    if msg_type.startswith("Plain Text"):
+        _render_dwa_text_send(phone_number)
+    else:
+        _render_dwa_template_send(phone_number)
+
+
+# ---------------------------------------------------------------------------
 # public entry point
 # ---------------------------------------------------------------------------
 
 _PRODUCT_ONLY_MODES = {
     "📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads",
-    "💬 WhatsFly Messaging",
+    "💬 WhatsFly Messaging", "📨 Direct WhatsApp",
 }
 
 
@@ -2275,6 +2590,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "🖼️ Media Library",
             "🎣 Leads",
             "💬 WhatsFly Messaging",
+            "📨 Direct WhatsApp",
         ],
         horizontal=True,
         label_visibility="collapsed",
@@ -2297,6 +2613,8 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             _show_leads(str(zid))
         elif mode == "💬 WhatsFly Messaging":
             _show_whatsfly_messaging()
+        elif mode == "📨 Direct WhatsApp":
+            _show_direct_whatsapp_messaging()
         else:
             _show_high_stock_marketing(str(zid), proj)
         return
