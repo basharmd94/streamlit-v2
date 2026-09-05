@@ -1834,9 +1834,22 @@ def _wf_extract_components(t: dict) -> dict:
     return out
 
 
-def _wf_variable_count(body_text: str) -> int:
-    matches = re.findall(r"\{\{\s*(\d+)\s*\}\}", body_text or "")
-    return max((int(m) for m in matches), default=0)
+_VAR_TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+
+
+def _wf_extract_variable_tokens(body_text: str) -> list:
+    """Ordered, de-duplicated variable tokens found in a template body.
+    Meta templates support two mutually-exclusive placeholder formats,
+    chosen when the template is created — **positional** (`{{1}}`, `{{2}}`,
+    ...) or **named** (`{{cusname}}`, `{{cuscode}}`, ...) — never mixed
+    within one template. Each token here is the raw text inside `{{ }}`,
+    either a digit string or a name, in first-appearance order."""
+    seen = []
+    for m in _VAR_TOKEN_RE.finditer(body_text or ""):
+        tok = m.group(1)
+        if tok not in seen:
+            seen.append(tok)
+    return seen
 
 
 def _wf_extract_media_ref(resp) -> tuple:
@@ -1870,23 +1883,30 @@ def _wf_format_whatsapp_markup(text: str) -> str:
     return escaped.replace("\n", "<br>")
 
 
-def _wf_substitute_preview(body_html: str, variables: list) -> str:
+def _wf_substitute_preview(body_html: str, tokens: list, variables: list) -> str:
     """Drops the entered variable values into the already-formatted body
-    HTML in place of {{n}} — highlighted where filled in, dimmed as a `[n]`
-    hint where still blank — so the bubble below updates live as inputs are
-    typed into. `{{`/`}}` survive _wf_format_whatsapp_markup's html.escape
-    untouched, so this regex still matches after that pass."""
+    HTML in place of each `{{token}}` — highlighted where filled in, dimmed
+    as a `[token]` hint where still blank — so the bubble below updates live
+    as inputs are typed into. `tokens`/`variables` are parallel lists (same
+    order as _wf_extract_variable_tokens found them) — matched by TOKEN TEXT
+    here, not by casting to int, so this works for both positional (`{{1}}`)
+    and named (`{{cusname}}`) templates alike. `{{`/`}}` survive
+    _wf_format_whatsapp_markup's html.escape untouched, so this regex still
+    matches after that pass."""
+    value_by_token = {tok: (variables[i].strip() if i < len(variables) and variables[i] else "")
+                       for i, tok in enumerate(tokens)}
+
     def _sub(m):
-        n = int(m.group(1))
-        val = variables[n - 1].strip() if 0 < n <= len(variables) and variables[n - 1] else ""
+        tok = m.group(1)
+        val = value_by_token.get(tok, "")
         if val:
             return (
                 '<span style="background:#FFF3B0;border-radius:3px;padding:0 3px;">'
                 f'{_html.escape(val)}</span>'
             )
-        return f'<span style="color:#7a8a99;font-style:italic;">[{n}]</span>'
+        return f'<span style="color:#7a8a99;font-style:italic;">[{tok}]</span>'
 
-    return re.sub(r"\{\{\s*(\d+)\s*\}\}", _sub, body_html)
+    return _VAR_TOKEN_RE.sub(_sub, body_html)
 
 
 def _wf_render_bubble(header: str | None, body_html: str, footer: str | None) -> None:
@@ -1999,7 +2019,7 @@ def _render_wf_template_send(phone_number: str) -> None:
 
     comps = _wf_extract_components(template)
     body_text = comps["body"]
-    n_vars = _wf_variable_count(body_text)
+    tokens = _wf_extract_variable_tokens(body_text)
     body_html = _wf_format_whatsapp_markup(body_text)
 
     st.markdown("**Template Preview**")
@@ -2008,36 +2028,45 @@ def _render_wf_template_send(phone_number: str) -> None:
     else:
         st.caption("No body text found for this template — check the raw JSON above to see the actual shape returned.")
 
-    named_variables = []  # list of (name, value) — WhatsFly keys each variable by its
-    # own template-defined NAME (e.g. "CUSNAME"), confirmed via a real dashboard
-    # example (`templateVariable-CUSNAME-1=...`) — NOT a numbered/positional array.
-    # {{1}}/{{2}} default to CUSNAME/CUSCODE — confirmed the real convention across
-    # this account's templates (both real examples used exactly this pair, in this
-    # order); a 3rd+ variable has no confirmed name yet, so stays blank.
-    if n_vars:
-        st.markdown(f"**Fill in {n_vars} variable(s)** — the preview below updates as you type:")
+    named_variables = []  # list of (name, value) — WhatsFly's SEND contract always
+    # keys each variable by a NAME (`templateVariable-<name>-<n>`, confirmed via a
+    # real dashboard example), regardless of which placeholder format the template
+    # body itself uses. Meta templates support two formats, chosen at template-
+    # creation time (never mixed within one template): positional (`{{1}}`,
+    # `{{2}}`) or named (`{{cusname}}`, `{{cuscode}}`). When the body already uses
+    # named tokens, that token IS the name WhatsFly needs — defaulted straight
+    # from it. For positional bodies there's no name in the text itself, so
+    # `{{1}}`/`{{2}}` fall back to this account's confirmed convention
+    # (`CUSNAME`/`CUSCODE`, both real examples used exactly this pair); a 3rd+
+    # positional variable has no confirmed name and stays blank.
+    if tokens:
+        st.markdown(f"**Fill in {len(tokens)} variable(s)** — the preview below updates as you type:")
         st.caption(
-            "Name defaults to this account's confirmed convention (`CUSNAME`/`CUSCODE` "
-            "for `{{1}}`/`{{2}}`) — override if a template uses something else. Sent "
-            "as `templateVariable-<name>-<n>` per variable, per a real dashboard example."
+            "Name defaults to the template's own `{{name}}` token if it uses named "
+            "placeholders, else this account's confirmed convention (`CUSNAME`/`CUSCODE` "
+            "for `{{1}}`/`{{2}}`) — override if needed. Sent as `templateVariable-<name>-<n>` "
+            "per variable, per a real dashboard example."
         )
-        for i in range(n_vars):
+        for i, tok in enumerate(tokens):
             c1, c2 = st.columns([1, 2])
             with c1:
-                default_name = _WF_DEFAULT_VAR_NAMES[i] if i < len(_WF_DEFAULT_VAR_NAMES) else ""
+                if not tok.isdigit():
+                    default_name = tok
+                else:
+                    default_name = _WF_DEFAULT_VAR_NAMES[i] if i < len(_WF_DEFAULT_VAR_NAMES) else ""
                 vname = st.text_input(
-                    f"Name for {{{{{i + 1}}}}}", value=default_name, key=f"wf_varname_{idx}_{i}"
+                    f"Name for {{{{{tok}}}}}", value=default_name, key=f"wf_varname_{idx}_{i}"
                 )
             with c2:
-                vval = st.text_input(f"Value for {{{{{i + 1}}}}}", key=f"wf_var_{idx}_{i}")
+                vval = st.text_input(f"Value for {{{{{tok}}}}}", key=f"wf_var_{idx}_{i}")
             named_variables.append((vname, vval))
 
         st.markdown("**Message Preview (with your edits)**")
         _wf_render_bubble(
-            comps["header"], _wf_substitute_preview(body_html, [v for _, v in named_variables]), comps["footer"]
+            comps["header"], _wf_substitute_preview(body_html, tokens, [v for _, v in named_variables]), comps["footer"]
         )
     else:
-        st.caption("No {{n}} variables detected in this template's body.")
+        st.caption("No {{...}} variables detected in this template's body.")
 
     has_image_header = st.checkbox(
         "🖼️ This template's header is an image",
@@ -2261,16 +2290,22 @@ def _show_whatsfly_messaging() -> None:
 # a separate Meta test WABA + test number (config/direct_whatsapp.ini), not
 # the real WhatsFly-routed production number. Reuses the generic
 # markup/preview helpers defined above (_wf_format_whatsapp_markup,
-# _wf_render_bubble, _wf_substitute_preview, _wf_variable_count,
+# _wf_render_bubble, _wf_substitute_preview, _wf_extract_variable_tokens,
 # _wf_extract_components) — those are plain WhatsApp-template rendering
 # helpers, not WhatsFly-specific, and Meta's own template shape
 # (top-level `components: [{type, text}]`) is exactly what
 # _wf_extract_components already parses.
 #
-# Unlike the WhatsFly panel, there's no per-variable NAME field or
+# Unlike the WhatsFly panel, there's no per-variable NAME *field* or
 # payload-shape guessing here — Meta's Cloud API contract is officially
-# documented (not reverse-engineered), template variables are positional
-# only, and there's exactly one real request shape.
+# documented (not reverse-engineered) and there's exactly one real request
+# shape. But Meta templates DO come in two placeholder formats, chosen at
+# template-creation time (never mixed within one template): positional
+# (`{{1}}`, `{{2}}`) or named (`{{cusname}}`, `{{cuscode}}`). For a named
+# template, each body parameter sent to Meta must carry a `parameter_name`
+# matching the token — taken straight from the body text itself, not typed
+# in by hand, since Meta (unlike WhatsFly) ties the name to the approved
+# template, not to metadata chosen at send time.
 # ---------------------------------------------------------------------------
 
 
@@ -2397,7 +2432,8 @@ def _render_dwa_template_send(phone_number: str) -> None:
 
     comps = _wf_extract_components(template)
     body_text = comps["body"]
-    n_vars = _wf_variable_count(body_text)
+    tokens = _wf_extract_variable_tokens(body_text)
+    is_named_format = bool(tokens) and not tokens[0].isdigit()
     body_html = _wf_format_whatsapp_markup(body_text)
 
     st.markdown("**Template Preview**")
@@ -2406,18 +2442,24 @@ def _render_dwa_template_send(phone_number: str) -> None:
     else:
         st.caption("No body text found for this template — check the raw JSON above to see the actual shape returned.")
 
-    variable_values = []  # positional — Meta matches {{n}} to the nth entry
-    # of the body component's `parameters` list, no per-variable name.
-    if n_vars:
-        st.markdown(f"**Fill in {n_vars} variable(s)** — the preview below updates as you type:")
-        for i in range(n_vars):
-            vval = st.text_input(f"Value for {{{{{i + 1}}}}}", key=f"dwa_var_{idx}_{i}")
+    variable_values = []  # parallel to `tokens` — Meta matches each entry to
+    # its own {{token}} by POSITION for a positional template (`{{1}}`,
+    # `{{2}}`, ...), or by the token text itself (sent as `parameter_name`)
+    # for a named template (`{{cusname}}`, `{{cuscode}}`, ...); no free-form
+    # naming here, unlike WhatsFly's send contract, since Meta ties the name
+    # to the approved template itself.
+    if tokens:
+        st.markdown(f"**Fill in {len(tokens)} variable(s)** — the preview below updates as you type:")
+        if is_named_format:
+            st.caption("Named-parameter template — each value below is sent tagged with its own `{{name}}`.")
+        for tok in tokens:
+            vval = st.text_input(f"Value for {{{{{tok}}}}}", key=f"dwa_var_{idx}_{tok}")
             variable_values.append(vval)
 
         st.markdown("**Message Preview (with your edits)**")
-        _wf_render_bubble(comps["header"], _wf_substitute_preview(body_html, variable_values), comps["footer"])
+        _wf_render_bubble(comps["header"], _wf_substitute_preview(body_html, tokens, variable_values), comps["footer"])
     else:
-        st.caption("No {{n}} variables detected in this template's body.")
+        st.caption("No {{...}} variables detected in this template's body.")
 
     has_image_header = st.checkbox(
         "🖼️ This template's header is an image",
@@ -2480,7 +2522,16 @@ def _render_dwa_template_send(phone_number: str) -> None:
     elif header_media_url:
         components.append({"type": "header", "parameters": [{"type": "image", "image": {"link": header_media_url}}]})
     if variable_values:
-        components.append({"type": "body", "parameters": [{"type": "text", "text": v} for v in variable_values]})
+        if is_named_format:
+            # Named-parameter template — each parameter must carry the
+            # token as `parameter_name`, matched by name rather than by
+            # position (Meta's requirement, confirmed against the docs).
+            body_params = [
+                {"type": "text", "parameter_name": tok, "text": v} for tok, v in zip(tokens, variable_values)
+            ]
+        else:
+            body_params = [{"type": "text", "text": v} for v in variable_values]
+        components.append({"type": "body", "parameters": body_params})
 
     with st.expander("⚙️ Send request details"):
         st.caption(
