@@ -39,6 +39,134 @@ def calculate_summary_statistics(filtered_data, filtered_data_r):
     }
 
 @timed
+def calculate_legacy_summary_statistics(legacy_df: pd.DataFrame) -> dict:
+    """Same 12-key shape as calculate_summary_statistics, so
+    display_summary_statistics can render it identically -- built from
+    core/queries.py::get_legacy_sales_summary's one-row aggregate (the
+    legacy email-report scripts' own sale/return netting logic, faithfully
+    reproduced including their (xordernum,xitem)-match fan-out and
+    sale-month-based return netting). See that query's docstring and
+    CLAUDE.md's "Legacy Sales Report" section for the full methodology.
+
+    "Total Sales"/"Total Returns" here are NOT independently comparable to
+    the normal summary's own Total Sales/Total Returns -- only Net Sales
+    (= Total Sales - Total Returns in both) is a fair apples-to-apples
+    figure, since a return here is only counted at all if it matched an
+    (xordernum,xitem) sale line in the requested period, unlike the normal
+    pipeline's period-actual return total.
+    """
+    if legacy_df is None or legacy_df.empty:
+        row = {}
+    else:
+        row = legacy_df.iloc[0].to_dict()
+
+    def _f(key):
+        return float(row.get(key) or 0.0)
+
+    def _i(key):
+        return int(row.get(key) or 0)
+
+    return {
+        "Total Sales": round(_f("total_sales"), 2),
+        "Total Returns": round(_f("total_returns"), 2),
+        "Net Sales": round(_f("net_sales"), 2),
+        "Number of Orders": _i("num_orders"),
+        "Number of Returns": _i("num_returns"),
+        "Number of Customers": _i("num_customers"),
+        "Number of Customer Returned": _i("num_customers_returned"),
+        "Number of Products": _i("num_products"),
+        "Number of Products Returned": _i("num_products_returned"),
+        "Units Sold": round(_f("units_sold"), 2),
+        "Units Returned": round(_f("units_returned"), 2),
+        "Net Units Sold": round(_f("net_units_sold"), 2),
+    }
+
+
+def _presence(row, new_col, legacy_col) -> str:
+    has_new = pd.notna(row[new_col])
+    has_legacy = pd.notna(row[legacy_col])
+    if has_new and has_legacy:
+        return "Both"
+    return "New Only" if has_new else "Legacy Only"
+
+
+@timed
+def build_legacy_audit_tables(new_orders, legacy_orders, new_returns, legacy_returns):
+    """Row-level audit behind the Legacy Sales Report: outer-joins the
+    "new" and "legacy" per-order and per-return breakdowns for ONE month
+    so individual transactions -- not just the aggregate totals above --
+    can be compared and the differences traced to specific vouchers.
+
+    Orders are matched on `xordernum` -- the transactional unit BOTH
+    systems' return-matching keys on -- not `opddt.xdornum` (the "DO--..."
+    number the rest of this app calls "voucher"), which the legacy scripts
+    never reference at all; `do_numbers` is carried along as a reference
+    column so it's still cross-referenceable against the rest of the app.
+    Returns are matched on `xcrnnum` directly -- both systems use the
+    exact same field, no bridging needed. See CLAUDE.md "Legacy Sales
+    Report -> Order/Return Detail Audit" and the four
+    get_new_order_detail/get_legacy_order_detail/get_new_return_detail/
+    get_legacy_return_detail queries this is built from.
+    """
+    order_audit = new_orders.merge(legacy_orders, on="ordernum", how="outer")
+    order_audit["delta"] = order_audit["new_amount"].fillna(0) - order_audit["legacy_amount"].fillna(0)
+    order_audit["present_in"] = order_audit.apply(lambda r: _presence(r, "new_amount", "legacy_amount"), axis=1)
+    order_audit = order_audit.rename(columns={
+        "ordernum": "Order Number", "do_numbers": "DO Number(s)",
+        "new_date": "New Date", "new_amount": "New Amount",
+        "legacy_date": "Legacy Date", "legacy_amount": "Legacy Amount",
+        "delta": "Delta", "present_in": "Present In",
+    }).sort_values("Delta", key=abs, ascending=False).reset_index(drop=True)
+
+    return_audit = new_returns.merge(legacy_returns, on="revoucher", how="outer")
+    # Legacy-only rows never came from the RECT/credit-note "source" column
+    # above (get_legacy_return_detail structurally only ever matches
+    # opcdt/opcrn returns) -- backfill so every row still shows a source.
+    if "source" in return_audit.columns:
+        return_audit["source"] = return_audit["source"].fillna("Credit Note")
+    return_audit["delta"] = return_audit["new_amount"].fillna(0) - return_audit["legacy_amount"].fillna(0)
+    return_audit["present_in"] = return_audit.apply(lambda r: _presence(r, "new_amount", "legacy_amount"), axis=1)
+    return_audit = return_audit.rename(columns={
+        "revoucher": "Return Voucher", "source": "Source",
+        "new_date": "New Date", "new_amount": "New Amount",
+        "legacy_date": "Legacy Date", "legacy_amount": "Legacy Amount",
+        "delta": "Delta", "present_in": "Present In",
+    }).sort_values("Delta", key=abs, ascending=False).reset_index(drop=True)
+
+    return order_audit, return_audit
+
+
+@timed
+def display_summary_statistics_body(stats):
+    """The actual 3-column stat grid, with no sidebar title -- factored out
+    of display_summary_statistics so a second stats table (e.g. the legacy
+    comparison table) can reuse the identical layout without re-emitting
+    the page's sidebar title a second time."""
+    col1, col2, col3 = st.columns(3)
+
+    # Split stats into three parts
+    stats_items = list(stats.items())
+    first_third = stats_items[:len(stats_items)//3]
+    second_third = stats_items[len(stats_items)//3:2*len(stats_items)//3]
+    third_third = stats_items[2*len(stats_items)//3:]
+
+    # Display first third of stats in first column
+    with col1:
+        for stat_name, value in first_third:
+            st.markdown(f"**{stat_name}:** {value:,.2f}")
+
+    # Display second third of stats in second column
+    with col2:
+        for stat_name, value in second_third:
+            st.markdown(f"**{stat_name}:** {value:,.2f}")
+
+    # Display third third of stats in third column
+    with col3:
+        for stat_name, value in third_third:
+            st.markdown(f"**{stat_name}:** {value:,.2f}")
+
+
+@timed
 def display_summary_statistics(stats):
     """
     Display summary statistics in the Streamlit app.
@@ -47,30 +175,7 @@ def display_summary_statistics(stats):
     - stats: Dictionary containing the summary statistics.
     """
     st.sidebar.title("Overall Sales Analysis")
-    
-    # Create a grid-like layout with three columns
-    col1, col2, col3 = st.columns(3)
-    
-    # Split stats into three parts
-    stats_items = list(stats.items())
-    first_third = stats_items[:len(stats_items)//3]
-    second_third = stats_items[len(stats_items)//3:2*len(stats_items)//3]
-    third_third = stats_items[2*len(stats_items)//3:]
-    
-    # Display first third of stats in first column
-    with col1:
-        for stat_name, value in first_third:
-            st.markdown(f"**{stat_name}:** {value:,.2f}")
-    
-    # Display second third of stats in second column
-    with col2:
-        for stat_name, value in second_third:
-            st.markdown(f"**{stat_name}:** {value:,.2f}")
-    
-    # Display third third of stats in third column
-    with col3:
-        for stat_name, value in third_third:
-            st.markdown(f"**{stat_name}:** {value:,.2f}")
+    display_summary_statistics_body(stats)
 
 @timed
 def display_cross_relation_pivot(filtered_data, filtered_data_r, current_page):

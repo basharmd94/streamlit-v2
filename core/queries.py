@@ -172,6 +172,225 @@ def get_sales_discount_detail(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_legacy_sales_summary(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Reproduces the legacy email-report scripts' own sales/return netting
+    logic, in SQL, for direct comparison against Overall Sales Analysis'
+    normal (mv_sales_line_items) numbers -- see CLAUDE.md "Legacy Sales
+    Report" section for the full methodology writeup.
+
+    Deliberately NOT the app's usual final_sales/get_return_data pipeline:
+    - Revenue = raw opddt.xlineamt (not altsales-proddiscount) -- confirmed
+      empirically these are ~identical for every ZID here, so this isn't
+      the source of any gap, but it's what the legacy script actually sums.
+    - A return line is matched to a sale line by (xordernum, xitem) alone
+      -- the legacy script's own join key -- and netted against whichever
+      MONTH THE ORIGINAL SALE fell in, not the return's own date. This is
+      a real, faithfully-reproduced quirk (not a bug fixed here): a sale
+      returned in a different month still nets against the sale's month.
+    - Faithfully reproduces the legacy script's own fan-out bug: if a
+      single (xordernum, xitem) has more than one matching return line
+      (e.g. two partial credit notes), the SQL LEFT JOIN duplicates the
+      sale row per match, exactly like the original script's pandas merge
+      -- confirmed against real data this inflates the total (e.g. HMBR
+      August 2026: +16,760) versus a de-duplicated join.
+    - RECT-type returns (the mobile-app / imtemptrn path) are excluded
+      entirely, matching the legacy scripts' own behavior of reporting
+      those in a separate sheet rather than netting them into this total.
+    - ZID 100005 (Zepto) exception: the legacy script reads xordernum/xitem
+      from opord/opodt, NOT opdor/opddt (what every other ZID's script, and
+      the rest of this app, uses) -- confirmed these hold the exact same
+      order set but different opord.xtotamt/opdor.xtotamt header values;
+      the line-level xlineamt this query actually sums was confirmed to
+      match final_sales closely regardless, so this table swap doesn't
+      corrupt the totals in practice, but it's a real, separate landmine.
+
+    filters: zid (required), year (list, optional), month (list, optional)
+    -- both filtered against the SALE's own date, i.e. the same year/month
+    scope currently loaded for the rest of Overall Sales Analysis.
+    """
+    zid = str(filters["zid"][0])
+    order_tbl, detail_tbl, qty_col = _legacy_tables(zid)
+
+    params = [zid, zid]
+    year_filter = ""
+    if filters.get("year"):
+        ph, yparams = _build_in_clause(filters["year"])
+        year_filter = f" AND syear IN ({ph})"
+        params.extend(yparams)
+    month_filter = ""
+    if filters.get("month"):
+        ph, mparams = _build_in_clause(filters["month"])
+        month_filter = f" AND smonth IN ({ph})"
+        params.extend(mparams)
+
+    sql = f"""
+        WITH sale_lines AS (
+            SELECT
+                d.xordernum, d.xitem, d.{qty_col} AS xqty, d.xlineamt,
+                o.xcus, o.xsp,
+                EXTRACT(YEAR FROM o.xdate)::int  AS syear,
+                EXTRACT(MONTH FROM o.xdate)::int AS smonth
+            FROM {detail_tbl} d
+            JOIN {order_tbl} o ON d.xordernum = o.xordernum AND o.zid = d.zid
+            WHERE d.zid = %s
+        ),
+        ret_lines AS (
+            SELECT crn.xordernum, cdt.xitem, cdt.xqty AS xqtyreturn,
+                   cdt.xlineamt AS xlineamtreturn, crn.xcrnnum
+            FROM opcdt cdt
+            JOIN opcrn crn ON cdt.xcrnnum = crn.xcrnnum AND crn.zid = cdt.zid
+            WHERE cdt.zid = %s
+        ),
+        joined AS (
+            SELECT sl.*, rl.xqtyreturn, rl.xlineamtreturn, rl.xcrnnum
+            FROM sale_lines sl
+            LEFT JOIN ret_lines rl ON sl.xordernum = rl.xordernum AND sl.xitem = rl.xitem
+            WHERE 1=1{year_filter}{month_filter}
+        )
+        SELECT
+            COALESCE(SUM(xlineamt), 0)                                        AS total_sales,
+            COALESCE(SUM(xlineamtreturn), 0)                                  AS total_returns,
+            COALESCE(SUM(xlineamt) - SUM(xlineamtreturn), 0)                  AS net_sales,
+            COUNT(DISTINCT xordernum)                                         AS num_orders,
+            COUNT(DISTINCT xcrnnum)                                           AS num_returns,
+            COUNT(DISTINCT xcus)                                              AS num_customers,
+            COUNT(DISTINCT xcus)  FILTER (WHERE xlineamtreturn IS NOT NULL AND xlineamtreturn <> 0) AS num_customers_returned,
+            COUNT(DISTINCT xitem)                                             AS num_products,
+            COUNT(DISTINCT xitem) FILTER (WHERE xlineamtreturn IS NOT NULL AND xlineamtreturn <> 0) AS num_products_returned,
+            COALESCE(SUM(xqty), 0)                                            AS units_sold,
+            COALESCE(SUM(xqtyreturn), 0)                                      AS units_returned,
+            COALESCE(SUM(xqty) - SUM(xqtyreturn), 0)                          AS net_units_sold
+        FROM joined
+    """
+    return sql, tuple(params)
+
+
+def _legacy_tables(zid: str) -> Tuple[str, str, str]:
+    """Same ZID branch as get_legacy_sales_summary: (order_tbl, detail_tbl, qty_col)."""
+    if str(zid) == "100005":
+        return "opord", "opodt", "xqtydel"
+    return "opdor", "opddt", "xqty"
+
+
+def get_new_order_detail(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Per-order (`xordernum`) breakdown for ONE specific year+month, using the
+    app's normal "new" formula (altsales - proddiscount) -- always from
+    opdor/opddt regardless of ZID (unlike the legacy side, which branches
+    for Zepto). Also surfaces the associated delivery-order number(s)
+    (`opddt.xdornum`, the "DO--..." voucher `mv_sales_line_items`/the rest
+    of the app actually calls "voucher") as a reference column, since that's
+    a DIFFERENT identity than `xordernum` -- the legacy scripts never use
+    xdornum at all, so xordernum is the only key both sides can be matched
+    on. For the Legacy Sales Report audit drill-down (Overall Sales
+    Analysis -> Overview)."""
+    zid = str(filters["zid"][0])
+    year = int(filters["year"][0])
+    month = int(filters["month"][0])
+    sql = """
+        SELECT
+            o.xordernum AS ordernum,
+            string_agg(DISTINCT d.xdornum, ', ') AS do_numbers,
+            MIN(o.xdate) AS new_date,
+            COALESCE(SUM(d.xdtwotax - d.xdtdisc), 0) AS new_amount
+        FROM opddt d
+        JOIN opdor o ON d.xordernum = o.xordernum AND o.zid = d.zid
+        WHERE d.zid = %s AND EXTRACT(YEAR FROM o.xdate) = %s AND EXTRACT(MONTH FROM o.xdate) = %s
+        GROUP BY o.xordernum
+    """
+    return sql, (zid, year, month)
+
+
+def get_legacy_order_detail(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Per-order (`xordernum`) breakdown for ONE specific year+month, using
+    the legacy scripts' own formula (raw xlineamt) and table pair (branches
+    to opord/opodt for ZID 100005). Companion to get_new_order_detail --
+    same grain, same key, different source/formula, for row-level audit."""
+    zid = str(filters["zid"][0])
+    year = int(filters["year"][0])
+    month = int(filters["month"][0])
+    order_tbl, detail_tbl, _ = _legacy_tables(zid)
+    sql = f"""
+        SELECT
+            o.xordernum AS ordernum,
+            MIN(o.xdate) AS legacy_date,
+            COALESCE(SUM(d.xlineamt), 0) AS legacy_amount
+        FROM {detail_tbl} d
+        JOIN {order_tbl} o ON d.xordernum = o.xordernum AND o.zid = d.zid
+        WHERE d.zid = %s AND EXTRACT(YEAR FROM o.xdate) = %s AND EXTRACT(MONTH FROM o.xdate) = %s
+        GROUP BY o.xordernum
+    """
+    return sql, (zid, year, month)
+
+
+def get_new_return_detail(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Per-return-voucher (`xcrnnum`/`ximtmptrn`) breakdown for ONE specific
+    year+month, matching the app's normal get_return_data population
+    exactly (opcdt/opcrn UNION imtemptdt/imtemptrn -- so RECT/mobile-app
+    returns are included, and correctly show up as legacy-side gaps once
+    outer-joined against get_legacy_return_detail's output). Filtered by
+    the RETURN's own date -- the "new" system's definition of "this
+    month's returns"."""
+    zid = str(filters["zid"][0])
+    year = int(filters["year"][0])
+    month = int(filters["month"][0])
+    sql = """
+        WITH ret AS (
+            SELECT crn.xcrnnum AS revoucher, crn.xdate AS date, cdt.xlineamt AS amt,
+                   'Credit Note' AS source
+            FROM opcdt cdt
+            JOIN opcrn crn ON cdt.xcrnnum = crn.xcrnnum AND crn.zid = cdt.zid
+            WHERE cdt.zid = %s
+            UNION ALL
+            SELECT imtemptrn.ximtmptrn AS revoucher, imtemptrn.xdate AS date, imtemptdt.xlineamt AS amt,
+                   'RECT/Mobile App' AS source
+            FROM imtemptdt
+            JOIN imtemptrn ON imtemptrn.ximtmptrn = imtemptdt.ximtmptrn AND imtemptrn.zid = imtemptdt.zid
+            WHERE imtemptdt.zid = %s
+        )
+        SELECT revoucher, source, MIN(date) AS new_date, COALESCE(SUM(amt), 0) AS new_amount
+        FROM ret
+        WHERE EXTRACT(YEAR FROM date) = %s AND EXTRACT(MONTH FROM date) = %s
+        GROUP BY revoucher, source
+    """
+    return sql, (zid, zid, year, month)
+
+
+def get_legacy_return_detail(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Per-return-voucher (`xcrnnum`) breakdown for ONE specific year+month,
+    using the legacy scripts' own matching logic: a return counts only if
+    its (xordernum, xitem) matches a sale line dated in the target month --
+    filtered by the SALE's month, not the return's own date (companion to
+    get_legacy_sales_summary's ret_lines/sale_lines CTEs, grouped by return
+    voucher instead of aggregated). RECT returns are never matched here,
+    matching the legacy scripts' own behavior."""
+    zid = str(filters["zid"][0])
+    year = int(filters["year"][0])
+    month = int(filters["month"][0])
+    order_tbl, detail_tbl, _ = _legacy_tables(zid)
+    sql = f"""
+        WITH sale_lines AS (
+            SELECT d.xordernum, d.xitem,
+                   EXTRACT(YEAR FROM o.xdate)::int  AS syear,
+                   EXTRACT(MONTH FROM o.xdate)::int AS smonth
+            FROM {detail_tbl} d
+            JOIN {order_tbl} o ON d.xordernum = o.xordernum AND o.zid = d.zid
+            WHERE d.zid = %s
+        ),
+        ret_lines AS (
+            SELECT crn.xcrnnum, crn.xdate AS return_date, cdt.xitem, cdt.xlineamt, crn.xordernum
+            FROM opcdt cdt
+            JOIN opcrn crn ON cdt.xcrnnum = crn.xcrnnum AND crn.zid = cdt.zid
+            WHERE cdt.zid = %s
+        )
+        SELECT rl.xcrnnum AS revoucher, MIN(rl.return_date) AS legacy_date, COALESCE(SUM(rl.xlineamt), 0) AS legacy_amount
+        FROM ret_lines rl
+        JOIN sale_lines sl ON rl.xordernum = sl.xordernum AND rl.xitem = sl.xitem
+        WHERE sl.syear = %s AND sl.smonth = %s
+        GROUP BY rl.xcrnnum
+    """
+    return sql, (zid, zid, year, month)
+
+
 def get_sales_7day(filters=None):
     """Last 180 calendar days of sales line items from mv_sales_line_items.
 
