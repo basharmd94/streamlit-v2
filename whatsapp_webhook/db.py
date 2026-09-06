@@ -68,26 +68,38 @@ def mark_event_processed(conn, event_id: int, status: str) -> None:
 
 
 def upsert_contact(conn, phone_number: str, wa_id, name) -> None:
+    # UPDATE-then-INSERT-if-0-rows instead of ON CONFLICT — the live server
+    # predates Postgres 9.5, same constraint already documented for
+    # marketing_leads (see CLAUDE.md). Narrow TOCTOU race between the two
+    # statements (two concurrent first-contacts from the same phone_number)
+    # is accepted here, same as elsewhere in this file — traffic is a
+    # handful of webhook POSTs a minute, and BackgroundTasks runs in one
+    # process, so real concurrent writers on the same phone_number are rare.
     with conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO contacts (phone_number, wa_id, name)
-               VALUES (%s, %s, %s)
-               ON CONFLICT (phone_number) DO UPDATE SET
-                   wa_id = EXCLUDED.wa_id,
-                   name = COALESCE(EXCLUDED.name, contacts.name),
-                   updated_at = now()""",
-            (phone_number, wa_id, name),
+            """UPDATE contacts SET wa_id = %s, name = COALESCE(%s, name), updated_at = now()
+               WHERE phone_number = %s""",
+            (wa_id, name, phone_number),
         )
+        if cur.rowcount == 0:
+            cur.execute(
+                "INSERT INTO contacts (phone_number, wa_id, name) VALUES (%s, %s, %s)",
+                (phone_number, wa_id, name),
+            )
 
 
 def insert_inbound_message(conn, *, wamid, phone_number_id, contact_phone,
                             message_type, content, message_timestamp) -> None:
+    # SELECT-then-INSERT instead of ON CONFLICT DO NOTHING — pre-9.5 server,
+    # see upsert_contact's comment above.
     with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM messages WHERE wamid = %s", (wamid,))
+        if cur.fetchone():
+            return
         cur.execute(
             """INSERT INTO messages (wamid, direction, phone_number_id, contact_phone,
                                      message_type, content, current_status, message_timestamp)
-               VALUES (%s, 'inbound', %s, %s, %s, %s, 'received', %s)
-               ON CONFLICT (wamid) DO NOTHING""",
+               VALUES (%s, 'inbound', %s, %s, %s, %s, 'received', %s)""",
             (wamid, phone_number_id, contact_phone, message_type,
              json.dumps(content), message_timestamp),
         )
@@ -100,28 +112,37 @@ def ensure_outbound_stub(conn, *, wamid, phone_number_id, contact_phone) -> None
     the build doc's own send/receive split — this service only covers the
     receive side so far). Creates a minimal placeholder row on first sight
     of the wamid so message_status_events' FK has something to point at.
-    ON CONFLICT DO NOTHING means a real send-side integration later just
-    becomes a no-op here, preserving whichever row (real or stub) already
-    exists rather than overwriting it."""
+    SELECT-then-INSERT (not ON CONFLICT DO NOTHING — pre-9.5 server, see
+    upsert_contact's comment above) means a real send-side integration later
+    still just finds the row already present, preserving whichever row
+    (real or stub) already exists rather than overwriting it."""
     with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM messages WHERE wamid = %s", (wamid,))
+        if cur.fetchone():
+            return
         cur.execute(
             """INSERT INTO messages (wamid, direction, phone_number_id, contact_phone, message_type)
-               VALUES (%s, 'outbound', %s, %s, 'unknown')
-               ON CONFLICT (wamid) DO NOTHING""",
+               VALUES (%s, 'outbound', %s, %s, 'unknown')""",
             (wamid, phone_number_id, contact_phone),
         )
 
 
 def insert_status_event(conn, *, wamid, status, error_code, error_title,
                          event_timestamp, webhook_event_id) -> None:
+    # SELECT-then-INSERT instead of ON CONFLICT (wamid, status) DO NOTHING —
+    # pre-9.5 server, see upsert_contact's comment above.
     with conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO message_status_events
-                   (wamid, status, error_code, error_title, event_timestamp, webhook_event_id)
-               VALUES (%s, %s, %s, %s, %s, %s)
-               ON CONFLICT (wamid, status) DO NOTHING""",
-            (wamid, status, error_code, error_title, event_timestamp, webhook_event_id),
+            "SELECT 1 FROM message_status_events WHERE wamid = %s AND status = %s",
+            (wamid, status),
         )
+        if cur.fetchone() is None:
+            cur.execute(
+                """INSERT INTO message_status_events
+                       (wamid, status, error_code, error_title, event_timestamp, webhook_event_id)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (wamid, status, error_code, error_title, event_timestamp, webhook_event_id),
+            )
         cur.execute("SELECT current_status FROM messages WHERE wamid = %s", (wamid,))
         row = cur.fetchone()
         current = row[0] if row else None
@@ -133,16 +154,25 @@ def insert_status_event(conn, *, wamid, status, error_code, error_title,
 
 
 def upsert_template(conn, *, name, language, category, status) -> None:
+    # UPDATE-then-INSERT-if-0-rows instead of ON CONFLICT (name, language)
+    # DO UPDATE — pre-9.5 server, see upsert_contact's comment above.
+    # IS NOT DISTINCT FROM (not `=`) since `language` can be NULL and two
+    # NULLs should still match as "the same template" here.
     with conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO templates (name, language, category, status, last_checked_at)
-               VALUES (%s, %s, %s, %s, now())
-               ON CONFLICT (name, language) DO UPDATE SET
-                   category = COALESCE(EXCLUDED.category, templates.category),
-                   status = EXCLUDED.status,
-                   last_checked_at = now()""",
-            (name, language, category, status),
+            """UPDATE templates SET
+                   category = COALESCE(%s, category),
+                   status = %s,
+                   last_checked_at = now()
+               WHERE name = %s AND language IS NOT DISTINCT FROM %s""",
+            (category, status, name, language),
         )
+        if cur.rowcount == 0:
+            cur.execute(
+                """INSERT INTO templates (name, language, category, status, last_checked_at)
+                   VALUES (%s, %s, %s, %s, now())""",
+                (name, language, category, status),
+            )
 
 
 def insert_account_alert(conn, *, event_type, payload) -> None:
