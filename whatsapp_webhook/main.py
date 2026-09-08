@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import os
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
@@ -123,7 +124,7 @@ def _log_rejected(raw_body: bytes) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _capture_whatsfly_event(request: Request, token: str, expected_token: str | None, kind: str) -> dict:
+async def _capture_whatsfly_event(request: Request, token: str, expected_token: Optional[str], kind: str) -> dict:
     if not expected_token or not hmac.compare_digest(token, expected_token):
         # 404, not 403 — don't confirm to a prober that this path exists at all.
         raise HTTPException(status_code=404)
