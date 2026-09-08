@@ -194,4 +194,5 @@ CREATE TABLE account_alerts (
 
 ## Deferred to a later phase
 
-- Production deployment to Windows Server 2016 (reverse proxy + TLS cert, running as a persistent service, firewall/port forwarding) — **done**, see `WHATSAPP_SCREENCAST_PREP.md` for current production state.
+- Production deployment to Windows Server 2016 (reverse proxy + TLS cert, running as a persistent service, firewall/port forwarding)
+- WhatsFly-specific integration (separate track, separate document)

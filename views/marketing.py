@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
+from core import whatsfly
 from core import direct_whatsapp
 from core import whatsapp_webhook_db
 
@@ -1698,18 +1699,95 @@ def _show_leads(zid: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shared WhatsApp template helpers, used by the Direct WhatsApp panel below.
-# Plain markup/preview rendering for a WhatsApp template's header/body/
-# footer, not tied to any one provider — Meta's own template shape
-# (`components: [{type: HEADER/BODY/FOOTER, text: ...}]`) is exactly what
-# _wa_extract_components parses.
+# 💬 WhatsFly Messaging — single-message test panel
+#
+# Build-phase scope only, per Whatsfly_Integration_docs/whatsfly-integration-guide.md:
+# send ONE message to ONE number chosen by hand and look at the raw feedback.
+# No receive-side / webhook handling here — that's a separate always-on
+# FastAPI service, a later phase, and explicitly not this Streamlit app.
+# Account-wide (one WhatsApp Business number), so this doesn't take zid.
 # ---------------------------------------------------------------------------
 
+# Confirmed real convention across this account's templates so far (both real
+# dashboard examples used exactly this pair, in this order) — positional
+# default for {{1}}/{{2}}'s variable NAME. A 3rd+ variable has no confirmed
+# name yet, so it stays blank rather than guessing further.
+_WF_DEFAULT_VAR_NAMES = ["CUSNAME", "CUSCODE"]
 
-def _wa_extract_components(t: dict) -> dict:
-    """Pulls header/body/footer text out of a Meta template entry's
-    `components` list, with a recursive fallback scan for any string
-    containing '{{' (for the body) if that shape isn't found."""
+
+def _wf_guess(d: dict, keys: tuple) -> str | None:
+    for k in keys:
+        v = d.get(k) if isinstance(d, dict) else None
+        if v:
+            return str(v)
+    return None
+
+
+def _wf_normalize_templates(raw) -> list:
+    """WhatsFly's real shape (confirmed against the live account):
+    {"status": "1", "message": [ {id, template_id, template_name, ...}, ... ]}
+    — the template list sits under "message", not "data"/"templates"/etc.
+    (a genuinely surprising key name — "message" doubling as the payload
+    array, not an error string). Every other common wrapper key is still
+    tried too, plus a bare-list / single-template fallback, since this is
+    all reverse-engineered from one account's response, not documented."""
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("message", "data", "templates", "result", "results", "list"):
+            val = raw.get(key)
+            if isinstance(val, list):
+                return val
+        if any(k in raw for k in ("template_name", "name", "elementName")):
+            return [raw]
+    return []
+
+
+def _wf_template_label(t: dict, i: int) -> str:
+    if not isinstance(t, dict):
+        return f"Template {i + 1}"
+    tid = _wf_guess(t, ("id",))
+    name = _wf_guess(t, ("template_name", "name", "elementName")) or f"Template {i + 1}"
+    category = _wf_guess(t, ("template_category", "category"))
+    lang = _wf_guess(t, ("language", "language_code", "lang"))
+    label = f"{name} (id {tid})" if tid else name
+    if category:
+        label += f" — {category}"
+    if lang:
+        label += f" ({lang})"
+    return label
+
+
+def _wf_templates_table(templates: list) -> pd.DataFrame:
+    """The 'what can we actually access' check. Confirmed real fields on the
+    live account: id (WhatsFly's own internal row id), template_id (the
+    long numeric Meta-style id), template_name, template_type,
+    template_category — language/status kept as a guessed fallback in case
+    a template on this account ever carries them, since the API's Get
+    Template docs describe an approval `status` this particular response
+    didn't happen to include."""
+    rows = [
+        {
+            "ID": _wf_guess(t, ("id",)) or "—",
+            "Template ID": _wf_guess(t, ("template_id", "wa_template_id", "uuid")) or "—",
+            "Name": _wf_guess(t, ("template_name", "name", "elementName")) or "—",
+            "Category": _wf_guess(t, ("template_category", "category")) or "—",
+            "Type": _wf_guess(t, ("template_type", "type")) or "—",
+            "Language": _wf_guess(t, ("language", "language_code", "lang")) or "—",
+            "Status": _wf_guess(t, ("status", "template_status")) or "—",
+        }
+        for t in templates
+    ]
+    return pd.DataFrame(rows)
+
+
+def _wf_extract_components(t: dict) -> dict:
+    """Best-effort pull of header/body/footer text from a template entry so
+    the send panel can render a beautified preview. Real key names aren't
+    confirmed against a live WhatsFly response, so this checks common flat
+    keys first, then Meta Cloud API's own
+    `components: [{type: HEADER/BODY/FOOTER, text: ...}]` shape, then a
+    recursive fallback scan for any string containing '{{' (for the body)."""
     out = {"header": None, "body": "", "footer": None}
     if not isinstance(t, dict):
         return out
@@ -1760,7 +1838,7 @@ def _wa_extract_components(t: dict) -> dict:
 _VAR_TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 
 
-def _wa_extract_variable_tokens(body_text: str) -> list:
+def _wf_extract_variable_tokens(body_text: str) -> list:
     """Ordered, de-duplicated variable tokens found in a template body.
     Meta templates support two mutually-exclusive placeholder formats,
     chosen when the template is created — **positional** (`{{1}}`, `{{2}}`,
@@ -1775,7 +1853,26 @@ def _wa_extract_variable_tokens(body_text: str) -> list:
     return seen
 
 
-def _wa_format_whatsapp_markup(text: str) -> str:
+def _wf_extract_media_ref(resp) -> tuple:
+    """Best-effort media id/url extraction from the upload/media response —
+    shape unconfirmed against the live account (first real use of this
+    endpoint), same defensive multi-key-guess stance as templates. Unwraps a
+    `message`/`data`/`result` wrapper dict first, since this account already
+    confirmed "message" as its payload-wrapper key for the template list."""
+    if not isinstance(resp, dict):
+        return None, None
+    node = resp
+    for key in ("message", "data", "result"):
+        v = resp.get(key)
+        if isinstance(v, dict):
+            node = v
+            break
+    media_id = _wf_guess(node, ("id", "media_id", "mediaId", "media_hash"))
+    media_url = _wf_guess(node, ("url", "media_url", "link", "file_url"))
+    return media_id, media_url
+
+
+def _wf_format_whatsapp_markup(text: str) -> str:
     """WhatsApp's own lightweight markup (*bold*, _italic_, ~strike~,
     ```mono```) turned into HTML for the beautified preview bubble. Escapes
     the source text first so template copy can never inject arbitrary HTML."""
@@ -1787,15 +1884,15 @@ def _wa_format_whatsapp_markup(text: str) -> str:
     return escaped.replace("\n", "<br>")
 
 
-def _wa_substitute_preview(body_html: str, tokens: list, variables: list) -> str:
+def _wf_substitute_preview(body_html: str, tokens: list, variables: list) -> str:
     """Drops the entered variable values into the already-formatted body
     HTML in place of each `{{token}}` — highlighted where filled in, dimmed
     as a `[token]` hint where still blank — so the bubble below updates live
     as inputs are typed into. `tokens`/`variables` are parallel lists (same
-    order as _wa_extract_variable_tokens found them) — matched by TOKEN TEXT
+    order as _wf_extract_variable_tokens found them) — matched by TOKEN TEXT
     here, not by casting to int, so this works for both positional (`{{1}}`)
     and named (`{{cusname}}`) templates alike. `{{`/`}}` survive
-    _wa_format_whatsapp_markup's html.escape untouched, so this regex still
+    _wf_format_whatsapp_markup's html.escape untouched, so this regex still
     matches after that pass."""
     value_by_token = {tok: (variables[i].strip() if i < len(variables) and variables[i] else "")
                        for i, tok in enumerate(tokens)}
@@ -1813,18 +1910,18 @@ def _wa_substitute_preview(body_html: str, tokens: list, variables: list) -> str
     return _VAR_TOKEN_RE.sub(_sub, body_html)
 
 
-def _wa_render_bubble(header: str | None, body_html: str, footer: str | None) -> None:
+def _wf_render_bubble(header: str | None, body_html: str, footer: str | None) -> None:
     parts = []
     if header:
         parts.append(
             f'<div style="font-weight:700;margin-bottom:6px;">'
-            f'{_wa_format_whatsapp_markup(header)}</div>'
+            f'{_wf_format_whatsapp_markup(header)}</div>'
         )
     parts.append(f'<div>{body_html}</div>')
     if footer:
         parts.append(
             f'<div style="color:#5B7083;font-size:12px;margin-top:8px;">'
-            f'{_wa_format_whatsapp_markup(footer)}</div>'
+            f'{_wf_format_whatsapp_markup(footer)}</div>'
         )
     st.markdown(
         '<div style="background:#DCF8C6;border:1px solid #B4E2A0;border-radius:10px;'
@@ -1834,17 +1931,382 @@ def _wa_render_bubble(header: str | None, body_html: str, footer: str | None) ->
     )
 
 
+def _render_wf_response(resp) -> None:
+    st.markdown("---")
+    st.markdown(f"**HTTP status:** `{resp.status_code}`")
+    try:
+        body = resp.json()
+    except ValueError:
+        st.code(resp.text or "(empty response body)")
+        return
+
+    # response envelope inconsistency per the build guide: most endpoints
+    # return status as the STRING "1"/"0", catalog endpoints return a
+    # boolean — handle both rather than assuming one.
+    status_val = body.get("status") if isinstance(body, dict) else None
+    is_ok = status_val in ("1", 1, True) or (resp.ok and status_val is None)
+    if is_ok:
+        st.success("Sent — see raw response below for the details WhatsFly returned.")
+    else:
+        st.error("WhatsFly reported an error — see raw response below.")
+        err_msg = str(body.get("message", "")) if isinstance(body, dict) else ""
+        if "does not exist" in err_msg and "graph-api" in err_msg.lower():
+            st.info(
+                "This is a **Meta Graph API-level** error, not a request-shape problem — "
+                "the request reached Meta's backend and Meta itself rejected "
+                "`phone_number_id`. Nothing left to fix in this panel; check WhatsFly's "
+                "dashboard (is the number still connected?) or Meta Business Manager "
+                "(permissions on the System User / app for this WABA number), or ask "
+                "WhatsFly support directly, quoting this exact message."
+            )
+    st.json(body)
+
+
+def _render_wf_text_send(phone_number: str) -> None:
+    st.caption(
+        "Session message — only works within 24h of the recipient last "
+        "messaging the business number. Use this after the rep messages "
+        "in first (the guide's suggested first-test shortcut)."
+    )
+    message = st.text_area("Message", key="wf_text_message", height=100)
+    if st.button("📤 Send Text Message", key="wf_send_text_btn"):
+        if not phone_number.strip():
+            st.error("Enter a recipient phone number first.")
+            return
+        if not message.strip():
+            st.error("Message is empty.")
+            return
+        with st.spinner("Sending…"):
+            try:
+                resp = whatsfly.send_text(phone_number.strip(), message)
+            except Exception as e:
+                st.error(f"Send failed: {e}")
+                return
+        _render_wf_response(resp)
+
+
+def _render_wf_template_send(phone_number: str) -> None:
+    if st.button("🔄 Load / Refresh Templates", key="wf_refresh_templates_btn"):
+        st.session_state.pop("_wf_templates_raw", None)
+
+    if "_wf_templates_raw" not in st.session_state:
+        with st.spinner("Fetching templates…"):
+            try:
+                st.session_state["_wf_templates_raw"] = whatsfly.get_templates()
+            except Exception as e:
+                st.error(f"Couldn't fetch templates: {e}")
+                return
+
+    raw = st.session_state["_wf_templates_raw"]
+    with st.expander("🔍 Raw template list response"):
+        st.json(raw)
+
+    templates = _wf_normalize_templates(raw)
+    if not templates:
+        st.warning("No templates found in the response above — expand it to see the actual shape returned.")
+        return
+
+    st.markdown(f"**{len(templates)} template(s) available on this account:**")
+    st.dataframe(_wf_templates_table(templates), width="stretch", hide_index=True)
+
+    labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
+    idx = st.selectbox(
+        "Select a template to send", range(len(templates)), format_func=lambda i: labels[i], key="wf_template_idx"
+    )
+    template = templates[idx]
+
+    with st.expander("🔍 Selected template (raw)"):
+        st.json(template)
+
+    comps = _wf_extract_components(template)
+    body_text = comps["body"]
+    tokens = _wf_extract_variable_tokens(body_text)
+    body_html = _wf_format_whatsapp_markup(body_text)
+
+    st.markdown("**Template Preview**")
+    if body_text:
+        _wf_render_bubble(comps["header"], body_html, comps["footer"])
+    else:
+        st.caption("No body text found for this template — check the raw JSON above to see the actual shape returned.")
+
+    named_variables = []  # list of (name, value) — WhatsFly's SEND contract always
+    # keys each variable by a NAME (`templateVariable-<name>-<n>`, confirmed via a
+    # real dashboard example), regardless of which placeholder format the template
+    # body itself uses. Meta templates support two formats, chosen at template-
+    # creation time (never mixed within one template): positional (`{{1}}`,
+    # `{{2}}`) or named (`{{cusname}}`, `{{cuscode}}`). When the body already uses
+    # named tokens, that token IS the name WhatsFly needs — defaulted straight
+    # from it. For positional bodies there's no name in the text itself, so
+    # `{{1}}`/`{{2}}` fall back to this account's confirmed convention
+    # (`CUSNAME`/`CUSCODE`, both real examples used exactly this pair); a 3rd+
+    # positional variable has no confirmed name and stays blank.
+    if tokens:
+        st.markdown(f"**Fill in {len(tokens)} variable(s)** — the preview below updates as you type:")
+        st.caption(
+            "Name defaults to the template's own `{{name}}` token if it uses named "
+            "placeholders, else this account's confirmed convention (`CUSNAME`/`CUSCODE` "
+            "for `{{1}}`/`{{2}}`) — override if needed. Sent as `templateVariable-<name>-<n>` "
+            "per variable, per a real dashboard example."
+        )
+        for i, tok in enumerate(tokens):
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                if not tok.isdigit():
+                    default_name = tok
+                else:
+                    default_name = _WF_DEFAULT_VAR_NAMES[i] if i < len(_WF_DEFAULT_VAR_NAMES) else ""
+                vname = st.text_input(
+                    f"Name for {{{{{tok}}}}}", value=default_name, key=f"wf_varname_{idx}_{i}"
+                )
+            with c2:
+                vval = st.text_input(f"Value for {{{{{tok}}}}}", key=f"wf_var_{idx}_{i}")
+            named_variables.append((vname, vval))
+
+        st.markdown("**Message Preview (with your edits)**")
+        _wf_render_bubble(
+            comps["header"], _wf_substitute_preview(body_html, tokens, [v for _, v in named_variables]), comps["footer"]
+        )
+    else:
+        st.caption("No {{...}} variables detected in this template's body.")
+
+    has_image_header = st.checkbox(
+        "🖼️ This template's header is an image",
+        key=f"wf_has_img_header_{idx}",
+        help=(
+            "Not auto-detected — this account's template-list response doesn't "
+            "expose header format, so check it manually against the template "
+            "and flip this on. Meta requires JPEG/PNG, 5MB max, for image headers."
+        ),
+    )
+    header_media_id = None
+    header_media_url = None
+    if has_image_header:
+        uploaded_file = st.file_uploader(
+            "Attach header image", type=["jpg", "jpeg", "png"], key=f"wf_header_img_{idx}"
+        )
+        manual_url = st.text_input(
+            "…or paste an already-hosted image URL instead",
+            key=f"wf_header_img_url_{idx}",
+        )
+        st.caption(
+            "**Confirmed via a real dashboard example** (image-header template): the "
+            "flat shape wants a plain **`template_header_media_url`** field — a hosted "
+            "URL, not a media id and not `media_type` (both of those were wrong guesses, "
+            "now removed from the default). The uploaded image's own hosted URL feeds "
+            "this automatically; the manual-URL box below is the same field if you'd "
+            "rather skip uploading."
+        )
+
+        if uploaded_file is not None:
+            st.image(uploaded_file, width=200)
+            file_sig = (uploaded_file.name, uploaded_file.size)
+            upload_cache_key = f"wf_header_upload_{idx}"
+            cached = st.session_state.get(upload_cache_key)
+            if not cached or cached.get("sig") != file_sig:
+                with st.spinner("Uploading image to WhatsFly…"):
+                    try:
+                        raw = whatsfly.upload_media(
+                            uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type or "image/jpeg"
+                        )
+                        mid, murl = _wf_extract_media_ref(raw)
+                        st.session_state[upload_cache_key] = {
+                            "sig": file_sig, "raw": raw, "media_id": mid, "media_url": murl, "error": None,
+                        }
+                    except Exception as e:
+                        st.session_state[upload_cache_key] = {"sig": file_sig, "raw": None, "error": str(e)}
+
+            cached = st.session_state.get(upload_cache_key)
+            if cached and cached.get("error"):
+                st.error(f"Upload failed: {cached['error']}")
+            elif cached and cached.get("raw") is not None:
+                with st.expander("🔍 Raw upload response"):
+                    st.json(cached["raw"])
+                if cached.get("media_id") or cached.get("media_url"):
+                    st.success(
+                        f"Uploaded — media_id: `{cached.get('media_id') or '—'}`, "
+                        f"url: `{cached.get('media_url') or '—'}`"
+                    )
+                    header_media_id = cached.get("media_id")
+                    header_media_url = cached.get("media_url")
+                else:
+                    st.warning("Uploaded, but couldn't find an id/url in the response — check the raw JSON above.")
+
+        if not header_media_id and not header_media_url and manual_url.strip():
+            header_media_url = manual_url.strip()
+
+    with st.expander("⚙️ Send request details"):
+        st.caption(
+            "**Confirmed via a real dashboard-generated example**: endpoint is "
+            "`POST /whatsapp/send/template` with flat params — but its `template_id` "
+            "param is a naming trap: it wants WhatsFly's short internal **`id`** "
+            "(e.g. `435966`), NOT the longer `template_id` field the template-list "
+            "response itself returns for the same template. Defaulted below accordingly."
+        )
+        template_id_val = st.text_input(
+            "Template ID for send (WhatsFly's short `id` — confirmed, not the list's `template_id`)",
+            value=_wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or "",
+            key=f"wf_template_id_{idx}",
+        )
+        endpoint = st.text_input(
+            "Send endpoint",
+            value="/whatsapp/send/template",
+            key="wf_endpoint",
+            help="Confirmed via a real dashboard-generated curl/GET example — this is the actual path.",
+        )
+
+        payload_shape = st.radio(
+            "Payload shape to try",
+            ["Flat (template_id + templateVariable-<name>-<n>)", "Meta Cloud API style (nested template/components)"],
+            horizontal=True,
+            key=f"wf_payload_shape_{idx}",
+            help=(
+                "Flat is confirmed via TWO real dashboard-generated examples now "
+                "(text-only, and this image-header one) — templateVariable-<name>-<n> "
+                "per variable, template_header_media_url for the header image, no "
+                "template_name/language_code in either real example. Meta Cloud API "
+                "style is kept only as a fallback; the send endpoint appears to key "
+                "its own template lookup off the flat template_id specifically, so "
+                "this shape (no flat template_id) got \"Message template not found\" "
+                "on a real attempt."
+            ),
+        )
+        header_image_param = (
+            {"id": header_media_id} if header_media_id
+            else {"link": header_media_url} if header_media_url
+            else None
+        )
+
+        if payload_shape.startswith("Meta"):
+            template_name = st.text_input(
+                "Template name (`template.name` — required for this shape only)",
+                value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
+                key=f"wf_template_name_{idx}",
+            )
+            language_code = st.text_input(
+                "Language code",
+                value=_wf_guess(template, ("language", "language_code", "lang")) or "en",
+                key=f"wf_lang_{idx}",
+            )
+            components = []
+            if header_image_param:
+                components.append({"type": "header", "parameters": [{"type": "image", "image": header_image_param}]})
+            body_values = [v for _, v in named_variables]
+            if body_values:
+                components.append({"type": "body", "parameters": [{"type": "text", "text": v} for v in body_values]})
+            default_payload = {
+                "template": {
+                    "name": template_name,
+                    "language": {"code": language_code},
+                    "components": components,
+                },
+            }
+            shape_key = "meta"
+        else:
+            # Confirmed via a real dashboard example against an image-header,
+            # named-variable template — templateVariable-<name>-<n> per variable
+            # (NOT a numbered/generic array), template_header_media_url as a plain
+            # hosted URL (NOT media_id/media_url/media_type, all wrong guesses from
+            # the first attempt). template_name/language_code weren't present in
+            # either real example, so dropped from the default entirely.
+            default_payload = {"template_id": template_id_val}
+            for i, (vname, vval) in enumerate(named_variables):
+                if vname.strip():
+                    default_payload[f"templateVariable-{vname.strip()}-{i + 1}"] = vval
+            if header_media_url:
+                default_payload["template_header_media_url"] = header_media_url
+            shape_key = "flat"
+
+        payload_key = f"wf_payload_json_{idx}_{shape_key}"
+        if payload_key not in st.session_state:
+            st.session_state[payload_key] = json.dumps(default_payload, indent=2)
+
+        if st.button("↻ Rebuild payload from fields above", key=f"wf_rebuild_payload_{idx}_{shape_key}"):
+            st.session_state[payload_key] = json.dumps(default_payload, indent=2)
+            st.rerun()
+
+        st.caption(
+            "Request body that will be sent (merged with apiToken/phone_number_id/phone_number) "
+            "— edit directly if the real API expects something different still."
+        )
+        payload_text = st.text_area("Payload JSON", key=payload_key, height=140)
+
+    if st.button("📤 Send Template Message", key="wf_send_template_btn"):
+        if not phone_number.strip():
+            st.error("Enter a recipient phone number first.")
+            return
+        try:
+            extra_params = json.loads(payload_text)
+        except json.JSONDecodeError as e:
+            st.error(f"Payload isn't valid JSON: {e}")
+            return
+        with st.spinner("Sending…"):
+            try:
+                resp = whatsfly.send_template(phone_number.strip(), endpoint.strip(), extra_params)
+            except Exception as e:
+                st.error(f"Send failed: {e}")
+                return
+        _render_wf_response(resp)
+
+
+def _show_whatsfly_messaging() -> None:
+    st.subheader("💬 WhatsFly — Send Test Message")
+    st.caption(
+        "Single-message test phase: send one message to one number and see what "
+        "comes back. No reply/webhook handling here yet — that's a separate "
+        "FastAPI service, a later phase (see Whatsfly_Integration_docs/)."
+    )
+
+    try:
+        whatsfly.get_credentials()
+    except whatsfly.WhatsFlyConfigError as e:
+        st.warning(str(e))
+        return
+
+    msg_type = st.radio(
+        "Message type",
+        ["Approved Template", "Plain Text (session message)"],
+        horizontal=True,
+        key="wf_msg_type",
+    )
+    phone_number = st.text_input(
+        "Recipient phone number",
+        key="wf_phone_number",
+        help="Country code + digits only — no '+', no spaces, e.g. 8801XXXXXXXXX.",
+    )
+
+    st.markdown("---")
+
+    if msg_type.startswith("Plain Text"):
+        _render_wf_text_send(phone_number)
+    else:
+        _render_wf_template_send(phone_number)
+
+
 # ---------------------------------------------------------------------------
 # 📨 Direct WhatsApp — single-message test panel, straight to Meta's own
-# WhatsApp Cloud API (graph.facebook.com). Meta's Cloud API contract is
-# officially documented (not reverse-engineered), so there's exactly one
-# real request shape. Meta templates come in two placeholder formats,
-# chosen at template-creation time (never mixed within one template):
-# positional (`{{1}}`, `{{2}}`) or named (`{{cusname}}`, `{{cuscode}}`). For
-# a named template, each body parameter sent to Meta must carry a
-# `parameter_name` matching the token — taken straight from the body text
-# itself, since Meta ties the name to the approved template, not to
-# metadata chosen at send time.
+# WhatsApp Cloud API (graph.facebook.com), no WhatsFly in between.
+#
+# Same test-phase scope as WhatsFly Messaging above: send ONE message to ONE
+# number, pull templates, fill in variables, see the raw response — against
+# a separate Meta test WABA + test number (config/direct_whatsapp.ini), not
+# the real WhatsFly-routed production number. Reuses the generic
+# markup/preview helpers defined above (_wf_format_whatsapp_markup,
+# _wf_render_bubble, _wf_substitute_preview, _wf_extract_variable_tokens,
+# _wf_extract_components) — those are plain WhatsApp-template rendering
+# helpers, not WhatsFly-specific, and Meta's own template shape
+# (top-level `components: [{type, text}]`) is exactly what
+# _wf_extract_components already parses.
+#
+# Unlike the WhatsFly panel, there's no per-variable NAME *field* or
+# payload-shape guessing here — Meta's Cloud API contract is officially
+# documented (not reverse-engineered) and there's exactly one real request
+# shape. But Meta templates DO come in two placeholder formats, chosen at
+# template-creation time (never mixed within one template): positional
+# (`{{1}}`, `{{2}}`) or named (`{{cusname}}`, `{{cuscode}}`). For a named
+# template, each body parameter sent to Meta must carry a `parameter_name`
+# matching the token — taken straight from the body text itself, not typed
+# in by hand, since Meta (unlike WhatsFly) ties the name to the approved
+# template, not to metadata chosen at send time.
 # ---------------------------------------------------------------------------
 
 
@@ -1969,15 +2431,15 @@ def _render_dwa_template_send(phone_number: str) -> None:
     with st.expander("🔍 Selected template (raw)"):
         st.json(template)
 
-    comps = _wa_extract_components(template)
+    comps = _wf_extract_components(template)
     body_text = comps["body"]
-    tokens = _wa_extract_variable_tokens(body_text)
+    tokens = _wf_extract_variable_tokens(body_text)
     is_named_format = bool(tokens) and not tokens[0].isdigit()
-    body_html = _wa_format_whatsapp_markup(body_text)
+    body_html = _wf_format_whatsapp_markup(body_text)
 
     st.markdown("**Template Preview**")
     if body_text:
-        _wa_render_bubble(comps["header"], body_html, comps["footer"])
+        _wf_render_bubble(comps["header"], body_html, comps["footer"])
     else:
         st.caption("No body text found for this template — check the raw JSON above to see the actual shape returned.")
 
@@ -1985,7 +2447,8 @@ def _render_dwa_template_send(phone_number: str) -> None:
     # its own {{token}} by POSITION for a positional template (`{{1}}`,
     # `{{2}}`, ...), or by the token text itself (sent as `parameter_name`)
     # for a named template (`{{cusname}}`, `{{cuscode}}`, ...); no free-form
-    # naming here, since Meta ties the name to the approved template itself.
+    # naming here, unlike WhatsFly's send contract, since Meta ties the name
+    # to the approved template itself.
     if tokens:
         st.markdown(f"**Fill in {len(tokens)} variable(s)** — the preview below updates as you type:")
         if is_named_format:
@@ -1995,7 +2458,7 @@ def _render_dwa_template_send(phone_number: str) -> None:
             variable_values.append(vval)
 
         st.markdown("**Message Preview (with your edits)**")
-        _wa_render_bubble(comps["header"], _wa_substitute_preview(body_html, tokens, variable_values), comps["footer"])
+        _wf_render_bubble(comps["header"], _wf_substitute_preview(body_html, tokens, variable_values), comps["footer"])
     else:
         st.caption("No {{...}} variables detected in this template's body.")
 
@@ -2120,9 +2583,11 @@ def _render_dwa_template_send(phone_number: str) -> None:
 def _show_direct_whatsapp_messaging() -> None:
     st.subheader("📨 Direct WhatsApp — Send Test Message")
     st.caption(
-        "Sends straight to Meta's WhatsApp Cloud API (graph.facebook.com) — "
-        "one message to one hand-entered number, plain text or an approved "
-        "template."
+        "Sends straight to Meta's WhatsApp Cloud API (graph.facebook.com) — no "
+        "WhatsFly in between. Same single-message test flow as WhatsFly "
+        "Messaging above, against a separate Meta test WABA + test number "
+        "(config/direct_whatsapp.ini), so nothing here touches the real "
+        "WhatsFly-routed production number."
     )
 
     try:
@@ -2171,8 +2636,9 @@ def _show_whatsapp_message_log() -> None:
     st.subheader("📥 WhatsApp Message Log")
     st.caption(
         "Read-only view into the whatsapp_webhook service's own database — "
-        "confirms a send (Direct WhatsApp above) actually reached Meta, and "
-        "shows inbound replies as they arrive. This app never writes here."
+        "confirms a send (WhatsFly / Direct WhatsApp above) actually reached "
+        "Meta, and shows inbound replies as they arrive. This app never "
+        "writes here."
     )
 
     try:
@@ -2245,7 +2711,7 @@ def _show_whatsapp_message_log() -> None:
 
 _PRODUCT_ONLY_MODES = {
     "📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads",
-    "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
+    "💬 WhatsFly Messaging", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
 }
 
 
@@ -2262,6 +2728,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "📈 High Stock Marketing",
             "🖼️ Media Library",
             "🎣 Leads",
+            "💬 WhatsFly Messaging",
             "📨 Direct WhatsApp",
             "📥 WhatsApp Message Log",
         ],
@@ -2284,6 +2751,8 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             _show_inactive_outreach(str(zid), proj, sales_raw)
         elif mode == "🎣 Leads":
             _show_leads(str(zid))
+        elif mode == "💬 WhatsFly Messaging":
+            _show_whatsfly_messaging()
         elif mode == "📨 Direct WhatsApp":
             _show_direct_whatsapp_messaging()
         elif mode == "📥 WhatsApp Message Log":
