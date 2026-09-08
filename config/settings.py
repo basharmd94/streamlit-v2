@@ -6,6 +6,7 @@ LOG_INI      = CONFIG_DIR / "logging.ini"
 DB_INI       = CONFIG_DIR / "global_db.ini"
 WHATSFLY_INI = CONFIG_DIR / "whatsfly.ini"
 DIRECT_WHATSAPP_INI = CONFIG_DIR / "direct_whatsapp.ini"
+WHATSAPP_WEBHOOK_DB_INI = CONFIG_DIR / "whatsapp_webhook_db.ini"
 
 def get_db_params(section: str = "database") -> dict:
     parser = ConfigParser()
@@ -50,5 +51,30 @@ def get_direct_whatsapp_params(section: str = "direct_whatsapp") -> dict | None:
         return None
     params = dict(parser.items(section))
     if not params.get("access_token") or not params.get("phone_number_id") or not params.get("waba_id"):
+        return None
+    return params
+
+
+def get_whatsapp_webhook_db_params(section: str = "whatsapp_webhook_db") -> dict | None:
+    """Returns {'host', 'port', 'dbname', 'user', 'password'} or None if
+    config/whatsapp_webhook_db.ini (gitignored, like every other *.ini here)
+    doesn't exist yet or is missing the section — never raises, so callers
+    can show a friendly setup message instead of crashing the page.
+
+    This is READ-ONLY access to the separate whatsapp_webhook service's own
+    Postgres database (whatsapp_webhooks, isolated from this app's `da` —
+    see whatsapp_webhook/schema.sql), for Marketing > WhatsApp Message Log.
+    Use a dedicated low-privilege SELECT-only role here, not the webhook
+    service's own webhook_svc role (which has INSERT/UPDATE) — this app
+    never writes to that database."""
+    if not WHATSAPP_WEBHOOK_DB_INI.exists():
+        return None
+    parser = ConfigParser()
+    parser.read(WHATSAPP_WEBHOOK_DB_INI)
+    if not parser.has_section(section):
+        return None
+    params = dict(parser.items(section))
+    params.setdefault("port", "5432")
+    if not params.get("host") or not params.get("dbname") or not params.get("user") or not params.get("password"):
         return None
     return params

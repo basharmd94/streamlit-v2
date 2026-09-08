@@ -9,6 +9,7 @@ from pathlib import Path
 
 from core import whatsfly
 from core import direct_whatsapp
+from core import whatsapp_webhook_db
 
 from views.call_log_shared import render_call_log_panel as _render_call_log_panel
 from views.lead_call_log_shared import (
@@ -2618,12 +2619,99 @@ def _show_direct_whatsapp_messaging() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 📥 WhatsApp Message Log — read-only viewer into the whatsapp_webhook
+# service's own database (whatsapp_webhooks), so a message sent via the
+# panels above (or a real customer reply) can be verified end-to-end without
+# leaving Streamlit. This app never writes to that database — see
+# core/whatsapp_webhook_db.py.
+# ---------------------------------------------------------------------------
+
+def _preview_wa_content(content) -> str:
+    if not isinstance(content, dict):
+        return ""
+    return str(content.get("body") or content.get("caption") or "")[:120]
+
+
+def _show_whatsapp_message_log() -> None:
+    st.subheader("📥 WhatsApp Message Log")
+    st.caption(
+        "Read-only view into the whatsapp_webhook service's own database — "
+        "confirms a send (WhatsFly / Direct WhatsApp above) actually reached "
+        "Meta, and shows inbound replies as they arrive. This app never "
+        "writes here."
+    )
+
+    try:
+        counts = whatsapp_webhook_db.get_counts()
+    except whatsapp_webhook_db.WhatsAppWebhookDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Webhook Events Logged", counts["webhook_events"])
+    c2.metric("Messages", counts["messages"])
+    c3.metric("Known Contacts", counts["contacts"])
+
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        if st.button("🔄 Refresh"):
+            st.rerun()
+    with col_b:
+        limit = st.number_input("Rows to show", min_value=10, max_value=1000, value=100, step=10)
+
+    try:
+        rows = whatsapp_webhook_db.get_recent_messages(int(limit))
+    except whatsapp_webhook_db.WhatsAppWebhookDBConfigError as e:
+        st.warning(str(e))
+        return
+    except Exception as e:
+        st.error(f"Could not load messages: {e}")
+        return
+
+    if not rows:
+        st.info("No messages recorded yet.")
+        return
+
+    df = pd.DataFrame(rows)
+    df["preview"] = df["content"].apply(_preview_wa_content)
+    display_df = df.rename(columns={
+        "wamid": "Message ID", "direction": "Direction", "contact_phone": "Phone",
+        "contact_name": "Contact", "message_type": "Type", "template_name": "Template",
+        "current_status": "Status", "message_timestamp": "Sent/Received At",
+        "created_at": "Logged At", "preview": "Preview",
+    })[["Direction", "Phone", "Contact", "Type", "Template", "Status",
+        "Preview", "Sent/Received At", "Logged At", "Message ID"]]
+
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown("**Drill down on one message** — status history + raw payload")
+    wamid_options = df["wamid"].tolist()
+    if wamid_options:
+        chosen = st.selectbox("Message ID (wamid)", wamid_options)
+        chosen_row = df[df["wamid"] == chosen].iloc[0]
+        st.json(chosen_row["content"] if isinstance(chosen_row["content"], dict) else {})
+        try:
+            history = whatsapp_webhook_db.get_status_history(chosen)
+        except Exception as e:
+            st.error(f"Could not load status history: {e}")
+            history = []
+        if history:
+            st.table(pd.DataFrame(history))
+        else:
+            st.caption(
+                "No status events yet for this message — normal for a fresh "
+                "inbound message, or an outbound one still in flight."
+            )
+
+
+# ---------------------------------------------------------------------------
 # public entry point
 # ---------------------------------------------------------------------------
 
 _PRODUCT_ONLY_MODES = {
     "📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads",
-    "💬 WhatsFly Messaging", "📨 Direct WhatsApp",
+    "💬 WhatsFly Messaging", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
 }
 
 
@@ -2642,6 +2730,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "🎣 Leads",
             "💬 WhatsFly Messaging",
             "📨 Direct WhatsApp",
+            "📥 WhatsApp Message Log",
         ],
         horizontal=True,
         label_visibility="collapsed",
@@ -2666,6 +2755,8 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             _show_whatsfly_messaging()
         elif mode == "📨 Direct WhatsApp":
             _show_direct_whatsapp_messaging()
+        elif mode == "📥 WhatsApp Message Log":
+            _show_whatsapp_message_log()
         else:
             _show_high_stock_marketing(str(zid), proj)
         return
