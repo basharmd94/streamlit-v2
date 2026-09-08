@@ -6,9 +6,8 @@ whatsapp_webhook/schema.sql and whatsapp_webhook/HANDOFF.md).
 
 This app never writes here — that's the webhook receiver's own job
 (whatsapp_webhook/db.py). This module exists solely for Marketing >
-WhatsApp Message Log, so a message sent via the Direct WhatsApp / WhatsFly
-panels (or a real customer reply) can be verified end-to-end without
-leaving Streamlit.
+WhatsApp Message Log, so a message sent via the Direct WhatsApp panel (or a
+real customer reply) can be verified end-to-end without leaving Streamlit.
 
 Credentials: config/whatsapp_webhook_db.ini (gitignored, same convention as
 config/direct_whatsapp.ini), via config.settings.get_whatsapp_webhook_db_params.

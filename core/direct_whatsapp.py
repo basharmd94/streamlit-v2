@@ -1,18 +1,11 @@
 # core/direct_whatsapp.py
 """
 Thin client for Meta's own WhatsApp Cloud API, called directly
-(graph.facebook.com) — no WhatsFly in between. See core/whatsfly.py for the
-WhatsFly-routed equivalent; the two are kept as separate clients/credentials
-since they hit different endpoints against (for now) a separate Meta test
-WhatsApp Business Account + test number, not the real WhatsFly-routed number.
+(graph.facebook.com). Follows Meta's own published Cloud API docs
+(https://developers.facebook.com/docs/whatsapp/cloud-api/) directly, so no
+defensive multi-key guessing here — the contract is documented.
 
-Unlike whatsfly.py, this follows Meta's own published Cloud API docs
-(https://developers.facebook.com/docs/whatsapp/cloud-api/) directly rather
-than reverse-engineering a response shape — so no defensive multi-key
-guessing here, the contract is documented.
-
-Credentials come from config/direct_whatsapp.ini (gitignored, same
-convention as config/whatsfly.ini) via
+Credentials come from config/direct_whatsapp.ini (gitignored) via
 config.settings.get_direct_whatsapp_params — never hardcoded, never
 committed.
 """
@@ -92,8 +85,7 @@ def send_text(phone_number: str, message: str) -> requests.Response:
 def upload_media(file_bytes: bytes, filename: str, mime_type: str) -> dict:
     """POST /{phone_number_id}/media (multipart) — Meta's documented shape,
     returns {"id": "<media_id>"} on success. That id feeds a template's
-    header image parameter directly (no separate hosted URL needed, unlike
-    WhatsFly's flow)."""
+    header image parameter directly."""
     creds = get_credentials()
     resp = requests.post(
         f"{_base_url(creds)}/{creds['phone_number_id']}/media",
@@ -108,12 +100,11 @@ def upload_media(file_bytes: bytes, filename: str, mime_type: str) -> dict:
 
 def send_template(phone_number: str, template_name: str, language_code: str, components: list) -> requests.Response:
     """POST /{phone_number_id}/messages, type=template — Meta's documented
-    nested `template: {name, language: {code}, components: [...]}` shape
-    (the real thing WhatsFly's own "Meta Cloud API style" fallback option
-    imitates). Variables are positional here (no per-variable name like
-    WhatsFly's `templateVariable-<name>-<n>` — that was a WhatsFly-specific
-    convention, not part of Meta's own contract): each `{{n}}` in the body
-    is filled by the nth entry of the body component's `parameters` list."""
+    nested `template: {name, language: {code}, components: [...]}` shape.
+    `components` is built by the caller and passed through as-is: a
+    positional template's body parameters are matched to `{{n}}` by array
+    order, a named template's each carry their own `parameter_name` — see
+    views/marketing.py::_render_dwa_template_send for how that's built."""
     creds = get_credentials()
     payload = {
         "messaging_product": "whatsapp",
