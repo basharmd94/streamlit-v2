@@ -34,11 +34,15 @@ app = FastAPI(title="WhatsApp Webhook Receiver")
 VERIFY_TOKEN = os.environ["WHATSAPP_VERIFY_TOKEN"]
 APP_SECRET = os.environ["META_APP_SECRET"].encode()
 
-# Optional — the /webhook/whatsfly/{token} route below 404s until this is
-# set, rather than the app failing to start. Not required at import time
-# because this route is new/being rolled out independently of the
-# Meta-direct one above.
-WHATSFLY_WEBHOOK_TOKEN = os.environ.get("WHATSFLY_WEBHOOK_TOKEN")
+# Optional, one per WhatsFly trigger type (WhatsFly gives each trigger its
+# own separate URL field, unlike Meta's single endpoint) — each route below
+# 404s until its own token is set, rather than the app failing to start.
+# Register only the URLs you actually want live; an unset token just means
+# that trigger's endpoint isn't reachable yet.
+WHATSFLY_WEBHOOK_TOKEN = os.environ.get("WHATSFLY_WEBHOOK_TOKEN")  # Incoming Message
+WHATSFLY_WEBHOOK_TOKEN_OUTGOING = os.environ.get("WHATSFLY_WEBHOOK_TOKEN_OUTGOING")
+WHATSFLY_WEBHOOK_TOKEN_STATUS = os.environ.get("WHATSFLY_WEBHOOK_TOKEN_STATUS")
+WHATSFLY_WEBHOOK_TOKEN_CONVERSATION = os.environ.get("WHATSFLY_WEBHOOK_TOKEN_CONVERSATION")
 
 
 @app.get("/webhook/whatsapp")
@@ -92,33 +96,35 @@ def _log_rejected(raw_body: bytes) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /webhook/whatsfly/{token} — WhatsFly's own webhook delivery (Settings >
-# Webhook > "Trigger Webhook for Incoming Message / Outgoing Message /
-# Message Status Change / Conversation Status Change"), a separate sender
-# from Meta's direct contract above.
+# WhatsFly's own webhook delivery — Settings > Webhook, which (confirmed
+# against the real dashboard) gives each of its 4 triggers a SEPARATE URL
+# field, unlike Meta's single endpoint above: Incoming Message, Outgoing
+# Message, Message Status Change, Conversation Status Change. One route per
+# trigger below, same shape, each with its own token/env var.
 #
 # WhatsFly's own integration guide documents no signing/secret mechanism at
 # all for their webhook calls (no header, no shared secret) — unlike Meta's
 # X-Hub-Signature-256. So trust here is a random token embedded in the URL
-# path itself instead, constant-time compared against WHATSFLY_WEBHOOK_TOKEN
-# — paste the full URL (including the token) into WhatsFly's webhook URL
-# field, not a bare /webhook/whatsfly.
+# path itself instead, constant-time compared per-route — paste the full
+# URL (including the token) into the matching WhatsFly webhook URL field.
 #
 # Phase 1, matching WhatsFly's own guide's suggested build order ("write a
 # minimal route that logs the raw request body and returns 200 OK"): just
 # capture the raw payload into the same webhook_events table (reusing the
 # existing schema — no migration) and leave processing_status at its
-# 'pending' default. WhatsFly's payload shape isn't documented anywhere and
-# their other API responses have had genuinely surprising shapes before
-# (e.g. the template list's "message" wrapper key) — real parsing (a
-# handlers.py-equivalent dispatch) comes once a live delivery shows us the
-# actual JSON, not before.
+# 'pending' default. Real parsing (a handlers.py-equivalent dispatch) comes
+# once a live delivery shows us each trigger's actual JSON shape — the
+# Incoming Message one already confirmed real fields (chat_id, first_name,
+# user_message, subscriber_id, wa_message_id, whatsapp_bot_id/name/username,
+# no explicit event-type field), the other three are still unconfirmed and
+# WhatsFly's other API responses have had genuinely surprising shapes before
+# (e.g. the template list's "message" wrapper key) — not guessing ahead of
+# real payloads for those.
 # ---------------------------------------------------------------------------
 
 
-@app.post("/webhook/whatsfly/{token}")
-async def receive_whatsfly(token: str, request: Request):
-    if not WHATSFLY_WEBHOOK_TOKEN or not hmac.compare_digest(token, WHATSFLY_WEBHOOK_TOKEN):
+async def _capture_whatsfly_event(request: Request, token: str, expected_token: str | None, kind: str) -> dict:
+    if not expected_token or not hmac.compare_digest(token, expected_token):
         # 404, not 403 — don't confirm to a prober that this path exists at all.
         raise HTTPException(status_code=404)
 
@@ -135,5 +141,27 @@ async def receive_whatsfly(token: str, request: Request):
         # this event's authenticity) is the same.
         event_id = wh_db.insert_webhook_event(conn, raw_payload=payload, signature_valid=True)
 
-    logger.info("WhatsFly webhook event id=%s captured (phase 1: raw log only, not yet parsed)", event_id)
+    logger.info("WhatsFly %s webhook event id=%s captured (phase 1: raw log only, not yet parsed)", kind, event_id)
     return {"status": "received"}
+
+
+@app.post("/webhook/whatsfly/{token}")
+async def receive_whatsfly_incoming(token: str, request: Request):
+    return await _capture_whatsfly_event(request, token, WHATSFLY_WEBHOOK_TOKEN, "incoming_message")
+
+
+@app.post("/webhook/whatsfly/outgoing/{token}")
+async def receive_whatsfly_outgoing(token: str, request: Request):
+    return await _capture_whatsfly_event(request, token, WHATSFLY_WEBHOOK_TOKEN_OUTGOING, "outgoing_message")
+
+
+@app.post("/webhook/whatsfly/status/{token}")
+async def receive_whatsfly_status(token: str, request: Request):
+    return await _capture_whatsfly_event(request, token, WHATSFLY_WEBHOOK_TOKEN_STATUS, "message_status_change")
+
+
+@app.post("/webhook/whatsfly/conversation/{token}")
+async def receive_whatsfly_conversation(token: str, request: Request):
+    return await _capture_whatsfly_event(
+        request, token, WHATSFLY_WEBHOOK_TOKEN_CONVERSATION, "conversation_status_change"
+    )
