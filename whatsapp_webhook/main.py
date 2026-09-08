@@ -23,6 +23,7 @@ load_dotenv()
 
 import db as wh_db
 import handlers
+import whatsfly_handlers
 from security import verify_signature
 
 logging.basicConfig(level=logging.INFO)
@@ -109,22 +110,18 @@ def _log_rejected(raw_body: bytes) -> None:
 # path itself instead, constant-time compared per-route — paste the full
 # URL (including the token) into the matching WhatsFly webhook URL field.
 #
-# Phase 1, matching WhatsFly's own guide's suggested build order ("write a
-# minimal route that logs the raw request body and returns 200 OK"): just
-# capture the raw payload into the same webhook_events table (reusing the
-# existing schema — no migration) and leave processing_status at its
-# 'pending' default. Real parsing (a handlers.py-equivalent dispatch) comes
-# once a live delivery shows us each trigger's actual JSON shape — the
-# Incoming Message one already confirmed real fields (chat_id, first_name,
-# user_message, subscriber_id, wa_message_id, whatsapp_bot_id/name/username,
-# no explicit event-type field), the other three are still unconfirmed and
-# WhatsFly's other API responses have had genuinely surprising shapes before
-# (e.g. the template list's "message" wrapper key) — not guessing ahead of
-# real payloads for those.
+# Phase 1 (capture raw, log only) is done — real parsing is now wired in
+# for Incoming Message, Outgoing Message, and Message Status Change, each
+# confirmed against real captured payloads (see whatsfly_handlers.py).
+# Conversation Status Change has no confirmed shape yet and stays
+# raw-capture-only (processor=None below) until a real one arrives.
 # ---------------------------------------------------------------------------
 
 
-async def _capture_whatsfly_event(request: Request, token: str, expected_token: Optional[str], kind: str) -> dict:
+async def _capture_whatsfly_event(
+    request: Request, token: str, expected_token: Optional[str], kind: str,
+    background_tasks: Optional[BackgroundTasks] = None, processor=None,
+) -> dict:
     if not expected_token or not hmac.compare_digest(token, expected_token):
         # 404, not 403 — don't confirm to a prober that this path exists at all.
         raise HTTPException(status_code=404)
@@ -142,27 +139,43 @@ async def _capture_whatsfly_event(request: Request, token: str, expected_token: 
         # this event's authenticity) is the same.
         event_id = wh_db.insert_webhook_event(conn, raw_payload=payload, signature_valid=True)
 
-    logger.info("WhatsFly %s webhook event id=%s captured (phase 1: raw log only, not yet parsed)", kind, event_id)
+    if processor is not None and background_tasks is not None:
+        # Ack fast, process after the response is sent — same
+        # respond-fast-process-later rule as the Meta route above.
+        background_tasks.add_task(processor, event_id, payload)
+    else:
+        logger.info("WhatsFly %s webhook event id=%s captured (raw log only, no parser yet)", kind, event_id)
+
     return {"status": "received"}
 
 
 @app.post("/webhook/whatsfly/{token}")
-async def receive_whatsfly_incoming(token: str, request: Request):
-    return await _capture_whatsfly_event(request, token, WHATSFLY_WEBHOOK_TOKEN, "incoming_message")
+async def receive_whatsfly_incoming(token: str, request: Request, background_tasks: BackgroundTasks):
+    return await _capture_whatsfly_event(
+        request, token, WHATSFLY_WEBHOOK_TOKEN, "incoming_message",
+        background_tasks, whatsfly_handlers.process_incoming,
+    )
 
 
 @app.post("/webhook/whatsfly/outgoing/{token}")
-async def receive_whatsfly_outgoing(token: str, request: Request):
-    return await _capture_whatsfly_event(request, token, WHATSFLY_WEBHOOK_TOKEN_OUTGOING, "outgoing_message")
+async def receive_whatsfly_outgoing(token: str, request: Request, background_tasks: BackgroundTasks):
+    return await _capture_whatsfly_event(
+        request, token, WHATSFLY_WEBHOOK_TOKEN_OUTGOING, "outgoing_message",
+        background_tasks, whatsfly_handlers.process_outgoing,
+    )
 
 
 @app.post("/webhook/whatsfly/status/{token}")
-async def receive_whatsfly_status(token: str, request: Request):
-    return await _capture_whatsfly_event(request, token, WHATSFLY_WEBHOOK_TOKEN_STATUS, "message_status_change")
+async def receive_whatsfly_status(token: str, request: Request, background_tasks: BackgroundTasks):
+    return await _capture_whatsfly_event(
+        request, token, WHATSFLY_WEBHOOK_TOKEN_STATUS, "message_status_change",
+        background_tasks, whatsfly_handlers.process_status,
+    )
 
 
 @app.post("/webhook/whatsfly/conversation/{token}")
 async def receive_whatsfly_conversation(token: str, request: Request):
+    # No processor yet — Conversation Status Change has no confirmed shape.
     return await _capture_whatsfly_event(
         request, token, WHATSFLY_WEBHOOK_TOKEN_CONVERSATION, "conversation_status_change"
     )

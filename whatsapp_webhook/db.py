@@ -127,6 +127,31 @@ def ensure_outbound_stub(conn, *, wamid, phone_number_id, contact_phone) -> None
         )
 
 
+def upsert_outbound_message(conn, *, wamid, phone_number_id, contact_phone,
+                             message_type, content) -> None:
+    """Insert or upgrade an outbound message row with its real content.
+    Confirmed necessary in practice, not just theoretical: WhatsFly's own
+    webhook delivery isn't ordering-guaranteed either — a Message Status
+    Change event for a wamid can (and did) arrive before that same
+    message's own Outgoing Message event, so ensure_outbound_stub may have
+    already created a thin 'unknown'-typed placeholder row by the time this
+    runs. UPDATE-then-INSERT-if-0-rows (pre-9.5 server, see upsert_contact's
+    comment above) means either ordering ends up with the same final state:
+    a real message_type/content on the row, not a stub stuck at 'unknown'."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE messages SET message_type = %s, content = %s WHERE wamid = %s",
+            (message_type, json.dumps(content), wamid),
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                """INSERT INTO messages (wamid, direction, phone_number_id, contact_phone,
+                                         message_type, content)
+                   VALUES (%s, 'outbound', %s, %s, %s, %s)""",
+                (wamid, phone_number_id, contact_phone, message_type, json.dumps(content)),
+            )
+
+
 def insert_status_event(conn, *, wamid, status, error_code, error_title,
                          event_timestamp, webhook_event_id) -> None:
     # SELECT-then-INSERT instead of ON CONFLICT (wamid, status) DO NOTHING —
