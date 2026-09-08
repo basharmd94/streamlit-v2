@@ -28,6 +28,50 @@ def normalize_phone_cols(df: pd.DataFrame, extra_cols: "list[str] | None" = None
     return df
 
 
+def to_whatsapp_number(raw) -> "str | None":
+    """Normalize a phone number string to WhatsApp's required send format —
+    country code + digits only, no '+', no spaces (e.g. 8801XXXXXXXXX).
+    Bangladesh-specific (880 prefix) since this app's customer base is BD.
+    Strips non-digits first so it's safe on values with spaces/dashes/(+)."""
+    if not raw or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    digits = re.sub(r"\D", "", str(raw))
+    if not digits:
+        return None
+    if digits.startswith("880"):
+        return digits
+    if digits.startswith("0"):
+        return "880" + digits[1:]
+    if len(digits) == 10:
+        # Bare 10-digit local number with no leading 0 — rare but seen.
+        return "880" + digits
+    return digits  # Not a recognizable BD shape — pass through as-is.
+
+
+def customer_whatsapp_numbers(cusmobile, whatsapp) -> tuple:
+    """(primary, secondary) WhatsApp-ready numbers for one customer row,
+    given cacus_directory's own cusmobile (cacus.xmobile) and whatsapp
+    (cacus.xtaxnum) columns.
+
+    Prefers `whatsapp` when populated — confirmed against real production
+    data that when it's set (91% of customers), it's already in the exact
+    880-format WhatsApp needs, and is this app's own established
+    "WhatsApp Number" field (see CLAUDE.md's Customer Columns table) —
+    falls back to `cusmobile` (local format, needs normalizing) only when
+    `whatsapp` is blank. Either field can hold multiple comma-separated
+    numbers in one cell (confirmed: ~21% of cusmobile, ~2% of whatsapp) —
+    the first becomes primary, the second (if present) becomes secondary,
+    both from whichever single field was actually used as the source (not
+    mixed across the two columns)."""
+    source = whatsapp if whatsapp and str(whatsapp).strip() else cusmobile
+    if not source or not str(source).strip():
+        return None, None
+    parts = [p.strip() for p in str(source).split(",") if p.strip()]
+    primary = to_whatsapp_number(parts[0]) if parts else None
+    secondary = to_whatsapp_number(parts[1]) if len(parts) > 1 else None
+    return primary, secondary
+
+
 def highlight_overdue_date(df: pd.DataFrame, col: str, ref_date=None):
     """Return a pandas Styler flagging `col` where its date has already
     passed `ref_date` (defaults to today) — e.g. an overdue promised-payment

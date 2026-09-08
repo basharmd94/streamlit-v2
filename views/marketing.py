@@ -31,7 +31,7 @@ from processing.marketing_leads import (
     build_lead_call_log_table,
     build_leads_upload_template,
 )
-from processing.common import normalize_phone_cols
+from processing.common import normalize_phone_cols, customer_whatsapp_numbers
 from core.analytics import Analytics
 
 
@@ -2248,12 +2248,50 @@ def _render_wf_template_send(phone_number: str) -> None:
         _render_wf_response(resp)
 
 
-def _show_whatsfly_messaging() -> None:
+_WF_STATUS_LABEL = {"sent": "✓ Sent", "delivered": "✓✓ Delivered", "read": "✓✓ Read", "failed": "⚠️ Failed"}
+
+
+def _wf_render_chat_history(phone_numbers: list) -> None:
+    """Renders a customer's WhatsApp thread as chat bubbles, matched purely
+    by phone number — the whatsapp_webhooks database has no concept of a
+    customer code at all, so this is the only way to relate a cacus
+    customer to their conversation. `phone_numbers` is a list (not one
+    number) since a customer can have two WhatsApp-eligible numbers
+    (primary/secondary) and either could be the one they've actually
+    messaged from."""
+    try:
+        messages = whatsapp_webhook_db.get_messages_for_contact(phone_numbers)
+    except whatsapp_webhook_db.WhatsAppWebhookDBConfigError as e:
+        st.info(f"Conversation history unavailable: {e}")
+        return
+    except Exception as e:
+        st.warning(f"Couldn't load conversation history: {e}")
+        return
+
+    if not messages:
+        st.caption("No message history found for this number yet.")
+        return
+
+    for m in messages:
+        is_inbound = m.get("direction") == "inbound"
+        with st.chat_message("user" if is_inbound else "assistant", avatar="🧑" if is_inbound else "🏢"):
+            content = m.get("content")
+            body = content.get("body") if isinstance(content, dict) else None
+            st.markdown(body or f"_{m.get('message_type') or 'message'} (no text)_")
+            ts = m.get("message_timestamp") or m.get("created_at")
+            meta = ts.strftime("%b %d, %Y %H:%M") if ts else ""
+            if not is_inbound and m.get("current_status"):
+                status_label = _WF_STATUS_LABEL.get(m["current_status"], m["current_status"])
+                meta = f"{meta}  ·  {status_label}" if meta else status_label
+            if meta:
+                st.caption(meta)
+
+
+def _show_whatsfly_messaging(zid: str) -> None:
     st.subheader("💬 WhatsFly — Send Test Message")
     st.caption(
-        "Single-message test phase: send one message to one number and see what "
-        "comes back. No reply/webhook handling here yet — that's a separate "
-        "FastAPI service, a later phase (see Whatsfly_Integration_docs/)."
+        "Send one message to one number — an approved template or plain "
+        "session text — with that number's own conversation history right here."
     )
 
     try:
@@ -2262,19 +2300,71 @@ def _show_whatsfly_messaging() -> None:
         st.warning(str(e))
         return
 
+    phone_number = ""
+    primary = secondary = None
+
+    with st.container(border=True):
+        st.markdown("**👤 Recipient**")
+        recipient_mode = st.radio(
+            "Recipient", ["Pick a customer", "Enter manually"],
+            horizontal=True, label_visibility="collapsed", key="wf_recipient_mode",
+        )
+
+        if recipient_mode == "Pick a customer":
+            cacus_df = _load_cacus(str(zid))
+            if cacus_df.empty:
+                st.warning("No customer data available for this ZID.")
+            else:
+                labels = ["— Select a customer —"] + [
+                    f"{r.cusid} - {str(r.cusname).strip() or '(no name)'}" for r in cacus_df.itertuples()
+                ]
+                choice = st.selectbox("Customer", labels, key="wf_customer_pick")
+                if choice != labels[0]:
+                    cusid = choice.split(" - ", 1)[0]
+                    row = cacus_df.loc[cacus_df["cusid"] == cusid].iloc[0]
+                    primary, secondary = customer_whatsapp_numbers(row.get("cusmobile"), row.get("whatsapp"))
+                    if not primary:
+                        st.warning("No phone number on file for this customer — switch to manual entry instead.")
+                    else:
+                        phone_number = primary
+                        if secondary and st.checkbox(
+                            f"Use secondary number ({secondary}) instead of primary ({primary})",
+                            key="wf_use_secondary",
+                        ):
+                            phone_number = secondary
+                        st.caption(f"Sending to: `{phone_number}`")
+        else:
+            phone_number = st.text_input(
+                "Recipient phone number",
+                key="wf_phone_number",
+                help="Country code + digits only — no '+', no spaces, e.g. 8801XXXXXXXXX.",
+            )
+
+    # Sanity check, not a hard block — a standard BD WhatsApp number is
+    # 880 + 10 digits = 13 digits total. Real customer-master data has
+    # genuine entry errors (e.g. a double leading zero) that normalize to
+    # something the wrong length; flag it rather than silently sending to
+    # a number that's likely wrong, or guessing at a "corrected" one.
+    if phone_number and (not phone_number.isdigit() or len(phone_number) != 13):
+        st.caption(
+            f"⚠️ `{phone_number}` doesn't look like a standard 880-format number "
+            "(expected 13 digits) — double-check before sending."
+        )
+
+    history_numbers = [n for n in {phone_number, primary, secondary} if n]
+    if history_numbers:
+        with st.container(border=True):
+            st.markdown("**💬 Conversation History**")
+            _wf_render_chat_history(history_numbers)
+
+    st.markdown("---")
+    st.markdown("**✉️ Compose Message**")
     msg_type = st.radio(
         "Message type",
         ["Approved Template", "Plain Text (session message)"],
         horizontal=True,
         key="wf_msg_type",
     )
-    phone_number = st.text_input(
-        "Recipient phone number",
-        key="wf_phone_number",
-        help="Country code + digits only — no '+', no spaces, e.g. 8801XXXXXXXXX.",
-    )
-
-    st.markdown("---")
 
     if msg_type.startswith("Plain Text"):
         _render_wf_text_send(phone_number)
@@ -2757,7 +2847,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
         elif mode == "🎣 Leads":
             _show_leads(str(zid))
         elif mode == "💬 WhatsFly Messaging":
-            _show_whatsfly_messaging()
+            _show_whatsfly_messaging(str(zid))
         elif mode == "📨 Direct WhatsApp":
             _show_direct_whatsapp_messaging()
         elif mode == "📥 WhatsApp Message Log":

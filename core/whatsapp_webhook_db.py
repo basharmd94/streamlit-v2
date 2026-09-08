@@ -97,6 +97,35 @@ def get_recent_messages(limit: int = 100) -> list[dict]:
         return list(cur.fetchall())
 
 
+def get_messages_for_contact(phone_numbers: list, limit: int = 200) -> list[dict]:
+    """Full message thread for one customer, matched purely by phone
+    number, oldest first (chat order).
+
+    This database has no concept of a customer code at all — confirmed:
+    whatsapp_webhook/schema.sql's contacts/messages tables only ever store
+    phone numbers, nothing from the ERP's customer master (cusid/cacus).
+    So relating a cacus customer to their WhatsApp thread has to go through
+    the phone number, not any id. Takes a LIST of candidate numbers (not a
+    single one) since a customer master row can have two WhatsApp-eligible
+    numbers (primary/secondary, see processing/common.py::
+    customer_whatsapp_numbers) and there's no way to know in advance which
+    one they've actually messaged from."""
+    phone_numbers = [p for p in (phone_numbers or []) if p]
+    if not phone_numbers:
+        return []
+    with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """SELECT m.wamid, m.direction, m.contact_phone, m.message_type, m.template_name,
+                      m.content, m.current_status, m.message_timestamp, m.created_at
+               FROM messages m
+               WHERE m.contact_phone = ANY(%s)
+               ORDER BY COALESCE(m.message_timestamp, m.created_at) ASC
+               LIMIT %s""",
+            (phone_numbers, limit),
+        )
+        return list(cur.fetchall())
+
+
 def get_status_history(wamid: str) -> list[dict]:
     """Full status timeline for one message (sent/delivered/read/failed),
     oldest first — for drilling into one specific test message."""
