@@ -2729,7 +2729,12 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "🖼️ Media Library",
             "🎣 Leads",
             "💬 WhatsFly Messaging",
-            "📨 Direct WhatsApp",
+            # "📨 Direct WhatsApp" — shut off, not deleted. WhatsFly is the
+            # path being developed now (see CLAUDE.md); the Direct WhatsApp
+            # code (core/direct_whatsapp.py, _show_direct_whatsapp_messaging,
+            # and its dispatch/_PRODUCT_ONLY_MODES entries below) is left in
+            # place, just unreachable via this radio — re-add the string
+            # here to bring it back.
             "📥 WhatsApp Message Log",
         ],
         horizontal=True,
