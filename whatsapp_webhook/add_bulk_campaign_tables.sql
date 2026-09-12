@@ -1,79 +1,34 @@
--- WhatsApp webhook receiver schema — a separate PostgreSQL database, isolated
--- from the main app's `da` database (see
--- WhatsApp_Integration_docs/whatsapp-webhook-build.md, "Database" section).
+-- Bulk Messaging campaign tables — non-destructive addition to an existing
+-- whatsapp_webhooks database, e.g.:
+--   psql -h <host> -U <user> -d whatsapp_webhooks -f add_bulk_campaign_tables.sql
+-- (see schema.sql for a fresh-setup version, which now includes these same
+-- tables). Syntax and every constraint below verified against a throwaway
+-- local Postgres 14 database loaded from schema.sql first, then dropped —
+-- not run against the real whatsapp_webhooks database from this environment,
+-- which has no connection to it. Pre-9.5 Postgres server, same as
+-- every other migration script in this repo — no `IF NOT EXISTS` on
+-- CREATE TABLE/INDEX, no `ON CONFLICT`. Safe to run once; errors (not a
+-- silent no-op) if run twice.
 --
--- Run once against a fresh database, e.g.:
---   createdb whatsapp_webhooks
---   psql -h localhost -U postgres -d whatsapp_webhooks -f schema.sql
-
-CREATE TABLE webhook_events (
-    id BIGSERIAL PRIMARY KEY,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    signature_valid BOOLEAN NOT NULL,
-    raw_payload JSONB NOT NULL,
-    processed_at TIMESTAMPTZ,
-    processing_status TEXT NOT NULL DEFAULT 'pending' -- pending | processed | failed
-);
-
-CREATE TABLE contacts (
-    id BIGSERIAL PRIMARY KEY,
-    phone_number TEXT UNIQUE NOT NULL,
-    wa_id TEXT,
-    name TEXT,
-    customer_code TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE messages (
-    id BIGSERIAL PRIMARY KEY,
-    wamid TEXT UNIQUE NOT NULL,
-    direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
-    phone_number_id TEXT NOT NULL,
-    contact_phone TEXT NOT NULL REFERENCES contacts(phone_number),
-    message_type TEXT NOT NULL,
-    template_name TEXT,
-    content JSONB,
-    current_status TEXT,
-    message_timestamp TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_messages_contact_phone ON messages(contact_phone);
-CREATE INDEX idx_messages_current_status ON messages(current_status);
-
-CREATE TABLE message_status_events (
-    id BIGSERIAL PRIMARY KEY,
-    wamid TEXT NOT NULL REFERENCES messages(wamid),
-    status TEXT NOT NULL,
-    error_code TEXT,
-    error_title TEXT,
-    event_timestamp TIMESTAMPTZ NOT NULL,
-    webhook_event_id BIGINT REFERENCES webhook_events(id),
-    UNIQUE (wamid, status)
-);
-CREATE INDEX idx_status_events_wamid ON message_status_events(wamid);
-
-CREATE TABLE templates (
-    id BIGSERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    category TEXT,
-    language TEXT,
-    status TEXT,
-    last_checked_at TIMESTAMPTZ,
-    UNIQUE (name, language)
-);
-
-CREATE TABLE account_alerts (
-    id BIGSERIAL PRIMARY KEY,
-    event_type TEXT NOT NULL,
-    payload JSONB NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Bulk Messaging campaign tables — see add_bulk_campaign_tables.sql for the
--- non-destructive version of this same DDL, for adding onto an existing
--- deployed database. Kept identical in both places; if the schema is
--- revised, revise it in both files.
+-- STATUS: already run for real against the live database — these three
+-- tables exist there now. This file is kept accurate as a from-scratch
+-- reference (and so schema.sql, which includes the same DDL, stays right
+-- for a fresh setup) but re-running it against the live database will now
+-- just error on "table already exists" rather than do anything. The
+-- cooldown_days column below was added to the CREATE TABLE here AFTER the
+-- live tables were created — see add_campaign_cooldown_column.sql for the
+-- separate ALTER that actually needs to run against the live database.
+--
+-- Dedup / crash-safety note: campaign_recipients rows start 'pending' and
+-- the send worker only ever processes rows still 'pending' for a given
+-- campaign. This means "just re-run the campaign after a crash" (per the
+-- build plan) needs NO separate resume logic — a crash mid-run simply
+-- leaves some rows 'sent'/'failed' and the rest 'pending'; re-running the
+-- worker against the same campaign_id naturally skips the ones already
+-- attempted and picks up only what's left. The UNIQUE (campaign_id, cusid)
+-- constraint is the second half of the guard — Phase 2 can't insert the
+-- same customer into the same campaign twice even if its own insert step
+-- were accidentally run twice.
 
 CREATE TABLE campaigns (
     id                  BIGSERIAL PRIMARY KEY,

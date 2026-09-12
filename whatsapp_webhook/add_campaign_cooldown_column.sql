@@ -1,0 +1,23 @@
+-- Adds cooldown_days to the campaigns table (already-live, created via
+-- add_bulk_campaign_tables.sql) -- the per-template resend cooldown, in
+-- days, that was in effect when THIS campaign's audience was built.
+--
+-- Persisted per-campaign, not just a code constant, so a later audit of
+-- "why wasn't customer X included in this campaign" stays answerable even
+-- if the default cooldown value in code changes afterward.
+--
+-- Scope, per explicit decision: PER TEMPLATE, not a blanket cross-campaign
+-- cooldown -- a customer is excluded from a new campaign only if they
+-- already received THIS SAME template (matched on campaigns.template_id,
+-- WhatsFly's own short internal id -- see the "naming trap" note on that
+-- field elsewhere) within the last `cooldown_days` days. A different
+-- template can still reach them sooner. The actual exclusion query lives
+-- in Phase 2 (campaign creation), not here -- this is only the column that
+-- records what window was used.
+--
+-- Run once, after add_bulk_campaign_tables.sql (already applied for real):
+--   psql -h <host> -U <admin> -d whatsapp_webhooks -f add_campaign_cooldown_column.sql
+-- Safe to run once; errors (not a silent no-op) if run twice, same
+-- convention as every other migration script in this repo.
+
+ALTER TABLE campaigns ADD COLUMN cooldown_days INTEGER NOT NULL DEFAULT 30;
