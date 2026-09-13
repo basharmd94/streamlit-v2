@@ -3371,6 +3371,14 @@ def _show_wf_campaign_history(zid: str) -> None:
     # "send_failed" (WhatsFly's API rejecting the request outright,
     # which never reaches Meta/the customer at all) since the two mean
     # very different things operationally.
+    # Found via real-world confusion: this enrichment lookup used to fail
+    # SILENTLY (bare except -> status_map = {}) -- meaning a genuine "the
+    # webhook DB lookup is broken" looked EXACTLY like "nothing has
+    # reported back yet" (Delivered/Delivery Failed both 0, no error
+    # shown anywhere). enrichment_error captures the first real exception
+    # message so it can be surfaced once, clearly, instead of silently
+    # degrading every campaign row to zero.
+    enrichment_error = None
     summaries = []
     for row in campaigns_df.itertuples():
         recipients = wfc.get_campaign_recipients(row.id)
@@ -3379,8 +3387,9 @@ def _show_wf_campaign_history(zid: str) -> None:
         wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
         try:
             status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
-        except Exception:
+        except Exception as e:
             status_map = {}
+            enrichment_error = enrichment_error or str(e)
         delivered = sum(1 for s in status_map.values() if s in ("delivered", "read"))
         read = sum(1 for s in status_map.values() if s == "read")
         delivery_failed = sum(1 for s in status_map.values() if s == "failed")
@@ -3395,6 +3404,14 @@ def _show_wf_campaign_history(zid: str) -> None:
             "cost": cost, "cost_per_delivered": cost_per_delivered,
         })
     summary_df = pd.DataFrame(summaries)
+
+    if enrichment_error:
+        st.warning(
+            "⚠️ Could not reach the webhook database to fetch Delivered/Read/Delivery "
+            "Failed status — every campaign below will show 0 for those columns until "
+            "this is fixed, **not** because nothing has arrived yet. Check "
+            f"`config/whatsapp_webhook_db.ini` on this server. Error: {enrichment_error}"
+        )
 
     # ── Overview — totals across everything shown above ───────────────────
     st.markdown("**📈 Overview**")
@@ -3472,14 +3489,22 @@ def _show_wf_campaign_history(zid: str) -> None:
     recipients = wfc.get_campaign_recipients(chosen_id)
     if not recipients.empty:
         wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
+        detail_enrichment_error = None
         try:
             status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
-        except Exception:
+        except Exception as e:
             status_map = {}
+            detail_enrichment_error = str(e)
         try:
             failure_reasons = whatsapp_webhook_db.get_failure_reasons_by_wamids(wamids)
-        except Exception:
+        except Exception as e:
             failure_reasons = {}
+            detail_enrichment_error = detail_enrichment_error or str(e)
+        if detail_enrichment_error:
+            st.warning(
+                "⚠️ Could not reach the webhook database — delivery_status/failure_reason "
+                f"below fall back to the send-call result only. Error: {detail_enrichment_error}"
+            )
         recipients = recipients.copy()
         recipients["delivery_status"] = recipients["wamid"].map(status_map).fillna(recipients["status"])
 
