@@ -3353,15 +3353,29 @@ def _show_wf_campaign_history(zid: str) -> None:
         st.info("No real campaigns yet — check the box above to also see test sends.")
         return
 
-    # One recipient-status pass per campaign — sent/failed from our own
-    # records, delivered/read enriched live from the webhook receiver's
-    # database via wamid (best-effort: a wamid with no status back yet
-    # just doesn't count toward delivered/read, it's not an error).
+    # One recipient-status pass per campaign — sent/rejected-at-send from
+    # our own records, delivered/read/delivery-failed enriched live from
+    # the webhook receiver's database via wamid (best-effort: a wamid with
+    # no status back yet just doesn't count toward any of the three, it's
+    # not an error).
+    #
+    # Real bug found via a real test send: a message accepted by WhatsFly
+    # at send time (status='sent' here — nothing wrong with the request)
+    # can still fail to actually reach the customer, reported later via
+    # the webhook as current_status='failed' (e.g. Meta rejecting the
+    # number itself). That case used to vanish entirely from this
+    # summary — not counted in "delivered" (correct), but also not
+    # counted in "failed" (which only ever looked at OUR OWN send-call
+    # status) — so 5 sent + 0 failed silently hid a real delivery
+    # failure. "delivery_failed" below is that count, kept separate from
+    # "send_failed" (WhatsFly's API rejecting the request outright,
+    # which never reaches Meta/the customer at all) since the two mean
+    # very different things operationally.
     summaries = []
     for row in campaigns_df.itertuples():
         recipients = wfc.get_campaign_recipients(row.id)
         sent = int((recipients["status"] == "sent").sum())
-        failed = int((recipients["status"] == "failed").sum())
+        send_failed = int((recipients["status"] == "failed").sum())
         wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
         try:
             status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
@@ -3369,14 +3383,16 @@ def _show_wf_campaign_history(zid: str) -> None:
             status_map = {}
         delivered = sum(1 for s in status_map.values() if s in ("delivered", "read"))
         read = sum(1 for s in status_map.values() if s == "read")
+        delivery_failed = sum(1 for s in status_map.values() if s == "failed")
         cost = float(row.actual_cost) if pd.notna(row.actual_cost) else None
         cost_per_delivered = (cost / delivered) if (cost is not None and delivered > 0) else None
         summaries.append({
             "id": row.id, "created_at": row.created_at, "zid": row.zid,
             "template_name": row.template_name, "status": row.status,
-            "total_recipients": row.total_recipients, "sent": sent, "failed": failed,
-            "delivered": delivered, "read": read, "cost": cost,
-            "cost_per_delivered": cost_per_delivered,
+            "total_recipients": row.total_recipients, "sent": sent,
+            "delivered": delivered, "read": read,
+            "delivery_failed": delivery_failed, "send_failed": send_failed,
+            "cost": cost, "cost_per_delivered": cost_per_delivered,
         })
     summary_df = pd.DataFrame(summaries)
 
@@ -3384,22 +3400,32 @@ def _show_wf_campaign_history(zid: str) -> None:
     st.markdown("**📈 Overview**")
     total_recipients = int(summary_df["total_recipients"].sum())
     total_sent = int(summary_df["sent"].sum())
-    total_failed = int(summary_df["failed"].sum())
+    total_send_failed = int(summary_df["send_failed"].sum())
     total_delivered = int(summary_df["delivered"].sum())
+    total_delivery_failed = int(summary_df["delivery_failed"].sum())
     total_cost = summary_df["cost"].dropna().sum()
     n_missing_cost = int(summary_df["cost"].isna().sum())
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Campaigns", f"{len(summary_df):,}")
     c2.metric("Recipients", f"{total_recipients:,}")
-    c3.metric("Sent", f"{total_sent:,}")
-    c4.metric("Delivered", f"{total_delivered:,}")
-    c5.metric("Failed", f"{total_failed:,}")
+    c3.metric("Sent", f"{total_sent:,}", help="Accepted by WhatsFly's API at send time.")
+    c4.metric("Delivered", f"{total_delivered:,}", help="Confirmed delivered or read, per the webhook.")
+    c5.metric(
+        "Delivery Failed", f"{total_delivery_failed:,}",
+        help="Accepted at send time, but Meta/WhatsApp later could not actually deliver it "
+             "(e.g. a rejected/experiment-flagged number) — see the reason in each campaign's "
+             "recipient detail below.",
+    )
+    c6.metric(
+        "Rejected at Send", f"{total_send_failed:,}",
+        help="WhatsFly's own API rejected the request outright — never even attempted delivery.",
+    )
 
-    c6, c7 = st.columns(2)
-    c6.metric("Total Cost (entered so far)", f"{total_cost:,.2f}" if total_cost else "—")
+    c7, c8 = st.columns(2)
+    c7.metric("Total Cost (entered so far)", f"{total_cost:,.2f}" if total_cost else "—")
     overall_cost_per_delivered = (total_cost / total_delivered) if (total_delivered and total_cost) else None
-    c7.metric("Cost / Delivered Message", f"{overall_cost_per_delivered:,.4f}" if overall_cost_per_delivered else "—")
+    c8.metric("Cost / Delivered Message", f"{overall_cost_per_delivered:,.4f}" if overall_cost_per_delivered else "—")
     if n_missing_cost:
         st.caption(
             f"⚠️ {n_missing_cost} of {len(summary_df)} campaign(s) have no cost entered yet — "
@@ -3414,7 +3440,8 @@ def _show_wf_campaign_history(zid: str) -> None:
     st.dataframe(
         display_df[[
             "id", "created_at", "zid", "template_name", "status", "total_recipients",
-            "sent", "delivered", "read", "failed", "cost", "cost_per_delivered",
+            "sent", "delivered", "read", "delivery_failed", "send_failed",
+            "cost", "cost_per_delivered",
         ]],
         width="stretch", hide_index=True,
     )
@@ -3449,12 +3476,37 @@ def _show_wf_campaign_history(zid: str) -> None:
             status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
         except Exception:
             status_map = {}
+        try:
+            failure_reasons = whatsapp_webhook_db.get_failure_reasons_by_wamids(wamids)
+        except Exception:
+            failure_reasons = {}
         recipients = recipients.copy()
         recipients["delivery_status"] = recipients["wamid"].map(status_map).fillna(recipients["status"])
+
+        # error_detail already covers a send-call rejection (status=
+        # 'failed' — WhatsFly's own response, before anything about
+        # actual delivery is known). A message WhatsFly DID accept but
+        # Meta later couldn't deliver (delivery_status == 'failed' via
+        # the webhook) has its real reason in message_status_events
+        # instead — previously not shown anywhere, just a bare "failed"
+        # with no explanation (real case: Meta error 130472, "phone
+        # number is part of an experiment").
+        def _failure_reason(r):
+            if r["error_detail"]:
+                return r["error_detail"]
+            if r["delivery_status"] == "failed":
+                fr = failure_reasons.get(r["wamid"]) or {}
+                title = fr.get("error_title")
+                code = fr.get("error_code")
+                if title:
+                    return f"({code}) {title}" if code else title
+            return ""
+
+        recipients["failure_reason"] = recipients.apply(_failure_reason, axis=1)
         st.dataframe(
             recipients[[
                 "cusid", "cusname", "phone_number", "status", "delivery_status",
-                "failure_type", "error_detail", "wamid", "sent_at",
+                "failure_reason", "wamid", "sent_at",
             ]],
             width="stretch", hide_index=True,
         )

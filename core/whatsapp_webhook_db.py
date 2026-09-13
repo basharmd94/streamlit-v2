@@ -147,6 +147,36 @@ def get_current_status_by_wamids(wamids: list) -> dict:
         return dict(cur.fetchall())
 
 
+def get_failure_reasons_by_wamids(wamids: list) -> dict:
+    """{wamid: {"error_code", "error_title", "event_timestamp"}} for the
+    most recent 'failed' status event per wamid.
+
+    Built for Marketing > Campaign History (Phase 4) — found via a real
+    test send that a message can be accepted by WhatsFly at send time
+    (campaign_recipients.status='sent', error_detail empty — there was
+    nothing wrong with the request) and STILL fail to actually reach the
+    customer, reported only later via the webhook as
+    messages.current_status='failed'. The real reason for THAT failure
+    (e.g. Meta's own "(Error Code: 130472) ... phone number is part of
+    an experiment") only ever lives here, in message_status_events — it
+    was previously invisible in the UI, since campaign_recipients only
+    ever records the immediate send-call response, before any of this
+    is known. A wamid with no 'failed' event at all is simply absent
+    from the returned dict."""
+    wamids = [w for w in (wamids or []) if w]
+    if not wamids:
+        return {}
+    with _get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """SELECT DISTINCT ON (wamid) wamid, error_code, error_title, event_timestamp
+               FROM message_status_events
+               WHERE wamid = ANY(%s) AND status = 'failed'
+               ORDER BY wamid, event_timestamp DESC""",
+            (wamids,),
+        )
+        return {row["wamid"]: dict(row) for row in cur.fetchall()}
+
+
 def get_status_history(wamid: str) -> list[dict]:
     """Full status timeline for one message (sent/delivered/read/failed),
     oldest first — for drilling into one specific test message."""
