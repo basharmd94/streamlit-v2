@@ -126,6 +126,27 @@ def get_messages_for_contact(phone_numbers: list, limit: int = 200) -> list[dict
         return list(cur.fetchall())
 
 
+def get_current_status_by_wamids(wamids: list) -> dict:
+    """{wamid: current_status} for a batch of message ids -- current_status
+    is already a forward-only rank on the webhook-receiver side (sent <
+    delivered < read, failed terminal — see whatsapp_webhook/handlers.py),
+    so this is always each message's latest known state, no history
+    walk needed. Built for Marketing > Campaign History (Phase 4) to
+    enrich a bulk-send campaign's per-recipient rows (which only know
+    sent/failed, from the send call's own immediate response) with real
+    delivered/read status as it arrives later via the webhook — a wamid
+    with no row here yet just hasn't reported a status back at all."""
+    wamids = [w for w in (wamids or []) if w]
+    if not wamids:
+        return {}
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT wamid, current_status FROM messages WHERE wamid = ANY(%s)",
+            (wamids,),
+        )
+        return dict(cur.fetchall())
+
+
 def get_status_history(wamid: str) -> list[dict]:
     """Full status timeline for one message (sent/delivered/read/failed),
     oldest first — for drilling into one specific test message."""

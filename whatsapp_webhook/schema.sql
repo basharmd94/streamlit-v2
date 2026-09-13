@@ -89,7 +89,8 @@ CREATE TABLE campaigns (
     created_by          TEXT NOT NULL,        -- st.session_state.username
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at          TIMESTAMPTZ,
-    completed_at        TIMESTAMPTZ
+    completed_at        TIMESTAMPTZ,
+    actual_cost         NUMERIC(12, 2)  -- entered/updated later from Campaign History (Phase 4) — see add_campaign_cost_column.sql for why this can never be known at send time
 );
 CREATE INDEX idx_campaigns_status ON campaigns(status);
 CREATE INDEX idx_campaigns_zid ON campaigns(zid);
@@ -123,3 +124,21 @@ CREATE TABLE contact_opt_outs (
     reason          TEXT,
     UNIQUE (zid, cusid)
 );
+
+-- Per-template variable mapping (Phase 6) -- see
+-- add_template_variable_mappings_table.sql for the non-destructive
+-- version of this same DDL, for adding onto an existing deployed
+-- database. Kept identical in both places.
+CREATE TABLE template_variable_mappings (
+    id              BIGSERIAL PRIMARY KEY,
+    template_id     TEXT NOT NULL,
+    template_name   TEXT NOT NULL,
+    variable_name   TEXT NOT NULL,
+    source_type     TEXT NOT NULL CHECK (source_type IN ('customer_attribute', 'flat_value')),
+    source_key      TEXT,
+    created_by      TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (template_id, variable_name)
+);
+CREATE INDEX idx_template_variable_mappings_template_id ON template_variable_mappings(template_id);

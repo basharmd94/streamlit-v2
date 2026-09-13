@@ -2559,6 +2559,124 @@ def _wf_bulk_default_view(zid: str, template: dict) -> None:
 _WF_BULK_TEMPLATE_VIEWS = {}
 
 
+def _render_campaign_confirm_and_send(
+    zid: str, template: dict, recipients: list, filters_used: list,
+    variable_mapping: dict = None, cooldown_days_default: int = 30,
+    header_image_url: str = None, key_prefix: str = "wfc",
+) -> None:
+    """Shared "confirm, persist, send, summarize" engine — Phase 2 of
+    Whatsfly_Integration_docs/bulk-send-build-plan.md. Meant to be CALLED
+    by a real per-campaign handler in _WF_BULK_TEMPLATE_VIEWS (Phase 6) or
+    by the manual test-number-list mode (Phase 3), never wired directly
+    into _wf_bulk_default_view — this function knows nothing about how
+    `recipients`' variables were built, only about running the send
+    itself, which genuinely is the same for every campaign (unlike
+    audience-building/variable-mapping, which stays campaign-specific per
+    the comment above _wf_bulk_default_view).
+
+    `key_prefix` namespaces every widget key this function creates — lets
+    more than one call site (e.g. a real campaign handler AND the manual
+    test-list expander) coexist on the same page render without a
+    Streamlit duplicate-key clash.
+
+    `recipients`: [{"cusid", "cusname", "phone_number", "variables"}, ...]
+    — already scoped to the audience this campaign should target, BEFORE
+    the opt-out/cooldown exclusions below are applied. `variables` must
+    already be in the template's own variable_map position order (see
+    _wf_extract_variable_map) — this function does not reorder it.
+
+    Runs the whole send loop synchronously in this one script run (see
+    the build plan's "Architecture, revised" — no background worker),
+    with a live st.progress() bar. Cannot be paused or stopped once
+    confirmed (Q3) and never retries a failure automatically (Q5)."""
+    from processing import wf_bulk_campaign as wfc
+
+    template_id = _wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or ""
+    template_name = _wf_guess(template, ("template_name", "name", "elementName")) or ""
+
+    st.markdown("**⚙️ Campaign settings**")
+    cooldown_days = st.number_input(
+        "Don't resend this template to a customer within (days)",
+        min_value=0, value=cooldown_days_default, key=f"{key_prefix}_cooldown_days",
+        help="Per-template only — a different template can still reach this customer sooner.",
+    )
+
+    try:
+        opted_out = wfc.get_opted_out_cusids(zid)
+        candidate_cusids = [r["cusid"] for r in recipients if r.get("cusid")]
+        cooldown_blocked = (
+            wfc.get_cooldown_blocked_cusids(zid, template_id, cooldown_days, candidate_cusids)
+            if candidate_cusids else set()
+        )
+    except wfc.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    final_recipients = [
+        r for r in recipients
+        if r.get("cusid") not in opted_out and r.get("cusid") not in cooldown_blocked
+    ]
+    n_opted_out = sum(1 for r in recipients if r.get("cusid") in opted_out)
+    n_cooldown = sum(
+        1 for r in recipients
+        if r.get("cusid") in cooldown_blocked and r.get("cusid") not in opted_out
+    )
+    st.caption(f"🚫 {n_opted_out} customer(s) excluded — opted out of bulk messaging.")
+    st.caption(f"⏳ {n_cooldown} customer(s) excluded — already sent this template within the last {cooldown_days} days.")
+    st.metric("Will send to", f"{len(final_recipients):,} customer(s)")
+
+    if not final_recipients:
+        st.info("Nothing to send — every candidate was excluded.")
+        return
+
+    st.warning(
+        f"You are about to send **{template_name}** to **{len(final_recipients)}** customer(s). "
+        "This cannot be paused or stopped once started."
+    )
+    confirmed = st.checkbox("I understand — this cannot be stopped once started", key=f"{key_prefix}_confirm_checkbox")
+    if not st.button("📤 Confirm & Send", key=f"{key_prefix}_confirm_send_btn", type="primary", disabled=not confirmed):
+        return
+
+    campaign_id = wfc.create_campaign(
+        zid=zid, template_name=template_name, template_id=template_id,
+        header_image_url=header_image_url, variable_mapping=variable_mapping or {},
+        filters_used=filters_used, cooldown_days=int(cooldown_days),
+        total_recipients=len(final_recipients),
+        created_by=st.session_state.get("username") or "unknown",
+    )
+    wfc.insert_recipients(campaign_id, zid, final_recipients)
+    wfc.mark_campaign_started(campaign_id)
+
+    progress_bar = st.progress(0.0)
+    status_text = st.empty()
+
+    def _progress_cb(done, total):
+        progress_bar.progress(done / total if total else 1.0)
+        status_text.text(f"Sending {done}/{total}…")
+
+    def _send_fn(phone_number, variables):
+        named_variables = list(variables.items())
+        header_image_param = {"link": header_image_url} if header_image_url else None
+        payload = _wf_build_template_payload(
+            template_id, named_variables, header_image_url, header_image_param=header_image_param,
+        )
+        return whatsfly.send_template(phone_number, "/whatsapp/send/template", payload)
+
+    with st.spinner("Sending campaign…"):
+        counts = wfc.run_send_loop(campaign_id, send_fn=_send_fn, progress_cb=_progress_cb)
+    wfc.mark_campaign_completed(campaign_id)
+
+    st.success(f"Done — {counts['sent']} sent, {counts['failed']} failed, out of {counts['total']}.")
+    recipients_df = wfc.get_campaign_recipients(campaign_id)
+    failed_df = recipients_df[recipients_df["status"] == "failed"]
+    if not failed_df.empty:
+        st.markdown("**⚠️ Failed sends** — review and correct with the customer, then resend manually if needed.")
+        st.dataframe(
+            failed_df[["cusid", "cusname", "phone_number", "failure_type", "error_detail"]],
+            width="stretch", hide_index=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Audience filter builder — free-form "add a filter", any order, each one
 # narrowing whatever candidates survived the ones before it (AND across
@@ -2971,6 +3089,383 @@ def _wfb_render_new_filter_input(ftype: str, zid: str, window_months: int, filte
     return None
 
 
+def _show_wf_template_mapping(zid: str) -> None:
+    """🔧 Template Variable Mapping — Phase 6 of the bulk-send build plan,
+    revised: since templates are now created ad hoc in WhatsFly's own
+    dashboard (a new one whenever needed, not one at a time with a build
+    session each time), this is a self-service tool instead of "write a
+    Python handler together per campaign". Pick a template, map each of
+    its own variable names (WhatsFly's own variable_map, exactly as named
+    when the template was built — see _wf_extract_variable_map) to a
+    customer attribute or a flat value entered per campaign, save it
+    once — every future campaign built around that template can then
+    resolve its variables automatically (processing/wf_template_mapping.py::
+    resolve_recipient_variables), no code change required."""
+    st.subheader("🔧 Template Variable Mapping")
+    st.caption(
+        "Map each template's own variables (as named in WhatsFly) to a customer attribute or "
+        "a flat value entered per campaign — saved once per template, reused by every campaign "
+        "built around it afterward."
+    )
+
+    try:
+        whatsfly.get_credentials()
+    except whatsfly.WhatsFlyConfigError as e:
+        st.warning(str(e))
+        return
+
+    from processing import wf_template_mapping as wtm
+
+    if st.button("🔄 Refresh Templates", key="wtm_refresh_templates_btn"):
+        st.session_state.pop("_wf_templates_raw", None)
+
+    if "_wf_templates_raw" not in st.session_state:
+        with st.spinner("Fetching templates…"):
+            try:
+                st.session_state["_wf_templates_raw"] = whatsfly.get_templates()
+            except Exception as e:
+                st.error(f"Couldn't fetch templates: {e}")
+                return
+
+    templates = _wf_normalize_templates(st.session_state["_wf_templates_raw"])
+    if not templates:
+        st.warning("No templates found.")
+        return
+
+    labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
+    idx = st.selectbox(
+        f"📋 Template ({len(templates)} available)", range(len(templates)),
+        format_func=lambda i: labels[i], key="wtm_template_idx",
+    )
+    template = templates[idx]
+    template_id = _wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or ""
+    template_name = _wf_guess(template, ("template_name", "name", "elementName")) or ""
+
+    var_map = _wf_extract_variable_map(template)
+    if not var_map:
+        st.info("This template has no variables to map.")
+        return
+
+    try:
+        existing = wtm.get_template_mapping(template_id)
+    except wtm.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    st.markdown(f"**✏️ Map {len(var_map)} variable(s)**")
+    attr_options = ["— not mapped yet —", "Flat value (enter per campaign)"] + [
+        label for _, label in wtm.CUSTOMER_ATTRIBUTES
+    ]
+    attr_keys = [None, "__flat__"] + [key for key, _ in wtm.CUSTOMER_ATTRIBUTES]
+
+    new_mappings = {}
+    for pos, name in var_map:
+        prior = existing.get(name)
+        if prior is None:
+            default_i = 0
+        elif prior["source_type"] == "flat_value":
+            default_i = 1
+        elif prior["source_key"] in attr_keys:
+            default_i = attr_keys.index(prior["source_key"])
+        else:
+            default_i = 0
+
+        choice_i = st.selectbox(
+            f"`{name}`", range(len(attr_options)),
+            format_func=lambda i: attr_options[i], index=default_i, key=f"wtm_var_{idx}_{pos}",
+        )
+        if choice_i == 0:
+            continue
+        elif choice_i == 1:
+            new_mappings[name] = {"source_type": "flat_value", "source_key": None}
+        else:
+            new_mappings[name] = {"source_type": "customer_attribute", "source_key": attr_keys[choice_i]}
+
+    if st.button("💾 Save Mapping", key="wtm_save_btn", type="primary"):
+        if len(new_mappings) < len(var_map):
+            st.warning(f"Only {len(new_mappings)}/{len(var_map)} variable(s) mapped — saving those; the rest stay unmapped.")
+        wtm.save_template_mapping(
+            template_id, template_name, new_mappings,
+            created_by=st.session_state.get("username") or "unknown",
+        )
+        st.success("Saved.")
+        st.rerun()
+
+    # ── Live preview with a real sample customer ──────────────────────────
+    st.markdown("---")
+    st.markdown("**📱 Preview**")
+    cacus_df = _load_cacus(str(zid))
+    if cacus_df.empty:
+        st.info("No customers available to preview with.")
+        return
+    cus_opts = {f"{row.cusname} ({row.cusid})": row for row in cacus_df.itertuples()}
+    cus_label = st.selectbox("Preview with customer", list(cus_opts.keys()), key="wtm_preview_cus")
+    sample = cus_opts[cus_label]
+    customer_row = {
+        "cusid": sample.cusid, "cusname": sample.cusname,
+        "cusmobile": getattr(sample, "cusmobile", ""), "whatsapp": getattr(sample, "whatsapp", ""),
+        "area": getattr(sample, "area", ""),
+    }
+
+    flat_vars = [name for name, m in new_mappings.items() if m["source_type"] == "flat_value"]
+    flat_values = {}
+    if flat_vars:
+        st.caption("Flat values below are for this preview only — entered fresh at actual send time.")
+        for name in flat_vars:
+            flat_values[name] = st.text_input(f"Preview value for `{name}`", key=f"wtm_flat_preview_{name}")
+
+    preview_values = []
+    for pos, name in var_map:
+        m = new_mappings.get(name) or existing.get(name)
+        if not m:
+            preview_values.append("")
+        elif m["source_type"] == "flat_value":
+            preview_values.append(flat_values.get(name, ""))
+        elif m["source_key"] in wtm.LIGHT_ATTRIBUTES:
+            preview_values.append(str(customer_row.get(m["source_key"], "")))
+        else:
+            preview_values.append(f"[{wtm.CUSTOMER_ATTRIBUTE_LABELS.get(m['source_key'], m['source_key'])} — computed at send time]")
+
+    comps = _wf_extract_components(template)
+    body_html = _wf_format_whatsapp_markup(comps["body"])
+    preview_body = _wf_substitute_positional_preview(body_html, preview_values)
+    _wf_render_phone_preview(comps["header"], preview_body, comps["footer"])
+
+
+def _show_wf_opt_out_management(zid: str) -> None:
+    """🚫 Opt-Out — Phase 5 of the bulk-send build plan. A permanent,
+    per-customer do-not-contact flag for this ZID, set/removed manually
+    here — never by an automated "STOP"-keyword parser (see the build
+    plan's Q16) — and checked automatically by every campaign's confirm-
+    and-send step (processing/wf_bulk_campaign.py::get_opted_out_cusids,
+    already wired into _render_campaign_confirm_and_send) before its
+    recipient rows are ever written."""
+    st.subheader("🚫 Opt-Out")
+    st.caption(
+        "Customers listed here are excluded from every future bulk campaign for this ZID, "
+        "automatically — checked once at campaign-creation time, no matter which template."
+    )
+
+    from processing import wf_bulk_campaign as wfc
+
+    try:
+        opt_outs_df = wfc.list_opt_outs(str(zid))
+    except wfc.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    cacus_df = _load_cacus(str(zid))
+    name_by_cusid = dict(zip(cacus_df["cusid"].astype(str), cacus_df["cusname"])) if not cacus_df.empty else {}
+
+    # ── Currently opted-out customers ──────────────────────────────────────
+    st.markdown(f"**📋 Currently opted out — {len(opt_outs_df):,}**")
+    if opt_outs_df.empty:
+        st.info("No customers opted out for this ZID yet.")
+    else:
+        display_df = opt_outs_df.copy()
+        display_df["cusname"] = display_df["cusid"].map(name_by_cusid).fillna("(unknown)")
+        display_df["opted_out_at"] = pd.to_datetime(display_df["opted_out_at"]).dt.strftime("%Y-%m-%d %H:%M")
+        show_cols = ["cusid", "cusname", "opted_out_at", "opted_out_by", "reason"]
+        st.dataframe(display_df[show_cols], width="stretch", hide_index=True)
+        st.download_button(
+            "📥 Download opt-out list (CSV)",
+            display_df[show_cols].to_csv(index=False).encode("utf-8"),
+            file_name=f"opt_outs_{zid}.csv", mime="text/csv", key="woo_download_csv",
+        )
+
+    # ── Opt a customer out ──────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**➕ Opt out a customer**")
+    if cacus_df.empty:
+        st.info("No customers available for this ZID.")
+        return
+
+    already_opted = set(opt_outs_df["cusid"].astype(str)) if not opt_outs_df.empty else set()
+    cus_opts = {f"{row.cusname} ({row.cusid})": str(row.cusid) for row in cacus_df.itertuples()}
+    chosen_label = st.selectbox("Select a customer", list(cus_opts.keys()), key="woo_optout_cus")
+    chosen_cusid = cus_opts[chosen_label]
+    already_out = chosen_cusid in already_opted
+
+    if already_out:
+        prior = opt_outs_df[opt_outs_df["cusid"].astype(str) == chosen_cusid].iloc[0]
+        st.warning(f"Already opted out on {pd.to_datetime(prior['opted_out_at']):%Y-%m-%d} by {prior['opted_out_by']}.")
+    reason = st.text_input("Reason (optional)", key="woo_optout_reason")
+    if st.button(
+        "🚫 Opt Out This Customer", key="woo_optout_btn", type="primary",
+        disabled=already_out,
+    ):
+        wfc.set_opt_out(
+            str(zid), chosen_cusid,
+            opted_out_by=st.session_state.get("username") or "unknown",
+            reason=reason.strip() or None,
+        )
+        st.success(f"{chosen_label} opted out.")
+        st.rerun()
+
+    # ── Remove an opt-out (opt back in) ─────────────────────────────────────
+    if not opt_outs_df.empty:
+        st.markdown("---")
+        st.markdown("**↩️ Remove an opt-out**")
+        remove_opts = {
+            f"{name_by_cusid.get(str(row.cusid), '(unknown)')} ({row.cusid})": str(row.cusid)
+            for row in opt_outs_df.itertuples()
+        }
+        remove_label = st.selectbox("Select a customer to opt back in", list(remove_opts.keys()), key="woo_remove_cus")
+        if st.button("↩️ Remove Opt-Out", key="woo_remove_btn"):
+            wfc.remove_opt_out(str(zid), remove_opts[remove_label])
+            st.success("Removed — this customer can be included in campaigns again.")
+            st.rerun()
+
+
+def _show_wf_campaign_history(zid: str) -> None:
+    """📊 Campaign History — Phase 4 of the bulk-send build plan. Revisit
+    past campaigns (sent/failed are final the moment a send loop finishes,
+    but delivered/read status keeps arriving asynchronously well after
+    that via the webhook path, so this is a REVISITABLE view, not a
+    one-time screen — every render re-reads current status fresh), enter/
+    update each campaign's actual cost once it's known (see
+    add_campaign_cost_column.sql: Meta bills per delivered message, but
+    only on a calendar-month invoice cycle, so cost is never knowable at
+    send time — confirmed against Meta's own billing docs), and see an
+    overview across every campaign. A separate top-level radio from Bulk
+    Messaging itself, per explicit ask."""
+    st.subheader("📊 Campaign History")
+
+    from processing import wf_bulk_campaign as wfc
+
+    try:
+        campaigns_df = wfc.list_campaigns()
+    except wfc.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    if campaigns_df.empty:
+        st.info("No campaigns sent yet.")
+        return
+
+    include_test = st.checkbox(
+        "Include test sends (zid = TEST, from the manual test-number-list mode)",
+        value=False, key="wch_include_test",
+    )
+    if not include_test:
+        campaigns_df = campaigns_df[campaigns_df["zid"] != "TEST"]
+    if campaigns_df.empty:
+        st.info("No real campaigns yet — check the box above to also see test sends.")
+        return
+
+    # One recipient-status pass per campaign — sent/failed from our own
+    # records, delivered/read enriched live from the webhook receiver's
+    # database via wamid (best-effort: a wamid with no status back yet
+    # just doesn't count toward delivered/read, it's not an error).
+    summaries = []
+    for row in campaigns_df.itertuples():
+        recipients = wfc.get_campaign_recipients(row.id)
+        sent = int((recipients["status"] == "sent").sum())
+        failed = int((recipients["status"] == "failed").sum())
+        wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
+        try:
+            status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
+        except Exception:
+            status_map = {}
+        delivered = sum(1 for s in status_map.values() if s in ("delivered", "read"))
+        read = sum(1 for s in status_map.values() if s == "read")
+        cost = float(row.actual_cost) if pd.notna(row.actual_cost) else None
+        cost_per_delivered = (cost / delivered) if (cost is not None and delivered > 0) else None
+        summaries.append({
+            "id": row.id, "created_at": row.created_at, "zid": row.zid,
+            "template_name": row.template_name, "status": row.status,
+            "total_recipients": row.total_recipients, "sent": sent, "failed": failed,
+            "delivered": delivered, "read": read, "cost": cost,
+            "cost_per_delivered": cost_per_delivered,
+        })
+    summary_df = pd.DataFrame(summaries)
+
+    # ── Overview — totals across everything shown above ───────────────────
+    st.markdown("**📈 Overview**")
+    total_recipients = int(summary_df["total_recipients"].sum())
+    total_sent = int(summary_df["sent"].sum())
+    total_failed = int(summary_df["failed"].sum())
+    total_delivered = int(summary_df["delivered"].sum())
+    total_cost = summary_df["cost"].dropna().sum()
+    n_missing_cost = int(summary_df["cost"].isna().sum())
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Campaigns", f"{len(summary_df):,}")
+    c2.metric("Recipients", f"{total_recipients:,}")
+    c3.metric("Sent", f"{total_sent:,}")
+    c4.metric("Delivered", f"{total_delivered:,}")
+    c5.metric("Failed", f"{total_failed:,}")
+
+    c6, c7 = st.columns(2)
+    c6.metric("Total Cost (entered so far)", f"{total_cost:,.2f}" if total_cost else "—")
+    overall_cost_per_delivered = (total_cost / total_delivered) if (total_delivered and total_cost) else None
+    c7.metric("Cost / Delivered Message", f"{overall_cost_per_delivered:,.4f}" if overall_cost_per_delivered else "—")
+    if n_missing_cost:
+        st.caption(
+            f"⚠️ {n_missing_cost} of {len(summary_df)} campaign(s) have no cost entered yet — "
+            "the totals above only reflect campaigns with a cost already entered."
+        )
+
+    # ── Past campaigns table ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**📋 Past Campaigns**")
+    display_df = summary_df.copy()
+    display_df["created_at"] = pd.to_datetime(display_df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
+    st.dataframe(
+        display_df[[
+            "id", "created_at", "zid", "template_name", "status", "total_recipients",
+            "sent", "delivered", "read", "failed", "cost", "cost_per_delivered",
+        ]],
+        width="stretch", hide_index=True,
+    )
+
+    # ── Drill into one campaign: full recipient detail + update its cost ──
+    st.markdown("---")
+    st.markdown("**🔍 Campaign detail / update cost**")
+    campaign_labels = {
+        f"#{row.id} — {row.template_name} ({row.created_at:%Y-%m-%d}, {row.zid})": row.id
+        for row in campaigns_df.itertuples()
+    }
+    chosen_label = st.selectbox("Select a campaign", list(campaign_labels.keys()), key="wch_selected_campaign")
+    chosen_id = int(campaign_labels[chosen_label])
+    chosen_row = campaigns_df[campaigns_df["id"] == chosen_id].iloc[0]
+
+    current_cost = float(chosen_row["actual_cost"]) if pd.notna(chosen_row["actual_cost"]) else 0.0
+    new_cost = st.number_input(
+        "Actual cost for this campaign", min_value=0.0, value=current_cost, step=0.01,
+        key=f"wch_cost_input_{chosen_id}",
+        help="Entered by hand from your monthly WhatsApp bill / WhatsFly invoice — Meta bills per "
+             "delivered message but only on a calendar-month cycle, so this is never known at send time.",
+    )
+    if st.button("💾 Save Cost", key=f"wch_save_cost_{chosen_id}"):
+        wfc.update_campaign_cost(chosen_id, new_cost)
+        st.success("Saved.")
+        st.rerun()
+
+    recipients = wfc.get_campaign_recipients(chosen_id)
+    if not recipients.empty:
+        wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
+        try:
+            status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
+        except Exception:
+            status_map = {}
+        recipients = recipients.copy()
+        recipients["delivery_status"] = recipients["wamid"].map(status_map).fillna(recipients["status"])
+        st.dataframe(
+            recipients[[
+                "cusid", "cusname", "phone_number", "status", "delivery_status",
+                "failure_type", "error_detail", "wamid", "sent_at",
+            ]],
+            width="stretch", hide_index=True,
+        )
+        st.download_button(
+            "📥 Download recipients (CSV)",
+            recipients.to_csv(index=False).encode("utf-8"),
+            file_name=f"campaign_{chosen_id}_recipients.csv", mime="text/csv",
+            key=f"wch_download_{chosen_id}",
+        )
+
+
 def _show_wf_bulk_messaging(zid: str, proj: str, data_dict: dict, selected_years: list) -> None:
     st.subheader("📢 WhatsFly — Bulk Messaging")
     st.caption("Build an audience with filters, then pick what to send them.")
@@ -3163,6 +3658,115 @@ def _show_wf_bulk_messaging(zid: str, proj: str, data_dict: dict, selected_years
     st.markdown("---")
     handler = _WF_BULK_TEMPLATE_VIEWS.get(template.get("template_name"), _wf_bulk_default_view)
     handler(zid, template)
+
+    st.markdown("---")
+    with st.expander("🧪 Test send (manual phone number list)"):
+        st.caption(
+            "Runs through the exact same send engine a real campaign uses (Phase 2), just "
+            "against a hand-typed list of numbers instead of the filtered audience above — the "
+            "way to prove out pacing/throttling/one-by-one sending against real WhatsFly before "
+            "any real campaign runs. Same value is sent to every number (no per-recipient "
+            "personalization) — this is for testing the mechanism, not a real campaign."
+        )
+        test_labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
+        test_idx = st.selectbox(
+            "Template to test with", range(len(templates)),
+            format_func=lambda i: test_labels[i], key="wf_test_template_idx",
+        )
+        test_template = templates[test_idx]
+
+        # Header image — same auto-detect + upload/paste-URL mechanism as
+        # the single-message panel (_render_wf_template_send) above, just
+        # without its live preview (this panel has none). Was missing
+        # entirely before: a template whose header actually IS an image
+        # would silently send with no header_image_url at all, since
+        # _render_campaign_confirm_and_send only ever attaches one when
+        # this expander explicitly hands it one.
+        test_comps = _wf_extract_components(test_template)
+        test_is_native = test_comps.get("style") == "whatsfly"
+        if test_is_native:
+            test_is_image_header = (
+                test_template.get("header_type") == "media" and test_template.get("header_subtype") == "image"
+            )
+            if test_is_image_header:
+                st.markdown("**🖼️ Header Image** _(auto-detected — this template requires one)_")
+        else:
+            st.markdown("**🖼️ Header Image (optional)**")
+            test_is_image_header = st.checkbox(
+                "This template's header is an image", key=f"wf_test_has_img_header_{test_idx}",
+                help="Not auto-detected for this template — check manually.",
+            )
+
+        test_header_image_url = None
+        if test_is_image_header:
+            uploaded_test_file = st.file_uploader(
+                "Attach image", type=["jpg", "jpeg", "png"], key=f"wf_test_header_img_{test_idx}",
+            )
+            manual_test_url = st.text_input(
+                "…or paste a hosted image URL", key=f"wf_test_header_img_url_{test_idx}",
+            )
+            if uploaded_test_file is not None:
+                file_sig = (uploaded_test_file.name, uploaded_test_file.size)
+                upload_cache_key = f"wf_test_header_upload_{test_idx}"
+                cached = st.session_state.get(upload_cache_key)
+                if not cached or cached.get("sig") != file_sig:
+                    with st.spinner("Uploading…"):
+                        try:
+                            raw_up = whatsfly.upload_media(
+                                uploaded_test_file.getvalue(), uploaded_test_file.name,
+                                uploaded_test_file.type or "image/jpeg",
+                            )
+                            _, murl = _wf_extract_media_ref(raw_up)
+                            st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": murl, "error": None}
+                        except Exception as e:
+                            st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": None, "error": str(e)}
+                cached = st.session_state.get(upload_cache_key)
+                if cached and cached.get("error"):
+                    st.error(f"Upload failed: {cached['error']}")
+                elif cached and cached.get("media_url"):
+                    st.success("Uploaded.")
+                    test_header_image_url = cached["media_url"]
+            if not test_header_image_url and manual_test_url.strip():
+                test_header_image_url = manual_test_url.strip()
+            if not test_header_image_url:
+                st.warning("This template's header is an image — attach one or paste a URL above before sending.")
+
+        numbers_raw = st.text_area(
+            "Phone numbers, one per line (WhatsApp format, e.g. 8801XXXXXXXXX)",
+            key="wf_test_numbers", height=100,
+        )
+        test_numbers = [n.strip() for n in numbers_raw.splitlines() if n.strip()]
+        st.caption(f"{len(test_numbers)} number(s) entered.")
+
+        test_var_map = _wf_extract_variable_map(test_template)
+        test_values = {}
+        if test_var_map:
+            st.markdown("**Variable values** — applied identically to every number above.")
+            for pos, name in test_var_map:
+                test_values[name] = st.text_input(name, key=f"wf_test_var_{test_idx}_{pos}")
+
+        if not test_numbers:
+            st.info("Enter at least one phone number above to test with.")
+        else:
+            test_recipients = [
+                {
+                    "cusid": f"TEST-{n}",  # stable per number -- lets the cooldown guard be exercised
+                    # deliberately too, not just bypassed, if the cooldown-days input above is raised
+                    "cusname": f"Test #{i + 1}",
+                    "phone_number": n,
+                    "variables": dict(test_values),
+                }
+                for i, n in enumerate(test_numbers)
+            ]
+            _render_campaign_confirm_and_send(
+                zid="TEST",  # sentinel zid, isolated from every real ZID's own campaign history/cooldowns
+                template=test_template, recipients=test_recipients,
+                filters_used=[{"type": "manual_test_list", "count": len(test_numbers)}],
+                variable_mapping={name: "typed in manually for this test" for _, name in test_var_map},
+                cooldown_days_default=0,  # tests should be freely re-runnable by default; raise it to test cooldown itself
+                header_image_url=test_header_image_url,
+                key_prefix="wf_test",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3594,7 +4198,8 @@ def _show_whatsapp_message_log() -> None:
 
 _PRODUCT_ONLY_MODES = {
     "📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads",
-    "💬 WhatsFly Messaging", "📢 Bulk Messaging", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
+    "💬 WhatsFly Messaging", "📢 Bulk Messaging", "🔧 Template Mapping", "📊 Campaign History",
+    "🚫 Opt-Out", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
 }
 
 
@@ -3613,6 +4218,9 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "🎣 Leads",
             "💬 WhatsFly Messaging",
             "📢 Bulk Messaging",
+            "🔧 Template Mapping",
+            "📊 Campaign History",
+            "🚫 Opt-Out",
             # "📨 Direct WhatsApp" — shut off, not deleted. WhatsFly is the
             # path being developed now (see CLAUDE.md); the Direct WhatsApp
             # code (core/direct_whatsapp.py, _show_direct_whatsapp_messaging,
@@ -3650,6 +4258,12 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             _show_whatsfly_messaging(str(zid))
         elif mode == "📢 Bulk Messaging":
             _show_wf_bulk_messaging(str(zid), proj, data_dict, selected_years)
+        elif mode == "🔧 Template Mapping":
+            _show_wf_template_mapping(str(zid))
+        elif mode == "📊 Campaign History":
+            _show_wf_campaign_history(str(zid))
+        elif mode == "🚫 Opt-Out":
+            _show_wf_opt_out_management(str(zid))
         elif mode == "📨 Direct WhatsApp":
             _show_direct_whatsapp_messaging()
         elif mode == "📥 WhatsApp Message Log":

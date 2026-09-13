@@ -44,7 +44,8 @@ CREATE TABLE campaigns (
     created_by          TEXT NOT NULL,        -- st.session_state.username
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at          TIMESTAMPTZ,
-    completed_at        TIMESTAMPTZ
+    completed_at        TIMESTAMPTZ,
+    actual_cost         NUMERIC(12, 2)  -- entered/updated later from Campaign History (Phase 4) — see add_campaign_cost_column.sql for why this can never be known at send time
 );
 CREATE INDEX idx_campaigns_status ON campaigns(status);
 CREATE INDEX idx_campaigns_zid ON campaigns(zid);
