@@ -1,3 +1,4 @@
+import base64
 import html as _html
 import json
 import re
@@ -5,6 +6,7 @@ import shutil
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core import whatsfly
@@ -31,7 +33,7 @@ from processing.marketing_leads import (
     build_lead_call_log_table,
     build_leads_upload_template,
 )
-from processing.common import normalize_phone_cols
+from processing.common import normalize_phone_cols, customer_whatsapp_numbers
 from core.analytics import Analytics
 
 
@@ -1749,7 +1751,7 @@ def _wf_template_label(t: dict, i: int) -> str:
     tid = _wf_guess(t, ("id",))
     name = _wf_guess(t, ("template_name", "name", "elementName")) or f"Template {i + 1}"
     category = _wf_guess(t, ("template_category", "category"))
-    lang = _wf_guess(t, ("language", "language_code", "lang"))
+    lang = _wf_guess(t, ("locale", "language", "language_code", "lang"))
     label = f"{name} (id {tid})" if tid else name
     if category:
         label += f" — {category}"
@@ -1773,7 +1775,7 @@ def _wf_templates_table(templates: list) -> pd.DataFrame:
             "Name": _wf_guess(t, ("template_name", "name", "elementName")) or "—",
             "Category": _wf_guess(t, ("template_category", "category")) or "—",
             "Type": _wf_guess(t, ("template_type", "type")) or "—",
-            "Language": _wf_guess(t, ("language", "language_code", "lang")) or "—",
+            "Language": _wf_guess(t, ("locale", "language", "language_code", "lang")) or "—",
             "Status": _wf_guess(t, ("status", "template_status")) or "—",
         }
         for t in templates
@@ -1782,15 +1784,37 @@ def _wf_templates_table(templates: list) -> pd.DataFrame:
 
 
 def _wf_extract_components(t: dict) -> dict:
-    """Best-effort pull of header/body/footer text from a template entry so
-    the send panel can render a beautified preview. Real key names aren't
-    confirmed against a live WhatsFly response, so this checks common flat
-    keys first, then Meta Cloud API's own
-    `components: [{type: HEADER/BODY/FOOTER, text: ...}]` shape, then a
-    recursive fallback scan for any string containing '{{' (for the body)."""
-    out = {"header": None, "body": "", "footer": None}
+    """Pull header/body/footer text from a template entry for the preview.
+
+    CONFIRMED against the live account (fetched and inspected directly,
+    not guessed): WhatsFly's own template-list response is NOT the
+    Meta-style `components: [{type, text}]` shape at the top level — that
+    only exists nested inside a SEPARATE stringified `template_json` field.
+    The top-level object instead carries `body_content`/`header_content`/
+    `footer_content` — plain, already-unicode-decoded text, ready to
+    display as-is. This is the real bug behind "preview shows the coded
+    message": the old fallback here (scanning every string for '{{') found
+    none in body_content (WhatsFly's own placeholders are '#NAME#'-style,
+    not '{{n}}' — see _wf_extract_variable_map) and instead matched
+    `template_json` itself (a giant string that DOES contain literal
+    '{{1}}' inside its nested, still-JSON-escaped text) and rendered that
+    whole raw blob as if it were the body.
+
+    Old Meta Cloud API `components`-list shape is kept as a fallback below
+    for safety, in case a template not managed through WhatsFly's own UI
+    ever shows up with that shape instead — not needed for any of this
+    account's real templates, all 8 of which use body_content."""
+    out = {"header": None, "body": "", "footer": None, "style": "meta"}
     if not isinstance(t, dict):
         return out
+
+    if "body_content" in t or "header_type" in t:
+        return {
+            "header": t.get("header_content") or None,
+            "body": t.get("body_content") or "",
+            "footer": t.get("footer_content") or None,
+            "style": "whatsfly",
+        }
 
     for key in ("body", "body_text", "message", "text", "template_text"):
         v = t.get(key)
@@ -1837,20 +1861,85 @@ def _wf_extract_components(t: dict) -> dict:
 
 _VAR_TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 
+# WhatsFly's OWN placeholder syntax in body_content/header_content/
+# footer_content — confirmed live, and confirmed INCONSISTENT even within
+# one template: system_abandoned_cart_reminder_new's own variable_map has
+# both "#LEAD_USER_FIRST_NAME#" (bare, no '!') and "#!system-cart-product-
+# list!#" (with '!') side by side for its own variables 1 and 2. This
+# matches both forms; names may contain hyphens (seen live: "system-cart-
+# total-price").
+_WF_PLACEHOLDER_RE = re.compile(r"#!?([A-Za-z0-9_-]+)!?#")
+
 
 def _wf_extract_variable_tokens(body_text: str) -> list:
-    """Ordered, de-duplicated variable tokens found in a template body.
-    Meta templates support two mutually-exclusive placeholder formats,
-    chosen when the template is created — **positional** (`{{1}}`, `{{2}}`,
-    ...) or **named** (`{{cusname}}`, `{{cuscode}}`, ...) — never mixed
-    within one template. Each token here is the raw text inside `{{ }}`,
-    either a digit string or a name, in first-appearance order."""
+    """Ordered, de-duplicated `{{...}}`-style variable tokens — the Meta
+    Cloud API convention, used only as a fallback when a template has no
+    `variable_map` of its own (see _wf_extract_variable_map, the primary
+    path for this account's real WhatsFly-managed templates)."""
     seen = []
     for m in _VAR_TOKEN_RE.finditer(body_text or ""):
         tok = m.group(1)
         if tok not in seen:
             seen.append(tok)
     return seen
+
+
+def _wf_extract_variable_map(t: dict) -> list:
+    """Ordered [(position, clean_name), ...] straight from WhatsFly's own
+    `variable_map` field — e.g. {"header":[],"body":{"1":"#!CUSNAME!#",
+    "2":"#!CUSCODE!#"},"button":[]} on the live account, confirmed against
+    a real fetch. This is ground truth for what each positional variable
+    is actually called — no more guessing via _WF_DEFAULT_VAR_NAMES for
+    any template that has one (i.e. every real template on this account
+    today). `body` can also come back as an empty list `[]` (a template
+    with zero variables, e.g. eid_shuveccha) rather than a dict — treated
+    the same as absent."""
+    raw_map = t.get("variable_map") if isinstance(t, dict) else None
+    if not raw_map:
+        return []
+    try:
+        parsed = json.loads(raw_map) if isinstance(raw_map, str) else raw_map
+    except (TypeError, ValueError):
+        return []
+    body_map = parsed.get("body") if isinstance(parsed, dict) else None
+    if not isinstance(body_map, dict) or not body_map:
+        return []
+
+    def _sort_key(k):
+        return int(k) if str(k).isdigit() else 0
+
+    out = []
+    for pos in sorted(body_map, key=_sort_key):
+        raw_name = str(body_map[pos]).strip()
+        m = _WF_PLACEHOLDER_RE.fullmatch(raw_name)
+        out.append((pos, m.group(1) if m else raw_name))
+    return out
+
+
+def _wf_substitute_positional_preview(body_html: str, values: list) -> str:
+    """Replaces each '#NAME#'/'#!NAME!#'-style placeholder occurrence in
+    the (already markup-formatted + escaped) body HTML with the value at
+    the SAME appearance position, left to right — matches WhatsFly's own
+    variable_map ordering ("1", "2", ...) regardless of what the
+    placeholder text itself says, since that text is confirmed
+    inconsistent (see _WF_PLACEHOLDER_RE). Highlighted where filled in,
+    dimmed as a `[n]` hint where still blank. Separate from
+    _wf_substitute_preview (the `{{...}}`-matching one) which Direct
+    WhatsApp also uses as-is — this one is WhatsFly-panel-only."""
+    counter = {"i": 0}
+
+    def _sub(m):
+        i = counter["i"]
+        counter["i"] += 1
+        val = values[i].strip() if i < len(values) and values[i] else ""
+        if val:
+            return (
+                '<span style="background:#FFF3B0;border-radius:3px;padding:0 3px;">'
+                f'{_html.escape(val)}</span>'
+            )
+        return f'<span style="color:#7a8a99;font-style:italic;">[{i + 1}]</span>'
+
+    return _WF_PLACEHOLDER_RE.sub(_sub, body_html)
 
 
 def _wf_extract_media_ref(resp) -> tuple:
@@ -1931,6 +2020,71 @@ def _wf_render_bubble(header: str | None, body_html: str, footer: str | None) ->
     )
 
 
+def _wf_render_phone_preview(header: str | None, body_html: str, footer: str | None, image_src: str | None = None) -> None:
+    """Deliberately plain 'phone screen' frame around the message bubble —
+    not a literal phone graphic, just a bordered, WhatsApp-chat-colored
+    panel so the preview reads as 'this is what shows up on their phone'.
+    WhatsFly-panel-only (Direct WhatsApp keeps using _wf_render_bubble
+    as-is, unchanged, since it's shared code — see that function's own
+    call sites). Built as ONE html string / one st.markdown call so the
+    image + bubble actually nest inside the frame — two separate
+    st.markdown calls would render as siblings, not nested."""
+    img_html = (
+        f'<img src="{_html.escape(image_src, quote=True)}" '
+        'style="width:100%;max-height:220px;object-fit:cover;border-radius:10px 10px 0 0;display:block;">'
+    ) if image_src else ""
+    text_parts = []
+    if header:
+        text_parts.append(f'<div style="font-weight:700;margin-bottom:6px;">{_wf_format_whatsapp_markup(header)}</div>')
+    text_parts.append(
+        f'<div>{body_html}</div>' if body_html
+        else '<div style="color:#7a8a99;">No body text found for this template.</div>'
+    )
+    if footer:
+        text_parts.append(f'<div style="color:#5B7083;font-size:12px;margin-top:8px;">{_wf_format_whatsapp_markup(footer)}</div>')
+    bubble_html = (
+        '<div style="background:#DCF8C6;border:1px solid #B4E2A0;border-radius:10px;overflow:hidden;'
+        'color:#111;font-size:15px;line-height:1.45;">'
+        + img_html
+        + f'<div style="padding:12px 16px;">{"".join(text_parts)}</div>'
+        + '</div>'
+    )
+    st.markdown(
+        '<div style="background:#ECE5DD;border:1px solid #ccc;border-radius:16px;'
+        'padding:20px 14px;min-height:180px;">' + bubble_html + '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _wf_build_template_payload(
+    template_id: str, named_variables: list, header_media_url: str | None,
+    use_meta_style: bool = False, template_name: str = "", language_code: str = "en",
+    header_image_param: dict | None = None,
+) -> dict:
+    """WhatsFly's confirmed-working flat send shape by default; the
+    documented-but-unconfirmed Meta Cloud API nested shape as an
+    admin-only fallback (see the WhatsFly Messaging notes in CLAUDE.md for
+    how each key here was confirmed against real dashboard examples).
+    Pure function of the current widget state — called fresh on every
+    rerun, never a separate editable copy that can go stale, so there's no
+    'rebuild' step before sending."""
+    if use_meta_style:
+        components = []
+        if header_image_param:
+            components.append({"type": "header", "parameters": [{"type": "image", "image": header_image_param}]})
+        body_values = [v for _, v in named_variables]
+        if body_values:
+            components.append({"type": "body", "parameters": [{"type": "text", "text": v} for v in body_values]})
+        return {"template": {"name": template_name, "language": {"code": language_code}, "components": components}}
+    payload = {"template_id": template_id}
+    for i, (vname, vval) in enumerate(named_variables):
+        if vname.strip():
+            payload[f"templateVariable-{vname.strip()}-{i + 1}"] = vval
+    if header_media_url:
+        payload["template_header_media_url"] = header_media_url
+    return payload
+
+
 def _render_wf_response(resp) -> None:
     st.markdown("---")
     st.markdown(f"**HTTP status:** `{resp.status_code}`")
@@ -1963,30 +2117,37 @@ def _render_wf_response(resp) -> None:
 
 
 def _render_wf_text_send(phone_number: str) -> None:
-    st.caption(
-        "Session message — only works within 24h of the recipient last "
-        "messaging the business number. Use this after the rep messages "
-        "in first (the guide's suggested first-test shortcut)."
-    )
-    message = st.text_area("Message", key="wf_text_message", height=100)
-    if st.button("📤 Send Text Message", key="wf_send_text_btn"):
-        if not phone_number.strip():
-            st.error("Enter a recipient phone number first.")
+    """Plain session text — an actual chat box (st.chat_input), not a
+    separate text area + button, per explicit ask. Sends immediately on
+    Enter, right below the conversation history above it."""
+    message = st.chat_input("Type a message and press Enter to send…", key="wf_chat_input")
+    if not message:
+        return
+    if not phone_number.strip():
+        st.error("Enter a recipient phone number first.")
+        return
+    with st.spinner("Sending…"):
+        try:
+            resp = whatsfly.send_text(phone_number.strip(), message)
+        except Exception as e:
+            st.error(f"Send failed: {e}")
             return
-        if not message.strip():
-            st.error("Message is empty.")
-            return
-        with st.spinner("Sending…"):
-            try:
-                resp = whatsfly.send_text(phone_number.strip(), message)
-            except Exception as e:
-                st.error(f"Send failed: {e}")
-                return
-        _render_wf_response(resp)
+    _render_wf_response(resp)
 
 
-def _render_wf_template_send(phone_number: str) -> None:
-    if st.button("🔄 Load / Refresh Templates", key="wf_refresh_templates_btn"):
+def _render_wf_template_send(phone_number: str, customer_name: str | None = None, customer_code: str | None = None) -> None:
+    """Dummy-phone layout: type on the left, live preview on the right —
+    everything on the right always reflects exactly what's on the left,
+    no separate 'rebuild' step. Image attachment sits at the TOP of the
+    left column so it's already in the preview by the time you reach the
+    variables. Raw payload JSON / template list dump only ever shows for
+    admin users (Advanced / Debug), never in the day-to-day flow.
+
+    `customer_name`/`customer_code` are only ever populated when the
+    recipient was picked from the customer list (not typed manually) —
+    when set, a CUSNAME/CUSCODE variable is auto-filled from them instead
+    of asking for it."""
+    if st.button("🔄 Refresh Templates", key="wf_refresh_templates_btn"):
         st.session_state.pop("_wf_templates_raw", None)
 
     if "_wf_templates_raw" not in st.session_state:
@@ -1997,263 +2158,954 @@ def _render_wf_template_send(phone_number: str) -> None:
                 st.error(f"Couldn't fetch templates: {e}")
                 return
 
+    is_admin = st.session_state.get("user_role") == "admin"
     raw = st.session_state["_wf_templates_raw"]
-    with st.expander("🔍 Raw template list response"):
-        st.json(raw)
-
     templates = _wf_normalize_templates(raw)
     if not templates:
-        st.warning("No templates found in the response above — expand it to see the actual shape returned.")
+        st.warning("No templates found.")
+        if is_admin:
+            with st.expander("⚙️ Advanced / Debug (admin only)"):
+                st.json(raw)
         return
-
-    st.markdown(f"**{len(templates)} template(s) available on this account:**")
-    st.dataframe(_wf_templates_table(templates), width="stretch", hide_index=True)
 
     labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
     idx = st.selectbox(
-        "Select a template to send", range(len(templates)), format_func=lambda i: labels[i], key="wf_template_idx"
+        f"📋 Template ({len(templates)} available)", range(len(templates)),
+        format_func=lambda i: labels[i], key="wf_template_idx",
     )
     template = templates[idx]
 
-    with st.expander("🔍 Selected template (raw)"):
-        st.json(template)
-
     comps = _wf_extract_components(template)
+    is_native = comps.get("style") == "whatsfly"
     body_text = comps["body"]
-    tokens = _wf_extract_variable_tokens(body_text)
     body_html = _wf_format_whatsapp_markup(body_text)
 
-    st.markdown("**Template Preview**")
-    if body_text:
-        _wf_render_bubble(comps["header"], body_html, comps["footer"])
+    # Ground truth for this account's real templates: WhatsFly's own
+    # variable_map gives the actual name per position (see
+    # _wf_extract_variable_map's docstring) — no guessing needed. Only
+    # falls back to the old {{token}} scan + _WF_DEFAULT_VAR_NAMES guess
+    # for a template that somehow has no variable_map of its own.
+    var_map = _wf_extract_variable_map(template) if is_native else []
+    tokens = []
+    if var_map:
+        var_entries = var_map
     else:
-        st.caption("No body text found for this template — check the raw JSON above to see the actual shape returned.")
+        tokens = _wf_extract_variable_tokens(body_text)
+        var_entries = [
+            (str(i + 1), tok if not tok.isdigit() else (
+                _WF_DEFAULT_VAR_NAMES[i] if i < len(_WF_DEFAULT_VAR_NAMES) else f"var{i + 1}"
+            ))
+            for i, tok in enumerate(tokens)
+        ]
 
-    named_variables = []  # list of (name, value) — WhatsFly's SEND contract always
-    # keys each variable by a NAME (`templateVariable-<name>-<n>`, confirmed via a
-    # real dashboard example), regardless of which placeholder format the template
-    # body itself uses. Meta templates support two formats, chosen at template-
-    # creation time (never mixed within one template): positional (`{{1}}`,
-    # `{{2}}`) or named (`{{cusname}}`, `{{cuscode}}`). When the body already uses
-    # named tokens, that token IS the name WhatsFly needs — defaulted straight
-    # from it. For positional bodies there's no name in the text itself, so
-    # `{{1}}`/`{{2}}` fall back to this account's confirmed convention
-    # (`CUSNAME`/`CUSCODE`, both real examples used exactly this pair); a 3rd+
-    # positional variable has no confirmed name and stays blank.
-    if tokens:
-        st.markdown(f"**Fill in {len(tokens)} variable(s)** — the preview below updates as you type:")
-        st.caption(
-            "Name defaults to the template's own `{{name}}` token if it uses named "
-            "placeholders, else this account's confirmed convention (`CUSNAME`/`CUSCODE` "
-            "for `{{1}}`/`{{2}}`) — override if needed. Sent as `templateVariable-<name>-<n>` "
-            "per variable, per a real dashboard example."
-        )
-        for i, tok in enumerate(tokens):
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                if not tok.isdigit():
-                    default_name = tok
-                else:
-                    default_name = _WF_DEFAULT_VAR_NAMES[i] if i < len(_WF_DEFAULT_VAR_NAMES) else ""
-                vname = st.text_input(
-                    f"Name for {{{{{tok}}}}}", value=default_name, key=f"wf_varname_{idx}_{i}"
-                )
-            with c2:
-                vval = st.text_input(f"Value for {{{{{tok}}}}}", key=f"wf_var_{idx}_{i}")
-            named_variables.append((vname, vval))
+    left, right = st.columns([1, 1])
 
-        st.markdown("**Message Preview (with your edits)**")
-        _wf_render_bubble(
-            comps["header"], _wf_substitute_preview(body_html, tokens, [v for _, v in named_variables]), comps["footer"]
-        )
-    else:
-        st.caption("No {{...}} variables detected in this template's body.")
+    with left:
+        # Auto-detected from the template's own header_type/header_subtype
+        # (confirmed live: "media"/"image") for a WhatsFly-native template
+        # — no more manual checkbox. A non-native (fallback-shape)
+        # template has no such field, so it still asks.
+        if is_native:
+            is_image_header = template.get("header_type") == "media" and template.get("header_subtype") == "image"
+            if is_image_header:
+                st.markdown("**🖼️ Header Image** _(auto-detected)_")
+        else:
+            st.markdown("**🖼️ Header Image (optional)**")
+            is_image_header = st.checkbox(
+                "This template's header is an image",
+                key=f"wf_has_img_header_{idx}",
+                help="Not auto-detected for this template — check manually. Meta requires JPEG/PNG, 5MB max.",
+            )
 
-    has_image_header = st.checkbox(
-        "🖼️ This template's header is an image",
-        key=f"wf_has_img_header_{idx}",
-        help=(
-            "Not auto-detected — this account's template-list response doesn't "
-            "expose header format, so check it manually against the template "
-            "and flip this on. Meta requires JPEG/PNG, 5MB max, for image headers."
-        ),
-    )
-    header_media_id = None
-    header_media_url = None
-    if has_image_header:
-        uploaded_file = st.file_uploader(
-            "Attach header image", type=["jpg", "jpeg", "png"], key=f"wf_header_img_{idx}"
-        )
-        manual_url = st.text_input(
-            "…or paste an already-hosted image URL instead",
-            key=f"wf_header_img_url_{idx}",
-        )
-        st.caption(
-            "**Confirmed via a real dashboard example** (image-header template): the "
-            "flat shape wants a plain **`template_header_media_url`** field — a hosted "
-            "URL, not a media id and not `media_type` (both of those were wrong guesses, "
-            "now removed from the default). The uploaded image's own hosted URL feeds "
-            "this automatically; the manual-URL box below is the same field if you'd "
-            "rather skip uploading."
-        )
+        header_media_id = header_media_url = None
+        image_preview_src = None
+        if is_image_header:
+            uploaded_file = st.file_uploader(
+                "Attach image", type=["jpg", "jpeg", "png"], key=f"wf_header_img_{idx}", label_visibility="collapsed",
+            )
+            manual_url = st.text_input("…or paste a hosted image URL", key=f"wf_header_img_url_{idx}")
 
-        if uploaded_file is not None:
-            st.image(uploaded_file, width=200)
-            file_sig = (uploaded_file.name, uploaded_file.size)
-            upload_cache_key = f"wf_header_upload_{idx}"
-            cached = st.session_state.get(upload_cache_key)
-            if not cached or cached.get("sig") != file_sig:
-                with st.spinner("Uploading image to WhatsFly…"):
-                    try:
-                        raw = whatsfly.upload_media(
-                            uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type or "image/jpeg"
-                        )
-                        mid, murl = _wf_extract_media_ref(raw)
-                        st.session_state[upload_cache_key] = {
-                            "sig": file_sig, "raw": raw, "media_id": mid, "media_url": murl, "error": None,
-                        }
-                    except Exception as e:
-                        st.session_state[upload_cache_key] = {"sig": file_sig, "raw": None, "error": str(e)}
+            if uploaded_file is not None:
+                file_sig = (uploaded_file.name, uploaded_file.size)
+                upload_cache_key = f"wf_header_upload_{idx}"
+                cached = st.session_state.get(upload_cache_key)
+                if not cached or cached.get("sig") != file_sig:
+                    with st.spinner("Uploading…"):
+                        try:
+                            raw_up = whatsfly.upload_media(
+                                uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type or "image/jpeg"
+                            )
+                            mid, murl = _wf_extract_media_ref(raw_up)
+                            st.session_state[upload_cache_key] = {
+                                "sig": file_sig, "raw": raw_up, "media_id": mid, "media_url": murl, "error": None,
+                            }
+                        except Exception as e:
+                            st.session_state[upload_cache_key] = {"sig": file_sig, "raw": None, "error": str(e)}
 
-            cached = st.session_state.get(upload_cache_key)
-            if cached and cached.get("error"):
-                st.error(f"Upload failed: {cached['error']}")
-            elif cached and cached.get("raw") is not None:
-                with st.expander("🔍 Raw upload response"):
-                    st.json(cached["raw"])
-                if cached.get("media_id") or cached.get("media_url"):
-                    st.success(
-                        f"Uploaded — media_id: `{cached.get('media_id') or '—'}`, "
-                        f"url: `{cached.get('media_url') or '—'}`"
-                    )
-                    header_media_id = cached.get("media_id")
-                    header_media_url = cached.get("media_url")
-                else:
-                    st.warning("Uploaded, but couldn't find an id/url in the response — check the raw JSON above.")
+                cached = st.session_state.get(upload_cache_key)
+                if cached and cached.get("error"):
+                    st.error(f"Upload failed: {cached['error']}")
+                elif cached and cached.get("raw") is not None:
+                    if cached.get("media_id") or cached.get("media_url"):
+                        st.success("Uploaded — see preview on the right.")
+                        header_media_id = cached.get("media_id")
+                        header_media_url = cached.get("media_url")
+                    else:
+                        st.warning("Uploaded, but no id/url found for it (see Advanced / Debug).")
+                # Preview the actual file itself (not just whatever url came
+                # back from the upload) so the right-hand preview is exactly
+                # what was picked, even before/without a successful upload.
+                image_preview_src = f"data:{uploaded_file.type or 'image/jpeg'};base64," + base64.b64encode(uploaded_file.getvalue()).decode()
 
-        if not header_media_id and not header_media_url and manual_url.strip():
-            header_media_url = manual_url.strip()
+            if not header_media_id and not header_media_url and manual_url.strip():
+                header_media_url = manual_url.strip()
+                if not image_preview_src:
+                    image_preview_src = header_media_url
 
-    with st.expander("⚙️ Send request details"):
-        st.caption(
-            "**Confirmed via a real dashboard-generated example**: endpoint is "
-            "`POST /whatsapp/send/template` with flat params — but its `template_id` "
-            "param is a naming trap: it wants WhatsFly's short internal **`id`** "
-            "(e.g. `435966`), NOT the longer `template_id` field the template-list "
-            "response itself returns for the same template. Defaulted below accordingly."
-        )
-        template_id_val = st.text_input(
-            "Template ID for send (WhatsFly's short `id` — confirmed, not the list's `template_id`)",
-            value=_wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or "",
-            key=f"wf_template_id_{idx}",
-        )
-        endpoint = st.text_input(
-            "Send endpoint",
-            value="/whatsapp/send/template",
-            key="wf_endpoint",
-            help="Confirmed via a real dashboard-generated curl/GET example — this is the actual path.",
-        )
-
-        payload_shape = st.radio(
-            "Payload shape to try",
-            ["Flat (template_id + templateVariable-<name>-<n>)", "Meta Cloud API style (nested template/components)"],
-            horizontal=True,
-            key=f"wf_payload_shape_{idx}",
-            help=(
-                "Flat is confirmed via TWO real dashboard-generated examples now "
-                "(text-only, and this image-header one) — templateVariable-<name>-<n> "
-                "per variable, template_header_media_url for the header image, no "
-                "template_name/language_code in either real example. Meta Cloud API "
-                "style is kept only as a fallback; the send endpoint appears to key "
-                "its own template lookup off the flat template_id specifically, so "
-                "this shape (no flat template_id) got \"Message template not found\" "
-                "on a real attempt."
-            ),
-        )
         header_image_param = (
             {"id": header_media_id} if header_media_id
             else {"link": header_media_url} if header_media_url
             else None
         )
 
-        if payload_shape.startswith("Meta"):
-            template_name = st.text_input(
-                "Template name (`template.name` — required for this shape only)",
-                value=_wf_guess(template, ("template_name", "name", "elementName")) or "",
-                key=f"wf_template_name_{idx}",
-            )
-            language_code = st.text_input(
-                "Language code",
-                value=_wf_guess(template, ("language", "language_code", "lang")) or "en",
-                key=f"wf_lang_{idx}",
-            )
-            components = []
-            if header_image_param:
-                components.append({"type": "header", "parameters": [{"type": "image", "image": header_image_param}]})
-            body_values = [v for _, v in named_variables]
-            if body_values:
-                components.append({"type": "body", "parameters": [{"type": "text", "text": v} for v in body_values]})
-            default_payload = {
-                "template": {
-                    "name": template_name,
-                    "language": {"code": language_code},
-                    "components": components,
-                },
-            }
-            shape_key = "meta"
+        # WhatsFly's send contract always keys a variable by NAME
+        # (`templateVariable-<name>-<n>`, confirmed via a real dashboard
+        # example). CUSNAME/CUSCODE — this account's own convention for
+        # "the picked customer's name/code" — auto-fill from the selected
+        # customer and skip the input entirely; every other variable
+        # (there's no data source for e.g. "cart total") still asks.
+        named_variables = []
+        if var_entries:
+            st.markdown(f"**✏️ Fill in {len(var_entries)} variable(s)**")
+            for pos, name in var_entries:
+                upper = name.strip().upper()
+                if upper == "CUSNAME" and customer_name:
+                    st.caption(f"**{name}** → {customer_name} _(from selected customer)_")
+                    named_variables.append((name, customer_name))
+                elif upper == "CUSCODE" and customer_code:
+                    st.caption(f"**{name}** → {customer_code} _(from selected customer)_")
+                    named_variables.append((name, customer_code))
+                else:
+                    vval = st.text_input(name, key=f"wf_var_{idx}_{pos}")
+                    named_variables.append((name, vval))
         else:
-            # Confirmed via a real dashboard example against an image-header,
-            # named-variable template — templateVariable-<name>-<n> per variable
-            # (NOT a numbered/generic array), template_header_media_url as a plain
-            # hosted URL (NOT media_id/media_url/media_type, all wrong guesses from
-            # the first attempt). template_name/language_code weren't present in
-            # either real example, so dropped from the default entirely.
-            default_payload = {"template_id": template_id_val}
-            for i, (vname, vval) in enumerate(named_variables):
-                if vname.strip():
-                    default_payload[f"templateVariable-{vname.strip()}-{i + 1}"] = vval
-            if header_media_url:
-                default_payload["template_header_media_url"] = header_media_url
-            shape_key = "flat"
+            st.caption("This template has no variables to fill in.")
 
-        payload_key = f"wf_payload_json_{idx}_{shape_key}"
-        if payload_key not in st.session_state:
-            st.session_state[payload_key] = json.dumps(default_payload, indent=2)
+    with right:
+        st.markdown("**📱 Preview**")
+        if body_text:
+            values = [v for _, v in named_variables]
+            preview_body = (
+                _wf_substitute_positional_preview(body_html, values) if is_native
+                else _wf_substitute_preview(body_html, tokens, values)
+            )
+        else:
+            preview_body = ""
+        _wf_render_phone_preview(comps["header"], preview_body, comps["footer"], image_preview_src)
 
-        if st.button("↻ Rebuild payload from fields above", key=f"wf_rebuild_payload_{idx}_{shape_key}"):
-            st.session_state[payload_key] = json.dumps(default_payload, indent=2)
-            st.rerun()
+    # Everything below builds the send payload fresh from the widget state
+    # above — no separate editable/persisted copy, so it can never go stale.
+    template_id_val = _wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or ""
+    endpoint = "/whatsapp/send/template"
+    use_meta_style = False
+    template_name_override = _wf_guess(template, ("template_name", "name", "elementName")) or ""
+    language_code_override = _wf_guess(template, ("locale", "language", "language_code", "lang")) or "en"
 
-        st.caption(
-            "Request body that will be sent (merged with apiToken/phone_number_id/phone_number) "
-            "— edit directly if the real API expects something different still."
+    if is_admin:
+        with st.expander("⚙️ Advanced / Debug (admin only)"):
+            # Confirmed via real dashboard-generated examples: endpoint is
+            # POST /whatsapp/send/template, flat params. `template_id` is a
+            # naming trap — it wants WhatsFly's short internal `id`, NOT
+            # the longer `template_id` field the list response returns.
+            template_id_val = st.text_input(
+                "Template ID (WhatsFly's short `id`, not the list's `template_id`)",
+                value=template_id_val, key=f"wf_template_id_{idx}",
+            )
+            endpoint = st.text_input("Send endpoint", value=endpoint, key="wf_endpoint")
+            use_meta_style = st.checkbox(
+                "Try Meta Cloud API style instead",
+                key=f"wf_use_meta_style_{idx}",
+                help="Documented fallback only — the flat shape above is the confirmed-working one; "
+                     "this failed with \"Message template not found\" on a real attempt.",
+            )
+            if use_meta_style:
+                template_name_override = st.text_input("Template name", value=template_name_override, key=f"wf_template_name_{idx}")
+                language_code_override = st.text_input("Language code", value=language_code_override, key=f"wf_lang_{idx}")
+
+            payload = _wf_build_template_payload(
+                template_id_val, named_variables, header_media_url,
+                use_meta_style, template_name_override, language_code_override, header_image_param,
+            )
+            st.markdown("**Payload that will be sent** _(builds live from the fields above — no rebuild needed)_")
+            st.json(payload)
+            st.markdown("**Raw template data**")
+            st.json(raw, expanded=False)
+            st.json(template, expanded=False)
+            st.dataframe(_wf_templates_table(templates), width="stretch", hide_index=True)
+    else:
+        payload = _wf_build_template_payload(
+            template_id_val, named_variables, header_media_url,
+            use_meta_style, template_name_override, language_code_override, header_image_param,
         )
-        payload_text = st.text_area("Payload JSON", key=payload_key, height=140)
 
-    if st.button("📤 Send Template Message", key="wf_send_template_btn"):
+    if st.button("📤 Send Template Message", key="wf_send_template_btn", type="primary"):
         if not phone_number.strip():
             st.error("Enter a recipient phone number first.")
             return
-        try:
-            extra_params = json.loads(payload_text)
-        except json.JSONDecodeError as e:
-            st.error(f"Payload isn't valid JSON: {e}")
-            return
         with st.spinner("Sending…"):
             try:
-                resp = whatsfly.send_template(phone_number.strip(), endpoint.strip(), extra_params)
+                resp = whatsfly.send_template(phone_number.strip(), endpoint.strip(), payload)
             except Exception as e:
                 st.error(f"Send failed: {e}")
                 return
         _render_wf_response(resp)
 
 
-def _show_whatsfly_messaging() -> None:
-    st.subheader("💬 WhatsFly — Send Test Message")
+_WF_STATUS_LABEL = {"sent": "✓ Sent", "delivered": "✓✓ Delivered", "read": "✓✓ Read", "failed": "⚠️ Failed"}
+
+
+def _wf_load_conversation_history(phone_numbers: list) -> list:
+    """Loads a customer's WhatsApp thread, matched purely by phone number —
+    the whatsapp_webhooks database has no concept of a customer code at
+    all, so this is the only way to relate a cacus customer to their
+    conversation. `phone_numbers` is a list (not one number) since a
+    customer can have two WhatsApp-eligible numbers (primary/secondary)
+    and either could be the one they've actually messaged from.
+
+    Returns [] on any lookup problem (DB not configured, connection error,
+    etc.) rather than raising — a config/infra gap here is not something a
+    person sending a message should ever see the internals of; it just
+    reads as 'no history yet'."""
+    try:
+        return whatsapp_webhook_db.get_messages_for_contact(phone_numbers)
+    except Exception:
+        return []
+
+
+def _wf_last_inbound_timestamp(messages: list):
+    """Most recent INBOUND message's timestamp, or None if the customer has
+    never messaged — this, not our own outbound sends, is what starts/
+    extends WhatsApp's 24h free-text session window."""
+    latest = None
+    for m in messages:
+        if m.get("direction") != "inbound":
+            continue
+        ts = m.get("message_timestamp") or m.get("created_at")
+        if ts and (latest is None or ts > latest):
+            latest = ts
+    return latest
+
+
+def _wf_session_window_status(last_inbound_ts) -> tuple:
+    """(is_open, caption) — WhatsApp's real rule: a plain session message
+    only works within 24h of the CUSTOMER's own last message; outside that
+    window (or if they've never messaged at all), only an approved
+    template can be sent. Timestamps without tzinfo are treated as UTC —
+    matches this account's own confirmed convention (WhatsFly's
+    status_time is a naive string, confirmed UTC — see
+    whatsapp_webhook/whatsfly_handlers.py)."""
+    if not last_inbound_ts:
+        return False, "🔒 No active session — the customer hasn't messaged you yet, so only an approved template can be sent."
+    ts = last_inbound_ts if last_inbound_ts.tzinfo else last_inbound_ts.replace(tzinfo=timezone.utc)
+    remaining = timedelta(hours=24) - (datetime.now(timezone.utc) - ts)
+    if remaining.total_seconds() <= 0:
+        hours_ago = int((datetime.now(timezone.utc) - ts).total_seconds() // 3600)
+        return False, f"🔒 Session expired — their last message was {hours_ago}h ago. Only an approved template can be sent now."
+    hrs, rem = divmod(int(remaining.total_seconds()), 3600)
+    mins = rem // 60
+    return True, f"🟢 Session open — {hrs}h {mins}m left to reply with plain text (from their last message)."
+
+
+def _wf_render_chat_history(messages: list) -> None:
+    """Renders an already-loaded message thread as chat bubbles."""
+    if not messages:
+        st.caption("No conversation history yet.")
+        return
+
+    for m in messages:
+        is_inbound = m.get("direction") == "inbound"
+        with st.chat_message("user" if is_inbound else "assistant", avatar="🧑" if is_inbound else "🏢"):
+            content = m.get("content")
+            body = content.get("body") if isinstance(content, dict) else None
+            st.markdown(body or f"_{m.get('message_type') or 'message'} (no text)_")
+            ts = m.get("message_timestamp") or m.get("created_at")
+            meta = ts.strftime("%b %d, %Y %H:%M") if ts else ""
+            if not is_inbound and m.get("current_status"):
+                status_label = _WF_STATUS_LABEL.get(m["current_status"], m["current_status"])
+                meta = f"{meta}  ·  {status_label}" if meta else status_label
+            if meta:
+                st.caption(meta)
+
+
+def _show_whatsfly_messaging(zid: str) -> None:
+    st.subheader("💬 WhatsFly — Send Single Message")
+    st.caption("Send one message to one customer, with their conversation history right here.")
+
+    try:
+        whatsfly.get_credentials()
+    except whatsfly.WhatsFlyConfigError as e:
+        st.warning(str(e))
+        return
+
+    phone_number = ""
+    primary = secondary = None
+    customer_name = customer_code = None
+
+    with st.container(border=True):
+        st.markdown("**👤 Recipient**")
+        recipient_mode = st.radio(
+            "Recipient", ["Pick a customer", "Enter manually"],
+            horizontal=True, label_visibility="collapsed", key="wf_recipient_mode",
+        )
+
+        if recipient_mode == "Pick a customer":
+            cacus_df = _load_cacus(str(zid))
+            if cacus_df.empty:
+                st.warning("No customer data available for this ZID.")
+            else:
+                labels = ["— Select a customer —"] + [
+                    f"{r.cusid} - {str(r.cusname).strip() or '(no name)'}" for r in cacus_df.itertuples()
+                ]
+                choice = st.selectbox("Customer", labels, key="wf_customer_pick")
+                if choice != labels[0]:
+                    cusid = choice.split(" - ", 1)[0]
+                    row = cacus_df.loc[cacus_df["cusid"] == cusid].iloc[0]
+                    customer_code = cusid
+                    customer_name = str(row.get("cusname") or "").strip() or None
+                    primary, secondary = customer_whatsapp_numbers(row.get("cusmobile"), row.get("whatsapp"))
+                    if not primary:
+                        st.warning("No phone number on file for this customer — switch to manual entry instead.")
+                    else:
+                        phone_number = primary
+                        if secondary and st.checkbox(
+                            f"Use secondary number ({secondary}) instead of primary ({primary})",
+                            key="wf_use_secondary",
+                        ):
+                            phone_number = secondary
+                        st.caption(f"Sending to: `{phone_number}`")
+        else:
+            phone_number = st.text_input(
+                "Recipient phone number",
+                key="wf_phone_number",
+                help="Country code + digits only — no '+', no spaces, e.g. 8801XXXXXXXXX.",
+            )
+
+    # Sanity check, not a hard block — a standard BD WhatsApp number is
+    # 880 + 10 digits = 13 digits total. Real customer-master data has
+    # genuine entry errors (e.g. a double leading zero) that normalize to
+    # something the wrong length; flag it rather than silently sending to
+    # a number that's likely wrong, or guessing at a "corrected" one.
+    if phone_number and (not phone_number.isdigit() or len(phone_number) != 13):
+        st.caption(
+            f"⚠️ `{phone_number}` doesn't look like a standard 880-format number "
+            "(expected 13 digits) — double-check before sending."
+        )
+
+    history_numbers = [n for n in {phone_number, primary, secondary} if n]
+    messages = []
+    if history_numbers:
+        messages = _wf_load_conversation_history(history_numbers)
+        session_open, window_caption = _wf_session_window_status(_wf_last_inbound_timestamp(messages))
+        with st.container(border=True):
+            st.markdown("**💬 Conversation History**")
+            _wf_render_chat_history(messages)
+            st.caption(window_caption)
+            # Reply lives right here, in the same panel as the thread it's
+            # replying to — only offered while the 24h session is actually
+            # open, since WhatsApp itself rejects plain text outside it.
+            if session_open:
+                _render_wf_text_send(phone_number)
+
+    # Templates work regardless of session state — that's what they're
+    # for — so this section is always available, no toggle needed; plain
+    # text lives entirely in the Conversation History panel above now.
+    st.markdown("---")
+    st.markdown("**✉️ Send a Template**")
+    _render_wf_template_send(phone_number, customer_name, customer_code)
+
+
+# ---------------------------------------------------------------------------
+# 📢 WhatsFly Bulk Messaging — campaign sends, one template at a time.
+#
+# Deliberately built template-FIRST rather than as one generic bulk-send
+# form: each real campaign (audience, what gets filled into each variable,
+# any extra filtering) is its own thing, and trying to guess a one-size-
+# shape now, before more than one campaign exists, would just mean
+# rebuilding it anyway. So the skeleton here is: pick a template, dispatch
+# to that template's own view function via _WF_BULK_TEMPLATE_VIEWS below,
+# with an explicit "not built yet" placeholder for everything unregistered.
+# Once several real campaigns exist side by side, look for what they share
+# and fold the common parts into one generic flow — not before.
+# ---------------------------------------------------------------------------
+
+
+def _wf_bulk_default_view(zid: str, template: dict) -> None:
+    """Shown for any template with no campaign view registered yet in
+    _WF_BULK_TEMPLATE_VIEWS — just a preview, so there's something concrete
+    on screen while each campaign gets built out one at a time."""
+    comps = _wf_extract_components(template)
+    body_html = _wf_format_whatsapp_markup(comps["body"])
+    st.info(
+        "This template doesn't have a bulk-send campaign built for it yet. "
+        "Describe who it should go to and what fills each variable, and "
+        "it'll get its own view registered in _WF_BULK_TEMPLATE_VIEWS."
+    )
+    _wf_render_phone_preview(comps["header"], body_html, comps["footer"])
+
+
+# {template_name: handler(zid, template) -> None} — add one entry per
+# campaign as it gets defined. Falls back to _wf_bulk_default_view for
+# every template not listed here yet.
+_WF_BULK_TEMPLATE_VIEWS = {}
+
+
+def _render_campaign_confirm_and_send(
+    zid: str, template: dict, recipients: list, filters_used: list,
+    variable_mapping: dict = None, cooldown_days_default: int = 30,
+    header_image_url: str = None, key_prefix: str = "wfc",
+) -> None:
+    """Shared "confirm, persist, send, summarize" engine — Phase 2 of
+    Whatsfly_Integration_docs/bulk-send-build-plan.md. Meant to be CALLED
+    by a real per-campaign handler in _WF_BULK_TEMPLATE_VIEWS (Phase 6) or
+    by the manual test-number-list mode (Phase 3), never wired directly
+    into _wf_bulk_default_view — this function knows nothing about how
+    `recipients`' variables were built, only about running the send
+    itself, which genuinely is the same for every campaign (unlike
+    audience-building/variable-mapping, which stays campaign-specific per
+    the comment above _wf_bulk_default_view).
+
+    `key_prefix` namespaces every widget key this function creates — lets
+    more than one call site (e.g. a real campaign handler AND the manual
+    test-list expander) coexist on the same page render without a
+    Streamlit duplicate-key clash.
+
+    `recipients`: [{"cusid", "cusname", "phone_number", "variables"}, ...]
+    — already scoped to the audience this campaign should target, BEFORE
+    the opt-out/cooldown exclusions below are applied. `variables` must
+    already be in the template's own variable_map position order (see
+    _wf_extract_variable_map) — this function does not reorder it.
+
+    Runs the whole send loop synchronously in this one script run (see
+    the build plan's "Architecture, revised" — no background worker),
+    with a live st.progress() bar. Cannot be paused or stopped once
+    confirmed (Q3) and never retries a failure automatically (Q5)."""
+    from processing import wf_bulk_campaign as wfc
+
+    template_id = _wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or ""
+    template_name = _wf_guess(template, ("template_name", "name", "elementName")) or ""
+
+    st.markdown("**⚙️ Campaign settings**")
+    cooldown_days = st.number_input(
+        "Don't resend this template to a customer within (days)",
+        min_value=0, value=cooldown_days_default, key=f"{key_prefix}_cooldown_days",
+        help="Per-template only — a different template can still reach this customer sooner.",
+    )
+
+    try:
+        opted_out = wfc.get_opted_out_cusids(zid)
+        candidate_cusids = [r["cusid"] for r in recipients if r.get("cusid")]
+        cooldown_blocked = (
+            wfc.get_cooldown_blocked_cusids(zid, template_id, cooldown_days, candidate_cusids)
+            if candidate_cusids else set()
+        )
+    except wfc.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    final_recipients = [
+        r for r in recipients
+        if r.get("cusid") not in opted_out and r.get("cusid") not in cooldown_blocked
+    ]
+    n_opted_out = sum(1 for r in recipients if r.get("cusid") in opted_out)
+    n_cooldown = sum(
+        1 for r in recipients
+        if r.get("cusid") in cooldown_blocked and r.get("cusid") not in opted_out
+    )
+    st.caption(f"🚫 {n_opted_out} customer(s) excluded — opted out of bulk messaging.")
+    st.caption(f"⏳ {n_cooldown} customer(s) excluded — already sent this template within the last {cooldown_days} days.")
+    st.metric("Will send to", f"{len(final_recipients):,} customer(s)")
+
+    if not final_recipients:
+        st.info("Nothing to send — every candidate was excluded.")
+        return
+
+    st.warning(
+        f"You are about to send **{template_name}** to **{len(final_recipients)}** customer(s). "
+        "This cannot be paused or stopped once started."
+    )
+    confirmed = st.checkbox("I understand — this cannot be stopped once started", key=f"{key_prefix}_confirm_checkbox")
+    if not st.button("📤 Confirm & Send", key=f"{key_prefix}_confirm_send_btn", type="primary", disabled=not confirmed):
+        return
+
+    campaign_id = wfc.create_campaign(
+        zid=zid, template_name=template_name, template_id=template_id,
+        header_image_url=header_image_url, variable_mapping=variable_mapping or {},
+        filters_used=filters_used, cooldown_days=int(cooldown_days),
+        total_recipients=len(final_recipients),
+        created_by=st.session_state.get("username") or "unknown",
+    )
+    wfc.insert_recipients(campaign_id, zid, final_recipients)
+    wfc.mark_campaign_started(campaign_id)
+
+    progress_bar = st.progress(0.0)
+    status_text = st.empty()
+
+    def _progress_cb(done, total):
+        progress_bar.progress(done / total if total else 1.0)
+        status_text.text(f"Sending {done}/{total}…")
+
+    def _send_fn(phone_number, variables):
+        named_variables = list(variables.items())
+        header_image_param = {"link": header_image_url} if header_image_url else None
+        payload = _wf_build_template_payload(
+            template_id, named_variables, header_image_url, header_image_param=header_image_param,
+        )
+        return whatsfly.send_template(phone_number, "/whatsapp/send/template", payload)
+
+    with st.spinner("Sending campaign…"):
+        counts = wfc.run_send_loop(campaign_id, send_fn=_send_fn, progress_cb=_progress_cb)
+    wfc.mark_campaign_completed(campaign_id)
+
+    st.success(f"Done — {counts['sent']} sent, {counts['failed']} failed, out of {counts['total']}.")
+    recipients_df = wfc.get_campaign_recipients(campaign_id)
+    failed_df = recipients_df[recipients_df["status"] == "failed"]
+    if not failed_df.empty:
+        st.markdown("**⚠️ Failed sends** — review and correct with the customer, then resend manually if needed.")
+        st.dataframe(
+            failed_df[["cusid", "cusname", "phone_number", "failure_type", "error_detail"]],
+            width="stretch", hide_index=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Audience filter builder — free-form "add a filter", any order, each one
+# narrowing whatever candidates survived the ones before it (AND across
+# filter types, confirmed). See processing/wf_bulk_audience.py for the
+# actual query/pandas logic; everything here is orchestration + widgets.
+# ---------------------------------------------------------------------------
+
+_BULK_FILTER_CATALOG = [
+    ("area", "Area"),
+    ("salesman", "Salesman"),
+    ("product_count_band", "Unique Products Bought"),
+    ("net_sales", "Net Sales (window)"),
+    ("total_returns", "Total Returns (window)"),
+    ("days_since_last_sale", "Days Since Last Sale"),
+    ("customer_score", "Customer Score"),
+    ("current_balance", "Current Balance"),
+    ("product", "Product"),
+    ("inactive", "Inactive (own timeline)"),
+    ("order_date", "Ordered On (exact date)"),
+    ("collection_date", "Collection Received On (exact date)"),
+    ("avg_collection_days", "Avg Collection Days (CP)"),
+]
+_BULK_FILTER_LABELS = dict(_BULK_FILTER_CATALOG)
+
+
+def _wfb_available_to_add(active_types: set) -> list:
+    """Which filter types can still be added, given what's already active.
+    Two real dependency rules: Salesman needs Area first (they come off
+    the same opdor rows — Salesman's own options are meaningless without
+    an Area to scope them to), and nothing can be added once Avg
+    Collection Days is active — it's the one expensive per-customer
+    computation, so it always runs last, over whatever's already been
+    narrowed down."""
+    if "avg_collection_days" in active_types:
+        return []
+    out = []
+    for key, label in _BULK_FILTER_CATALOG:
+        if key in active_types:
+            continue
+        if key == "salesman" and "area" not in active_types:
+            continue
+        out.append((key, label))
+    return out
+
+
+def _wfb_describe_filter(f: dict) -> str:
+    t = f["type"]
+    if t == "area":
+        return ", ".join(f["value"])
+    if t == "salesman":
+        labels = f.get("labels") or [str(v) for v in f["value"]]
+        return f"{', '.join(labels)} (in {', '.join(f['area'])})"
+    if t == "avg_collection_days":
+        return f"{f['min']:g}–{f['max']:g} days (own {f.get('window_months', '?')}-month window)"
+    if t in ("product_count_band", "days_since_last_sale"):
+        return f"{f['min']:g}–{f['max']:g}"
+    if t == "customer_score":
+        return f"{f['min']:g}–{f['max']:g}"
+    if t in ("current_balance", "net_sales", "total_returns"):
+        return f"{f['min']:,.0f}–{f['max']:,.0f}"
+    if t == "product":
+        return ", ".join(f.get("labels") or f["value"])
+    if t == "inactive":
+        return f"no purchase (own {f.get('window_months', '?')}-month window)"
+    if t in ("order_date", "collection_date"):
+        return str(f["value"])
+    return ""
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _wfb_customer_metrics(zid: str, proj: str, _sales_raw: pd.DataFrame, _coll_df: pd.DataFrame, selected_years: tuple) -> pd.DataFrame:
+    """cusid + composite_score + current_balance, via the exact same
+    build_customer_marketing_table used by Marketing -> Customer Scoring —
+    "whatever score/balance is currently showing", not re-scoped to this
+    feature's own window slider. One computation feeds both the Customer
+    Score and Current Balance filters, plus the two columns of the same
+    name always shown in the final audience table. Leading underscore on
+    the DataFrame params tells st.cache_data to hash them by identity/
+    cheaply rather than full content (they're already cached upstream by
+    Analytics)."""
+    sales_raw = _sales_raw if isinstance(_sales_raw, pd.DataFrame) else pd.DataFrame()
+    if sales_raw.empty:
+        return pd.DataFrame(columns=["cusid", "composite_score", "current_balance"])
+    coll_df = _coll_df if isinstance(_coll_df, pd.DataFrame) else pd.DataFrame()
+    ar_df = _load_ar_balance(str(zid), proj)
+    cacus_df = _load_cacus(str(zid))
+    result = build_customer_marketing_table(
+        sales_df=sales_raw,
+        collection_df=coll_df,
+        ar_df=ar_df,
+        selected_years=selected_years,
+        cacus_df=cacus_df if not cacus_df.empty else None,
+    )
+    if result is None or result.empty:
+        return pd.DataFrame(columns=["cusid", "composite_score", "current_balance"])
+    keep = [c for c in ("cusid", "composite_score", "current_balance") if c in result.columns]
+    out = result[keep].copy()
+    out["cusid"] = out["cusid"].astype(str)
+    return out
+
+
+def _wfb_map_from_metrics(metrics: pd.DataFrame, col: str) -> dict:
+    """cusid -> col value, dropping rows where col is NaN — shared by the
+    Customer Score and Current Balance filters/table columns."""
+    if metrics is None or metrics.empty or col not in metrics.columns:
+        return {}
+    sub = metrics.dropna(subset=[col])
+    return dict(zip(sub["cusid"], sub[col]))
+
+
+def _wfb_compute_candidates(zid: str, window_months: int, filters: list, upto: int = None, score_map: dict = None, balance_map: dict = None) -> set:
+    """Replays `filters` (in add-order) from scratch, returning the
+    candidate cusid set after applying filters[:upto] (all of them if
+    upto is None). Recomputed fresh each call — simplest correct approach;
+    revisit with incremental caching only if this proves slow once real
+    campaigns are actually using it, not before."""
+    from processing import wf_bulk_audience as wfb
+
+    start_date, end_date = wfb.window_dates(window_months)
+    active = filters if upto is None else filters[:upto]
+
+    def _all_customers():
+        cdf = _load_cacus(str(zid))
+        return set(cdf["cusid"].dropna().astype(str)) if not cdf.empty else set()
+
+    candidates = None
+    area_pool = None
+
+    for f in active:
+        ftype = f["type"]
+        if ftype == "area":
+            if area_pool is None:
+                area_pool = wfb.load_area_salesman_pool(zid, start_date, end_date)
+            qualifying = wfb.apply_area(area_pool, f["value"])
+        elif ftype == "salesman":
+            if area_pool is None:
+                area_pool = wfb.load_area_salesman_pool(zid, start_date, end_date)
+            qualifying = wfb.apply_salesman(area_pool, f["area"], f["value"])
+        elif ftype == "product_count_band":
+            lines = wfb.load_sales_lines(zid, start_date, end_date, cusids=candidates)
+            qualifying = wfb.apply_product_count_band(lines, f["min"], f["max"])
+        elif ftype == "days_since_last_sale":
+            last_sale = wfb.load_last_sale_dates(zid, cusids=candidates)
+            qualifying = wfb.apply_days_since_last_sale(last_sale, f["min"], f["max"])
+        elif ftype == "customer_score":
+            qualifying = {cid for cid, v in (score_map or {}).items() if f["min"] <= v <= f["max"]}
+        elif ftype == "current_balance":
+            qualifying = {cid for cid, v in (balance_map or {}).items() if f["min"] <= v <= f["max"]}
+        elif ftype == "net_sales":
+            lines = wfb.load_sales_lines(zid, start_date, end_date, cusids=candidates)
+            ret_lines = wfb.load_returns_lines(zid, start_date, end_date, cusids=candidates)
+            qualifying = wfb.apply_net_sales_band(lines, ret_lines, f["min"], f["max"])
+        elif ftype == "total_returns":
+            ret_lines = wfb.load_returns_lines(zid, start_date, end_date, cusids=candidates)
+            qualifying = wfb.apply_total_returns_band(ret_lines, f["min"], f["max"])
+        elif ftype == "product":
+            lines = wfb.load_sales_lines(zid, start_date, end_date, cusids=candidates)
+            qualifying = wfb.apply_product_filter(lines, f["value"])
+        elif ftype == "inactive":
+            base = candidates if candidates is not None else _all_customers()
+            # Own independent window, NOT the shared slider -- per explicit
+            # follow-up ask: "how long since anything happened" is a
+            # different question from what the shared window otherwise
+            # scopes, same reasoning as Avg Collection Days above.
+            inact_start, inact_end = wfb.window_dates(f.get("window_months", wfb.DEFAULT_WINDOW_MONTHS))
+            lines = wfb.load_sales_lines(zid, inact_start, inact_end, cusids=base)
+            qualifying = wfb.apply_inactive(base, lines)
+        elif ftype == "order_date":
+            qualifying = wfb.apply_order_date(zid, f["value"])
+        elif ftype == "collection_date":
+            qualifying = wfb.apply_collection_date(zid, f["value"])
+        elif ftype == "avg_collection_days":
+            base = candidates if candidates is not None else _all_customers()
+            # Own independent window, NOT the shared slider — per explicit
+            # ask, since it's a genuinely different question ("how long a
+            # history to compute this specific average over") from "how
+            # recently did they buy/sell" that the shared window answers.
+            acd_start, acd_end = wfb.window_dates(f.get("window_months", wfb.DEFAULT_WINDOW_MONTHS))
+            avg_df = wfb.compute_avg_collection_days(zid, acd_start, acd_end, base)
+            qualifying = wfb.apply_avg_collection_days(avg_df, f["min"], f["max"])
+        else:
+            qualifying = candidates if candidates is not None else set()
+
+        candidates = qualifying if candidates is None else (candidates & qualifying)
+
+    return candidates if candidates is not None else _all_customers()
+
+
+def _wfb_render_new_filter_input(ftype: str, zid: str, window_months: int, filters: list, candidates_so_far, score_map: dict, balance_map: dict = None) -> dict:
+    """Renders the input widget(s) for a filter type being added, scoped
+    against `candidates_so_far` (whoever survived the filters already
+    active) — options only show what's actually still reachable, per
+    explicit ask, not the full unfiltered universe. Returns the filter
+    dict once there's something valid to add, else None."""
+    from processing import wf_bulk_audience as wfb
+
+    start_date, end_date = wfb.window_dates(window_months)
+    gen = st.session_state["_wfb_add_gen"]
+
+    if ftype == "area":
+        pool = wfb.load_area_salesman_pool(zid, start_date, end_date)
+        if candidates_so_far is not None:
+            pool = pool[pool["cusid"].astype(str).isin(candidates_so_far)]
+        opts = wfb.area_options(pool)
+        if not opts:
+            st.info("No areas found for the current candidates in this window.")
+            return None
+        vals = st.multiselect(
+            "Areas — a customer qualifies if sold to in ANY of the selected areas", opts,
+            key=f"wfb_new_area_{gen}",
+        )
+        if not vals:
+            st.caption("Select at least one area above to enable Add.")
+            return None
+        return {"type": "area", "value": vals}
+
+    if ftype == "salesman":
+        area_f = next((f for f in filters if f["type"] == "area"), None)
+        if area_f is None:
+            return None
+        pool = wfb.load_area_salesman_pool(zid, start_date, end_date)
+        opts = wfb.salesman_options(pool, area_f["value"])
+        if not opts:
+            st.info("No salesman sold in ANY of the selected areas within this window.")
+            return None
+        coverage = wfb.salesman_area_coverage(pool, area_f["value"])
+        labels = [f"{spid} - {spname} ({', '.join(coverage.get(spid, []))})" for spid, spname in opts]
+        st.caption(
+            "Shown here if active in ANY of the selected areas — the area(s) in parentheses are "
+            "which of your selected areas they actually cover. Picking one only pulls their "
+            "customers from the areas you selected, even if they also sell elsewhere."
+        )
+        idxs = st.multiselect(
+            "Salesmen — a customer qualifies if sold to by ANY of the selected salesmen", range(len(opts)),
+            format_func=lambda i: labels[i], key=f"wfb_new_sp_{gen}",
+        )
+        if not idxs:
+            st.caption("Select at least one salesman above to enable Add.")
+            return None
+        return {
+            "type": "salesman",
+            "area": area_f["value"],
+            "value": [opts[i][0] for i in idxs],
+            "labels": [labels[i] for i in idxs],
+        }
+
+    if ftype == "product_count_band":
+        lines = wfb.load_sales_lines(zid, start_date, end_date, cusids=candidates_so_far)
+        counts = wfb.unique_product_counts(lines)
+        if counts.empty:
+            st.info("No purchase data for the current candidates in this window.")
+            return None
+        lo, hi = int(counts.min()), int(counts.max())
+        c1, c2 = st.columns(2)
+        mn = c1.number_input("Min unique products", min_value=0, value=lo, key=f"wfb_new_pcb_min_{gen}")
+        mx = c2.number_input("Max unique products", min_value=0, value=hi, key=f"wfb_new_pcb_max_{gen}")
+        return {"type": "product_count_band", "min": mn, "max": mx}
+
+    if ftype == "days_since_last_sale":
+        last_sale = wfb.load_last_sale_dates(zid, cusids=candidates_so_far)
+        if last_sale.empty:
+            st.info("No sales history for the current candidates.")
+            return None
+        lo, hi = int(last_sale["days_since"].min()), int(last_sale["days_since"].max())
+        c1, c2 = st.columns(2)
+        mn = c1.number_input("Min days since last sale", min_value=0, value=lo, key=f"wfb_new_dsls_min_{gen}")
+        mx = c2.number_input("Max days since last sale", min_value=0, value=hi, key=f"wfb_new_dsls_max_{gen}")
+        return {"type": "days_since_last_sale", "min": mn, "max": mx}
+
+    if ftype == "customer_score":
+        vals = [v for cid, v in (score_map or {}).items() if candidates_so_far is None or cid in candidates_so_far]
+        if not vals:
+            st.info("No scored customers among the current candidates.")
+            return None
+        lo, hi = float(min(vals)), float(max(vals))
+        c1, c2 = st.columns(2)
+        mn = c1.number_input("Min score", value=lo, key=f"wfb_new_score_min_{gen}")
+        mx = c2.number_input("Max score", value=hi, key=f"wfb_new_score_max_{gen}")
+        return {"type": "customer_score", "min": mn, "max": mx}
+
+    if ftype == "current_balance":
+        vals = [v for cid, v in (balance_map or {}).items() if candidates_so_far is None or cid in candidates_so_far]
+        if not vals:
+            st.info("No balance data for the current candidates.")
+            return None
+        lo, hi = float(min(vals)), float(max(vals))
+        st.caption("Current AR balance — debit-positive means the customer owes money; not scoped to the time window.")
+        c1, c2 = st.columns(2)
+        mn = c1.number_input("Min balance", value=lo, key=f"wfb_new_bal_min_{gen}")
+        mx = c2.number_input("Max balance", value=hi, key=f"wfb_new_bal_max_{gen}")
+        return {"type": "current_balance", "min": mn, "max": mx}
+
+    if ftype == "net_sales":
+        lines = wfb.load_sales_lines(zid, start_date, end_date, cusids=candidates_so_far)
+        ret_lines = wfb.load_returns_lines(zid, start_date, end_date, cusids=candidates_so_far)
+        net = wfb.net_sales_by_customer(lines, ret_lines)
+        if net.empty:
+            st.info("No sales data for the current candidates in this window.")
+            return None
+        lo, hi = float(net.min()), float(net.max())
+        st.caption(
+            f"Net of returns (sales − returns) between {start_date} and {end_date} — "
+            "same window as the slider above."
+        )
+        c1, c2 = st.columns(2)
+        mn = c1.number_input("Min net sales", value=lo, key=f"wfb_new_ns_min_{gen}")
+        mx = c2.number_input("Max net sales", value=hi, key=f"wfb_new_ns_max_{gen}")
+        return {"type": "net_sales", "min": mn, "max": mx}
+
+    if ftype == "total_returns":
+        ret_lines = wfb.load_returns_lines(zid, start_date, end_date, cusids=candidates_so_far)
+        totals = wfb.total_returns_by_customer(ret_lines)
+        if totals.empty:
+            st.info("No returns for the current candidates in this window.")
+            return None
+        lo, hi = float(totals.min()), float(totals.max())
+        st.caption(f"Total returns between {start_date} and {end_date} — same window as the slider above.")
+        c1, c2 = st.columns(2)
+        mn = c1.number_input("Min total returns", value=lo, key=f"wfb_new_tr_min_{gen}")
+        mx = c2.number_input("Max total returns", value=hi, key=f"wfb_new_tr_max_{gen}")
+        return {"type": "total_returns", "min": mn, "max": mx}
+
+    if ftype == "product":
+        lines = wfb.load_sales_lines(zid, start_date, end_date, cusids=candidates_so_far)
+        opts = wfb.product_options(lines)
+        n_candidates = len(candidates_so_far) if candidates_so_far is not None else "all"
+        st.caption(
+            f"{len(opts)} product(s) sold to the {n_candidates} current candidate(s) between {start_date} "
+            f"and {end_date}. A product with zero sales to them in this window won't be listed below."
+        )
+
+        with st.expander("🔍 Check whether a specific product was sold in this window at all"):
+            query = st.text_input("Search by product code or name", key=f"wfb_prod_check_{gen}")
+            if query.strip():
+                all_lines = wfb.load_sales_lines(zid, start_date, end_date)  # unscoped by candidates
+                q = query.strip().lower()
+                hits = all_lines[
+                    all_lines["itemcode"].astype(str).str.lower().str.contains(q, na=False)
+                    | all_lines["itemname"].astype(str).str.lower().str.contains(q, na=False)
+                ]
+                if hits.empty:
+                    st.warning(f"No sales at all for “{query}” in this window ({start_date} to {end_date}).")
+                else:
+                    total_buyers = hits["cusid"].nunique()
+                    among_candidates = (
+                        hits[hits["cusid"].astype(str).isin(candidates_so_far)]["cusid"].nunique()
+                        if candidates_so_far is not None else total_buyers
+                    )
+                    matches = sorted(set(f"{r.itemcode} - {r.itemname}" for r in hits.itertuples()))
+                    does_or_not = "does" if among_candidates else "doesn't"
+                    st.success(
+                        f"Sold to {total_buyers} customer(s) total in this window — {among_candidates} of them "
+                        f"among your current candidates. That's why it {does_or_not} show up in the list below."
+                    )
+                    shown = ", ".join(matches[:10]) + (f" (+{len(matches) - 10} more)" if len(matches) > 10 else "")
+                    st.caption(f"Matched: {shown}")
+
+        if not opts:
+            st.info("No products found for the current candidates in this window.")
+            return None
+        labels = [f"{code} - {name}" for code, name in opts]
+        idxs = st.multiselect(
+            "Products — must have bought EVERY selected one at least once", range(len(opts)),
+            format_func=lambda i: labels[i], key=f"wfb_new_prod_{gen}",
+        )
+        if not idxs:
+            st.caption("Select at least one product above to enable Add.")
+            return None
+        return {"type": "product", "value": [opts[i][0] for i in idxs], "labels": [labels[i] for i in idxs]}
+
+    if ftype == "inactive":
+        inact_window = st.slider(
+            "Time window for this calculation (months) — independent of the main slider above",
+            min_value=1, max_value=24, value=window_months, key=f"wfb_new_inactive_window_{gen}",
+            help="How far back to check for ANY purchase. A customer with no purchase in this "
+                 "window qualifies as inactive, regardless of what the shared window above is set to.",
+        )
+        inact_start, inact_end = wfb.window_dates(inact_window)
+        st.caption(f"No purchase at all between {inact_start} and {inact_end}.")
+        return {"type": "inactive", "window_months": inact_window}
+
+    if ftype == "order_date":
+        val = st.date_input("Ordered on", key=f"wfb_new_odate_{gen}")
+        return {"type": "order_date", "value": val}
+
+    if ftype == "collection_date":
+        val = st.date_input("Collection received on", key=f"wfb_new_cdate_{gen}")
+        return {"type": "collection_date", "value": val}
+
+    if ftype == "avg_collection_days":
+        st.caption(
+            "Computed only for the current candidates — this is why it's always added last, "
+            "so the per-customer calculation stays cheap. This is the average number of days "
+            "it took each customer to pay AFTER their last sale (not the average gap between "
+            "one collection and the next)."
+        )
+        acd_window = st.slider(
+            "Time window for this calculation (months) — independent of the main slider above",
+            min_value=1, max_value=36, value=window_months, key=f"wfb_new_acd_window_{gen}",
+            help="How far back sales/returns/collections are pulled just for this one filter. "
+                 "A sale that happened before this window started won't be seen, so a collection "
+                 "near the start of the window can look like it has no matching sale — widen this "
+                 "if that's throwing off the average.",
+        )
+        c1, c2 = st.columns(2)
+        mn = c1.number_input("Min avg days to collection", min_value=0.0, value=0.0, key=f"wfb_new_acd_min_{gen}")
+        mx = c2.number_input("Max avg days to collection", min_value=0.0, value=100.0, key=f"wfb_new_acd_max_{gen}")
+        return {"type": "avg_collection_days", "min": mn, "max": mx, "window_months": acd_window}
+
+    return None
+
+
+def _show_wf_template_mapping(zid: str) -> None:
+    """🔧 Template Variable Mapping — Phase 6 of the bulk-send build plan,
+    revised: since templates are now created ad hoc in WhatsFly's own
+    dashboard (a new one whenever needed, not one at a time with a build
+    session each time), this is a self-service tool instead of "write a
+    Python handler together per campaign". Pick a template, map each of
+    its own variable names (WhatsFly's own variable_map, exactly as named
+    when the template was built — see _wf_extract_variable_map) to a
+    customer attribute or a flat value entered per campaign, save it
+    once — every future campaign built around that template can then
+    resolve its variables automatically (processing/wf_template_mapping.py::
+    resolve_recipient_variables), no code change required."""
+    st.subheader("🔧 Template Variable Mapping")
     st.caption(
-        "Single-message test phase: send one message to one number and see what "
-        "comes back. No reply/webhook handling here yet — that's a separate "
-        "FastAPI service, a later phase (see Whatsfly_Integration_docs/)."
+        "Map each template's own variables (as named in WhatsFly) to a customer attribute or "
+        "a flat value entered per campaign — saved once per template, reused by every campaign "
+        "built around it afterward."
     )
 
     try:
@@ -2262,24 +3114,659 @@ def _show_whatsfly_messaging() -> None:
         st.warning(str(e))
         return
 
-    msg_type = st.radio(
-        "Message type",
-        ["Approved Template", "Plain Text (session message)"],
-        horizontal=True,
-        key="wf_msg_type",
+    from processing import wf_template_mapping as wtm
+
+    if st.button("🔄 Refresh Templates", key="wtm_refresh_templates_btn"):
+        st.session_state.pop("_wf_templates_raw", None)
+
+    if "_wf_templates_raw" not in st.session_state:
+        with st.spinner("Fetching templates…"):
+            try:
+                st.session_state["_wf_templates_raw"] = whatsfly.get_templates()
+            except Exception as e:
+                st.error(f"Couldn't fetch templates: {e}")
+                return
+
+    templates = _wf_normalize_templates(st.session_state["_wf_templates_raw"])
+    if not templates:
+        st.warning("No templates found.")
+        return
+
+    labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
+    idx = st.selectbox(
+        f"📋 Template ({len(templates)} available)", range(len(templates)),
+        format_func=lambda i: labels[i], key="wtm_template_idx",
     )
-    phone_number = st.text_input(
-        "Recipient phone number",
-        key="wf_phone_number",
-        help="Country code + digits only — no '+', no spaces, e.g. 8801XXXXXXXXX.",
+    template = templates[idx]
+    template_id = _wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or ""
+    template_name = _wf_guess(template, ("template_name", "name", "elementName")) or ""
+
+    var_map = _wf_extract_variable_map(template)
+    if not var_map:
+        st.info("This template has no variables to map.")
+        return
+
+    try:
+        existing = wtm.get_template_mapping(template_id)
+    except wtm.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    st.markdown(f"**✏️ Map {len(var_map)} variable(s)**")
+    attr_options = ["— not mapped yet —", "Flat value (enter per campaign)"] + [
+        label for _, label in wtm.CUSTOMER_ATTRIBUTES
+    ]
+    attr_keys = [None, "__flat__"] + [key for key, _ in wtm.CUSTOMER_ATTRIBUTES]
+
+    new_mappings = {}
+    for pos, name in var_map:
+        prior = existing.get(name)
+        if prior is None:
+            default_i = 0
+        elif prior["source_type"] == "flat_value":
+            default_i = 1
+        elif prior["source_key"] in attr_keys:
+            default_i = attr_keys.index(prior["source_key"])
+        else:
+            default_i = 0
+
+        choice_i = st.selectbox(
+            f"`{name}`", range(len(attr_options)),
+            format_func=lambda i: attr_options[i], index=default_i, key=f"wtm_var_{idx}_{pos}",
+        )
+        if choice_i == 0:
+            continue
+        elif choice_i == 1:
+            new_mappings[name] = {"source_type": "flat_value", "source_key": None}
+        else:
+            new_mappings[name] = {"source_type": "customer_attribute", "source_key": attr_keys[choice_i]}
+
+    if st.button("💾 Save Mapping", key="wtm_save_btn", type="primary"):
+        if len(new_mappings) < len(var_map):
+            st.warning(f"Only {len(new_mappings)}/{len(var_map)} variable(s) mapped — saving those; the rest stay unmapped.")
+        wtm.save_template_mapping(
+            template_id, template_name, new_mappings,
+            created_by=st.session_state.get("username") or "unknown",
+        )
+        st.success("Saved.")
+        st.rerun()
+
+    # ── Live preview with a real sample customer ──────────────────────────
+    st.markdown("---")
+    st.markdown("**📱 Preview**")
+    cacus_df = _load_cacus(str(zid))
+    if cacus_df.empty:
+        st.info("No customers available to preview with.")
+        return
+    cus_opts = {f"{row.cusname} ({row.cusid})": row for row in cacus_df.itertuples()}
+    cus_label = st.selectbox("Preview with customer", list(cus_opts.keys()), key="wtm_preview_cus")
+    sample = cus_opts[cus_label]
+    customer_row = {
+        "cusid": sample.cusid, "cusname": sample.cusname,
+        "cusmobile": getattr(sample, "cusmobile", ""), "whatsapp": getattr(sample, "whatsapp", ""),
+        "area": getattr(sample, "area", ""),
+    }
+
+    flat_vars = [name for name, m in new_mappings.items() if m["source_type"] == "flat_value"]
+    flat_values = {}
+    if flat_vars:
+        st.caption("Flat values below are for this preview only — entered fresh at actual send time.")
+        for name in flat_vars:
+            flat_values[name] = st.text_input(f"Preview value for `{name}`", key=f"wtm_flat_preview_{name}")
+
+    preview_values = []
+    for pos, name in var_map:
+        m = new_mappings.get(name) or existing.get(name)
+        if not m:
+            preview_values.append("")
+        elif m["source_type"] == "flat_value":
+            preview_values.append(flat_values.get(name, ""))
+        elif m["source_key"] in wtm.LIGHT_ATTRIBUTES:
+            preview_values.append(str(customer_row.get(m["source_key"], "")))
+        else:
+            preview_values.append(f"[{wtm.CUSTOMER_ATTRIBUTE_LABELS.get(m['source_key'], m['source_key'])} — computed at send time]")
+
+    comps = _wf_extract_components(template)
+    body_html = _wf_format_whatsapp_markup(comps["body"])
+    preview_body = _wf_substitute_positional_preview(body_html, preview_values)
+    _wf_render_phone_preview(comps["header"], preview_body, comps["footer"])
+
+
+def _show_wf_opt_out_management(zid: str) -> None:
+    """🚫 Opt-Out — Phase 5 of the bulk-send build plan. A permanent,
+    per-customer do-not-contact flag for this ZID, set/removed manually
+    here — never by an automated "STOP"-keyword parser (see the build
+    plan's Q16) — and checked automatically by every campaign's confirm-
+    and-send step (processing/wf_bulk_campaign.py::get_opted_out_cusids,
+    already wired into _render_campaign_confirm_and_send) before its
+    recipient rows are ever written."""
+    st.subheader("🚫 Opt-Out")
+    st.caption(
+        "Customers listed here are excluded from every future bulk campaign for this ZID, "
+        "automatically — checked once at campaign-creation time, no matter which template."
     )
+
+    from processing import wf_bulk_campaign as wfc
+
+    try:
+        opt_outs_df = wfc.list_opt_outs(str(zid))
+    except wfc.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    cacus_df = _load_cacus(str(zid))
+    name_by_cusid = dict(zip(cacus_df["cusid"].astype(str), cacus_df["cusname"])) if not cacus_df.empty else {}
+
+    # ── Currently opted-out customers ──────────────────────────────────────
+    st.markdown(f"**📋 Currently opted out — {len(opt_outs_df):,}**")
+    if opt_outs_df.empty:
+        st.info("No customers opted out for this ZID yet.")
+    else:
+        display_df = opt_outs_df.copy()
+        display_df["cusname"] = display_df["cusid"].map(name_by_cusid).fillna("(unknown)")
+        display_df["opted_out_at"] = pd.to_datetime(display_df["opted_out_at"]).dt.strftime("%Y-%m-%d %H:%M")
+        show_cols = ["cusid", "cusname", "opted_out_at", "opted_out_by", "reason"]
+        st.dataframe(display_df[show_cols], width="stretch", hide_index=True)
+        st.download_button(
+            "📥 Download opt-out list (CSV)",
+            display_df[show_cols].to_csv(index=False).encode("utf-8"),
+            file_name=f"opt_outs_{zid}.csv", mime="text/csv", key="woo_download_csv",
+        )
+
+    # ── Opt a customer out ──────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**➕ Opt out a customer**")
+    if cacus_df.empty:
+        st.info("No customers available for this ZID.")
+        return
+
+    already_opted = set(opt_outs_df["cusid"].astype(str)) if not opt_outs_df.empty else set()
+    cus_opts = {f"{row.cusname} ({row.cusid})": str(row.cusid) for row in cacus_df.itertuples()}
+    chosen_label = st.selectbox("Select a customer", list(cus_opts.keys()), key="woo_optout_cus")
+    chosen_cusid = cus_opts[chosen_label]
+    already_out = chosen_cusid in already_opted
+
+    if already_out:
+        prior = opt_outs_df[opt_outs_df["cusid"].astype(str) == chosen_cusid].iloc[0]
+        st.warning(f"Already opted out on {pd.to_datetime(prior['opted_out_at']):%Y-%m-%d} by {prior['opted_out_by']}.")
+    reason = st.text_input("Reason (optional)", key="woo_optout_reason")
+    if st.button(
+        "🚫 Opt Out This Customer", key="woo_optout_btn", type="primary",
+        disabled=already_out,
+    ):
+        wfc.set_opt_out(
+            str(zid), chosen_cusid,
+            opted_out_by=st.session_state.get("username") or "unknown",
+            reason=reason.strip() or None,
+        )
+        st.success(f"{chosen_label} opted out.")
+        st.rerun()
+
+    # ── Remove an opt-out (opt back in) ─────────────────────────────────────
+    if not opt_outs_df.empty:
+        st.markdown("---")
+        st.markdown("**↩️ Remove an opt-out**")
+        remove_opts = {
+            f"{name_by_cusid.get(str(row.cusid), '(unknown)')} ({row.cusid})": str(row.cusid)
+            for row in opt_outs_df.itertuples()
+        }
+        remove_label = st.selectbox("Select a customer to opt back in", list(remove_opts.keys()), key="woo_remove_cus")
+        if st.button("↩️ Remove Opt-Out", key="woo_remove_btn"):
+            wfc.remove_opt_out(str(zid), remove_opts[remove_label])
+            st.success("Removed — this customer can be included in campaigns again.")
+            st.rerun()
+
+
+def _show_wf_campaign_history(zid: str) -> None:
+    """📊 Campaign History — Phase 4 of the bulk-send build plan. Revisit
+    past campaigns (sent/failed are final the moment a send loop finishes,
+    but delivered/read status keeps arriving asynchronously well after
+    that via the webhook path, so this is a REVISITABLE view, not a
+    one-time screen — every render re-reads current status fresh), enter/
+    update each campaign's actual cost once it's known (see
+    add_campaign_cost_column.sql: Meta bills per delivered message, but
+    only on a calendar-month invoice cycle, so cost is never knowable at
+    send time — confirmed against Meta's own billing docs), and see an
+    overview across every campaign. A separate top-level radio from Bulk
+    Messaging itself, per explicit ask."""
+    st.subheader("📊 Campaign History")
+
+    from processing import wf_bulk_campaign as wfc
+
+    try:
+        campaigns_df = wfc.list_campaigns()
+    except wfc.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    if campaigns_df.empty:
+        st.info("No campaigns sent yet.")
+        return
+
+    include_test = st.checkbox(
+        "Include test sends (zid = TEST, from the manual test-number-list mode)",
+        value=False, key="wch_include_test",
+    )
+    if not include_test:
+        campaigns_df = campaigns_df[campaigns_df["zid"] != "TEST"]
+    if campaigns_df.empty:
+        st.info("No real campaigns yet — check the box above to also see test sends.")
+        return
+
+    # One recipient-status pass per campaign — sent/failed from our own
+    # records, delivered/read enriched live from the webhook receiver's
+    # database via wamid (best-effort: a wamid with no status back yet
+    # just doesn't count toward delivered/read, it's not an error).
+    summaries = []
+    for row in campaigns_df.itertuples():
+        recipients = wfc.get_campaign_recipients(row.id)
+        sent = int((recipients["status"] == "sent").sum())
+        failed = int((recipients["status"] == "failed").sum())
+        wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
+        try:
+            status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
+        except Exception:
+            status_map = {}
+        delivered = sum(1 for s in status_map.values() if s in ("delivered", "read"))
+        read = sum(1 for s in status_map.values() if s == "read")
+        cost = float(row.actual_cost) if pd.notna(row.actual_cost) else None
+        cost_per_delivered = (cost / delivered) if (cost is not None and delivered > 0) else None
+        summaries.append({
+            "id": row.id, "created_at": row.created_at, "zid": row.zid,
+            "template_name": row.template_name, "status": row.status,
+            "total_recipients": row.total_recipients, "sent": sent, "failed": failed,
+            "delivered": delivered, "read": read, "cost": cost,
+            "cost_per_delivered": cost_per_delivered,
+        })
+    summary_df = pd.DataFrame(summaries)
+
+    # ── Overview — totals across everything shown above ───────────────────
+    st.markdown("**📈 Overview**")
+    total_recipients = int(summary_df["total_recipients"].sum())
+    total_sent = int(summary_df["sent"].sum())
+    total_failed = int(summary_df["failed"].sum())
+    total_delivered = int(summary_df["delivered"].sum())
+    total_cost = summary_df["cost"].dropna().sum()
+    n_missing_cost = int(summary_df["cost"].isna().sum())
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Campaigns", f"{len(summary_df):,}")
+    c2.metric("Recipients", f"{total_recipients:,}")
+    c3.metric("Sent", f"{total_sent:,}")
+    c4.metric("Delivered", f"{total_delivered:,}")
+    c5.metric("Failed", f"{total_failed:,}")
+
+    c6, c7 = st.columns(2)
+    c6.metric("Total Cost (entered so far)", f"{total_cost:,.2f}" if total_cost else "—")
+    overall_cost_per_delivered = (total_cost / total_delivered) if (total_delivered and total_cost) else None
+    c7.metric("Cost / Delivered Message", f"{overall_cost_per_delivered:,.4f}" if overall_cost_per_delivered else "—")
+    if n_missing_cost:
+        st.caption(
+            f"⚠️ {n_missing_cost} of {len(summary_df)} campaign(s) have no cost entered yet — "
+            "the totals above only reflect campaigns with a cost already entered."
+        )
+
+    # ── Past campaigns table ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**📋 Past Campaigns**")
+    display_df = summary_df.copy()
+    display_df["created_at"] = pd.to_datetime(display_df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
+    st.dataframe(
+        display_df[[
+            "id", "created_at", "zid", "template_name", "status", "total_recipients",
+            "sent", "delivered", "read", "failed", "cost", "cost_per_delivered",
+        ]],
+        width="stretch", hide_index=True,
+    )
+
+    # ── Drill into one campaign: full recipient detail + update its cost ──
+    st.markdown("---")
+    st.markdown("**🔍 Campaign detail / update cost**")
+    campaign_labels = {
+        f"#{row.id} — {row.template_name} ({row.created_at:%Y-%m-%d}, {row.zid})": row.id
+        for row in campaigns_df.itertuples()
+    }
+    chosen_label = st.selectbox("Select a campaign", list(campaign_labels.keys()), key="wch_selected_campaign")
+    chosen_id = int(campaign_labels[chosen_label])
+    chosen_row = campaigns_df[campaigns_df["id"] == chosen_id].iloc[0]
+
+    current_cost = float(chosen_row["actual_cost"]) if pd.notna(chosen_row["actual_cost"]) else 0.0
+    new_cost = st.number_input(
+        "Actual cost for this campaign", min_value=0.0, value=current_cost, step=0.01,
+        key=f"wch_cost_input_{chosen_id}",
+        help="Entered by hand from your monthly WhatsApp bill / WhatsFly invoice — Meta bills per "
+             "delivered message but only on a calendar-month cycle, so this is never known at send time.",
+    )
+    if st.button("💾 Save Cost", key=f"wch_save_cost_{chosen_id}"):
+        wfc.update_campaign_cost(chosen_id, new_cost)
+        st.success("Saved.")
+        st.rerun()
+
+    recipients = wfc.get_campaign_recipients(chosen_id)
+    if not recipients.empty:
+        wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
+        try:
+            status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
+        except Exception:
+            status_map = {}
+        recipients = recipients.copy()
+        recipients["delivery_status"] = recipients["wamid"].map(status_map).fillna(recipients["status"])
+        st.dataframe(
+            recipients[[
+                "cusid", "cusname", "phone_number", "status", "delivery_status",
+                "failure_type", "error_detail", "wamid", "sent_at",
+            ]],
+            width="stretch", hide_index=True,
+        )
+        st.download_button(
+            "📥 Download recipients (CSV)",
+            recipients.to_csv(index=False).encode("utf-8"),
+            file_name=f"campaign_{chosen_id}_recipients.csv", mime="text/csv",
+            key=f"wch_download_{chosen_id}",
+        )
+
+
+def _show_wf_bulk_messaging(zid: str, proj: str, data_dict: dict, selected_years: list) -> None:
+    st.subheader("📢 WhatsFly — Bulk Messaging")
+    st.caption("Build an audience with filters, then pick what to send them.")
+
+    try:
+        whatsfly.get_credentials()
+    except whatsfly.WhatsFlyConfigError as e:
+        st.warning(str(e))
+        return
+
+    from processing import wf_bulk_audience as wfb
+
+    st.session_state.setdefault("_wfb_filters", [])
+    st.session_state.setdefault("_wfb_add_gen", 0)
+    filters = st.session_state["_wfb_filters"]
+    active_types = {f["type"] for f in filters}
+
+    window_months = st.slider(
+        "Time window (months)", min_value=1, max_value=24, value=wfb.DEFAULT_WINDOW_MONTHS, step=1,
+        key="wfb_window_months",
+        help="Governs Area/Salesman, Unique Products Bought, Net Sales, Total Returns, and Product. Days "
+             "Since Last Sale, Customer Score, Current Balance, Inactive, Avg Collection Days, and the "
+             "two exact-date filters each have their own independent scope.",
+    )
+    start_date, end_date = wfb.window_dates(window_months)
+    st.caption(f"Window: {start_date} → {end_date}")
+
+    _sr = data_dict.get("sales")
+    sales_raw = _sr if isinstance(_sr, pd.DataFrame) else pd.DataFrame()
+    _cd = data_dict.get("collection")
+    coll_df = _cd if isinstance(_cd, pd.DataFrame) else pd.DataFrame()
+    metrics = _wfb_customer_metrics(
+        str(zid), proj, sales_raw, coll_df, tuple(int(y) for y in selected_years) if selected_years else tuple(),
+    )
+    score_map = _wfb_map_from_metrics(metrics, "composite_score")
+    balance_map = _wfb_map_from_metrics(metrics, "current_balance")
+
+    st.markdown("**🧰 Audience Filters**")
+
+    for i, f in enumerate(filters):
+        with st.container(border=True):
+            c1, c2 = st.columns([5, 1])
+            with c1:
+                st.markdown(f"**{_BULK_FILTER_LABELS[f['type']]}** — {_wfb_describe_filter(f)}")
+            with c2:
+                if st.button("✕ Remove", key=f"wfb_remove_{i}"):
+                    st.session_state["_wfb_filters"] = filters[:i]
+                    st.rerun()
+
+    candidates_so_far = _wfb_compute_candidates(str(zid), window_months, filters, score_map=score_map, balance_map=balance_map)
+    st.metric("Customers matching so far", f"{len(candidates_so_far):,}")
+
+    available = _wfb_available_to_add(active_types)
+    if available:
+        gen = st.session_state["_wfb_add_gen"]
+        options = ["— choose a filter to add —"] + [label for _, label in available]
+        choice_label = st.selectbox("➕ Add a filter", options, key=f"wfb_add_selector_{gen}")
+        if choice_label != options[0]:
+            chosen_type = next(k for k, lbl in available if lbl == choice_label)
+            with st.container(border=True):
+                new_filter = _wfb_render_new_filter_input(
+                    chosen_type, str(zid), window_months, filters, candidates_so_far, score_map, balance_map,
+                )
+                if new_filter is not None and st.button("✅ Add this filter", key=f"wfb_confirm_add_{gen}"):
+                    st.session_state["_wfb_filters"] = filters + [new_filter]
+                    st.session_state["_wfb_add_gen"] = gen + 1
+                    st.rerun()
+    elif "avg_collection_days" in active_types:
+        st.caption("Avg Collection Days is active — remove it to add any further filters.")
+    else:
+        st.caption("Every filter type is active.")
+
+    if filters and st.button("🗑️ Clear all filters", key="wfb_clear_all"):
+        st.session_state["_wfb_filters"] = []
+        st.session_state["_wfb_excluded_cusids"] = set()
+        st.rerun()
+
+    st.session_state.setdefault("_wfb_excluded_cusids", set())
 
     st.markdown("---")
+    st.markdown(f"**👥 Audience — {len(candidates_so_far):,} customers matched by filters**")
+    if candidates_so_far:
+        cacus_df = _load_cacus(str(zid))
+        audience_df = cacus_df[cacus_df["cusid"].astype(str).isin(candidates_so_far)].copy()
+        audience_df["cusid"] = audience_df["cusid"].astype(str)
 
-    if msg_type.startswith("Plain Text"):
-        _render_wf_text_send(phone_number)
-    else:
-        _render_wf_template_send(phone_number)
+        # Always shown, regardless of which filters are active — Net Sales
+        # uses the SAME shared window as the rest of the feature (not
+        # build_customer_marketing_table's own sidebar-year scope, and not
+        # any per-filter independent window like Avg Collection Days/
+        # Inactive have); Current Balance/Score are the same "currently
+        # showing" snapshot the Customer Score/Current Balance filters use.
+        # Net of returns, not gross — same "Net Sales" meaning as the
+        # Net Sales filter and everywhere else in this app (Common
+        # Pitfall #1 in CLAUDE.md).
+        sales_window_lines = wfb.load_sales_lines(str(zid), start_date, end_date, cusids=candidates_so_far)
+        returns_window_lines = wfb.load_returns_lines(str(zid), start_date, end_date, cusids=candidates_so_far)
+        net_sales_map = wfb.net_sales_by_customer(sales_window_lines, returns_window_lines).to_dict()
+        audience_df["Net Sales (window)"] = audience_df["cusid"].map(net_sales_map).fillna(0.0)
+        audience_df["Current Balance"] = audience_df["cusid"].map(balance_map)
+        audience_df["Current Score"] = audience_df["cusid"].map(score_map)
+
+        show_cols = [c for c in ["cusid", "cusname", "cusmobile", "whatsapp", "area"] if c in audience_df.columns]
+        show_cols += ["Net Sales (window)", "Current Balance", "Current Score"]
+
+        # Contactable-only gate — must have BOTH Mobile and WhatsApp on
+        # file, not just one (deliberately stricter than the "either
+        # works" fallback the single-message WhatsFly panel uses
+        # elsewhere) — always applied, per explicit ask, not an optional
+        # filter in the builder above. Count always shown, even when 0,
+        # so the check is visibly running rather than silently no-op.
+        contactable_df, n_dropped_phone = wfb.apply_contactable_only(audience_df[show_cols])
+        st.caption(f"📵 {n_dropped_phone:,} customer(s) excluded — missing Mobile or WhatsApp number on file.")
+
+        if contactable_df.empty:
+            st.warning("No customers with both a Mobile and WhatsApp number on file match the current filters.")
+        else:
+            # Multiselect-to-exclude instead of an editable checkbox grid —
+            # st.data_editor's canvas-rendered grid proved unreliable to
+            # drive/verify (a real, known rough edge for that widget), so
+            # this swaps to a plain multiselect: pick who to REMOVE, and
+            # the final table/CSV below is just everyone else.
+            contactable_df = contactable_df.reset_index(drop=True)
+            current_cusids = set(contactable_df["cusid"])
+            label_for_cusid = {
+                row.cusid: f"{row.cusid} - {row.cusname}" for row in contactable_df.itertuples()
+            }
+            cusid_for_label = {v: k for k, v in label_for_cusid.items()}
+
+            persisted_excluded = st.session_state["_wfb_excluded_cusids"]
+            default_labels = [label_for_cusid[c] for c in persisted_excluded if c in current_cusids]
+            # Fingerprint the widget key to the current row set, same
+            # reasoning as elsewhere in this feature — a filter/window
+            # change swaps in a different candidate set, and this forces a
+            # fresh widget instance instead of Streamlit trying to
+            # validate a stale `default` against options that no longer
+            # contain it. The persisted exclusion set (by cusid, synced
+            # below) is what actually survives across that change, not
+            # the widget's own state.
+            _fingerprint = hash(tuple(sorted(current_cusids)))
+            st.markdown("**✏️ Final review** — pick any customers below to remove them from the final list, even ones the filters matched.")
+            selected_labels = st.multiselect(
+                "Remove from final list",
+                options=list(label_for_cusid.values()),
+                default=default_labels,
+                key=f"wfb_exclude_ms_{_fingerprint}",
+            )
+            selected_cusids = {cusid_for_label[l] for l in selected_labels}
+            # Cusids currently out of view keep whatever exclusion state
+            # they already had; only the currently-visible set is
+            # reconciled against what the widget just returned.
+            st.session_state["_wfb_excluded_cusids"] = (persisted_excluded - current_cusids) | selected_cusids
+
+            final_df = contactable_df[~contactable_df["cusid"].isin(st.session_state["_wfb_excluded_cusids"])]
+            st.metric("Final list (after phone check + manual review)", f"{len(final_df):,}")
+            st.dataframe(final_df, width="stretch", hide_index=True)
+            st.download_button(
+                "📥 Download audience (CSV)",
+                final_df.to_csv(index=False).encode("utf-8"),
+                file_name=f"bulk_audience_{zid}.csv", mime="text/csv", key="wfb_download_csv",
+            )
+
+    st.markdown("---")
+    st.markdown("**✉️ Template**")
+    st.caption("Pick a template — the view below is built per campaign as each one gets defined.")
+
+    if st.button("🔄 Refresh Templates", key="wf_bulk_refresh_templates_btn"):
+        st.session_state.pop("_wf_templates_raw", None)
+
+    if "_wf_templates_raw" not in st.session_state:
+        with st.spinner("Fetching templates…"):
+            try:
+                st.session_state["_wf_templates_raw"] = whatsfly.get_templates()
+            except Exception as e:
+                st.error(f"Couldn't fetch templates: {e}")
+                return
+
+    templates = _wf_normalize_templates(st.session_state["_wf_templates_raw"])
+    if not templates:
+        st.warning("No templates found.")
+        return
+
+    labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
+    idx = st.selectbox(
+        f"📋 Template ({len(templates)} available)", range(len(templates)),
+        format_func=lambda i: labels[i], key="wf_bulk_template_idx",
+    )
+    template = templates[idx]
+
+    st.markdown("---")
+    handler = _WF_BULK_TEMPLATE_VIEWS.get(template.get("template_name"), _wf_bulk_default_view)
+    handler(zid, template)
+
+    st.markdown("---")
+    with st.expander("🧪 Test send (manual phone number list)"):
+        st.caption(
+            "Runs through the exact same send engine a real campaign uses (Phase 2), just "
+            "against a hand-typed list of numbers instead of the filtered audience above — the "
+            "way to prove out pacing/throttling/one-by-one sending against real WhatsFly before "
+            "any real campaign runs. Same value is sent to every number (no per-recipient "
+            "personalization) — this is for testing the mechanism, not a real campaign."
+        )
+        test_labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
+        test_idx = st.selectbox(
+            "Template to test with", range(len(templates)),
+            format_func=lambda i: test_labels[i], key="wf_test_template_idx",
+        )
+        test_template = templates[test_idx]
+
+        # Header image — same auto-detect + upload/paste-URL mechanism as
+        # the single-message panel (_render_wf_template_send) above, just
+        # without its live preview (this panel has none). Was missing
+        # entirely before: a template whose header actually IS an image
+        # would silently send with no header_image_url at all, since
+        # _render_campaign_confirm_and_send only ever attaches one when
+        # this expander explicitly hands it one.
+        test_comps = _wf_extract_components(test_template)
+        test_is_native = test_comps.get("style") == "whatsfly"
+        if test_is_native:
+            test_is_image_header = (
+                test_template.get("header_type") == "media" and test_template.get("header_subtype") == "image"
+            )
+            if test_is_image_header:
+                st.markdown("**🖼️ Header Image** _(auto-detected — this template requires one)_")
+        else:
+            st.markdown("**🖼️ Header Image (optional)**")
+            test_is_image_header = st.checkbox(
+                "This template's header is an image", key=f"wf_test_has_img_header_{test_idx}",
+                help="Not auto-detected for this template — check manually.",
+            )
+
+        test_header_image_url = None
+        if test_is_image_header:
+            uploaded_test_file = st.file_uploader(
+                "Attach image", type=["jpg", "jpeg", "png"], key=f"wf_test_header_img_{test_idx}",
+            )
+            manual_test_url = st.text_input(
+                "…or paste a hosted image URL", key=f"wf_test_header_img_url_{test_idx}",
+            )
+            if uploaded_test_file is not None:
+                file_sig = (uploaded_test_file.name, uploaded_test_file.size)
+                upload_cache_key = f"wf_test_header_upload_{test_idx}"
+                cached = st.session_state.get(upload_cache_key)
+                if not cached or cached.get("sig") != file_sig:
+                    with st.spinner("Uploading…"):
+                        try:
+                            raw_up = whatsfly.upload_media(
+                                uploaded_test_file.getvalue(), uploaded_test_file.name,
+                                uploaded_test_file.type or "image/jpeg",
+                            )
+                            _, murl = _wf_extract_media_ref(raw_up)
+                            st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": murl, "error": None}
+                        except Exception as e:
+                            st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": None, "error": str(e)}
+                cached = st.session_state.get(upload_cache_key)
+                if cached and cached.get("error"):
+                    st.error(f"Upload failed: {cached['error']}")
+                elif cached and cached.get("media_url"):
+                    st.success("Uploaded.")
+                    test_header_image_url = cached["media_url"]
+            if not test_header_image_url and manual_test_url.strip():
+                test_header_image_url = manual_test_url.strip()
+            if not test_header_image_url:
+                st.warning("This template's header is an image — attach one or paste a URL above before sending.")
+
+        numbers_raw = st.text_area(
+            "Phone numbers, one per line (WhatsApp format, e.g. 8801XXXXXXXXX)",
+            key="wf_test_numbers", height=100,
+        )
+        test_numbers = [n.strip() for n in numbers_raw.splitlines() if n.strip()]
+        st.caption(f"{len(test_numbers)} number(s) entered.")
+
+        test_var_map = _wf_extract_variable_map(test_template)
+        test_values = {}
+        if test_var_map:
+            st.markdown("**Variable values** — applied identically to every number above.")
+            for pos, name in test_var_map:
+                test_values[name] = st.text_input(name, key=f"wf_test_var_{test_idx}_{pos}")
+
+        if not test_numbers:
+            st.info("Enter at least one phone number above to test with.")
+        else:
+            test_recipients = [
+                {
+                    "cusid": f"TEST-{n}",  # stable per number -- lets the cooldown guard be exercised
+                    # deliberately too, not just bypassed, if the cooldown-days input above is raised
+                    "cusname": f"Test #{i + 1}",
+                    "phone_number": n,
+                    "variables": dict(test_values),
+                }
+                for i, n in enumerate(test_numbers)
+            ]
+            _render_campaign_confirm_and_send(
+                zid="TEST",  # sentinel zid, isolated from every real ZID's own campaign history/cooldowns
+                template=test_template, recipients=test_recipients,
+                filters_used=[{"type": "manual_test_list", "count": len(test_numbers)}],
+                variable_mapping={name: "typed in manually for this test" for _, name in test_var_map},
+                cooldown_days_default=0,  # tests should be freely re-runnable by default; raise it to test cooldown itself
+                header_image_url=test_header_image_url,
+                key_prefix="wf_test",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2711,7 +4198,8 @@ def _show_whatsapp_message_log() -> None:
 
 _PRODUCT_ONLY_MODES = {
     "📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads",
-    "💬 WhatsFly Messaging", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
+    "💬 WhatsFly Messaging", "📢 Bulk Messaging", "🔧 Template Mapping", "📊 Campaign History",
+    "🚫 Opt-Out", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
 }
 
 
@@ -2729,13 +4217,23 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "🖼️ Media Library",
             "🎣 Leads",
             "💬 WhatsFly Messaging",
+            "📢 Bulk Messaging",
+            "🔧 Template Mapping",
+            "📊 Campaign History",
+            "🚫 Opt-Out",
             # "📨 Direct WhatsApp" — shut off, not deleted. WhatsFly is the
             # path being developed now (see CLAUDE.md); the Direct WhatsApp
             # code (core/direct_whatsapp.py, _show_direct_whatsapp_messaging,
             # and its dispatch/_PRODUCT_ONLY_MODES entries below) is left in
             # place, just unreachable via this radio — re-add the string
             # here to bring it back.
-            "📥 WhatsApp Message Log",
+            # "📥 WhatsApp Message Log" — shut off, not deleted, same as
+            # Direct WhatsApp above. Conversation history now shows inline
+            # per-customer in WhatsFly Messaging itself, making this
+            # standalone browse-everything view redundant for day-to-day
+            # use; the code (_show_whatsapp_message_log, dispatch/
+            # _PRODUCT_ONLY_MODES entries below) is untouched — re-add the
+            # string here to bring it back.
         ],
         horizontal=True,
         label_visibility="collapsed",
@@ -2757,7 +4255,15 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
         elif mode == "🎣 Leads":
             _show_leads(str(zid))
         elif mode == "💬 WhatsFly Messaging":
-            _show_whatsfly_messaging()
+            _show_whatsfly_messaging(str(zid))
+        elif mode == "📢 Bulk Messaging":
+            _show_wf_bulk_messaging(str(zid), proj, data_dict, selected_years)
+        elif mode == "🔧 Template Mapping":
+            _show_wf_template_mapping(str(zid))
+        elif mode == "📊 Campaign History":
+            _show_wf_campaign_history(str(zid))
+        elif mode == "🚫 Opt-Out":
+            _show_wf_opt_out_management(str(zid))
         elif mode == "📨 Direct WhatsApp":
             _show_direct_whatsapp_messaging()
         elif mode == "📥 WhatsApp Message Log":

@@ -3117,3 +3117,125 @@ def get_hmbr_catalog_lookup(filters=None) -> Tuple[str, tuple]:
         WHERE zid = '100001'
     """
     return sql, ()
+
+
+# ---------------------------------------------------------------------------
+# Marketing -> Bulk Messaging audience filter builder (views/marketing.py,
+# processing/wf_bulk_audience.py). Area here is deliberately opdor.xdiv
+# (order-level territory), NOT cacus.xcity (used for "area" everywhere else
+# in this app, e.g. the WhatsFly single-message panel) -- this filter's
+# whole point is cascading into "which salesman actually sold here", and
+# only opdor's own xdiv+xsp pairing supports that; xcity has no relationship
+# to which salesman visited a customer.
+# ---------------------------------------------------------------------------
+
+def get_bulk_area_salesman_orders(filters=None) -> Tuple[str, tuple]:
+    """Distinct (cusid, area=xdiv, salesman) combos from opdor within
+    [start_date, end_date] -- the Area/Salesman filter's own data source.
+    One row per (cusid, xdiv, xsp) triple actually sold, so a customer who
+    bought from two salesmen (or in two territories) in the window
+    legitimately appears more than once here; the view layer narrows to
+    the chosen area/salesman before deriving a customer list from it."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT DISTINCT o.xcus AS cusid, o.xdiv AS area, o.xsp AS spid, p.xname AS spname
+        FROM opdor o
+        LEFT JOIN prmst p ON o.xsp = p.xemp AND o.zid = p.zid
+        WHERE o.zid = %s AND o.xdate >= %s AND o.xdate <= %s
+    """
+    return sql, (zid, filters["start_date"], filters["end_date"])
+
+
+def get_bulk_order_date_customers(filters=None) -> Tuple[str, tuple]:
+    """Customers with an order dated exactly `order_date` -- independent of
+    the Bulk Messaging window slider, per explicit ask."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = "SELECT DISTINCT xcus AS cusid FROM opdor WHERE zid = %s AND xdate = %s"
+    return sql, (zid, filters["order_date"])
+
+
+def get_bulk_sales_lines(filters=None) -> Tuple[str, tuple]:
+    """mv_sales_line_items rows within [start_date, end_date] for the Bulk
+    Messaging filter builder (unique-products-bought band, Product filter,
+    Inactive check, and the sales side of Avg Collection Days -- which
+    needs cusname too, since average_days_to_collection derives its
+    customer-name mapping from the sales side). Optionally restricted to
+    an already-narrowed `cusids` candidate list -- kept small by the time
+    the expensive Avg Collection Days filter runs, per explicit ask that
+    it always run last."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT cusid, cusname, itemcode, itemname, date, (altsales - proddiscount) AS final_sales
+        FROM mv_sales_line_items
+        WHERE zid = %s AND date >= %s AND date <= %s
+    """
+    params = [zid, filters["start_date"], filters["end_date"]]
+    if filters.get("cusids") is not None:
+        sql += " AND cusid = ANY(%s)"
+        params.append(list(filters["cusids"]))
+    return sql, tuple(params)
+
+
+def get_bulk_last_sale_dates(filters=None) -> Tuple[str, tuple]:
+    """All-time (not window-bound) last sale date per customer -- "Days
+    Since Last Sale" is defined the same way everywhere else in this app
+    (today minus their actual last sale, however long ago that was), not
+    scoped to the Bulk Messaging window slider."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = "SELECT cusid, MAX(date) AS last_sale_date FROM mv_sales_line_items WHERE zid = %s"
+    params = [zid]
+    if filters.get("cusids") is not None:
+        sql += " AND cusid = ANY(%s)"
+        params.append(list(filters["cusids"]))
+    sql += " GROUP BY cusid"
+    return sql, tuple(params)
+
+
+def get_bulk_returns_lines(filters=None) -> Tuple[str, tuple]:
+    """Same return population as get_return_data (opcdt/opcrn UNION
+    imtemptdt/imtemptrn), scoped to a date range + optional candidate
+    cusid list -- feeds Avg Collection Days' return-netting."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        WITH ret AS (
+            SELECT opcdt.zid, opcrn.xdate AS date, opcrn.xcus AS cusid, opcdt.xlineamt AS treturnamt
+            FROM opcdt
+            LEFT JOIN opcrn ON opcrn.xcrnnum = opcdt.xcrnnum AND opcrn.zid = opcdt.zid
+            WHERE opcdt.zid = %s
+
+            UNION ALL
+
+            SELECT imtemptdt.zid, imtemptrn.xdate AS date, imtemptrn.xcus AS cusid, imtemptdt.xlineamt AS treturnamt
+            FROM imtemptdt
+            LEFT JOIN imtemptrn ON imtemptrn.ximtmptrn = imtemptdt.ximtmptrn AND imtemptrn.zid = imtemptdt.zid
+            WHERE imtemptdt.zid = %s
+        )
+        SELECT cusid, date, treturnamt FROM ret
+        WHERE zid = %s AND date >= %s AND date <= %s
+    """
+    params = [zid, zid, zid, filters["start_date"], filters["end_date"]]
+    if filters.get("cusids") is not None:
+        sql += " AND cusid = ANY(%s)"
+        params.append(list(filters["cusids"]))
+    return sql, tuple(params)
+
+
+def get_bulk_collection_lines(filters=None) -> Tuple[str, tuple]:
+    """mv_collection_vouchers rows within [start_date, end_date] for the
+    Bulk Messaging filter builder -- feeds both the Collection-received-on-
+    a-date filter and Avg Collection Days' collection side (cusname
+    included since average_days_to_collection's own collection-side
+    fillna reaches for it)."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = "SELECT cusid, cusname, date, value FROM mv_collection_vouchers WHERE zid = %s AND date >= %s AND date <= %s"
+    params = [zid, filters["start_date"], filters["end_date"]]
+    if filters.get("cusids") is not None:
+        sql += " AND cusid = ANY(%s)"
+        params.append(list(filters["cusids"]))
+    return sql, tuple(params)

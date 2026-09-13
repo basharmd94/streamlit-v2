@@ -1,0 +1,24 @@
+-- Adds actual_cost to the campaigns table (already-live, created via
+-- add_bulk_campaign_tables.sql) -- what this campaign actually cost,
+-- entered/updated AFTER the fact from Phase 4's Campaign History view,
+-- never known at send time.
+--
+-- Why campaigns, not campaign_recipients: Meta's WhatsApp Business
+-- Platform bills per DELIVERED template message (not per send, not per
+-- conversation -- moved to per-message pricing July 1, 2025), but the
+-- actual invoice is issued on a CALENDAR-MONTH cycle (1st-to-last-day,
+-- invoiced the following month, Net 30) -- confirmed against Meta's own
+-- docs and Business Help Center while designing this. There is no
+-- per-recipient cost Meta ever hands back; a business only ever sees one
+-- monthly total covering every message sent that month, possibly across
+-- several campaigns. So `actual_cost` here is a per-campaign ESTIMATE/
+-- ALLOCATION the user enters by hand (e.g. from that month's invoice,
+-- split across whichever campaigns ran), not a value this app can
+-- compute or verify on its own -- nullable, no default, blank until set.
+--
+-- Run once, after add_bulk_campaign_tables.sql (already applied for real):
+--   psql -h <host> -U <admin> -d whatsapp_webhooks -f add_campaign_cost_column.sql
+-- Safe to run once; errors (not a silent no-op) if run twice, same
+-- convention as every other migration script in this repo.
+
+ALTER TABLE campaigns ADD COLUMN actual_cost NUMERIC(12, 2);
