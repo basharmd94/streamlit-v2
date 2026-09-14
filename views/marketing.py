@@ -3689,7 +3689,31 @@ def _show_wf_curated_list(zid: str) -> None:
 
 
 def _show_wf_bulk_messaging(zid: str, proj: str, data_dict: dict, selected_years: list) -> None:
+    """📢 WhatsFly — Bulk Messaging. Two ways to build an audience, picked
+    via an inner radio (moved here from being its own top-level "📋
+    Curated List" tab, per explicit ask, to avoid the confusion of two
+    separate top-level entries for what's really the same feature —
+    build an audience, then decide what to send it): "🧰 Filtered List"
+    (the existing filter builder, _show_wf_bulk_messaging_filtered) and
+    "📋 Curated List" (hand-picked, _show_wf_curated_list). Credential
+    check lives inside the Filtered List branch specifically, not here —
+    Curated List does no WhatsFly API calls at all (pure DB list
+    management), so it shouldn't be blocked by a missing WhatsFly config
+    the way the filter/template/test-send flow legitimately is."""
     st.subheader("📢 WhatsFly — Bulk Messaging")
+    sub_mode = st.radio(
+        "Audience source", ["🧰 Filtered List", "📋 Curated List"],
+        horizontal=True, key="wfb_sub_mode", label_visibility="collapsed",
+    )
+    st.markdown("---")
+    if sub_mode == "🧰 Filtered List":
+        _show_wf_bulk_messaging_filtered(zid, proj, data_dict, selected_years)
+    else:
+        _show_wf_curated_list(str(zid))
+
+
+def _show_wf_bulk_messaging_filtered(zid: str, proj: str, data_dict: dict, selected_years: list) -> None:
+    st.subheader("🧰 Filtered List")
     st.caption("Build an audience with filters, then pick what to send them.")
 
     try:
@@ -4422,7 +4446,7 @@ def _show_whatsapp_message_log() -> None:
 _PRODUCT_ONLY_MODES = {
     "📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads",
     "💬 WhatsFly Messaging", "📢 Bulk Messaging", "🔧 Template Mapping", "📊 Campaign History",
-    "🚫 Opt-Out", "📋 Curated List", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
+    "🚫 Opt-Out", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
 }
 
 
@@ -4444,7 +4468,6 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "🔧 Template Mapping",
             "📊 Campaign History",
             "🚫 Opt-Out",
-            "📋 Curated List",
             # "📨 Direct WhatsApp" — shut off, not deleted. WhatsFly is the
             # path being developed now (see CLAUDE.md); the Direct WhatsApp
             # code (core/direct_whatsapp.py, _show_direct_whatsapp_messaging,
@@ -4488,8 +4511,6 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             _show_wf_campaign_history(str(zid))
         elif mode == "🚫 Opt-Out":
             _show_wf_opt_out_management(str(zid))
-        elif mode == "📋 Curated List":
-            _show_wf_curated_list(str(zid))
         elif mode == "📨 Direct WhatsApp":
             _show_direct_whatsapp_messaging()
         elif mode == "📥 WhatsApp Message Log":
