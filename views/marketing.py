@@ -3339,6 +3339,13 @@ def _show_wf_campaign_history(zid: str) -> None:
         st.warning(str(e))
         return
 
+    # Exclude the Curated List's own "draft" campaigns row(s) (template_id
+    # == "" — see processing/wf_bulk_campaign.py's Curated List section) —
+    # those are audiences still being hand-picked, never sent, and would
+    # otherwise show up here as a confusing permanently-"pending" campaign
+    # with a blank template name.
+    campaigns_df = campaigns_df[campaigns_df["template_id"] != ""]
+
     if campaigns_df.empty:
         st.info("No campaigns sent yet.")
         return
@@ -3549,29 +3556,38 @@ def _show_wf_curated_list(zid: str) -> None:
     than by any filter. The full customer directory for this ZID, no
     area/salesman/score/etc. filters at all — deliberately just the raw
     list (explicit ask) — with a multiselect to pick individual customers
-    onto one saved list per ZID (processing/wf_curated_list.py).
+    onto one saved list per ZID.
 
-    Doesn't feed into a send yet — same "build the list first" scope as
-    the filter-builder audience currently has (see _wf_bulk_default_view's
-    own comment: "Not yet built: the actual send step"). The natural next
-    step, once wanted, is reusing _render_campaign_confirm_and_send the
-    same way the Test send panel and a real campaign handler both already
-    do."""
+    Deliberately reuses campaigns/campaign_recipients directly rather
+    than a dedicated table (see processing/wf_bulk_campaign.py's own
+    "Curated List" section comment for the design reasoning) — a
+    curated list genuinely IS a campaign's audience, just one built by
+    hand and not sent yet, so it belongs in the same place a real
+    campaign's recipients already live, found via one sentinel
+    campaigns row per ZID. Doesn't feed into a send yet — same
+    "build the list first" scope as the filter-builder audience
+    currently has. The natural next step, once wanted, is reusing
+    _render_campaign_confirm_and_send against this SAME campaign_id
+    (picking a template at that point), same as the Test send panel
+    and a real campaign handler both already do."""
     st.subheader("📋 Curated List")
     st.caption(
         "The full customer directory for this ZID — no area/salesman/score filters, just pick "
         "customers by hand onto one saved list. Doesn't send anything by itself yet."
     )
 
-    from processing import wf_curated_list as wcl
+    from processing import wf_bulk_campaign as wfc
 
+    zid = str(zid)
     try:
-        curated_df = wcl.list_curated(str(zid))
-    except wcl.WfBulkCampaignDBConfigError as e:
+        campaign_id = wfc.find_curated_campaign_id(zid)
+    except wfc.WfBulkCampaignDBConfigError as e:
         st.warning(str(e))
         return
 
-    cacus_df = _load_cacus(str(zid))
+    curated_df = wfc.get_campaign_recipients(campaign_id) if campaign_id is not None else pd.DataFrame()
+
+    cacus_df = _load_cacus(zid)
     if cacus_df.empty:
         st.info("No customers available for this ZID.")
         return
@@ -3582,8 +3598,7 @@ def _show_wf_curated_list(zid: str) -> None:
         st.info("Nothing curated yet for this ZID — pick some customers below.")
     else:
         display_df = curated_df.copy()
-        display_df["added_at"] = pd.to_datetime(display_df["added_at"]).dt.strftime("%Y-%m-%d %H:%M")
-        show_cols = ["cusid", "cusname", "cusmobile", "whatsapp", "area", "added_by", "added_at"]
+        show_cols = ["cusid", "cusname", "phone_number", "created_at"]
         st.dataframe(display_df[show_cols], width="stretch", hide_index=True)
         st.download_button(
             "📥 Download curated list (CSV)",
@@ -3592,7 +3607,6 @@ def _show_wf_curated_list(zid: str) -> None:
         )
 
         st.markdown("**➖ Remove from the list**")
-        curated_cusids = curated_df["cusid"].astype(str).tolist()
         remove_labels = {
             f"{row.cusname} ({row.cusid})": str(row.cusid) for row in curated_df.itertuples()
         }
@@ -3601,7 +3615,7 @@ def _show_wf_curated_list(zid: str) -> None:
         )
         if st.button("➖ Remove Selected", key="wcl_remove_btn", disabled=not chosen_remove):
             for label in chosen_remove:
-                wcl.remove_from_curated(str(zid), remove_labels[label])
+                wfc.remove_curated_recipient(campaign_id, remove_labels[label])
             st.success(f"Removed {len(chosen_remove)} customer(s).")
             st.rerun()
 
@@ -3613,11 +3627,24 @@ def _show_wf_curated_list(zid: str) -> None:
     st.dataframe(display_cacus[show_cacus_cols], width="stretch", hide_index=True)
 
     already_curated = set(curated_df["cusid"].astype(str)) if not curated_df.empty else set()
-    add_labels = {
-        f"{row.cusname} ({row.cusid})"
-        + (" ✓ already on list" if str(row.cusid) in already_curated else ""): row
-        for row in cacus_df.itertuples()
-    }
+    # Excluded here, not just skipped at add-time, so the option list
+    # itself never offers a customer with no usable number — same
+    # "never silently drop" instinct as the rest of this app, just
+    # applied before the pick instead of after.
+    no_number_count = 0
+    add_labels = {}
+    for row in cacus_df.itertuples():
+        cusid = str(row.cusid)
+        if cusid in already_curated:
+            continue
+        primary, _secondary = customer_whatsapp_numbers(getattr(row, "cusmobile", None), getattr(row, "whatsapp", None))
+        if not primary:
+            no_number_count += 1
+            continue
+        add_labels[f"{row.cusname} ({row.cusid})"] = (row, primary)
+    if no_number_count:
+        st.caption(f"⚠️ {no_number_count} customer(s) excluded — no usable phone number on file.")
+
     # Fingerprinted key so the multiselect resets to empty right after a
     # successful add, same pattern as Bulk Messaging's own "Remove from
     # final list" widget — otherwise Streamlit would keep the just-added
@@ -3627,18 +3654,15 @@ def _show_wf_curated_list(zid: str) -> None:
         "Select customer(s) to add", list(add_labels.keys()), key=f"wcl_add_ms_{add_gen}",
     )
     if st.button("➕ Add Selected to Curated List", key="wcl_add_btn", type="primary", disabled=not chosen_add):
-        rows_to_add = [add_labels[label] for label in chosen_add]
+        if campaign_id is None:
+            campaign_id = wfc.get_or_create_curated_campaign_id(zid, st.session_state.get("username") or "unknown")
         customers = [
-            {
-                "cusid": str(r.cusid), "cusname": r.cusname,
-                "cusmobile": getattr(r, "cusmobile", None), "whatsapp": getattr(r, "whatsapp", None),
-                "area": getattr(r, "area", None),
-            }
-            for r in rows_to_add
+            {"cusid": str(row.cusid), "cusname": row.cusname, "phone_number": primary}
+            for label in chosen_add for row, primary in [add_labels[label]]
         ]
-        wcl.add_to_curated(str(zid), customers, st.session_state.get("username") or "unknown")
+        added = wfc.add_curated_recipients(campaign_id, zid, customers)
         st.session_state["_wcl_add_gen"] = add_gen + 1
-        st.success(f"Added {len(customers)} customer(s) to the curated list.")
+        st.success(f"Added {added} customer(s) to the curated list.")
         st.rerun()
 
 

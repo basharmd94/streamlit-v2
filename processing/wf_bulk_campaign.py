@@ -292,6 +292,96 @@ def update_campaign_cost(campaign_id: int, actual_cost) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Curated List -- a hand-picked alternative to the filter-builder audience,
+# for when the target list is better chosen by eye than by any filter (see
+# views/marketing.py::_show_wf_curated_list). Deliberately reuses
+# campaigns/campaign_recipients directly instead of its own table: a
+# curated list genuinely IS a campaign's audience, just one built by hand
+# and not sent yet -- see CLAUDE.md / bulk-send-build-plan.md for the
+# design discussion this settled from (a dedicated curated_list_contacts
+# table was built first, then dropped in favor of this reuse once it was
+# pointed out there was no real need for a separate table).
+#
+# One "draft" campaigns row per ZID, found/created by
+# _CURATED_SENTINEL_TEMPLATE_ID (an empty template_id -- a real campaign
+# always has a real one, so this can never collide) -- stays at
+# status='pending' for as long as it's just being curated (a real
+# campaign moves to 'in_progress' the moment run_send_loop starts, so a
+# lingering 'pending' row with no template is unambiguous). filters_used
+# keeps its normal '[]' default, which already IS the "hand-curated, not
+# filter-built" signal -- no extra column needed for that either.
+# ---------------------------------------------------------------------------
+
+_CURATED_SENTINEL_TEMPLATE_ID = ""
+
+
+def find_curated_campaign_id(zid: str) -> int:
+    """The existing curated-list campaign id for this ZID, or None if
+    nothing has been curated yet."""
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM campaigns WHERE zid = %s AND template_id = %s ORDER BY created_at ASC LIMIT 1",
+            (zid, _CURATED_SENTINEL_TEMPLATE_ID),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def get_or_create_curated_campaign_id(zid: str, created_by: str) -> int:
+    """Reuses create_campaign() as-is -- the blank template_name/
+    template_id satisfy those columns' NOT NULL constraint without
+    needing a schema change (an empty string is not NULL)."""
+    existing = find_curated_campaign_id(zid)
+    if existing is not None:
+        return existing
+    return create_campaign(
+        zid=zid, template_name="", template_id=_CURATED_SENTINEL_TEMPLATE_ID,
+        header_image_url=None, variable_mapping={}, filters_used=[],
+        cooldown_days=0, total_recipients=0, created_by=created_by,
+    )
+
+
+def _sync_campaign_total_recipients(campaign_id: int) -> None:
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE campaigns SET total_recipients = "
+            "(SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = %s) WHERE id = %s",
+            (campaign_id, campaign_id),
+        )
+        conn.commit()
+
+
+def add_curated_recipients(campaign_id: int, zid: str, customers: list) -> int:
+    """`customers`: [{"cusid", "cusname", "phone_number"}, ...] -- already
+    resolved to a real WhatsApp-ready phone_number by the caller (see
+    processing/common.py::customer_whatsapp_numbers), and already
+    filtered by the caller to exclude anyone already on this campaign's
+    list -- UNIQUE (campaign_id, cusid) would reject a literal duplicate
+    anyway, but pre-filtering keeps the UI from ever offering an
+    already-curated customer as if adding them again were a normal
+    action. Reuses insert_recipients() as-is. Returns the count added."""
+    if not customers:
+        return 0
+    insert_recipients(campaign_id, zid, customers)
+    _sync_campaign_total_recipients(campaign_id)
+    return len(customers)
+
+
+def remove_curated_recipient(campaign_id: int, cusid: str) -> None:
+    """A real DELETE -- safe only because this campaign has never
+    started (see the module comment above: a real in-progress/completed
+    campaign never deletes a recipient row, only a still-'pending'
+    curated list does)."""
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM campaign_recipients WHERE campaign_id = %s AND cusid = %s",
+            (campaign_id, cusid),
+        )
+        conn.commit()
+    _sync_campaign_total_recipients(campaign_id)
+
+
+# ---------------------------------------------------------------------------
 # Failure classification -- a starting rule, not a settled one. Expected to
 # be refined once real WhatsFly failure responses are actually seen (same
 # evidence-based approach as the WhatsFly template-contract work
