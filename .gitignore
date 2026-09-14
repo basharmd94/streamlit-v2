@@ -76,12 +76,15 @@ data/crm_log.json
 data/level_p_projections.json
 data/level_p_breakeven.json
 
-# GL hierarchy / Level S mapping — hand-edited directly on the server
-# whenever a new GL account is created; managed by copy/paste between
-# environments rather than git, per explicit decision (kept causing
-# `git pull` conflicts on the server every time an account was added).
+# GL hierarchy / Level S mapping / labels — all three editable via the
+# in-app "⚙️ Config Editor" (views/financial.py::_render_config_editor,
+# the only JSON-writing path anywhere in this app), so all three carry
+# the same risk: hand-edited directly on the server, causing `git pull`
+# conflicts the moment they're saved through that panel. Managed by
+# copy/paste between environments instead, per explicit decision.
 data/hierarchy.json
 data/level_s_mapping.json
+data/labels.json
 
 # Product media library — binary image files managed via the app UI
 data/product_images/
