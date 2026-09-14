@@ -2527,35 +2527,193 @@ def _show_whatsfly_messaging(zid: str) -> None:
 # ---------------------------------------------------------------------------
 # 📢 WhatsFly Bulk Messaging — campaign sends, one template at a time.
 #
-# Deliberately built template-FIRST rather than as one generic bulk-send
-# form: each real campaign (audience, what gets filled into each variable,
-# any extra filtering) is its own thing, and trying to guess a one-size-
-# shape now, before more than one campaign exists, would just mean
-# rebuilding it anyway. So the skeleton here is: pick a template, dispatch
-# to that template's own view function via _WF_BULK_TEMPLATE_VIEWS below,
-# with an explicit "not built yet" placeholder for everything unregistered.
-# Once several real campaigns exist side by side, look for what they share
-# and fold the common parts into one generic flow — not before.
+# Originally built template-FIRST, as one bespoke Python handler per real
+# campaign (see git history) — that plan was explicitly SUPERSEDED by
+# Phase 6 (see Whatsfly_Integration_docs/bulk-send-build-plan.md) once
+# templates started getting created ad hoc in WhatsFly's own dashboard: a
+# generic, self-service variable-mapping tool (🔧 Template Mapping,
+# processing/wf_template_mapping.py) replaced "write code together per
+# template". _wf_bulk_default_view below is that generic flow — it's the
+# real send path for every template now, not a placeholder.
+# _WF_BULK_TEMPLATE_VIEWS stays available for a genuine one-off exception
+# a saved mapping can't express, but the expectation is nothing needs to
+# be added there anymore.
 # ---------------------------------------------------------------------------
 
 
-def _wf_bulk_default_view(zid: str, template: dict) -> None:
-    """Shown for any template with no campaign view registered yet in
-    _WF_BULK_TEMPLATE_VIEWS — just a preview, so there's something concrete
-    on screen while each campaign gets built out one at a time."""
+def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame) -> None:
+    """The generic send view for a Bulk Messaging campaign, driven entirely
+    by whatever variable mapping was saved for this template under 🔧
+    Template Mapping (processing/wf_template_mapping.py) — no per-template
+    Python code needed. `recipients_df` is the already-built, already-
+    phone-checked audience (Filtered List's `final_df`, or empty if
+    nothing's been built yet).
+
+    Flow: resolve the template's own variable_map -> look up its saved
+    mapping -> if anything's unmapped, stop and point at Template Mapping
+    (nothing to send yet) -> collect the header image (same auto-detect +
+    upload/paste-URL pattern as the single-message panel and the Test
+    send expander) and any flat-value variables (same value for every
+    recipient, asked once) -> preview against a real sample recipient ->
+    resolve each recipient's own variables via resolve_recipient_variables
+    -> hand off to the shared send engine (_render_campaign_confirm_and_send),
+    which is where opt-out/cooldown exclusion and the actual Confirm & Send
+    button live."""
+    from processing import wf_template_mapping as wtm
+
     comps = _wf_extract_components(template)
-    body_html = _wf_format_whatsapp_markup(comps["body"])
-    st.info(
-        "This template doesn't have a bulk-send campaign built for it yet. "
-        "Describe who it should go to and what fills each variable, and "
-        "it'll get its own view registered in _WF_BULK_TEMPLATE_VIEWS."
+    is_native = comps.get("style") == "whatsfly"
+    body_text = comps["body"]
+    body_html = _wf_format_whatsapp_markup(body_text)
+    template_id = _wf_guess(template, ("id", "template_id", "wa_template_id", "uuid")) or ""
+
+    # Ground truth for a native template's own variable names; falls back
+    # to a plain {{n}} token scan for a non-native (fallback-shape)
+    # template, same pattern _render_wf_template_send already uses.
+    var_map = _wf_extract_variable_map(template) if is_native else []
+    if not var_map:
+        tokens = _wf_extract_variable_tokens(body_text)
+        var_map = [(str(i + 1), tok if not tok.isdigit() else f"var{i + 1}") for i, tok in enumerate(tokens)]
+
+    try:
+        mapping = wtm.get_template_mapping(template_id)
+    except wtm.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        _wf_render_phone_preview(comps["header"], body_html, comps["footer"])
+        return
+
+    unmapped = [name for _, name in var_map if name not in mapping]
+    if unmapped:
+        st.warning(
+            f"This template has {len(unmapped)} variable(s) not yet mapped: "
+            f"**{', '.join(unmapped)}**. Map them under **🔧 Template Mapping** first, "
+            "then come back here to send."
+        )
+        _wf_render_phone_preview(comps["header"], body_html, comps["footer"])
+        return
+
+    # ── Header image — same auto-detect + upload/paste-URL mechanism as
+    #    the single-message panel and the Test send expander. ───────────
+    if is_native:
+        is_image_header = template.get("header_type") == "media" and template.get("header_subtype") == "image"
+        if is_image_header:
+            st.markdown("**🖼️ Header Image** _(auto-detected — this template requires one)_")
+    else:
+        st.markdown("**🖼️ Header Image (optional)**")
+        is_image_header = st.checkbox(
+            "This template's header is an image", key=f"wfb_has_img_header_{template_id}",
+            help="Not auto-detected for this template — check manually.",
+        )
+
+    header_image_url = None
+    if is_image_header:
+        uploaded_file = st.file_uploader(
+            "Attach image", type=["jpg", "jpeg", "png"], key=f"wfb_header_img_{template_id}",
+        )
+        manual_url = st.text_input("…or paste a hosted image URL", key=f"wfb_header_img_url_{template_id}")
+        if uploaded_file is not None:
+            file_sig = (uploaded_file.name, uploaded_file.size)
+            upload_cache_key = f"wfb_header_upload_{template_id}"
+            cached = st.session_state.get(upload_cache_key)
+            if not cached or cached.get("sig") != file_sig:
+                with st.spinner("Uploading…"):
+                    try:
+                        raw_up = whatsfly.upload_media(
+                            uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type or "image/jpeg",
+                        )
+                        _, murl = _wf_extract_media_ref(raw_up)
+                        st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": murl, "error": None}
+                    except Exception as e:
+                        st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": None, "error": str(e)}
+            cached = st.session_state.get(upload_cache_key)
+            if cached and cached.get("error"):
+                st.error(f"Upload failed: {cached['error']}")
+            elif cached and cached.get("media_url"):
+                st.success("Uploaded.")
+                header_image_url = cached["media_url"]
+        if not header_image_url and manual_url.strip():
+            header_image_url = manual_url.strip()
+        if not header_image_url:
+            st.warning("This template's header is an image — attach one or paste a URL above before sending.")
+
+    # ── Flat-value variables — mapped as "same value for every recipient",
+    #    entered once per campaign (e.g. a promo code, a cart total that
+    #    isn't per-customer data). ────────────────────────────────────────
+    flat_values = {}
+    flat_vars = [(pos, name) for pos, name in var_map if mapping.get(name, {}).get("source_type") == "flat_value"]
+    if flat_vars:
+        st.markdown("**✏️ Fill in variable(s) that apply to every recipient**")
+        for pos, name in flat_vars:
+            flat_values[name] = st.text_input(name, key=f"wfb_flatvar_{template_id}_{pos}")
+
+    # ── Preview against a real sample recipient, if one's available ────
+    if not recipients_df.empty:
+        sample_row = {
+            "cusid": recipients_df.iloc[0].get("cusid"), "cusname": recipients_df.iloc[0].get("cusname"),
+            "cusmobile": recipients_df.iloc[0].get("cusmobile"), "whatsapp": recipients_df.iloc[0].get("whatsapp"),
+            "area": recipients_df.iloc[0].get("area"),
+            "net_sales": recipients_df.iloc[0].get("Net Sales (window)"),
+            "current_balance": recipients_df.iloc[0].get("Current Balance"),
+            "current_score": recipients_df.iloc[0].get("Current Score"),
+        }
+        sample_vars = wtm.resolve_recipient_variables(var_map, mapping, sample_row, flat_values)
+        values = [sample_vars.get(name, "") for _, name in var_map]
+        preview_body = _wf_substitute_positional_preview(body_html, values) if is_native else body_html
+    else:
+        preview_body = body_html
+    image_preview_src = header_image_url if is_image_header else None
+    _wf_render_phone_preview(comps["header"], preview_body, comps["footer"], image_preview_src)
+
+    if recipients_df.empty:
+        st.info("Build an audience above (with a phone number on file) before you can send.")
+        return
+
+    # ── Resolve every recipient's own variables, then hand off to the
+    #    shared send engine. ────────────────────────────────────────────
+    recipients = []
+    skipped_no_phone = 0
+    for rec in recipients_df.to_dict("records"):
+        primary, _secondary = customer_whatsapp_numbers(rec.get("cusmobile"), rec.get("whatsapp"))
+        if not primary:
+            skipped_no_phone += 1
+            continue
+        customer_row = {
+            "cusid": rec.get("cusid"), "cusname": rec.get("cusname"),
+            "cusmobile": rec.get("cusmobile"), "whatsapp": rec.get("whatsapp"),
+            "area": rec.get("area"),
+            "net_sales": rec.get("Net Sales (window)"),
+            "current_balance": rec.get("Current Balance"),
+            "current_score": rec.get("Current Score"),
+        }
+        recipients.append({
+            "cusid": str(rec.get("cusid")), "cusname": rec.get("cusname"),
+            "phone_number": primary,
+            "variables": wtm.resolve_recipient_variables(var_map, mapping, customer_row, flat_values),
+        })
+    if skipped_no_phone:
+        st.caption(f"⚠️ {skipped_no_phone} recipient(s) skipped — no resolvable WhatsApp number.")
+
+    def _describe_mapping(name):
+        m = mapping.get(name)
+        if not m:
+            return "unmapped"
+        if m["source_type"] == "flat_value":
+            return "flat_value (entered per campaign)"
+        return f"customer attribute: {m['source_key']}"
+
+    _render_campaign_confirm_and_send(
+        zid=zid, template=template, recipients=recipients,
+        filters_used=st.session_state.get("_wfb_filters", []),
+        variable_mapping={name: _describe_mapping(name) for _, name in var_map},
+        cooldown_days_default=30, header_image_url=header_image_url,
+        key_prefix=f"wfb_send_{template_id}",
     )
-    _wf_render_phone_preview(comps["header"], body_html, comps["footer"])
 
 
-# {template_name: handler(zid, template) -> None} — add one entry per
-# campaign as it gets defined. Falls back to _wf_bulk_default_view for
-# every template not listed here yet.
+# {template_name: handler(zid, template, recipients_df) -> None} — for a
+# genuine one-off a saved mapping can't express. Falls back to
+# _wf_bulk_default_view (the real, generic send flow) for everything else
+# — expected to stay empty; see the module comment above.
 _WF_BULK_TEMPLATE_VIEWS = {}
 
 
@@ -3791,6 +3949,12 @@ def _show_wf_bulk_messaging_filtered(zid: str, proj: str, data_dict: dict, selec
 
     st.session_state.setdefault("_wfb_excluded_cusids", set())
 
+    # Always defined before the template section below, regardless of
+    # which branch runs (no candidates yet, or none left after the phone
+    # check) — the template handler needs a DataFrame to check, not a
+    # NameError.
+    final_df = pd.DataFrame()
+
     st.markdown("---")
     st.markdown(f"**👥 Audience — {len(candidates_so_far):,} customers matched by filters**")
     if candidates_so_far:
@@ -3903,7 +4067,7 @@ def _show_wf_bulk_messaging_filtered(zid: str, proj: str, data_dict: dict, selec
 
     st.markdown("---")
     handler = _WF_BULK_TEMPLATE_VIEWS.get(template.get("template_name"), _wf_bulk_default_view)
-    handler(zid, template)
+    handler(str(zid), template, final_df)
 
     st.markdown("---")
     if st.session_state.get("user_role") == "admin":
