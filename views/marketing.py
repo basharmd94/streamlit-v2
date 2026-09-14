@@ -3239,14 +3239,29 @@ def _show_wf_opt_out_management(zid: str) -> None:
     plan's Q16) — and checked automatically by every campaign's confirm-
     and-send step (processing/wf_bulk_campaign.py::get_opted_out_cusids,
     already wired into _render_campaign_confirm_and_send) before its
-    recipient rows are ever written."""
+    recipient rows are ever written.
+
+    100001/100000 share one real customer base (confirmed against real
+    data — see processing/wf_bulk_campaign.py's module comment above
+    _combined_zids), so every function this view calls treats those two
+    ZIDs as one combined scope: opting a customer out from either one
+    excludes them from campaigns under both, and this page shows/removes
+    that same combined list regardless of which of the two is currently
+    active in the sidebar — otherwise a customer opted out while viewing
+    100001 would falsely look "not opted out" the moment you switched to
+    100000."""
+    from processing import wf_bulk_campaign as wfc
+
     st.subheader("🚫 Opt-Out")
     st.caption(
         "Customers listed here are excluded from every future bulk campaign for this ZID, "
         "automatically — checked once at campaign-creation time, no matter which template."
+        + (
+            " **100001 and 100000 share one customer base**, so this list — and opting someone "
+            "out or back in — applies to both ZIDs together, not just the one currently selected."
+            if str(zid) in wfc._SHARED_CUSTOMER_ZIDS else ""
+        )
     )
-
-    from processing import wf_bulk_campaign as wfc
 
     try:
         opt_outs_df = wfc.list_opt_outs(str(zid))
@@ -3258,14 +3273,21 @@ def _show_wf_opt_out_management(zid: str) -> None:
     name_by_cusid = dict(zip(cacus_df["cusid"].astype(str), cacus_df["cusname"])) if not cacus_df.empty else {}
 
     # ── Currently opted-out customers ──────────────────────────────────────
+    is_shared_scope = str(zid) in wfc._SHARED_CUSTOMER_ZIDS
     st.markdown(f"**📋 Currently opted out — {len(opt_outs_df):,}**")
     if opt_outs_df.empty:
-        st.info("No customers opted out for this ZID yet.")
+        st.info("No customers opted out for this ZID yet." + (" (100001+100000 combined)" if is_shared_scope else ""))
     else:
         display_df = opt_outs_df.copy()
         display_df["cusname"] = display_df["cusid"].map(name_by_cusid).fillna("(unknown)")
         display_df["opted_out_at"] = pd.to_datetime(display_df["opted_out_at"]).dt.strftime("%Y-%m-%d %H:%M")
-        show_cols = ["cusid", "cusname", "opted_out_at", "opted_out_by", "reason"]
+        # Show which ZID each row was actually recorded under, but only
+        # when it's meaningful (100001/100000 combined scope) — otherwise
+        # it's always the same single value and just adds noise.
+        show_cols = (
+            ["cusid", "cusname", "zid", "opted_out_at", "opted_out_by", "reason"] if is_shared_scope
+            else ["cusid", "cusname", "opted_out_at", "opted_out_by", "reason"]
+        )
         st.dataframe(display_df[show_cols], width="stretch", hide_index=True)
         st.download_button(
             "📥 Download opt-out list (CSV)",

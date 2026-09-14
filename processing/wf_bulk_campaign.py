@@ -75,24 +75,53 @@ def _get_conn():
 # inserted, each with an explicit count shown to the user (never a silent
 # drop, same "never silently drop" pattern as the audience filter builder's
 # phone-completeness gate).
+#
+# 100001/100000 combined scope: confirmed against real data (9,958 of 9,959
+# cusids appear in BOTH ZIDs' cacus tables, same cusid on both sides in the
+# overwhelming majority of cases) that `cacus` is genuinely a SHARED
+# customer master between these two ZIDs specifically -- not two separate
+# customer lists that happen to overlap. Opt-out and cooldown are both a
+# promise to a real customer/phone number, so a customer opted out (or
+# recently sent a template) while looking at 100001 must also be excluded
+# from a campaign built under 100000, and vice versa -- otherwise the
+# exclusion silently doesn't hold, since it never even checks the sibling
+# ZID's rows. Same combined-scope treatment this app already gives 100001+
+# 100000 elsewhere (Salesman Due's own combined-scope path, per CLAUDE.md).
+# 100005/100009 have no evidence of this overlap (separate customer base,
+# no shared sales team) and stay strictly single-ZID.
 # ---------------------------------------------------------------------------
 
+_SHARED_CUSTOMER_ZIDS = {"100001", "100000"}
+
+
+def _combined_zids(zid: str) -> list:
+    """[zid] normally; [100001, 100000] when zid is either of those two,
+    since they share one real customer base (see module comment above)."""
+    zid = str(zid)
+    if zid in _SHARED_CUSTOMER_ZIDS:
+        return sorted(_SHARED_CUSTOMER_ZIDS)
+    return [zid]
+
+
 def get_opted_out_cusids(zid: str) -> set:
-    """cusids in contact_opt_outs for this zid -- excluded from every
-    future campaign regardless of template, until manually un-opted
-    (Phase 5)."""
+    """cusids opted out for this zid (or, for 100001/100000, for either of
+    the two combined ZIDs) -- excluded from every future campaign
+    regardless of template, until manually un-opted (Phase 5)."""
     with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT cusid FROM contact_opt_outs WHERE zid = %s", (zid,))
+        cur.execute("SELECT cusid FROM contact_opt_outs WHERE zid = ANY(%s)", (_combined_zids(zid),))
         return {row[0] for row in cur.fetchall()}
 
 
 def list_opt_outs(zid: str) -> pd.DataFrame:
-    """Every currently opted-out customer for this ZID, newest first --
-    the Opt-Out Management view's (Phase 5) main table."""
+    """Every currently opted-out customer for this ZID (combined with its
+    sibling for 100001/100000 -- see module comment above, so the
+    management page never shows a false "not opted out" for a customer
+    who was opted out while viewing the other ZID), newest first -- the
+    Opt-Out Management view's (Phase 5) main table."""
     with _get_conn() as conn:
         return pd.read_sql(
-            "SELECT * FROM contact_opt_outs WHERE zid = %s ORDER BY opted_out_at DESC",
-            conn, params=(zid,),
+            "SELECT * FROM contact_opt_outs WHERE zid = ANY(%s) ORDER BY opted_out_at DESC",
+            conn, params=(_combined_zids(zid),),
         )
 
 
@@ -101,12 +130,21 @@ def set_opt_out(zid: str, cusid: str, opted_out_by: str, reason: str = None) -> 
     upsert (UPDATE-then-INSERT-if-0-rows, same convention as every other
     upsert in this app) so re-opting-out an already-opted-out customer
     just refreshes the reason/timestamp instead of erroring against the
-    UNIQUE (zid, cusid) constraint."""
+    UNIQUE (zid, cusid) constraint.
+
+    The UPDATE half checks the COMBINED zid set (100001/100000 share one
+    customer base -- see module comment above) so re-opting-out the same
+    customer from the sibling ZID refreshes the existing row instead of
+    creating a redundant second one; the INSERT half (only reached when
+    truly nothing exists yet in either ZID) always writes under the
+    zid actually passed in -- which ZID's row it lands under doesn't
+    matter for enforcement, since every exclusion check already looks
+    across the combined set too."""
     with _get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE contact_opt_outs SET opted_out_at = now(), opted_out_by = %s, reason = %s "
-            "WHERE zid = %s AND cusid = %s",
-            (opted_out_by, reason, zid, cusid),
+            "WHERE zid = ANY(%s) AND cusid = %s",
+            (opted_out_by, reason, _combined_zids(zid), cusid),
         )
         if cur.rowcount == 0:
             cur.execute(
@@ -120,19 +158,27 @@ def remove_opt_out(zid: str, cusid: str) -> None:
     """Opts a customer back in -- a real DELETE, not a flag flip, since
     there's no "inactive opt-out" state worth preserving; if they're
     opted out again later, that's a fresh row with its own reason/
-    timestamp, not a revived old one."""
+    timestamp, not a revived old one.
+
+    Deletes across the COMBINED zid set (100001/100000 -- see module
+    comment above), not just the currently active one, so removing an
+    opt-out actually removes it regardless of which ZID the original row
+    happened to be stored under."""
     with _get_conn() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM contact_opt_outs WHERE zid = %s AND cusid = %s", (zid, cusid))
+        cur.execute("DELETE FROM contact_opt_outs WHERE zid = ANY(%s) AND cusid = %s", (_combined_zids(zid), cusid))
         conn.commit()
 
 
 def get_cooldown_blocked_cusids(zid: str, template_id: str, cooldown_days, candidate_cusids) -> set:
     """cusids among `candidate_cusids` already sent THIS SAME template_id
-    within the last `cooldown_days` days -- per-template scope (explicit
-    choice: a different template is never blocked by this), verified
-    correct in Phase 1 against realistic scratch data. status='sent' only
-    -- a failed attempt never reached the customer, so it shouldn't count
-    toward the cooldown."""
+    within the last `cooldown_days` days, checked across the COMBINED zid
+    set (100001/100000 -- see module comment above; a template sent under
+    100001 today counts against the cooldown for a 100000 campaign
+    tomorrow, since it's the same real customer/phone number either way)
+    -- per-template scope (explicit choice: a different template is never
+    blocked by this), verified correct in Phase 1 against realistic
+    scratch data. status='sent' only -- a failed attempt never reached
+    the customer, so it shouldn't count toward the cooldown."""
     candidates = list(candidate_cusids)
     if not candidates:
         return set()
@@ -142,13 +188,13 @@ def get_cooldown_blocked_cusids(zid: str, template_id: str, cooldown_days, candi
             SELECT DISTINCT cr.cusid
             FROM campaign_recipients cr
             JOIN campaigns c ON c.id = cr.campaign_id
-            WHERE cr.zid = %s
+            WHERE cr.zid = ANY(%s)
               AND c.template_id = %s
               AND cr.status = 'sent'
               AND cr.sent_at >= now() - (%s || ' days')::interval
               AND cr.cusid = ANY(%s)
             """,
-            (zid, template_id, str(int(cooldown_days)), candidates),
+            (_combined_zids(zid), template_id, str(int(cooldown_days)), candidates),
         )
         return {row[0] for row in cur.fetchall()}
 
