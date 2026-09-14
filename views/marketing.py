@@ -3339,6 +3339,13 @@ def _show_wf_campaign_history(zid: str) -> None:
         st.warning(str(e))
         return
 
+    # Exclude the Curated List's own "draft" campaigns row(s) (template_id
+    # == "" — see processing/wf_bulk_campaign.py's Curated List section) —
+    # those are audiences still being hand-picked, never sent, and would
+    # otherwise show up here as a confusing permanently-"pending" campaign
+    # with a blank template name.
+    campaigns_df = campaigns_df[campaigns_df["template_id"] != ""]
+
     if campaigns_df.empty:
         st.info("No campaigns sent yet.")
         return
@@ -3371,6 +3378,14 @@ def _show_wf_campaign_history(zid: str) -> None:
     # "send_failed" (WhatsFly's API rejecting the request outright,
     # which never reaches Meta/the customer at all) since the two mean
     # very different things operationally.
+    # Found via real-world confusion: this enrichment lookup used to fail
+    # SILENTLY (bare except -> status_map = {}) -- meaning a genuine "the
+    # webhook DB lookup is broken" looked EXACTLY like "nothing has
+    # reported back yet" (Delivered/Delivery Failed both 0, no error
+    # shown anywhere). enrichment_error captures the first real exception
+    # message so it can be surfaced once, clearly, instead of silently
+    # degrading every campaign row to zero.
+    enrichment_error = None
     summaries = []
     for row in campaigns_df.itertuples():
         recipients = wfc.get_campaign_recipients(row.id)
@@ -3379,8 +3394,9 @@ def _show_wf_campaign_history(zid: str) -> None:
         wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
         try:
             status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
-        except Exception:
+        except Exception as e:
             status_map = {}
+            enrichment_error = enrichment_error or str(e)
         delivered = sum(1 for s in status_map.values() if s in ("delivered", "read"))
         read = sum(1 for s in status_map.values() if s == "read")
         delivery_failed = sum(1 for s in status_map.values() if s == "failed")
@@ -3395,6 +3411,14 @@ def _show_wf_campaign_history(zid: str) -> None:
             "cost": cost, "cost_per_delivered": cost_per_delivered,
         })
     summary_df = pd.DataFrame(summaries)
+
+    if enrichment_error:
+        st.warning(
+            "⚠️ Could not reach the webhook database to fetch Delivered/Read/Delivery "
+            "Failed status — every campaign below will show 0 for those columns until "
+            "this is fixed, **not** because nothing has arrived yet. Check "
+            f"`config/whatsapp_webhook_db.ini` on this server. Error: {enrichment_error}"
+        )
 
     # ── Overview — totals across everything shown above ───────────────────
     st.markdown("**📈 Overview**")
@@ -3472,14 +3496,22 @@ def _show_wf_campaign_history(zid: str) -> None:
     recipients = wfc.get_campaign_recipients(chosen_id)
     if not recipients.empty:
         wamids = recipients.loc[recipients["wamid"].notna(), "wamid"].tolist()
+        detail_enrichment_error = None
         try:
             status_map = whatsapp_webhook_db.get_current_status_by_wamids(wamids)
-        except Exception:
+        except Exception as e:
             status_map = {}
+            detail_enrichment_error = str(e)
         try:
             failure_reasons = whatsapp_webhook_db.get_failure_reasons_by_wamids(wamids)
-        except Exception:
+        except Exception as e:
             failure_reasons = {}
+            detail_enrichment_error = detail_enrichment_error or str(e)
+        if detail_enrichment_error:
+            st.warning(
+                "⚠️ Could not reach the webhook database — delivery_status/failure_reason "
+                f"below fall back to the send-call result only. Error: {detail_enrichment_error}"
+            )
         recipients = recipients.copy()
         recipients["delivery_status"] = recipients["wamid"].map(status_map).fillna(recipients["status"])
 
@@ -3516,6 +3548,122 @@ def _show_wf_campaign_history(zid: str) -> None:
             file_name=f"campaign_{chosen_id}_recipients.csv", mime="text/csv",
             key=f"wch_download_{chosen_id}",
         )
+
+
+def _show_wf_curated_list(zid: str) -> None:
+    """📋 Curated List — a hand-picked alternative to the Bulk Messaging
+    filter builder, for when the target audience is better chosen by eye
+    than by any filter. The full customer directory for this ZID, no
+    area/salesman/score/etc. filters at all — deliberately just the raw
+    list (explicit ask) — with a multiselect to pick individual customers
+    onto one saved list per ZID.
+
+    Deliberately reuses campaigns/campaign_recipients directly rather
+    than a dedicated table (see processing/wf_bulk_campaign.py's own
+    "Curated List" section comment for the design reasoning) — a
+    curated list genuinely IS a campaign's audience, just one built by
+    hand and not sent yet, so it belongs in the same place a real
+    campaign's recipients already live, found via one sentinel
+    campaigns row per ZID. Doesn't feed into a send yet — same
+    "build the list first" scope as the filter-builder audience
+    currently has. The natural next step, once wanted, is reusing
+    _render_campaign_confirm_and_send against this SAME campaign_id
+    (picking a template at that point), same as the Test send panel
+    and a real campaign handler both already do."""
+    st.subheader("📋 Curated List")
+    st.caption(
+        "The full customer directory for this ZID — no area/salesman/score filters, just pick "
+        "customers by hand onto one saved list. Doesn't send anything by itself yet."
+    )
+
+    from processing import wf_bulk_campaign as wfc
+
+    zid = str(zid)
+    try:
+        campaign_id = wfc.find_curated_campaign_id(zid)
+    except wfc.WfBulkCampaignDBConfigError as e:
+        st.warning(str(e))
+        return
+
+    curated_df = wfc.get_campaign_recipients(campaign_id) if campaign_id is not None else pd.DataFrame()
+
+    cacus_df = _load_cacus(zid)
+    if cacus_df.empty:
+        st.info("No customers available for this ZID.")
+        return
+
+    # ── Currently curated ───────────────────────────────────────────────
+    st.markdown(f"**📋 Currently on the list — {len(curated_df):,}**")
+    if curated_df.empty:
+        st.info("Nothing curated yet for this ZID — pick some customers below.")
+    else:
+        display_df = curated_df.copy()
+        show_cols = ["cusid", "cusname", "phone_number", "created_at"]
+        st.dataframe(display_df[show_cols], width="stretch", hide_index=True)
+        st.download_button(
+            "📥 Download curated list (CSV)",
+            display_df[show_cols].to_csv(index=False).encode("utf-8"),
+            file_name=f"curated_list_{zid}.csv", mime="text/csv", key="wcl_download_csv",
+        )
+
+        st.markdown("**➖ Remove from the list**")
+        remove_labels = {
+            f"{row.cusname} ({row.cusid})": str(row.cusid) for row in curated_df.itertuples()
+        }
+        chosen_remove = st.multiselect(
+            "Select customer(s) to remove", list(remove_labels.keys()), key="wcl_remove_ms",
+        )
+        if st.button("➖ Remove Selected", key="wcl_remove_btn", disabled=not chosen_remove):
+            for label in chosen_remove:
+                wfc.remove_curated_recipient(campaign_id, remove_labels[label])
+            st.success(f"Removed {len(chosen_remove)} customer(s).")
+            st.rerun()
+
+    # ── Browse the full directory, pick customers to add ────────────────
+    st.markdown("---")
+    st.markdown(f"**➕ Add customers — full directory ({len(cacus_df):,})**")
+    display_cacus = cacus_df.copy()
+    show_cacus_cols = [c for c in ["cusid", "cusname", "cusmobile", "whatsapp", "area"] if c in display_cacus.columns]
+    st.dataframe(display_cacus[show_cacus_cols], width="stretch", hide_index=True)
+
+    already_curated = set(curated_df["cusid"].astype(str)) if not curated_df.empty else set()
+    # Excluded here, not just skipped at add-time, so the option list
+    # itself never offers a customer with no usable number — same
+    # "never silently drop" instinct as the rest of this app, just
+    # applied before the pick instead of after.
+    no_number_count = 0
+    add_labels = {}
+    for row in cacus_df.itertuples():
+        cusid = str(row.cusid)
+        if cusid in already_curated:
+            continue
+        primary, _secondary = customer_whatsapp_numbers(getattr(row, "cusmobile", None), getattr(row, "whatsapp", None))
+        if not primary:
+            no_number_count += 1
+            continue
+        add_labels[f"{row.cusname} ({row.cusid})"] = (row, primary)
+    if no_number_count:
+        st.caption(f"⚠️ {no_number_count} customer(s) excluded — no usable phone number on file.")
+
+    # Fingerprinted key so the multiselect resets to empty right after a
+    # successful add, same pattern as Bulk Messaging's own "Remove from
+    # final list" widget — otherwise Streamlit would keep the just-added
+    # names selected across the rerun.
+    add_gen = st.session_state.get("_wcl_add_gen", 0)
+    chosen_add = st.multiselect(
+        "Select customer(s) to add", list(add_labels.keys()), key=f"wcl_add_ms_{add_gen}",
+    )
+    if st.button("➕ Add Selected to Curated List", key="wcl_add_btn", type="primary", disabled=not chosen_add):
+        if campaign_id is None:
+            campaign_id = wfc.get_or_create_curated_campaign_id(zid, st.session_state.get("username") or "unknown")
+        customers = [
+            {"cusid": str(row.cusid), "cusname": row.cusname, "phone_number": primary}
+            for label in chosen_add for row, primary in [add_labels[label]]
+        ]
+        added = wfc.add_curated_recipients(campaign_id, zid, customers)
+        st.session_state["_wcl_add_gen"] = add_gen + 1
+        st.success(f"Added {added} customer(s) to the curated list.")
+        st.rerun()
 
 
 def _show_wf_bulk_messaging(zid: str, proj: str, data_dict: dict, selected_years: list) -> None:
@@ -3712,113 +3860,114 @@ def _show_wf_bulk_messaging(zid: str, proj: str, data_dict: dict, selected_years
     handler(zid, template)
 
     st.markdown("---")
-    with st.expander("🧪 Test send (manual phone number list)"):
-        st.caption(
-            "Runs through the exact same send engine a real campaign uses (Phase 2), just "
-            "against a hand-typed list of numbers instead of the filtered audience above — the "
-            "way to prove out pacing/throttling/one-by-one sending against real WhatsFly before "
-            "any real campaign runs. Same value is sent to every number (no per-recipient "
-            "personalization) — this is for testing the mechanism, not a real campaign."
-        )
-        test_labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
-        test_idx = st.selectbox(
-            "Template to test with", range(len(templates)),
-            format_func=lambda i: test_labels[i], key="wf_test_template_idx",
-        )
-        test_template = templates[test_idx]
-
-        # Header image — same auto-detect + upload/paste-URL mechanism as
-        # the single-message panel (_render_wf_template_send) above, just
-        # without its live preview (this panel has none). Was missing
-        # entirely before: a template whose header actually IS an image
-        # would silently send with no header_image_url at all, since
-        # _render_campaign_confirm_and_send only ever attaches one when
-        # this expander explicitly hands it one.
-        test_comps = _wf_extract_components(test_template)
-        test_is_native = test_comps.get("style") == "whatsfly"
-        if test_is_native:
-            test_is_image_header = (
-                test_template.get("header_type") == "media" and test_template.get("header_subtype") == "image"
+    if st.session_state.get("user_role") == "admin":
+        with st.expander("🧪 Test send (manual phone number list)"):
+            st.caption(
+                "Runs through the exact same send engine a real campaign uses (Phase 2), just "
+                "against a hand-typed list of numbers instead of the filtered audience above — the "
+                "way to prove out pacing/throttling/one-by-one sending against real WhatsFly before "
+                "any real campaign runs. Same value is sent to every number (no per-recipient "
+                "personalization) — this is for testing the mechanism, not a real campaign."
             )
+            test_labels = [_wf_template_label(t, i) for i, t in enumerate(templates)]
+            test_idx = st.selectbox(
+                "Template to test with", range(len(templates)),
+                format_func=lambda i: test_labels[i], key="wf_test_template_idx",
+            )
+            test_template = templates[test_idx]
+
+            # Header image — same auto-detect + upload/paste-URL mechanism as
+            # the single-message panel (_render_wf_template_send) above, just
+            # without its live preview (this panel has none). Was missing
+            # entirely before: a template whose header actually IS an image
+            # would silently send with no header_image_url at all, since
+            # _render_campaign_confirm_and_send only ever attaches one when
+            # this expander explicitly hands it one.
+            test_comps = _wf_extract_components(test_template)
+            test_is_native = test_comps.get("style") == "whatsfly"
+            if test_is_native:
+                test_is_image_header = (
+                    test_template.get("header_type") == "media" and test_template.get("header_subtype") == "image"
+                )
+                if test_is_image_header:
+                    st.markdown("**🖼️ Header Image** _(auto-detected — this template requires one)_")
+            else:
+                st.markdown("**🖼️ Header Image (optional)**")
+                test_is_image_header = st.checkbox(
+                    "This template's header is an image", key=f"wf_test_has_img_header_{test_idx}",
+                    help="Not auto-detected for this template — check manually.",
+                )
+
+            test_header_image_url = None
             if test_is_image_header:
-                st.markdown("**🖼️ Header Image** _(auto-detected — this template requires one)_")
-        else:
-            st.markdown("**🖼️ Header Image (optional)**")
-            test_is_image_header = st.checkbox(
-                "This template's header is an image", key=f"wf_test_has_img_header_{test_idx}",
-                help="Not auto-detected for this template — check manually.",
-            )
+                uploaded_test_file = st.file_uploader(
+                    "Attach image", type=["jpg", "jpeg", "png"], key=f"wf_test_header_img_{test_idx}",
+                )
+                manual_test_url = st.text_input(
+                    "…or paste a hosted image URL", key=f"wf_test_header_img_url_{test_idx}",
+                )
+                if uploaded_test_file is not None:
+                    file_sig = (uploaded_test_file.name, uploaded_test_file.size)
+                    upload_cache_key = f"wf_test_header_upload_{test_idx}"
+                    cached = st.session_state.get(upload_cache_key)
+                    if not cached or cached.get("sig") != file_sig:
+                        with st.spinner("Uploading…"):
+                            try:
+                                raw_up = whatsfly.upload_media(
+                                    uploaded_test_file.getvalue(), uploaded_test_file.name,
+                                    uploaded_test_file.type or "image/jpeg",
+                                )
+                                _, murl = _wf_extract_media_ref(raw_up)
+                                st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": murl, "error": None}
+                            except Exception as e:
+                                st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": None, "error": str(e)}
+                    cached = st.session_state.get(upload_cache_key)
+                    if cached and cached.get("error"):
+                        st.error(f"Upload failed: {cached['error']}")
+                    elif cached and cached.get("media_url"):
+                        st.success("Uploaded.")
+                        test_header_image_url = cached["media_url"]
+                if not test_header_image_url and manual_test_url.strip():
+                    test_header_image_url = manual_test_url.strip()
+                if not test_header_image_url:
+                    st.warning("This template's header is an image — attach one or paste a URL above before sending.")
 
-        test_header_image_url = None
-        if test_is_image_header:
-            uploaded_test_file = st.file_uploader(
-                "Attach image", type=["jpg", "jpeg", "png"], key=f"wf_test_header_img_{test_idx}",
+            numbers_raw = st.text_area(
+                "Phone numbers, one per line (WhatsApp format, e.g. 8801XXXXXXXXX)",
+                key="wf_test_numbers", height=100,
             )
-            manual_test_url = st.text_input(
-                "…or paste a hosted image URL", key=f"wf_test_header_img_url_{test_idx}",
-            )
-            if uploaded_test_file is not None:
-                file_sig = (uploaded_test_file.name, uploaded_test_file.size)
-                upload_cache_key = f"wf_test_header_upload_{test_idx}"
-                cached = st.session_state.get(upload_cache_key)
-                if not cached or cached.get("sig") != file_sig:
-                    with st.spinner("Uploading…"):
-                        try:
-                            raw_up = whatsfly.upload_media(
-                                uploaded_test_file.getvalue(), uploaded_test_file.name,
-                                uploaded_test_file.type or "image/jpeg",
-                            )
-                            _, murl = _wf_extract_media_ref(raw_up)
-                            st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": murl, "error": None}
-                        except Exception as e:
-                            st.session_state[upload_cache_key] = {"sig": file_sig, "media_url": None, "error": str(e)}
-                cached = st.session_state.get(upload_cache_key)
-                if cached and cached.get("error"):
-                    st.error(f"Upload failed: {cached['error']}")
-                elif cached and cached.get("media_url"):
-                    st.success("Uploaded.")
-                    test_header_image_url = cached["media_url"]
-            if not test_header_image_url and manual_test_url.strip():
-                test_header_image_url = manual_test_url.strip()
-            if not test_header_image_url:
-                st.warning("This template's header is an image — attach one or paste a URL above before sending.")
+            test_numbers = [n.strip() for n in numbers_raw.splitlines() if n.strip()]
+            st.caption(f"{len(test_numbers)} number(s) entered.")
 
-        numbers_raw = st.text_area(
-            "Phone numbers, one per line (WhatsApp format, e.g. 8801XXXXXXXXX)",
-            key="wf_test_numbers", height=100,
-        )
-        test_numbers = [n.strip() for n in numbers_raw.splitlines() if n.strip()]
-        st.caption(f"{len(test_numbers)} number(s) entered.")
+            test_var_map = _wf_extract_variable_map(test_template)
+            test_values = {}
+            if test_var_map:
+                st.markdown("**Variable values** — applied identically to every number above.")
+                for pos, name in test_var_map:
+                    test_values[name] = st.text_input(name, key=f"wf_test_var_{test_idx}_{pos}")
 
-        test_var_map = _wf_extract_variable_map(test_template)
-        test_values = {}
-        if test_var_map:
-            st.markdown("**Variable values** — applied identically to every number above.")
-            for pos, name in test_var_map:
-                test_values[name] = st.text_input(name, key=f"wf_test_var_{test_idx}_{pos}")
-
-        if not test_numbers:
-            st.info("Enter at least one phone number above to test with.")
-        else:
-            test_recipients = [
-                {
-                    "cusid": f"TEST-{n}",  # stable per number -- lets the cooldown guard be exercised
-                    # deliberately too, not just bypassed, if the cooldown-days input above is raised
-                    "cusname": f"Test #{i + 1}",
-                    "phone_number": n,
-                    "variables": dict(test_values),
-                }
-                for i, n in enumerate(test_numbers)
-            ]
-            _render_campaign_confirm_and_send(
-                zid="TEST",  # sentinel zid, isolated from every real ZID's own campaign history/cooldowns
-                template=test_template, recipients=test_recipients,
-                filters_used=[{"type": "manual_test_list", "count": len(test_numbers)}],
-                variable_mapping={name: "typed in manually for this test" for _, name in test_var_map},
-                cooldown_days_default=0,  # tests should be freely re-runnable by default; raise it to test cooldown itself
-                header_image_url=test_header_image_url,
-                key_prefix="wf_test",
-            )
+            if not test_numbers:
+                st.info("Enter at least one phone number above to test with.")
+            else:
+                test_recipients = [
+                    {
+                        "cusid": f"TEST-{n}",  # stable per number -- lets the cooldown guard be exercised
+                        # deliberately too, not just bypassed, if the cooldown-days input above is raised
+                        "cusname": f"Test #{i + 1}",
+                        "phone_number": n,
+                        "variables": dict(test_values),
+                    }
+                    for i, n in enumerate(test_numbers)
+                ]
+                _render_campaign_confirm_and_send(
+                    zid="TEST",  # sentinel zid, isolated from every real ZID's own campaign history/cooldowns
+                    template=test_template, recipients=test_recipients,
+                    filters_used=[{"type": "manual_test_list", "count": len(test_numbers)}],
+                    variable_mapping={name: "typed in manually for this test" for _, name in test_var_map},
+                    cooldown_days_default=0,  # tests should be freely re-runnable by default; raise it to test cooldown itself
+                    header_image_url=test_header_image_url,
+                    key_prefix="wf_test",
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -4251,7 +4400,7 @@ def _show_whatsapp_message_log() -> None:
 _PRODUCT_ONLY_MODES = {
     "📈 High Stock Marketing", "🖼️ Media Library", "📱 Inactive Outreach", "🎣 Leads",
     "💬 WhatsFly Messaging", "📢 Bulk Messaging", "🔧 Template Mapping", "📊 Campaign History",
-    "🚫 Opt-Out", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
+    "🚫 Opt-Out", "📋 Curated List", "📨 Direct WhatsApp", "📥 WhatsApp Message Log",
 }
 
 
@@ -4273,6 +4422,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             "🔧 Template Mapping",
             "📊 Campaign History",
             "🚫 Opt-Out",
+            "📋 Curated List",
             # "📨 Direct WhatsApp" — shut off, not deleted. WhatsFly is the
             # path being developed now (see CLAUDE.md); the Direct WhatsApp
             # code (core/direct_whatsapp.py, _show_direct_whatsapp_messaging,
@@ -4316,6 +4466,8 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
             _show_wf_campaign_history(str(zid))
         elif mode == "🚫 Opt-Out":
             _show_wf_opt_out_management(str(zid))
+        elif mode == "📋 Curated List":
+            _show_wf_curated_list(str(zid))
         elif mode == "📨 Direct WhatsApp":
             _show_direct_whatsapp_messaging()
         elif mode == "📥 WhatsApp Message Log":
