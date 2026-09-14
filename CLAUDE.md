@@ -528,6 +528,26 @@ Orders whose total quantity falls below every defined tier (e.g. a 1-tier setup 
 
 ---
 
+## Customer Data View (`views/sales.py::display_customer_data_view_page`)
+
+Two radio modes: **🔍 Individual DO/SR Check** (the original page — customer-mandatory, salesman/product/area-optional transaction lookup, unchanged, just moved into its own `_render_individual_do_sr_check`) and **⚖️ Rate Mismatch Audit** (new).
+
+### Rate Mismatch Audit
+
+Mobile orders land in `opord` (header) / `opodt` (line) — a **separate table pair from the main `opdor`/`opddt` sales flow**, not just a differently-named view of the same data. `opord.xordernum` only ever has one of two real prefixes (confirmed against live data): `COMO` (open mobile order) or `CO--` (confirmed, still pre-delivery) — it becomes a `DO--` voucher in the main flow once delivery is actually confirmed, which is out of scope here since the point is catching a bad rate *before* that happens.
+
+`opodt.xrate` is the real, confirmed rate column (what prints on the invoice) — checked per line against two reference prices, both already established elsewhere in this app:
+- `caitem.xstdprice` — the item's standard price.
+- Wholesale special price — `GREATEST(caitem.xstdprice - opspprc.xdisc, 0)` at the item's lowest-`xqty` tier, the exact same formula `get_opspprc_data`/`get_inventory_overview` (Purchase Analysis's Total Inventory Overview) already use for "WH Price".
+
+**Only genuine mismatches are returned** — `core/queries.py::get_rate_mismatch_audit` (registered `"rate_mismatch_audit"`) filters to `xrate IS DISTINCT FROM` both reference prices at the SQL level, per explicit ask ("the ones that match don't need to be shown"); matching *either* reference price is considered correct.
+
+UI: a date picker (today, back to 30 days) + an explicit "🔍 Run Rate Audit" button — nothing queried until clicked, same stays-on-screen-until-rerun pattern as every other on-demand report in this app (`st.session_state["_cdv_audit_result"]`). One row per mismatched line: Voucher, Date, Cust Code, Customer (`cacus.xshort`), Item Code, Item Name, Qty, Invoiced Rate, Std Price, WH Price, plus a CSV download.
+
+Verified against real data: a real September 2026 mismatch found (`COMO418641`, item `1304` "Spirit Level 20 Inch" — invoiced at 265.00 against a std price of 280.00 and WH price of 275.00, matching neither) — confirmed by direct SQL first, then the exact same single row surfaced through the UI end to end.
+
+---
+
 ## Manufacturing Analysis — "🔄 Warehouse Flow" (`views/manufacturing.py::_render_warehouse_flow`)
 
 An 8th `mfg_view_mode` radio option alongside FG Costing / FG Cost History / RM Rate Trend / RM Requirement / RM Stock Coverage / BOM Variance / MO Detail — for the same 3 entities (`_MANUFACTURING_ZIDS` = 100000/100005/100009). **Per-product** flow: `Raw Material → (MO) → Finished Goods warehouse → (transfer) → Sales Store → (DO) → market`. Independent of MO header/detail data, so it runs *before* the page's MO-empty early-return, not after. Branches into an inner `mfg_flow_mode` radio, both sharing the one cached `flow_raw` load and the `same_wh` (100009) detection at the top of `_render_warehouse_flow`:

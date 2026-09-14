@@ -56,6 +56,7 @@ class Analytics:
             "legacy_order_detail":  queries.get_legacy_order_detail,
             "new_return_detail":    queries.get_new_return_detail,
             "legacy_return_detail": queries.get_legacy_return_detail,
+            "rate_mismatch_audit":  queries.get_rate_mismatch_audit,
             "sales_7day":       queries.get_sales_7day,
             "customer_last_do_items": queries.get_customer_last_do_items,
             "return":           queries.get_return_data,

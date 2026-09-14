@@ -1582,6 +1582,20 @@ def _build_customer_data_view_options(zid: int,sales_shape: tuple,sales_cols: tu
 def display_customer_data_view_page(current_page, zid, data_dict):
     st.header("Customer Data View")
 
+    mode = st.radio(
+        "View", ["🔍 Individual DO/SR Check", "⚖️ Rate Mismatch Audit"],
+        horizontal=True, key="cdv_mode",
+    )
+    st.markdown("---")
+
+    if mode == "⚖️ Rate Mismatch Audit":
+        _render_rate_mismatch_audit(str(zid))
+        return
+
+    _render_individual_do_sr_check(zid, data_dict)
+
+
+def _render_individual_do_sr_check(zid, data_dict):
     # -----------------------------
     # Load & prepare data
     # -----------------------------
@@ -1724,4 +1738,67 @@ def display_customer_data_view_page(current_page, zid, data_dict):
             na_rep="-",
         ),
         width="stretch",
+    )
+
+
+# ── Rate Mismatch Audit — mobile-order (COMO/CO--) line rates checked ──────────
+# against caitem's standard price / wholesale special price, one day at a
+# time. New "⚖️ Rate Mismatch Audit" radio under Customer Data View.
+
+def _render_rate_mismatch_audit(zid: str):
+    from datetime import date, timedelta
+    from core.analytics import Analytics
+
+    st.subheader("⚖️ Rate Mismatch Audit")
+    st.caption(
+        "Mobile orders (voucher starts `COMO` or `CO--`) for one day, whose invoiced rate "
+        "(`opodt.xrate`) matches neither the item's standard price (`caitem.xstdprice`) nor its "
+        "wholesale special price. Only mismatches are shown — a rate matching either one is fine."
+    )
+
+    today = date.today()
+    audit_date = st.date_input(
+        "Date", value=today, min_value=today - timedelta(days=30), max_value=today,
+        key="cdv_audit_date",
+    )
+
+    if st.button("🔍 Run Rate Audit", key="cdv_run_audit_btn", type="primary"):
+        with st.spinner("Checking mobile-order rates…"):
+            df = Analytics("rate_mismatch_audit", zid=zid, filters={"date": [str(audit_date)]}).data
+        st.session_state["_cdv_audit_result"] = (df if df is not None else pd.DataFrame(), audit_date)
+
+    if "_cdv_audit_result" not in st.session_state:
+        st.info("Pick a date and run the audit — nothing is checked until you click the button.")
+        return
+
+    result_df, result_date = st.session_state["_cdv_audit_result"]
+    st.markdown(f"**Showing {result_date:%Y-%m-%d}:**")
+
+    if result_df.empty:
+        st.success("No rate mismatches found for this date — every COMO/CO-- line matches its standard or wholesale price.")
+        return
+
+    display_df = result_df.rename(columns={
+        "voucher": "Voucher", "date": "Date", "cusid": "Cust Code", "cusname": "Customer",
+        "itemcode": "Item Code", "itemname": "Item Name", "qty": "Qty",
+        "rate": "Invoiced Rate", "std_price": "Std Price", "wh_price": "WH Price",
+    })
+    show_cols = ["Voucher", "Date", "Cust Code", "Customer", "Item Code", "Item Name",
+                 "Qty", "Invoiced Rate", "Std Price", "WH Price"]
+    display_df = display_df[show_cols]
+
+    st.metric("Mismatches found", f"{len(display_df):,}")
+    st.dataframe(
+        display_df.style.format(
+            {"Qty": "{:,.0f}", "Invoiced Rate": "{:,.2f}", "Std Price": "{:,.2f}", "WH Price": "{:,.2f}"},
+            na_rep="—",
+        ),
+        width="stretch", hide_index=True,
+    )
+    st.download_button(
+        "⬇ Download Rate Mismatch CSV",
+        display_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"rate_mismatch_{zid}_{result_date}.csv",
+        mime="text/csv",
+        key="cdv_audit_download",
     )

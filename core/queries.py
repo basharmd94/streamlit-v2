@@ -1713,6 +1713,58 @@ def get_opspprc_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_rate_mismatch_audit(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Mobile-order line items for ONE specific day whose invoiced rate
+    (opodt.xrate -- confirmed the real rate column, printed on invoices)
+    doesn't match either of the two prices it should reasonably equal:
+    caitem's own standard price (caitem.xstdprice), or the wholesale
+    special price (GREATEST(xstdprice - opspprc.xdisc, 0), lowest-qty
+    tier -- the exact same formula get_opspprc_data/get_inventory_overview
+    already use for "WH Price" elsewhere in this app). Only the
+    genuinely-mismatched rows come back -- rows matching EITHER reference
+    price are correct and deliberately excluded, per explicit ask.
+
+    Mobile orders land in opord (header)/opodt (line) rather than the
+    main opdor/opddt sales flow -- COMO is the open mobile-order prefix,
+    CO-- is what it becomes once confirmed (still pre-delivery; COMO/CO--
+    itself becomes a DO-- voucher in the main flow once delivery is
+    confirmed, out of scope here since this audit is specifically about
+    catching a bad rate before that happens). Confirmed against real
+    data: both prefixes are real and current (COMO/CO-- are the only two
+    prefixes xordernum ever has)."""
+    zid = str(filters["zid"][0])
+    audit_date = filters["date"][0]
+    sql = """
+        SELECT
+            o.xordernum   AS voucher,
+            o.xdate       AS date,
+            o.xcus        AS cusid,
+            cc.xshort     AS cusname,
+            d.xrow        AS line_no,
+            d.xitem       AS itemcode,
+            ci.xdesc      AS itemname,
+            d.xqtyord     AS qty,
+            d.xrate       AS rate,
+            ci.xstdprice  AS std_price,
+            GREATEST(ci.xstdprice - COALESCE(wp.xdisc, 0), 0) AS wh_price
+        FROM opord o
+        JOIN opodt d ON o.zid = d.zid AND o.xordernum = d.xordernum
+        LEFT JOIN caitem ci ON ci.zid = o.zid AND ci.xitem = d.xitem
+        LEFT JOIN cacus cc ON cc.zid = o.zid AND cc.xcus = o.xcus
+        LEFT JOIN LATERAL (
+            SELECT xdisc FROM opspprc
+            WHERE zid = o.zid AND xpricecat = d.xitem
+            ORDER BY xqty LIMIT 1
+        ) wp ON true
+        WHERE o.zid = %s AND o.xdate = %s
+          AND (o.xordernum LIKE 'COMO%%' OR o.xordernum LIKE 'CO--%%')
+          AND d.xrate IS DISTINCT FROM ci.xstdprice
+          AND d.xrate IS DISTINCT FROM GREATEST(ci.xstdprice - COALESCE(wp.xdisc, 0), 0)
+        ORDER BY o.xordernum, d.xrow
+    """
+    return sql, (zid, audit_date)
+
+
 def get_final_items_view(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """
     Query the final_items_view database view.
