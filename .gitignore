@@ -76,6 +76,13 @@ data/crm_log.json
 data/level_p_projections.json
 data/level_p_breakeven.json
 
+# GL hierarchy / Level S mapping — hand-edited directly on the server
+# whenever a new GL account is created; managed by copy/paste between
+# environments rather than git, per explicit decision (kept causing
+# `git pull` conflicts on the server every time an account was added).
+data/hierarchy.json
+data/level_s_mapping.json
+
 # Product media library — binary image files managed via the app UI
 data/product_images/
 
