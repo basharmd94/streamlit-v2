@@ -142,3 +142,20 @@ CREATE TABLE template_variable_mappings (
     UNIQUE (template_id, variable_name)
 );
 CREATE INDEX idx_template_variable_mappings_template_id ON template_variable_mappings(template_id);
+
+-- Hand-curated customer list (one per ZID) -- see add_curated_list_table.sql
+-- for the non-destructive version of this same DDL, for adding onto an
+-- existing deployed database. Kept identical in both places.
+CREATE TABLE curated_list_contacts (
+    id              BIGSERIAL PRIMARY KEY,
+    zid             TEXT NOT NULL,
+    cusid           TEXT NOT NULL,
+    cusname         TEXT,
+    cusmobile       TEXT,
+    whatsapp        TEXT,
+    area            TEXT,
+    added_by        TEXT NOT NULL,
+    added_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (zid, cusid)
+);
+CREATE INDEX idx_curated_list_contacts_zid ON curated_list_contacts(zid);
