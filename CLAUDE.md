@@ -39,10 +39,11 @@ views/                  # One public display_*()/render_*() per file, UI only
   daily_sales.py, accounting.py, home.py
 visualization/common_v.py  # plot_histogram, plot_bar_chart (Plotly wrappers)
 data/                   # targets.json, public_holidays.json, warehouse_filters.json, hierarchy.json,
-                        #   level_s_mapping.json (gitignored runtime — hierarchy.json/level_s_mapping.json
-                        #   moved here 2026-09-14: hand-edited directly on the server whenever a new GL
-                        #   account is created, synced between environments by copy/paste, not git)
-                        # ls_account_notes.json, labels.json (committed)
+                        #   level_s_mapping.json, labels.json (gitignored runtime — the last three moved
+                        #   here 2026-09-14: all editable via the in-app "⚙️ Config Editor"
+                        #   (views/financial.py), so all three get hand-edited directly on the server
+                        #   and are synced between environments by copy/paste, not git)
+                        # ls_account_notes.json (committed — read-only, no in-app edit path)
 db_sync/                # Standalone DB sync scripts (separate from the app)
 whatsapp_webhook/       # Standalone FastAPI service (separate from the app, see below)
 ```
