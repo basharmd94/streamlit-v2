@@ -731,79 +731,110 @@ def _render_three_month_averages(sales_df: pd.DataFrame, returns_df: pd.DataFram
         st.caption(f"Details: {_ma_err}")
 
 
-# ── Salesman daily breakdown (current month) ──────────────────────────────────
+# ── Daily Breakdown (current month, per salesman) — own top-level mode ────────
+# Moved out of Individual Salesman into its own "📅 Daily Breakdown" radio
+# entry per explicit ask, same salesman-picker mechanic as before. Real
+# change is the columns: 100001/100000 share one field sales team (see
+# CLAUDE.md), so this now fetches BOTH ZIDs directly (independent of
+# whichever ZID the sidebar happens to have active) and shows Sales split
+# per ZID side by side, dropping the old Pending (opmob) column entirely
+# in favor of a straight Total Sales column — while Unique Cust/Unique
+# Prod stay combined totals across both ZIDs, no split, per explicit ask.
 
-def _render_sp_daily_breakdown(
-    sp_sales: pd.DataFrame,
-    opmob_df: pd.DataFrame,
-    sel_spid: str,
-    zid,
-):
-    """
-    Daily breakdown for the selected salesman for the current month:
-    one row per date × area with Sales, Pending opmob, Uniq Cust, Uniq Prods.
-    """
+def _render_daily_breakdown_page() -> None:
+    """One row per date x area for the selected salesman's current-month
+    sales: Sales 100001, Sales 100000, Total Sales, Unique Cust (combined),
+    Unique Prod (combined)."""
+    st.subheader("📅 Daily Breakdown — Current Month")
+    st.caption("Per salesman, current month — 100001 and 100000 combined (shared field sales team).")
+
+    from core.analytics import Analytics
+
     today        = pd.Timestamp.today().normalize()
     cur_year     = today.year
     cur_month    = today.month
     mo_start_cur = pd.Timestamp(cur_year, cur_month, 1)
 
-    if "date" not in sp_sales.columns or sp_sales.empty:
-        st.info("No sales data available for the daily breakdown.")
+    frames = []
+    for z in ("100001", "100000"):
+        raw = Analytics("sales", zid=z, filters={"year": [cur_year], "month": [cur_month]}).data
+        if raw is not None and not raw.empty:
+            raw = raw.copy()
+            raw["zid"] = z
+            frames.append(raw)
+
+    if not frames:
+        st.info("No sales data available for 100001/100000 this month yet.")
+        return
+
+    (combined,) = common.data_copy_add_columns(pd.concat(frames, ignore_index=True))
+
+    sp_opts = _sp_opts(combined)
+    sel_sp_raw = st.selectbox(
+        "Salesman *(required)",
+        [None] + sp_opts,
+        format_func=lambda x: "— select a salesman —" if x is None else x,
+        key="tm_daily_sp",
+    )
+    if not sel_sp_raw:
+        st.info("👆 Select a salesman to view the daily breakdown.")
+        return
+    sel_spid = _codes([sel_sp_raw])[0]
+
+    sp_sales = _filter_code(combined, "spid", [sel_spid])
+    if sp_sales.empty or "final_sales" not in sp_sales.columns:
+        st.info(f"No current-month sales data available for {sel_sp_raw}.")
         return
 
     df = sp_sales.copy()
     df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
     df["_d"]  = df["_dt"].dt.date
     mtd = df[(df["_dt"] >= mo_start_cur) & (df["_dt"] <= today)]
+    mtd = mtd.dropna(subset=["area"]) if "area" in mtd.columns else mtd.iloc[0:0]
 
-    if mtd.empty or "area" not in mtd.columns:
-        st.info("No current-month sales data available for this salesman.")
+    if mtd.empty:
+        st.info(f"No current-month sales data available for {sel_sp_raw}.")
         return
 
-    # cusid → area lookup for pending opmob mapping
-    cusid_area_map: dict = {}
-    if "cusid" in df.columns and "area" in df.columns:
-        cusid_area_map = (
-            df[["cusid", "area"]].dropna()
-            .drop_duplicates("cusid")
-            .set_index("cusid")["area"]
-            .to_dict()
-        )
-
-    # pending opmob by area for this salesman
-    pend_area: dict = {}
-    if not opmob_df.empty and "cusid" in opmob_df.columns and "linetotal" in opmob_df.columns:
-        ob = opmob_df.copy()
-        ob["area"] = ob["cusid"].astype(str).map(cusid_area_map)
-        for ar, grp in ob.dropna(subset=["area"]).groupby("area"):
-            pend_area[str(ar)] = float(grp["linetotal"].sum())
-
-    grp = (
-        mtd.dropna(subset=["area"])
-        .groupby(["_d", "area"])
-        .agg(
-            Sales       =("final_sales", "sum"),
-            uniq_cust   =("cusid",       pd.Series.nunique),
-            uniq_prods  =("itemcode",    pd.Series.nunique),
-        )
+    sales_pivot = (
+        mtd.groupby(["_d", "area", "zid"])["final_sales"].sum()
+        .unstack("zid", fill_value=0.0)
         .reset_index()
-        .rename(columns={"_d": "Date", "area": "Area",
-                         "uniq_cust": "Uniq Cust", "uniq_prods": "Uniq Prods"})
-        .sort_values(["Date", "Area"], ascending=[False, True])
+    )
+    # Both ZID columns must exist even if one had zero rows this month for
+    # this salesman — unstack only creates a column for a zid value that
+    # actually appears in the (filtered) data.
+    for z in ("100001", "100000"):
+        if z not in sales_pivot.columns:
+            sales_pivot[z] = 0.0
+    sales_pivot["Total Sales"] = sales_pivot["100001"] + sales_pivot["100000"]
+
+    uniq = (
+        mtd.groupby(["_d", "area"])
+        .agg(uniq_cust=("cusid", pd.Series.nunique), uniq_prods=("itemcode", pd.Series.nunique))
+        .reset_index()
     )
 
-    grp["Pending"] = grp["Area"].apply(lambda a: pend_area.get(str(a), 0.0))
-
-    t = grp[["Date", "Area", "Sales", "Pending", "Uniq Cust", "Uniq Prods"]].reset_index(drop=True)
+    t = (
+        sales_pivot.merge(uniq, on=["_d", "area"], how="outer")
+        .rename(columns={
+            "_d": "Date", "area": "Area",
+            "100001": "Sales 100001", "100000": "Sales 100000",
+            "uniq_cust": "Unique Cust", "uniq_prods": "Unique Prod",
+        })
+        .sort_values(["Date", "Area"], ascending=[False, True])
+        [["Date", "Area", "Sales 100001", "Sales 100000", "Total Sales", "Unique Cust", "Unique Prod"]]
+        .reset_index(drop=True)
+    )
 
     try:
         st.dataframe(
             t.style.format({
-                "Sales":      "{:,.0f}",
-                "Pending":    "{:,.0f}",
-                "Uniq Cust":  "{:,.0f}",
-                "Uniq Prods": "{:,.0f}",
+                "Sales 100001": "{:,.0f}",
+                "Sales 100000": "{:,.0f}",
+                "Total Sales":  "{:,.0f}",
+                "Unique Cust":  "{:,.0f}",
+                "Unique Prod":  "{:,.0f}",
             }, na_rep="—"),
             width="stretch",
             hide_index=True,
@@ -815,9 +846,9 @@ def _render_sp_daily_breakdown(
     st.download_button(
         "⬇ Download Daily Breakdown CSV",
         t.to_csv(index=False).encode("utf-8"),
-        file_name=f"daily_{sel_spid}_{cur_year}_{cur_month:02d}.csv",
+        file_name=f"daily_breakdown_{sel_spid}_{cur_year}_{cur_month:02d}.csv",
         mime="text/csv",
-        key="dl_sp_daily",
+        key="dl_daily_breakdown",
     )
 
 
@@ -1043,7 +1074,7 @@ def display_target_management_page(current_page, zid, data_dict):
     # ── View mode radio ───────────────────────────────────────────────────────
     _view_mode = st.radio(
         "View",
-        ["👤 Individual Salesman", "📊 All Salesmen Overview", "🎯 Salesman Score",
+        ["👤 Individual Salesman", "📅 Daily Breakdown", "📊 All Salesmen Overview", "🎯 Salesman Score",
          "📊 3 Month Averages", "🧾 SR Trn",
          "📦 Current Stock", "🔮 Next Month Target", "🗺️ Field Tracking",
          "📲 App Collections", "↩️ Returns Registry", "💬 Feedback"],
@@ -1093,6 +1124,10 @@ def display_target_management_page(current_page, zid, data_dict):
                             st.rerun()
         else:
             st.info("No public holidays saved yet.")
+
+    if _view_mode == "📅 Daily Breakdown":
+        _render_daily_breakdown_page()
+        return
 
     if _view_mode == "📊 All Salesmen Overview":
         opmob_all = _load_opmob_pending(str(zid))
@@ -1437,11 +1472,6 @@ def display_target_management_page(current_page, zid, data_dict):
                     mime="text/csv",
                     key="dl_no_sales",
                 )
-
-    # ── Daily Breakdown for selected salesman (collapsed by default) ──────────
-    st.markdown("---")
-    with st.expander("📅 Daily Breakdown — Current Month", expanded=False):
-        _render_sp_daily_breakdown(f_sp, opmob_df, sel_spid, zid)
 
     # ── Buying Pattern Analysis — commented out for now ───────────────────────
     # try:
