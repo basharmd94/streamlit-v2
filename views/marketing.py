@@ -187,6 +187,14 @@ def _wf_item_row_for_mapping(row) -> dict:
     }
 
 
+def _wf_format_product_list(rows) -> str:
+    """'Item A (1234), Item B (5678), ...' — the resolved value for a
+    'product_list' item attribute (processing/wf_template_mapping.py::
+    MULTI_ITEM_KEYS), in the order the products were picked. `rows` are
+    _wf_item_price_catalog rows (namedtuples from .itertuples())."""
+    return ", ".join(f"{r.itemname} ({r.itemcode})" for r in rows)
+
+
 def _resolve_packcode(df: pd.DataFrame) -> pd.DataFrame:
     """Add resolved_code column: packcode wins unless blank / NO / KH-prefix."""
     if df.empty:
@@ -2675,6 +2683,47 @@ def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame)
         if not header_image_url:
             st.warning("This template's header is an image — attach one or paste a URL above before sending.")
 
+    # ── Item-attribute variables — mapped to this campaign's promoted
+    #    product(s) (code/name/std price/wholesale price, or a joined
+    #    Product List — processing/wf_template_mapping.py::ITEM_ATTRIBUTES/
+    #    MULTI_ITEM_KEYS), picked once per campaign, same for every
+    #    recipient. Shown right under the header image — choosing what's
+    #    being promoted is the natural next step after the visual, and
+    #    it's a different choice from the audience-filter Product filter
+    #    above (that narrows WHO gets the message; this picks WHAT the
+    #    message is about). Split into a single-item picker (one product,
+    #    its own code/name/prices) and a multi-item picker (a Product List
+    #    variable, several products joined as "Name (Code), Name (Code),
+    #    ...") since a template's item variables are one or the other, not
+    #    meaningfully both at once. ─────────────────────────────────────
+    item_values = {}
+    item_vars = [(pos, name) for pos, name in var_map if mapping.get(name, {}).get("source_type") == "item_attribute"]
+    single_item_vars = [(pos, name) for pos, name in item_vars if mapping[name]["source_key"] not in wtm.MULTI_ITEM_KEYS]
+    multi_item_vars = [(pos, name) for pos, name in item_vars if mapping[name]["source_key"] in wtm.MULTI_ITEM_KEYS]
+    item_pick_incomplete = False
+    if item_vars:
+        st.markdown("**📦 Product(s) for this campaign**")
+        item_df = _wf_item_price_catalog(zid)
+        if item_df.empty:
+            st.warning("No items available — this campaign can't be sent until a product is pickable.")
+            item_pick_incomplete = True
+        else:
+            item_opts = {f"{row.itemname} ({row.itemcode})": row for row in item_df.itertuples()}
+            item_row = {}
+            if single_item_vars:
+                item_label = st.selectbox("Product", list(item_opts.keys()), key=f"wfb_item_{template_id}")
+                item_row.update(_wf_item_row_for_mapping(item_opts[item_label]))
+            if multi_item_vars:
+                multi_labels = st.multiselect(
+                    "Products (Product List variable)", list(item_opts.keys()), key=f"wfb_item_multi_{template_id}",
+                )
+                if multi_labels:
+                    item_row["product_list"] = _wf_format_product_list([item_opts[l] for l in multi_labels])
+                else:
+                    st.warning("Pick at least one product for the Product List variable before sending.")
+                    item_pick_incomplete = True
+            item_values = wtm.build_item_values(var_map, mapping, item_row)
+
     # ── Flat-value variables — mapped as "same value for every recipient",
     #    entered once per campaign (e.g. a promo code, a cart total that
     #    isn't per-customer data). ────────────────────────────────────────
@@ -2684,23 +2733,6 @@ def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame)
         st.markdown("**✏️ Fill in variable(s) that apply to every recipient**")
         for pos, name in flat_vars:
             flat_values[name] = st.text_input(name, key=f"wfb_flatvar_{template_id}_{pos}")
-
-    # ── Item-attribute variables — mapped to a single product's own
-    #    catalog data (code/name/std price/wholesale price), picked once
-    #    per campaign, same for every recipient — same shape as flat
-    #    values above (processing/wf_template_mapping.py::ITEM_ATTRIBUTES). ──
-    item_values = {}
-    item_vars = [(pos, name) for pos, name in var_map if mapping.get(name, {}).get("source_type") == "item_attribute"]
-    if item_vars:
-        st.markdown("**📦 Pick the item this campaign is about**")
-        item_df = _wf_item_price_catalog(zid)
-        if item_df.empty:
-            st.warning("No items available — this campaign can't be sent until an item is pickable.")
-        else:
-            item_opts = {f"{row.itemname} ({row.itemcode})": row for row in item_df.itertuples()}
-            item_label = st.selectbox("Item", list(item_opts.keys()), key=f"wfb_item_{template_id}")
-            sel = item_opts[item_label]
-            item_values = wtm.build_item_values(var_map, mapping, _wf_item_row_for_mapping(sel))
 
     # ── Preview against a real sample recipient, if one's available ────
     if not recipients_df.empty:
@@ -2724,8 +2756,8 @@ def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame)
         st.info("Build an audience above (with a phone number on file) before you can send.")
         return
 
-    if item_vars and not item_values:
-        st.info("Pick an item above before you can send.")
+    if item_pick_incomplete:
+        st.info("Pick the product(s) above before you can send.")
         return
 
     # ── Resolve every recipient's own variables, then hand off to the
@@ -3445,20 +3477,29 @@ def _show_wf_template_mapping(zid: str) -> None:
             flat_values[name] = st.text_input(f"Preview value for `{name}`", key=f"wtm_flat_preview_{name}")
 
     item_vars = [name for name, m in new_mappings.items() if m["source_type"] == "item_attribute"]
+    single_item_vars = [name for name in item_vars if new_mappings[name]["source_key"] not in wtm.MULTI_ITEM_KEYS]
+    multi_item_vars = [name for name in item_vars if new_mappings[name]["source_key"] in wtm.MULTI_ITEM_KEYS]
     item_values = {}
     if item_vars:
         st.caption(
-            "Item below is for this preview only — one item is picked fresh for the whole "
-            "campaign at actual send time (same value for every recipient, like a flat value)."
+            "Item(s) below are for this preview only — picked fresh for the whole campaign at "
+            "actual send time (same value for every recipient, like a flat value)."
         )
         item_df = _wf_item_price_catalog(str(zid))
         if item_df.empty:
             st.info("No items available to preview with.")
         else:
             item_opts = {f"{row.itemname} ({row.itemcode})": row for row in item_df.itertuples()}
-            item_label = st.selectbox("Preview with item", list(item_opts.keys()), key="wtm_preview_item")
-            sel = item_opts[item_label]
-            item_row = _wf_item_row_for_mapping(sel)
+            item_row = {}
+            if single_item_vars:
+                item_label = st.selectbox("Preview with item", list(item_opts.keys()), key="wtm_preview_item")
+                item_row.update(_wf_item_row_for_mapping(item_opts[item_label]))
+            if multi_item_vars:
+                multi_labels = st.multiselect(
+                    "Preview with products (Product List)", list(item_opts.keys()), key="wtm_preview_item_multi",
+                )
+                if multi_labels:
+                    item_row["product_list"] = _wf_format_product_list([item_opts[l] for l in multi_labels])
             for name in item_vars:
                 item_values[name] = item_row.get(new_mappings[name]["source_key"], "")
 

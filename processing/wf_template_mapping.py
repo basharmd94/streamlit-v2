@@ -55,8 +55,19 @@ ITEM_ATTRIBUTES = [
     ("item_name", "Item Name"),
     ("std_price", "Standard Price (List)"),
     ("wh_price", "Wholesale/Discounted Price"),
+    ("product_list", "Product List (multiple items — \"Name (Code)\", joined)"),
 ]
 ITEM_ATTRIBUTE_LABELS = dict(ITEM_ATTRIBUTES)
+
+# Which ITEM_ATTRIBUTES keys need a MULTI-item picker (a multiselect,
+# resolving to one joined "Name (Code), Name (Code), ..." string across
+# every picked item) rather than the single-item picker the other four
+# item attributes share. A template's item variable(s) are either all
+# single-product or (rarely) all multi-product -- not meaningfully mixed --
+# but this is checked per-variable so the picker UI (views/marketing.py::
+# _wf_bulk_default_view / _show_wf_template_mapping) can show exactly the
+# widget each mapped variable actually needs.
+MULTI_ITEM_KEYS = {"product_list"}
 
 # Attributes resolvable straight from cacus_directory alone -- cheap enough
 # for a live preview without needing the heavier sales/collection pipeline
