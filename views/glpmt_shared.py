@@ -3,6 +3,14 @@
 # mobile Ordering app (table: glpmt), staged pending reconciliation into the
 # real GL ledger. Same panel is mounted in both Collection Analysis and
 # Target Management, so this module is the single source of truth for it.
+#
+# Redesigned (2026-09-16) per explicit ask, once it became clear the point
+# was never "list every payment promise a salesman logged" but to verify
+# the whole story: a delivery (DO) happened, the salesman logged the
+# customer's promised payment date on their behalf, and (hopefully) a real
+# collection (RCT) came in afterward. Now one row per customer -- their
+# latest DO, latest RCT, latest glpmt entry, and current AR balance -- see
+# processing/glpmt_reconciliation.py for the actual reconciliation logic.
 
 from __future__ import annotations
 
@@ -10,6 +18,8 @@ import pandas as pd
 import streamlit as st
 
 from core.analytics import Analytics
+from processing import common
+from processing.glpmt_reconciliation import build_glpmt_reconciliation
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -18,14 +28,49 @@ def _load_glpmt(zid: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_sales_full(zid: str) -> pd.DataFrame:
+    """Full sales history (no year/month filter) -- needed to find each
+    customer's single latest DO regardless of when it happened, same
+    "load full history, slice in memory" pattern used elsewhere in this
+    app for similar all-time lookups."""
+    df = Analytics("sales", zid=zid, filters={}).data
+    if df is None or df.empty:
+        return pd.DataFrame()
+    (df,) = common.data_copy_add_columns(df)
+    return df
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_collection_full(zid: str) -> pd.DataFrame:
+    """Full collection-voucher history (mv_collection_vouchers) -- needed
+    to find each customer's single latest RCT regardless of when it
+    happened."""
+    df = Analytics("collection", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_ar_ledger_full(zid: str) -> pd.DataFrame:
+    """Full AR ledger (mv_ar_transactions) -- feeds the same Current
+    Balance calc Collection Analysis -> Salesman Due already uses
+    (processing/salesman_due.py), reused unchanged here rather than
+    recomputed."""
+    df = Analytics("ar_due_ledger", zid=zid, filters={}).data
+    return df if df is not None else pd.DataFrame()
+
+
 def render_glpmt_panel(zid: str, key_suffix: str = "") -> None:
-    """Filters: Salesman (emp code), Customer, Date of Entry (range).
-    Always sorted by date of entry, latest first — per spec, not user-toggleable."""
+    """Filters: Salesman (emp code), Customer, Date of Entry (range) --
+    applied to the RAW glpmt entries first, same as before the redesign.
+    Always sorted by date of entry, latest first — per spec, not
+    user-toggleable."""
     st.subheader("📲 App Collections")
     st.caption(
-        "Payments salesmen have entered directly into the mobile Ordering app — "
-        "staged here pending reconciliation into the ERP ledger. "
-        "Sorted by date of entry, latest first."
+        "Did the whole story complete? A delivery (DO) happened, the salesman logged the "
+        "customer's promised payment date on their behalf, and — hopefully — a real collection "
+        "(RCT) came in after. One row per customer: their latest DO, latest RCT, latest promised "
+        "payment, and current balance, side by side."
     )
 
     df = _load_glpmt(str(zid))
@@ -67,52 +112,89 @@ def render_glpmt_panel(zid: str, key_suffix: str = "") -> None:
                 key=f"glpmt_daterange{key_suffix}",
             )
 
-    disp = df.copy()
+    filtered = df.copy()
     if sel_sp:
-        disp = disp[disp["spid"].isin(sel_sp)]
+        filtered = filtered[filtered["spid"].isin(sel_sp)]
     if sel_cus:
-        disp = disp[disp["cusid"].isin(sel_cus)]
+        filtered = filtered[filtered["cusid"].isin(sel_cus)]
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start, end = date_range
-        disp = disp[
-            (disp["entry_time"].dt.date >= start) & (disp["entry_time"].dt.date <= end)
+        filtered = filtered[
+            (filtered["entry_time"].dt.date >= start) & (filtered["entry_time"].dt.date <= end)
         ]
 
+    if filtered.empty:
+        st.info("No app-entered payments match these filters.")
+        return
+
+    sales_df = _load_sales_full(str(zid))
+    collection_df = _load_collection_full(str(zid))
+    ar_ledger_df = _load_ar_ledger_full(str(zid))
+
+    recon = build_glpmt_reconciliation(filtered, sales_df, collection_df, ar_ledger_df)
+    if recon.empty:
+        st.info(
+            "No customer here still has a real balance — every match either fell below the "
+            "near-zero threshold or has no matching AR ledger row at all."
+        )
+        return
+
     # Sorted by date of entry, latest first — non-negotiable per spec.
-    disp = disp.sort_values("entry_time", ascending=False).reset_index(drop=True)
+    recon = recon.sort_values("entry_time", ascending=False).reset_index(drop=True)
 
-    st.caption(f"**{len(disp):,}** payment entr{'y' if len(disp) == 1 else 'ies'}")
+    st.caption(
+        f"**{len(recon):,}** customer(s) — customers whose AR balance is already near zero are "
+        "left out entirely (nothing left to chase)."
+    )
 
-    show = disp.rename(columns={
-        "pmtnum":     "Payment #",
-        "spid":       "Emp Code",
-        "spname":     "Salesman",
-        "cusid":      "Cust Code",
-        "cusname":    "Customer",
-        "paydate":    "Payment Date",
-        "payamt":     "Amount",
-        "paytype":    "Type",
-        "bankdetail": "Bank Detail",
-        "paystatus":  "Status",
-        "remarks":    "Remarks",
-        "entry_time": "Date of Entry",
+    show = recon.rename(columns={
+        "cusid":       "Cust Code",
+        "cusname":     "Customer",
+        "spid":        "Emp Code",
+        "spname":      "Salesman",
+        "do_date":     "Latest DO",
+        "do_number":   "DO Number",
+        "do_amount":   "DO Amount",
+        "rct_date":    "Latest RCT",
+        "rct_number":  "RCT Number",
+        "rct_amount":  "RCT Amount",
+        "balance":     "Customer Balance",
+        "paydate":     "Latest Payment Date",
+        "entry_time":  "Entered Date",
+        "payamt":      "Amount Entered",
+        "paytype":     "Type",
+        "bankdetail":  "Bank Detail",
+        "paystatus":   "Status",
+        "remarks":     "Remark",
     })
     show_cols = [
-        "Date of Entry", "Payment #", "Emp Code", "Salesman",
-        "Cust Code", "Customer", "Payment Date", "Amount",
-        "Type", "Bank Detail", "Status", "Remarks",
+        "Cust Code", "Customer", "Emp Code", "Salesman",
+        "Latest DO", "DO Number", "DO Amount",
+        "Latest RCT", "RCT Number", "RCT Amount", "RCT After DO",
+        "Customer Balance",
+        "Latest Payment Date", "Payment After DO",
+        "Entered Date", "Amount Entered", "Type", "Bank Detail", "Status", "Remark",
     ]
     show = show[[c for c in show_cols if c in show.columns]]
 
     st.dataframe(
         show,
         column_config={
-            "Date of Entry": st.column_config.DatetimeColumn("Date of Entry", format="YYYY-MM-DD HH:mm"),
-            "Payment Date":  st.column_config.DateColumn("Payment Date", format="YYYY-MM-DD"),
-            "Amount":        st.column_config.NumberColumn("Amount", format="%.2f"),
+            "Latest DO":           st.column_config.DateColumn("Latest DO", format="YYYY-MM-DD"),
+            "DO Amount":           st.column_config.NumberColumn("DO Amount", format="%.2f"),
+            "Latest RCT":          st.column_config.DateColumn("Latest RCT", format="YYYY-MM-DD"),
+            "RCT Amount":          st.column_config.NumberColumn("RCT Amount", format="%.2f"),
+            "Customer Balance":    st.column_config.NumberColumn("Customer Balance", format="%.2f"),
+            "Latest Payment Date": st.column_config.DateColumn("Latest Payment Date", format="YYYY-MM-DD"),
+            "Entered Date":        st.column_config.DatetimeColumn("Entered Date", format="YYYY-MM-DD HH:mm"),
+            "Amount Entered":      st.column_config.NumberColumn("Amount Entered", format="%.2f"),
         },
         width="stretch",
         hide_index=True,
+    )
+    st.caption(
+        "✅ / ⚠️ = the date genuinely came after the DO date / did not (or was at/before it). "
+        "Blank = nothing to compare yet (one side of the check has no date on file)."
     )
 
     st.download_button(
