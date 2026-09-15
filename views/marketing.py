@@ -148,6 +148,45 @@ def _load_inv_overview(zid: str) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
+def _wf_item_price_catalog(zid: str) -> pd.DataFrame:
+    """itemcode/itemname/std_price/wh_price, for Template Mapping's
+    'item_attribute' variables (processing/wf_template_mapping.py::
+    ITEM_ATTRIBUTES) — a template variable that names an item's own code,
+    name, standard price, or wholesale/discounted price, so a promo
+    template can announce one specific product. Reuses the already-cached
+    inventory_overview pull (_load_inv_overview) instead of new SQL —
+    wh_price = GREATEST(std_price - min_disc_amt, 0), the same formula
+    get_opspprc_data/get_inventory_overview/the Rate Mismatch Audit already
+    use elsewhere in this app for "WH Price". Scoped to final_items_view's
+    own item population (i.e. items with a current stock record), same as
+    every other consumer of inventory_overview."""
+    df = _load_inv_overview(str(zid))
+    if df.empty:
+        return pd.DataFrame()
+    out = df[["item_id", "item_name", "std_price", "min_disc_amt"]].copy()
+    out = out.rename(columns={"item_id": "itemcode", "item_name": "itemname"})
+    out["wh_price"] = (out["std_price"] - out["min_disc_amt"]).clip(lower=0)
+    out = out.drop(columns=["min_disc_amt"]).sort_values("itemname").reset_index(drop=True)
+    return out
+
+
+def _wf_item_row_for_mapping(row) -> dict:
+    """Build the {'item_code','item_name','std_price','wh_price'} dict
+    ITEM_ATTRIBUTES resolves against, from one _wf_item_price_catalog row
+    (a namedtuple from .itertuples()). Prices are formatted as plain
+    2-decimal strings ('156.00') rather than a raw float's '156.0', matching
+    every other price figure this app's templates/messages show."""
+    def _fmt_price(v):
+        try:
+            return f"{float(v):,.2f}"
+        except (TypeError, ValueError):
+            return ""
+    return {
+        "item_code": row.itemcode, "item_name": row.itemname,
+        "std_price": _fmt_price(row.std_price), "wh_price": _fmt_price(row.wh_price),
+    }
+
+
 def _resolve_packcode(df: pd.DataFrame) -> pd.DataFrame:
     """Add resolved_code column: packcode wins unless blank / NO / KH-prefix."""
     if df.empty:
@@ -2646,6 +2685,23 @@ def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame)
         for pos, name in flat_vars:
             flat_values[name] = st.text_input(name, key=f"wfb_flatvar_{template_id}_{pos}")
 
+    # ── Item-attribute variables — mapped to a single product's own
+    #    catalog data (code/name/std price/wholesale price), picked once
+    #    per campaign, same for every recipient — same shape as flat
+    #    values above (processing/wf_template_mapping.py::ITEM_ATTRIBUTES). ──
+    item_values = {}
+    item_vars = [(pos, name) for pos, name in var_map if mapping.get(name, {}).get("source_type") == "item_attribute"]
+    if item_vars:
+        st.markdown("**📦 Pick the item this campaign is about**")
+        item_df = _wf_item_price_catalog(zid)
+        if item_df.empty:
+            st.warning("No items available — this campaign can't be sent until an item is pickable.")
+        else:
+            item_opts = {f"{row.itemname} ({row.itemcode})": row for row in item_df.itertuples()}
+            item_label = st.selectbox("Item", list(item_opts.keys()), key=f"wfb_item_{template_id}")
+            sel = item_opts[item_label]
+            item_values = wtm.build_item_values(var_map, mapping, _wf_item_row_for_mapping(sel))
+
     # ── Preview against a real sample recipient, if one's available ────
     if not recipients_df.empty:
         sample_row = {
@@ -2656,7 +2712,7 @@ def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame)
             "current_balance": recipients_df.iloc[0].get("Current Balance"),
             "current_score": recipients_df.iloc[0].get("Current Score"),
         }
-        sample_vars = wtm.resolve_recipient_variables(var_map, mapping, sample_row, flat_values)
+        sample_vars = wtm.resolve_recipient_variables(var_map, mapping, sample_row, flat_values, item_values)
         values = [sample_vars.get(name, "") for _, name in var_map]
         preview_body = _wf_substitute_positional_preview(body_html, values) if is_native else body_html
     else:
@@ -2666,6 +2722,10 @@ def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame)
 
     if recipients_df.empty:
         st.info("Build an audience above (with a phone number on file) before you can send.")
+        return
+
+    if item_vars and not item_values:
+        st.info("Pick an item above before you can send.")
         return
 
     # ── Resolve every recipient's own variables, then hand off to the
@@ -2688,7 +2748,7 @@ def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame)
         recipients.append({
             "cusid": str(rec.get("cusid")), "cusname": rec.get("cusname"),
             "phone_number": primary,
-            "variables": wtm.resolve_recipient_variables(var_map, mapping, customer_row, flat_values),
+            "variables": wtm.resolve_recipient_variables(var_map, mapping, customer_row, flat_values, item_values),
         })
     if skipped_no_phone:
         st.caption(f"⚠️ {skipped_no_phone} recipient(s) skipped — no resolvable WhatsApp number.")
@@ -2699,6 +2759,8 @@ def _wf_bulk_default_view(zid: str, template: dict, recipients_df: pd.DataFrame)
             return "unmapped"
         if m["source_type"] == "flat_value":
             return "flat_value (entered per campaign)"
+        if m["source_type"] == "item_attribute":
+            return f"item attribute: {m['source_key']}"
         return f"customer attribute: {m['source_key']}"
 
     _render_campaign_confirm_and_send(
@@ -3311,10 +3373,18 @@ def _show_wf_template_mapping(zid: str) -> None:
         return
 
     st.markdown(f"**✏️ Map {len(var_map)} variable(s)**")
-    attr_options = ["— not mapped yet —", "Flat value (enter per campaign)"] + [
-        label for _, label in wtm.CUSTOMER_ATTRIBUTES
-    ]
-    attr_keys = [None, "__flat__"] + [key for key, _ in wtm.CUSTOMER_ATTRIBUTES]
+    n_cust = len(wtm.CUSTOMER_ATTRIBUTES)
+    item_start = 2 + n_cust  # index where the Item-attribute options begin, below
+    attr_options = (
+        ["— not mapped yet —", "Flat value (enter per campaign)"]
+        + [label for _, label in wtm.CUSTOMER_ATTRIBUTES]
+        + [f"Item: {label}" for _, label in wtm.ITEM_ATTRIBUTES]
+    )
+    attr_keys = (
+        [None, "__flat__"]
+        + [key for key, _ in wtm.CUSTOMER_ATTRIBUTES]
+        + [key for key, _ in wtm.ITEM_ATTRIBUTES]
+    )
 
     new_mappings = {}
     for pos, name in var_map:
@@ -3336,8 +3406,10 @@ def _show_wf_template_mapping(zid: str) -> None:
             continue
         elif choice_i == 1:
             new_mappings[name] = {"source_type": "flat_value", "source_key": None}
-        else:
+        elif choice_i < item_start:
             new_mappings[name] = {"source_type": "customer_attribute", "source_key": attr_keys[choice_i]}
+        else:
+            new_mappings[name] = {"source_type": "item_attribute", "source_key": attr_keys[choice_i]}
 
     if st.button("💾 Save Mapping", key="wtm_save_btn", type="primary"):
         if len(new_mappings) < len(var_map):
@@ -3372,6 +3444,24 @@ def _show_wf_template_mapping(zid: str) -> None:
         for name in flat_vars:
             flat_values[name] = st.text_input(f"Preview value for `{name}`", key=f"wtm_flat_preview_{name}")
 
+    item_vars = [name for name, m in new_mappings.items() if m["source_type"] == "item_attribute"]
+    item_values = {}
+    if item_vars:
+        st.caption(
+            "Item below is for this preview only — one item is picked fresh for the whole "
+            "campaign at actual send time (same value for every recipient, like a flat value)."
+        )
+        item_df = _wf_item_price_catalog(str(zid))
+        if item_df.empty:
+            st.info("No items available to preview with.")
+        else:
+            item_opts = {f"{row.itemname} ({row.itemcode})": row for row in item_df.itertuples()}
+            item_label = st.selectbox("Preview with item", list(item_opts.keys()), key="wtm_preview_item")
+            sel = item_opts[item_label]
+            item_row = _wf_item_row_for_mapping(sel)
+            for name in item_vars:
+                item_values[name] = item_row.get(new_mappings[name]["source_key"], "")
+
     preview_values = []
     for pos, name in var_map:
         m = new_mappings.get(name) or existing.get(name)
@@ -3379,6 +3469,8 @@ def _show_wf_template_mapping(zid: str) -> None:
             preview_values.append("")
         elif m["source_type"] == "flat_value":
             preview_values.append(flat_values.get(name, ""))
+        elif m["source_type"] == "item_attribute":
+            preview_values.append(str(item_values.get(name, "")))
         elif m["source_key"] in wtm.LIGHT_ATTRIBUTES:
             preview_values.append(str(customer_row.get(m["source_key"], "")))
         else:

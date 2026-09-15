@@ -40,6 +40,24 @@ CUSTOMER_ATTRIBUTES = [
 ]
 CUSTOMER_ATTRIBUTE_LABELS = dict(CUSTOMER_ATTRIBUTES)
 
+# {key: label} -- item/product catalog fields a template variable can be
+# mapped to (e.g. a template that announces one product's price). Unlike
+# CUSTOMER_ATTRIBUTES, these are NOT per-recipient -- one item is picked
+# once per campaign (in the Template Mapping preview, and again in the
+# actual Bulk Messaging send flow) and the same values go out to every
+# recipient, the same "asked once per campaign" shape as flat_value.
+# Sourced from views/marketing.py::_wf_item_price_catalog, which reuses the
+# existing inventory_overview pull (caitem std price + opspprc's lowest-tier
+# wholesale discount, the same GREATEST(std_price - disc, 0) formula used
+# throughout this app for "WH Price") -- no new SQL needed.
+ITEM_ATTRIBUTES = [
+    ("item_code", "Item Code"),
+    ("item_name", "Item Name"),
+    ("std_price", "Standard Price (List)"),
+    ("wh_price", "Wholesale/Discounted Price"),
+]
+ITEM_ATTRIBUTE_LABELS = dict(ITEM_ATTRIBUTES)
+
 # Attributes resolvable straight from cacus_directory alone -- cheap enough
 # for a live preview without needing the heavier sales/collection pipeline
 # behind Net Sales/Current Balance/Current Score (see
@@ -88,7 +106,10 @@ def save_template_mapping(template_id: str, template_name: str, mappings: dict, 
         conn.commit()
 
 
-def resolve_recipient_variables(var_map_entries: list, mapping: dict, customer_row: dict, flat_values: dict = None) -> dict:
+def resolve_recipient_variables(
+    var_map_entries: list, mapping: dict, customer_row: dict,
+    flat_values: dict = None, item_values: dict = None,
+) -> dict:
     """Builds the actual {variable_name: value} to send for ONE recipient,
     given a saved mapping. `customer_row` is a dict of that customer's
     known attributes (whatever CUSTOMER_ATTRIBUTES keys are available --
@@ -96,13 +117,16 @@ def resolve_recipient_variables(var_map_entries: list, mapping: dict, customer_r
     {variable_name: value} for whichever variables are mapped as
     'flat_value' (the same value for every recipient in one campaign, set
     once at send time -- see the build plan's Q13/header-image precedent
-    for "same for everyone"). A variable with no saved mapping at all
-    resolves to '' rather than raising, so an incomplete mapping degrades
-    visibly (a blank in the message) instead of crashing a whole
-    campaign. This is what Phase 2's send engine (processing/
+    for "same for everyone"). `item_values` is the same "asked once per
+    campaign" shape for 'item_attribute' variables -- one product picked
+    once (see ITEM_ATTRIBUTES above), not per recipient. A variable with no
+    saved mapping at all resolves to '' rather than raising, so an
+    incomplete mapping degrades visibly (a blank in the message) instead of
+    crashing a whole campaign. This is what Phase 2's send engine (processing/
     wf_bulk_campaign.py) will eventually be fed by, once a real campaign
     is wired up to use a saved mapping instead of a bespoke handler."""
     flat_values = flat_values or {}
+    item_values = item_values or {}
     out = {}
     for _, name in var_map_entries:
         m = mapping.get(name)
@@ -110,6 +134,25 @@ def resolve_recipient_variables(var_map_entries: list, mapping: dict, customer_r
             out[name] = ""
         elif m["source_type"] == "flat_value":
             out[name] = flat_values.get(name, "")
+        elif m["source_type"] == "item_attribute":
+            out[name] = str(item_values.get(name, "") or "")
         else:
             out[name] = str(customer_row.get(m["source_key"], "") or "")
+    return out
+
+
+def build_item_values(var_map_entries: list, mapping: dict, item_row: dict) -> dict:
+    """{variable_name: value} for every variable mapped as 'item_attribute',
+    resolved against ONE picked item (item_row: {'item_code', 'item_name',
+    'std_price', 'wh_price'} -- see views/marketing.py::_wf_item_price_catalog).
+    Called once per campaign (or once per Template Mapping preview render),
+    then handed to resolve_recipient_variables as `item_values` for every
+    recipient -- the item itself doesn't vary by recipient, only the
+    customer-attribute/flat_value variables do."""
+    item_row = item_row or {}
+    out = {}
+    for _, name in var_map_entries:
+        m = mapping.get(name)
+        if m and m.get("source_type") == "item_attribute":
+            out[name] = item_row.get(m["source_key"], "")
     return out
