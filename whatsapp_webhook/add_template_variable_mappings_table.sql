@@ -22,14 +22,20 @@
 -- UPDATE-then-INSERT-if-0-rows from the Python side instead, matching
 -- every other upsert in this app). Safe to run once; errors (not a
 -- silent no-op) if run twice.
+--
+-- Updated in place (2026-09-15) to add 'item_attribute' to the
+-- source_type CHECK for a FRESH setup -- an existing server that already
+-- ran this script needs add_item_attribute_source_type.sql instead (a
+-- non-destructive ALTER, same two-script pattern as the
+-- marketing_leads area/lead_cost columns elsewhere in this repo).
 
 CREATE TABLE template_variable_mappings (
     id              BIGSERIAL PRIMARY KEY,
     template_id     TEXT NOT NULL,      -- WhatsFly's short internal `id` field -- the send-time identity (see the "naming trap" note elsewhere: NOT the longer `template_id` the template-list response also returns). Stable even if template_name were ever reused.
     template_name   TEXT NOT NULL,      -- denormalized, for display only
     variable_name   TEXT NOT NULL,      -- exactly as it appears in the template's own variable_map (e.g. "CUSCODE") -- WhatsFly's own name, chosen when the template was built
-    source_type     TEXT NOT NULL CHECK (source_type IN ('customer_attribute', 'flat_value')),
-    source_key      TEXT,               -- e.g. "cusid" when source_type = 'customer_attribute' -- NULL for 'flat_value' (its actual value is entered fresh per campaign at send time, never stored here)
+    source_type     TEXT NOT NULL CHECK (source_type IN ('customer_attribute', 'flat_value', 'item_attribute')),
+    source_key      TEXT,               -- e.g. "cusid" when source_type = 'customer_attribute', or "item_name"/"product_list" when source_type = 'item_attribute' -- NULL for 'flat_value' (its actual value is entered fresh per campaign at send time, never stored here)
     created_by      TEXT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
