@@ -75,11 +75,15 @@ def get_message_status(wa_message_id: str) -> dict:
     configured as `phone_number_id` in config/whatsfly.ini, so no new
     credential is needed here.
 
-    Shape is NOT yet confirmed against the live account (same exploratory
-    stance as get_templates/upload_media before their real shapes were
-    captured) — callers should treat the result defensively and show it
-    raw until a real response is captured and this docstring/any parsing
-    is updated to match."""
+    Real confirmed shape (2026-09-15, a genuine failed send):
+    {"status": "1", "message": {"message_status": "failed",
+    "delivery_status_updated_at": null}}. Confirmed there is NO
+    failure-reason field anywhere in this response — unlike the webhook's
+    own message_status_change event (which does carry failed_reason),
+    this polling endpoint only ever reports the bare status, never why. A
+    "failed" pulled from here will always have a blank failure reason in
+    Campaign History; that's this endpoint's real limitation, not a
+    parsing gap (see views/marketing.py::_wf_parse_message_status)."""
     creds = get_credentials()
     resp = requests.post(
         f"{BASE_URL}/whatsapp/get/message-status",

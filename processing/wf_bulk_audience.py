@@ -291,6 +291,23 @@ def apply_contactable_only(audience_df: pd.DataFrame) -> tuple:
     return audience_df[keep_mask].copy(), int((~keep_mask).sum())
 
 
+def get_no_whatsapp_customers(audience_df: pd.DataFrame) -> pd.DataFrame:
+    """The exact population apply_contactable_only drops -- rows missing
+    EITHER cusmobile or whatsapp, not just both -- returned directly
+    (not just counted) for Campaign History's "Customers Missing a
+    WhatsApp Number" download, per explicit ask: staff need the actual
+    list so they can go collect a real number for these customers,
+    making them includable in a future campaign's audience. Same mask
+    logic as apply_contactable_only's own keep_mask, kept as a separate
+    function (not a signature change to that one) so existing callers
+    unpacking its (kept_df, dropped_count) return aren't affected."""
+    if audience_df.empty:
+        return audience_df
+    has_mobile = audience_df["cusmobile"].astype(str).str.strip() != ""
+    has_whatsapp = audience_df["whatsapp"].astype(str).str.strip() != ""
+    return audience_df[~(has_mobile & has_whatsapp)].copy()
+
+
 # ---------------------------------------------------------------------------
 # Days Since Last Sale -- all-time last sale date, NOT window-bound (same
 # definition already established elsewhere in this app).

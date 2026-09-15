@@ -1774,20 +1774,30 @@ def _wf_guess(d: dict, keys: tuple) -> str | None:
 
 
 def _wf_parse_message_status(raw: dict) -> tuple:
-    """(status, error_detail) best-effort extracted from
+    """(status, error_detail) extracted from
     GET/POST /whatsapp/get/message-status's response (core/whatsfly.py::
-    get_message_status) — shape NOT yet confirmed against the live
-    account, so this tries several plausible key names rather than
-    assuming one, same defensive stance as _wf_guess above. Deliberately
-    does NOT read a bare top-level "status" key as the message's
-    delivery status — that key is this API's own generic request
-    success/failure envelope elsewhere ("1"/"0"/true/false, see
+    get_message_status). Real confirmed shape (2026-09-15):
+    {"status": "1", "message": {"message_status": "failed",
+    "delivery_status_updated_at": null}} — "message_status" (the first
+    key tried below) is correct on the first guess against a real
+    response. Several other plausible key names are still tried as a
+    fallback in case a different message_type/status value uses a
+    different field, same defensive stance as _wf_guess above.
+    Deliberately does NOT read a bare top-level "status" key as the
+    message's delivery status — that key is this API's own generic
+    request success/failure envelope elsewhere ("1"/"0"/true/false, see
     _wf_normalize_templates), not a per-message state; blindly reading it
     here would show a nonsense status like "1" instead of "read"/"failed".
     Checks common wrapper keys ("message"/"data", matching
     _wf_normalize_templates' own confirmed wrapper) for the real payload
-    first. Whatever this misses is never lost — the caller always stores
-    the full raw response alongside these two fields (see
+    first. **error_detail is confirmed to always come back None from this
+    endpoint** — the real response above has no failure-reason field at
+    all (unlike the webhook's own message_status_change event, which does
+    carry failed_reason); this is that endpoint's genuine limitation, not
+    a parsing gap, so a manually-reconciled "failed" recipient will show
+    no reason in Campaign History and that's expected. Whatever this
+    still misses is never lost either way — the caller always stores the
+    full raw response alongside these two fields (see
     processing/wf_bulk_campaign.py::update_recipient_whatsfly_reconciliation)
     so this can be re-parsed later without another live call."""
     if not isinstance(raw, dict):
@@ -3793,21 +3803,41 @@ def _show_wf_campaign_history(zid: str) -> None:
         except Exception as e:
             status_map = {}
             enrichment_error = enrichment_error or str(e)
-        delivered = sum(1 for s in status_map.values() if s in ("delivered", "read"))
-        read = sum(1 for s in status_map.values() if s == "read")
-        delivery_failed = sum(1 for s in status_map.values() if s == "failed")
+        # Combine webhook-sourced status with any manually-reconciled
+        # status (campaign_recipients.whatsfly_status — "🔄 Reconcile
+        # Unconfirmed with WhatsFly" in the detail view below) for
+        # whichever wamids the webhook never reported on at all — same
+        # priority as the per-campaign detail view's own delivery_status
+        # fallback chain, so the two never disagree. Previously this
+        # summary/Past Campaigns table only ever looked at status_map, so
+        # a manually-reconciled campaign's Delivered/Read/Delivery Failed
+        # kept reading 0 here even after reconciliation — a real gap,
+        # found via explicit follow-up ("no matter if the data came from
+        # webhook or by calling whatsfly manually, this table needs to
+        # be updated").
+        combined_status = dict(status_map)
+        still_unresolved = 0
+        for r in recipients.itertuples():
+            if not r.wamid:
+                continue
+            if r.wamid in combined_status:
+                continue
+            if pd.notna(r.whatsfly_status):
+                combined_status[r.wamid] = r.whatsfly_status
+            else:
+                still_unresolved += 1
+        delivered = sum(1 for s in combined_status.values() if s in ("delivered", "read"))
+        read = sum(1 for s in combined_status.values() if s == "read")
+        delivery_failed = sum(1 for s in combined_status.values() if s == "failed")
         cost = float(row.actual_cost) if pd.notna(row.actual_cost) else None
         cost_per_delivered = (cost / delivered) if (cost is not None and delivered > 0) else None
-        # This campaign's own Delivered/Read/Delivery Failed figures are
-        # unconfirmed (not necessarily wrong, just unverifiable) when it
-        # was sent/created AFTER the last webhook activity this server
-        # has seen at all — there's been zero opportunity for ANY status
-        # to arrive back for it yet, of any kind, from any recipient.
-        campaign_started = row.created_at
-        webhook_unconfirmed = last_webhook_at is not None and campaign_started is not None and (
-            (campaign_started if campaign_started.tzinfo else campaign_started.replace(tzinfo=timezone.utc))
-            > (last_webhook_at if last_webhook_at.tzinfo else last_webhook_at.replace(tzinfo=timezone.utc))
-        )
+        # A campaign still has genuinely unconfirmed figures when at
+        # least one of its wamids has neither webhook data NOR a manual
+        # reconciliation yet — data-completeness, not just "sent after
+        # the pipeline went quiet" (the earlier, narrower definition):
+        # reconciling a campaign now correctly clears this flag even if
+        # the webhook itself never reported anything at all.
+        webhook_unconfirmed = still_unresolved > 0
         summaries.append({
             "id": row.id, "created_at": row.created_at, "zid": row.zid,
             "template_name": row.template_name, "status": row.status,
@@ -4033,6 +4063,24 @@ def _show_wf_campaign_history(zid: str) -> None:
             key=f"wch_download_{chosen_id}",
         )
 
+        # A dedicated failed-only export, per explicit ask — "so we can
+        # collect their whatsapp number just in case ... they have a
+        # number that does not have whatsapp in it." delivery_status
+        # already reflects webhook OR manually-reconciled data (the
+        # fallback chain above), so this catches a failure either way it
+        # was discovered, not just a webhook-reported one.
+        failed_recipients = recipients[recipients["delivery_status"] == "failed"]
+        if not failed_recipients.empty:
+            st.download_button(
+                f"📥 Download Failed Recipients ({len(failed_recipients)}) — for number verification",
+                failed_recipients[[
+                    "cusid", "cusname", "phone_number", "wamid",
+                    "delivery_status", "status_source", "failure_reason",
+                ]].to_csv(index=False).encode("utf-8"),
+                file_name=f"campaign_{chosen_id}_failed_recipients.csv", mime="text/csv",
+                key=f"wch_download_failed_{chosen_id}",
+            )
+
         # ── Manual reconciliation — for exactly the "webhook never
         #    arrived" gap the staleness indicator above exists to catch
         #    (real 2026-09-15 incident: WhatsFly's own dashboard showed
@@ -4119,6 +4167,43 @@ def _show_wf_campaign_history(zid: str) -> None:
                         st.warning(str(e))
                     except Exception as e:
                         st.error(f"Request failed: {e}")
+
+    # ── Customers with no WhatsApp-capable number at all — the exact
+    #    population Bulk Messaging's contactable-only gate
+    #    (processing/wf_bulk_audience.py::apply_contactable_only) drops
+    #    from every campaign's audience before it's ever built, since
+    #    there's nothing to send to. Not tied to any one campaign/run —
+    #    campaign_recipients only ever persisted who WAS included, never
+    #    who got excluded, so this is a standing, always-current lookup
+    #    (whoever's missing a number TODAY) rather than a retrospective
+    #    one, letting staff go collect real WhatsApp numbers for them so
+    #    they're includable going forward. Placed at the bottom of
+    #    Campaign History rather than inside Bulk Messaging's audience
+    #    builder, per explicit ask. ───────────────────────────────────
+    st.markdown("---")
+    st.markdown("**📵 Customers Missing a WhatsApp Number**")
+    from processing import wf_bulk_audience as wfb
+
+    cacus_df = _load_cacus(str(zid))
+    if cacus_df.empty:
+        st.info("No customer directory data available for this ZID.")
+    else:
+        no_whatsapp = wfb.get_no_whatsapp_customers(cacus_df)
+        st.caption(
+            f"{len(no_whatsapp)} of {len(cacus_df)} customers in this ZID are missing a mobile "
+            "number, a WhatsApp number, or both — they're silently excluded from every Bulk "
+            "Messaging campaign's audience (the contactable-only gate) since there's nothing to "
+            "send to. Collect a real number for these to include them in a future campaign."
+        )
+        if not no_whatsapp.empty:
+            show_cols = [c for c in ("cusid", "cusname", "cusmobile", "whatsapp", "area") if c in no_whatsapp.columns]
+            st.dataframe(no_whatsapp[show_cols], width="stretch", hide_index=True)
+            st.download_button(
+                f"📥 Download Customers Missing a WhatsApp Number ({len(no_whatsapp)})",
+                no_whatsapp[show_cols].to_csv(index=False).encode("utf-8"),
+                file_name=f"customers_missing_whatsapp_{zid}.csv", mime="text/csv",
+                key="wch_missing_whatsapp_download",
+            )
 
 
 def _show_wf_curated_list(zid: str) -> None:
