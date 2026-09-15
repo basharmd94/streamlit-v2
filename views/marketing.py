@@ -3,6 +3,7 @@ import html as _html
 import json
 import re
 import shutil
+import time
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -1770,6 +1771,39 @@ def _wf_guess(d: dict, keys: tuple) -> str | None:
         if v:
             return str(v)
     return None
+
+
+def _wf_parse_message_status(raw: dict) -> tuple:
+    """(status, error_detail) best-effort extracted from
+    GET/POST /whatsapp/get/message-status's response (core/whatsfly.py::
+    get_message_status) — shape NOT yet confirmed against the live
+    account, so this tries several plausible key names rather than
+    assuming one, same defensive stance as _wf_guess above. Deliberately
+    does NOT read a bare top-level "status" key as the message's
+    delivery status — that key is this API's own generic request
+    success/failure envelope elsewhere ("1"/"0"/true/false, see
+    _wf_normalize_templates), not a per-message state; blindly reading it
+    here would show a nonsense status like "1" instead of "read"/"failed".
+    Checks common wrapper keys ("message"/"data", matching
+    _wf_normalize_templates' own confirmed wrapper) for the real payload
+    first. Whatever this misses is never lost — the caller always stores
+    the full raw response alongside these two fields (see
+    processing/wf_bulk_campaign.py::update_recipient_whatsfly_reconciliation)
+    so this can be re-parsed later without another live call."""
+    if not isinstance(raw, dict):
+        return None, None
+    payload = raw
+    for wrapper in ("message", "data"):
+        w = raw.get(wrapper)
+        if isinstance(w, dict):
+            payload = w
+            break
+        if isinstance(w, list) and w and isinstance(w[0], dict):
+            payload = w[0]
+            break
+    status = _wf_guess(payload, ("message_status", "delivery_status", "read_status", "wa_status"))
+    error_detail = _wf_guess(payload, ("failed_reason", "error_title", "error_message", "error"))
+    return status, error_detail
 
 
 def _wf_normalize_templates(raw) -> list:
@@ -3935,14 +3969,30 @@ def _show_wf_campaign_history(zid: str) -> None:
                 f"below fall back to the send-call result only. Error: {detail_enrichment_error}"
             )
         recipients = recipients.copy()
-        recipients["delivery_status"] = recipients["wamid"].map(status_map).fillna(recipients["status"])
-        # Distinct from delivery_status == 'sent' (which the .fillna above
-        # can ALSO produce when the webhook genuinely reported 'sent' as a
-        # real status — those two cases look identical in delivery_status
-        # alone). webhook_confirmed is the precise signal: did the webhook
-        # DB have ANY row at all for this wamid, of any status. False here
-        # is exactly the "🔄 Check WhatsFly Directly" candidate set below.
+        recipients["delivery_status"] = (
+            recipients["wamid"].map(status_map)
+            .fillna(recipients["whatsfly_status"])
+            .fillna(recipients["status"])
+        )
+        # Distinct from delivery_status == 'sent' (which the .fillna chain
+        # above can ALSO produce when the webhook genuinely reported
+        # 'sent' as a real status — those cases look identical in
+        # delivery_status alone). webhook_confirmed/reconciled are the
+        # precise signals: did the webhook DB have ANY row at all for
+        # this wamid (of any status), and has a manual WhatsFly pull
+        # already been saved for it (see "🔄 Reconcile Unconfirmed"
+        # below). Both False is exactly that section's candidate set.
         recipients["webhook_confirmed"] = recipients["wamid"].isin(status_map.keys())
+        recipients["reconciled"] = recipients["whatsfly_checked_at"].notna()
+
+        def _status_source(r):
+            if r["webhook_confirmed"]:
+                return "Webhook"
+            if r["reconciled"]:
+                return "WhatsFly (manual)"
+            return "Send only"
+
+        recipients["status_source"] = recipients.apply(_status_source, axis=1)
 
         # error_detail already covers a send-call rejection (status=
         # 'failed' — WhatsFly's own response, before anything about
@@ -3951,7 +4001,10 @@ def _show_wf_campaign_history(zid: str) -> None:
         # the webhook) has its real reason in message_status_events
         # instead — previously not shown anywhere, just a bare "failed"
         # with no explanation (real case: Meta error 130472, "phone
-        # number is part of an experiment").
+        # number is part of an experiment"). whatsfly_error_detail is the
+        # same idea for a manually-reconciled recipient — checked only
+        # once the webhook-sourced reason comes up empty, same priority
+        # order as delivery_status's own fallback chain above.
         def _failure_reason(r):
             if r["error_detail"]:
                 return r["error_detail"]
@@ -3961,13 +4014,15 @@ def _show_wf_campaign_history(zid: str) -> None:
                 code = fr.get("error_code")
                 if title:
                     return f"({code}) {title}" if code else title
+                if r["whatsfly_error_detail"]:
+                    return r["whatsfly_error_detail"]
             return ""
 
         recipients["failure_reason"] = recipients.apply(_failure_reason, axis=1)
         st.dataframe(
             recipients[[
                 "cusid", "cusname", "phone_number", "status", "delivery_status",
-                "failure_reason", "wamid", "sent_at",
+                "status_source", "failure_reason", "wamid", "sent_at",
             ]],
             width="stretch", hide_index=True,
         )
@@ -3982,39 +4037,88 @@ def _show_wf_campaign_history(zid: str) -> None:
         #    arrived" gap the staleness indicator above exists to catch
         #    (real 2026-09-15 incident: WhatsFly's own dashboard showed
         #    real delivered/read/failed status for a campaign this app
-        #    had zero webhook data for at all). Pulls ONE recipient's
-        #    status directly from WhatsFly via core/whatsfly.py::
-        #    get_message_status — deliberately manual/one-at-a-time, never
-        #    automatic, since it's a real live call against the paid
-        #    WhatsFly account, and admin-only + raw JSON since the
-        #    response shape isn't confirmed yet (same exploratory stance
-        #    get_templates/upload_media started with). ───────────────────
-        unconfirmed = recipients[recipients["wamid"].notna() & ~recipients["webhook_confirmed"]]
-        if not unconfirmed.empty and st.session_state.get("user_role") == "admin":
+        #    had zero webhook data for at all). Pulls status directly
+        #    from WhatsFly via core/whatsfly.py::get_message_status and
+        #    PERSISTS it (processing/wf_bulk_campaign.py::
+        #    update_recipient_whatsfly_reconciliation) so a recipient
+        #    checked once never needs checking again — `reconciled` above
+        #    is exactly that memory, and only a genuinely SUCCESSFUL API
+        #    response gets persisted/marked done; a request-level failure
+        #    (timeout, rate limit) leaves the recipient a candidate for
+        #    the next run rather than silently giving up on it forever.
+        #    Admin-only + the full raw response always stored alongside
+        #    the parsed guess, since the response shape isn't confirmed
+        #    yet (same exploratory stance get_templates/upload_media
+        #    started with). ───────────────────────────────────────────
+        still_unconfirmed = recipients[
+            recipients["wamid"].notna() & ~recipients["webhook_confirmed"] & ~recipients["reconciled"]
+        ]
+        already_reconciled = int(recipients["reconciled"].sum())
+        if (not still_unconfirmed.empty or already_reconciled) and st.session_state.get("user_role") == "admin":
             st.markdown("---")
-            st.markdown("**🔄 Check WhatsFly Directly**")
+            st.markdown("**🔄 Reconcile Unconfirmed with WhatsFly**")
+            skip_note = f" — {already_reconciled} already reconciled and skipped." if already_reconciled else ""
             st.caption(
-                f"{len(unconfirmed)} recipient(s) in this campaign have no webhook data at all "
-                "(see the 🕐 note above, if shown). Pick one to pull its status straight from "
-                "WhatsFly's own API instead of waiting on the webhook — response shown raw "
-                "since the shape isn't confirmed yet; paste it back so the parsing can be tightened."
+                f"{len(still_unconfirmed)} recipient(s) still have no webhook data and haven't "
+                f"been checked yet{skip_note} Pulls each one's status straight from WhatsFly's "
+                "own API and saves it, so a recipient checked once is never re-checked automatically."
             )
-            recon_opts = {
-                f"{r.cusname} ({r.cusid}) — {r.wamid[:24]}…": r.wamid
-                for r in unconfirmed.itertuples()
-            }
-            recon_label = st.selectbox(
-                "Recipient", list(recon_opts.keys()), key=f"wch_recon_pick_{chosen_id}",
-            )
-            if st.button("🔄 Check WhatsFly Directly", key=f"wch_recon_btn_{chosen_id}"):
-                try:
-                    raw = whatsfly.get_message_status(recon_opts[recon_label])
-                    st.success("Response received — raw JSON below:")
-                    st.json(raw)
-                except whatsfly.WhatsFlyConfigError as e:
-                    st.warning(str(e))
-                except Exception as e:
-                    st.error(f"Request failed: {e}")
+            if not still_unconfirmed.empty:
+                if st.button(
+                    f"🔄 Reconcile All Unconfirmed ({len(still_unconfirmed)})",
+                    key=f"wch_recon_all_{chosen_id}", type="primary",
+                ):
+                    progress = st.progress(0.0)
+                    status_box = st.empty()
+                    total = len(still_unconfirmed)
+                    ok = failed = 0
+                    for i, r in enumerate(still_unconfirmed.itertuples()):
+                        status_box.text(f"Checking {r.cusname or r.cusid} ({i + 1}/{total})…")
+                        try:
+                            raw = whatsfly.get_message_status(r.wamid)
+                        except Exception:
+                            failed += 1
+                        else:
+                            status, error_detail = _wf_parse_message_status(raw)
+                            wfc.update_recipient_whatsfly_reconciliation(
+                                r.id, status=status, error_detail=error_detail, raw=raw,
+                            )
+                            ok += 1
+                        progress.progress((i + 1) / total)
+                        if i < total - 1:
+                            time.sleep(1.0)
+                    status_box.empty()
+                    msg = f"Done — {ok} reconciled"
+                    if failed:
+                        msg += f", {failed} failed to reach WhatsFly (left as-is — re-run to retry those)"
+                    st.success(
+                        msg + ". If a reconciled row's Status still looks blank, WhatsFly's response "
+                        "shape wasn't recognized by the parser — check that row's raw data via the "
+                        "single-recipient check below, or the CSV download."
+                    )
+                    st.rerun()
+
+            with st.expander("Check one recipient individually (or re-check an already-reconciled one)"):
+                recon_pool = recipients[recipients["wamid"].notna()]
+                recon_opts = {
+                    f"{r.cusname} ({r.cusid}) — {'✅ reconciled' if r.reconciled else '🕐 pending'} — {r.wamid[:24]}…": r
+                    for r in recon_pool.itertuples()
+                }
+                recon_label = st.selectbox("Recipient", list(recon_opts.keys()), key=f"wch_recon_pick_{chosen_id}")
+                sel = recon_opts[recon_label]
+                if st.button("🔄 Check WhatsFly Directly", key=f"wch_recon_btn_{chosen_id}"):
+                    try:
+                        raw = whatsfly.get_message_status(sel.wamid)
+                        status, error_detail = _wf_parse_message_status(raw)
+                        wfc.update_recipient_whatsfly_reconciliation(
+                            sel.id, status=status, error_detail=error_detail, raw=raw,
+                        )
+                        st.success(f"Saved — parsed status: {status or '(not recognized — see raw JSON below)'}")
+                        st.json(raw)
+                    except whatsfly.WhatsFlyConfigError as e:
+                        st.warning(str(e))
+                    except Exception as e:
+                        st.error(f"Request failed: {e}")
 
 
 def _show_wf_curated_list(zid: str) -> None:

@@ -296,9 +296,35 @@ def update_recipient_result(recipient_id: int, *, status: str, wamid=None,
         conn.commit()
 
 
+def update_recipient_whatsfly_reconciliation(recipient_id: int, *, status, error_detail, raw) -> None:
+    """Persists a manual WhatsFly status pull (Campaign History's
+    "🔄 Reconcile Unconfirmed", views/marketing.py) for a recipient whose
+    webhook never reported anything at all (see CLAUDE.md's 2026-09-15
+    incident). `status`/`error_detail` are a best-effort parse of
+    WhatsFly's get/message-status response -- shape not yet confirmed
+    against the live account, see core/whatsfly.py::get_message_status --
+    `raw` (the full response dict) is ALWAYS stored regardless, so a
+    wrong parse guess doesn't lose the underlying data; it can be
+    re-parsed from whatsfly_raw later without another live call."""
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE campaign_recipients
+            SET whatsfly_status = %s, whatsfly_checked_at = now(),
+                whatsfly_error_detail = %s, whatsfly_raw = %s
+            WHERE id = %s
+            """,
+            (status, error_detail, psycopg2.extras.Json(raw) if raw is not None else None, recipient_id),
+        )
+        conn.commit()
+
+
 def get_campaign_recipients(campaign_id: int) -> pd.DataFrame:
     """Full recipient list for a campaign -- feeds the end-of-loop summary
-    here, and Phase 4's revisit-a-past-campaign view."""
+    here, and Phase 4's revisit-a-past-campaign view. SELECT * so the
+    whatsfly_status/whatsfly_checked_at/whatsfly_error_detail/whatsfly_raw
+    reconciliation columns (see update_recipient_whatsfly_reconciliation)
+    flow through automatically, no query change needed when they're added."""
     with _get_conn() as conn:
         return pd.read_sql(
             "SELECT * FROM campaign_recipients WHERE campaign_id = %s ORDER BY id",
