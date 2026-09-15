@@ -498,6 +498,40 @@ def build_merged_sc_table(
 
 # ─── Call-coverage matrix ─────────────────────────────────────────────────────
 
+# Coarse aging buckets for days_since_sale, replacing one-column/row-per-exact-
+# day -- a real production table had 2,403 distinct day values for ONE zid
+# alone (13 to 4,525 days since last sale), making the original day-level
+# matrix unreadable. Finer near the top where precision actually helps
+# triage, coarser once an account is genuinely stale.
+_DAY_BUCKETS = [
+    (0, 7, "0-7"),
+    (8, 14, "8-14"),
+    (15, 30, "15-30"),
+    (31, 60, "31-60"),
+    (61, 90, "61-90"),
+    (91, 180, "91-180"),
+    (181, 365, "181-365"),
+    (366, None, "365+"),
+]
+_BUCKET_ORDER = [b[2] for b in _DAY_BUCKETS]
+
+# "Active" cutoff for scoping Salesman/City rows -- roughly 3 months, per
+# explicit ask. All-time data otherwise pulls in ex-employees/long-dead
+# areas with zero current relevance (real case: 321 distinct salesmen and
+# 119 areas in one zid's all-time history).
+_ACTIVE_WITHIN_DAYS = 90
+
+
+def _bucket_label(days: int) -> str:
+    for lo, hi, label in _DAY_BUCKETS:
+        if hi is None:
+            if days >= lo:
+                return label
+        elif lo <= days <= hi:
+            return label
+    return _BUCKET_ORDER[-1]  # unreachable given the ranges above; safe fallback
+
+
 def build_callcoverage_matrix(
     df: pd.DataFrame,
     cl_map: dict,
@@ -510,11 +544,28 @@ def build_callcoverage_matrix(
                    txn_type             (for Type dim).
     cl_map: {cusid_str: {last_called, outcome, notes}}
 
-    Salesman / City → cells show "called/total" unique customers.
-    Outcomes        → cells show count of customers with that outcome.
-    Type            → counts unique customers per (days, txn_type); no cusid dedup
-                      (a customer with Delivery + Collection on the same day counts twice).
-    Rows sorted descending (most overdue first).
+    Columns are ALWAYS the days_since_sale bucket (see _DAY_BUCKETS) --
+    swapped from the original days-as-rows layout per explicit ask, since
+    8 buckets reads far better as columns than as rows, while Salesman/
+    City/Outcomes/Type can still run long as rows (which scroll
+    naturally, unlike columns).
+
+    Salesman / City → rows are that dimension's values, SCOPED to whoever
+        has been active in the last ~3 months (see _ACTIVE_WITHIN_DAYS) --
+        checked against the full (pre-dedup) `df`, so a salesman/area with
+        ANY recent transaction anywhere in their book counts as active,
+        even for a customer whose own shown row is an old one. Cells show
+        "called/total" unique customers. This scoping is also how a
+        caller's own salesman-filtered `df` (see views/customer_support.py)
+        automatically narrows the City rows down to just the areas THAT
+        salesman covers -- no separate area-detection logic needed, it
+        falls out of scoping against the same already-filtered input.
+    Outcomes → rows are outcome labels; cells show count of customers
+        with that outcome. Inherits whatever salesman/customer scoping
+        the caller already applied to `df`, same as every other dim.
+    Type → rows are txn_type; cells count unique customers per
+        (txn_type, bucket); no cusid dedup (a customer with Delivery +
+        Collection on the same day counts twice, same as before).
     """
     if df.empty:
         return pd.DataFrame()
@@ -526,31 +577,32 @@ def build_callcoverage_matrix(
     if df.empty:
         return pd.DataFrame()
     df["days_since_sale"] = df["days_since_sale"].astype(int)
+    df["_bucket"] = pd.Categorical(
+        df["days_since_sale"].apply(_bucket_label), categories=_BUCKET_ORDER, ordered=True,
+    )
 
     if dimension == "Type":
         if "txn_type" not in df.columns:
             return pd.DataFrame()
         df["_last_called"] = df["cusid"].map(lambda c: (cl_map.get(c) or {}).get("last_called"))
         df["_called"] = df["_last_called"].notna()
-        total = (
-            df.groupby(["days_since_sale", "txn_type"])["cusid"]
-            .nunique().rename("total")
-        )
+        total = df.groupby(["txn_type", "_bucket"], observed=True)["cusid"].nunique().rename("total")
         called = (
             df[df["_called"]]
-            .groupby(["days_since_sale", "txn_type"])["cusid"]
+            .groupby(["txn_type", "_bucket"], observed=True)["cusid"]
             .nunique().rename("called")
         )
         grouped = pd.concat([total, called], axis=1).fillna(0).reset_index()
         grouped["called"] = grouped["called"].astype(int)
         grouped["value"] = grouped["called"].astype(str) + "/" + grouped["total"].astype(str)
         pivot = (
-            grouped.pivot(index="days_since_sale", columns="txn_type", values="value")
+            grouped.pivot(index="txn_type", columns="_bucket", values="value")
             .fillna("0/0")
+            .reindex(columns=_BUCKET_ORDER, fill_value="0/0")
         )
-        pivot.index.name = "Days"
+        pivot.index.name = None
         pivot.columns.name = None
-        return pivot.sort_index(ascending=False)
+        return pivot
 
     # For all other dimensions: deduplicate on cusid (keep most-overdue row per customer)
     base = (
@@ -567,8 +619,16 @@ def build_callcoverage_matrix(
         if dim_col not in base.columns:
             return pd.DataFrame()
         base[dim_col] = base[dim_col].fillna("Unknown")
+
+        active_vals = set(
+            df.loc[df["days_since_sale"] <= _ACTIVE_WITHIN_DAYS, dim_col].dropna().unique()
+        )
+        base = base[base[dim_col].isin(active_vals)]
+        if base.empty:
+            return pd.DataFrame()
+
         grouped = (
-            base.groupby(["days_since_sale", dim_col])
+            base.groupby([dim_col, "_bucket"], observed=True)
             .agg(total=("cusid", "count"), called=("_called", "sum"))
             .reset_index()
         )
@@ -578,24 +638,26 @@ def build_callcoverage_matrix(
             + grouped["total"].astype(str)
         )
         pivot = (
-            grouped.pivot(index="days_since_sale", columns=dim_col, values="value")
+            grouped.pivot(index=dim_col, columns="_bucket", values="value")
             .fillna("0/0")
+            .reindex(columns=_BUCKET_ORDER, fill_value="0/0")
         )
-        pivot.index.name = "Days"
+        pivot.index.name = None
         pivot.columns.name = None
-        return pivot.sort_index(ascending=False)
+        return pivot.sort_index()
 
     # Outcomes
     base["_outcome_label"] = base["_outcome"].fillna("Not Called")
     grouped = (
-        base.groupby(["days_since_sale", "_outcome_label"])
+        base.groupby(["_outcome_label", "_bucket"], observed=True)
         .size()
         .reset_index(name="count")
     )
     pivot = (
-        grouped.pivot(index="days_since_sale", columns="_outcome_label", values="count")
+        grouped.pivot(index="_outcome_label", columns="_bucket", values="count")
+        .reindex(columns=_BUCKET_ORDER, fill_value=0)
         .fillna(0).astype(int)
     )
-    pivot.index.name = "Days"
+    pivot.index.name = None
     pivot.columns.name = None
-    return pivot.sort_index(ascending=False)
+    return pivot

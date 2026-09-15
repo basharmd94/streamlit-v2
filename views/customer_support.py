@@ -84,7 +84,18 @@ def _render_coverage_matrix(
     key_suffix: str,
     has_type: bool = False,
 ) -> None:
-    """Collapsed expander — at-a-glance call-coverage pivot for owner oversight."""
+    """Collapsed expander — at-a-glance call-coverage pivot for owner oversight.
+
+    Columns are always the days-since-sale bucket (0-7/8-14/.../365+ —
+    see processing/customer_support.py::_DAY_BUCKETS); rows are whichever
+    dimension is chosen below. Salesman/City rows are additionally scoped
+    to whoever's had a sale in roughly the last 3 months — all-time data
+    otherwise drags in long-gone salesmen/areas with zero current
+    relevance. When the caller has already narrowed `df` to one salesman
+    (the "Salesman" filter above this panel), City rows come out scoped
+    to just that salesman's own areas too, for free — no separate
+    area-detection step needed, it falls out of the same scoping logic
+    running against the already-filtered input."""
     with st.expander("📊 Call Coverage Matrix", expanded=False):
         options = ["Salesman", "City", "Outcomes"]
         if has_type:
@@ -97,11 +108,14 @@ def _render_coverage_matrix(
             st.info("No data to build coverage matrix.")
             return
         if dim in ("Salesman", "City"):
-            caption = "Cells: called / total unique customers · rows = days since last sale, highest first"
+            caption = (
+                "Cells: called / total unique customers · columns = days since last sale "
+                "(bucketed) · rows = active in the last ~3 months only"
+            )
         elif dim == "Type":
-            caption = "Cells: called / total unique customers with that transaction type · rows = days since transaction"
+            caption = "Cells: called / total unique customers with that transaction type · columns = days since transaction (bucketed)"
         else:
-            caption = "Cells: count of customers with that outcome · 'Not Called' = no log entry · rows = days since last sale"
+            caption = "Cells: count of customers with that outcome · 'Not Called' = no log entry · columns = days since last sale (bucketed)"
         st.caption(caption)
         st.dataframe(matrix, width="stretch")
 
