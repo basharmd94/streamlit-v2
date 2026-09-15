@@ -57,6 +57,43 @@ def get_templates() -> dict:
     return resp.json()
 
 
+def get_message_status(wa_message_id: str) -> dict:
+    """GET/POST /whatsapp/get/message-status — raw JSON response for one
+    message's current delivery/read status, pulled directly from WhatsFly
+    rather than waiting on their webhook. The guide's own note: "for
+    real-time tracking at scale, prefer the webhook over polling this" —
+    built for exactly the fallback case that note implies: Campaign
+    History's staleness indicator can flag a recipient whose webhook
+    never arrived (a real 2026-09-15 incident — WhatsFly silently stopped
+    calling the webhook for a whole campaign, though the messages
+    themselves sent fine and had real status visible on WhatsFly's own
+    dashboard), and this is the one-off pull to check WhatsFly's own
+    record for it directly instead.
+
+    `whatsapp_bot_id` is WhatsFly's own per-number id — confirmed (see
+    whatsapp_webhook/whatsfly_handlers.py) it's the SAME value already
+    configured as `phone_number_id` in config/whatsfly.ini, so no new
+    credential is needed here.
+
+    Shape is NOT yet confirmed against the live account (same exploratory
+    stance as get_templates/upload_media before their real shapes were
+    captured) — callers should treat the result defensively and show it
+    raw until a real response is captured and this docstring/any parsing
+    is updated to match."""
+    creds = get_credentials()
+    resp = requests.post(
+        f"{BASE_URL}/whatsapp/get/message-status",
+        data={
+            "apiToken": creds["api_token"],
+            "wa_message_id": wa_message_id,
+            "whatsapp_bot_id": creds["phone_number_id"],
+        },
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def send_text(phone_number: str, message: str) -> requests.Response:
     """POST /whatsapp/send — session message only (24h window since the
     recipient last messaged the business number). Returns the raw Response

@@ -3936,6 +3936,13 @@ def _show_wf_campaign_history(zid: str) -> None:
             )
         recipients = recipients.copy()
         recipients["delivery_status"] = recipients["wamid"].map(status_map).fillna(recipients["status"])
+        # Distinct from delivery_status == 'sent' (which the .fillna above
+        # can ALSO produce when the webhook genuinely reported 'sent' as a
+        # real status — those two cases look identical in delivery_status
+        # alone). webhook_confirmed is the precise signal: did the webhook
+        # DB have ANY row at all for this wamid, of any status. False here
+        # is exactly the "🔄 Check WhatsFly Directly" candidate set below.
+        recipients["webhook_confirmed"] = recipients["wamid"].isin(status_map.keys())
 
         # error_detail already covers a send-call rejection (status=
         # 'failed' — WhatsFly's own response, before anything about
@@ -3970,6 +3977,44 @@ def _show_wf_campaign_history(zid: str) -> None:
             file_name=f"campaign_{chosen_id}_recipients.csv", mime="text/csv",
             key=f"wch_download_{chosen_id}",
         )
+
+        # ── Manual reconciliation — for exactly the "webhook never
+        #    arrived" gap the staleness indicator above exists to catch
+        #    (real 2026-09-15 incident: WhatsFly's own dashboard showed
+        #    real delivered/read/failed status for a campaign this app
+        #    had zero webhook data for at all). Pulls ONE recipient's
+        #    status directly from WhatsFly via core/whatsfly.py::
+        #    get_message_status — deliberately manual/one-at-a-time, never
+        #    automatic, since it's a real live call against the paid
+        #    WhatsFly account, and admin-only + raw JSON since the
+        #    response shape isn't confirmed yet (same exploratory stance
+        #    get_templates/upload_media started with). ───────────────────
+        unconfirmed = recipients[recipients["wamid"].notna() & ~recipients["webhook_confirmed"]]
+        if not unconfirmed.empty and st.session_state.get("user_role") == "admin":
+            st.markdown("---")
+            st.markdown("**🔄 Check WhatsFly Directly**")
+            st.caption(
+                f"{len(unconfirmed)} recipient(s) in this campaign have no webhook data at all "
+                "(see the 🕐 note above, if shown). Pick one to pull its status straight from "
+                "WhatsFly's own API instead of waiting on the webhook — response shown raw "
+                "since the shape isn't confirmed yet; paste it back so the parsing can be tightened."
+            )
+            recon_opts = {
+                f"{r.cusname} ({r.cusid}) — {r.wamid[:24]}…": r.wamid
+                for r in unconfirmed.itertuples()
+            }
+            recon_label = st.selectbox(
+                "Recipient", list(recon_opts.keys()), key=f"wch_recon_pick_{chosen_id}",
+            )
+            if st.button("🔄 Check WhatsFly Directly", key=f"wch_recon_btn_{chosen_id}"):
+                try:
+                    raw = whatsfly.get_message_status(recon_opts[recon_label])
+                    st.success("Response received — raw JSON below:")
+                    st.json(raw)
+                except whatsfly.WhatsFlyConfigError as e:
+                    st.warning(str(e))
+                except Exception as e:
+                    st.error(f"Request failed: {e}")
 
 
 def _show_wf_curated_list(zid: str) -> None:
