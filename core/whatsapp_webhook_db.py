@@ -177,6 +177,30 @@ def get_failure_reasons_by_wamids(wamids: list) -> dict:
         return {row["wamid"]: dict(row) for row in cur.fetchall()}
 
 
+def get_last_webhook_received_at():
+    """MAX(webhook_events.received_at) across every webhook this server has
+    ever received -- WhatsFly's 4 token routes AND the Meta-direct
+    endpoint alike -- or None if the table is empty. A single global
+    pipeline-health signal, deliberately NOT scoped to any one campaign
+    or wamid.
+
+    Built for Campaign History's staleness indicator (Phase 4 follow-up),
+    after a real production incident (2026-09-15): a campaign's
+    Delivered/Read/Delivery Failed all read 0 -- not because nothing had
+    actually delivered, but because WhatsFly had silently stopped calling
+    the webhook entirely, ~39h before the campaign was even sent (confirmed
+    via server logs: 28/28 webhook calls this server has EVER received
+    returned 200 OK with zero drops, and none of them were for this
+    campaign -- the gap was upstream of this server, not a delivery
+    failure here). Nothing in the UI could tell "confirmed zero" apart
+    from "we have no idea, the pipeline's been silent for days" -- this
+    is the cheapest possible signal to close that gap: one MAX()."""
+    with _get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT MAX(received_at) FROM webhook_events")
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
 def get_status_history(wamid: str) -> list[dict]:
     """Full status timeline for one message (sent/delivered/read/failed),
     oldest first — for drilling into one specific test message."""

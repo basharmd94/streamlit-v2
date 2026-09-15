@@ -3630,6 +3630,30 @@ def _show_wf_opt_out_management(zid: str) -> None:
             st.rerun()
 
 
+# How long with zero webhook activity (of any kind, account-wide) before
+# Campaign History flags the pipeline as possibly stalled rather than
+# genuinely quiet — generous enough that normal low-traffic gaps (a slow
+# evening, a weekend) don't false-alarm, tight enough to catch a real
+# outage (the incident this was built for was a ~39h gap).
+_WF_WEBHOOK_STALE_THRESHOLD = timedelta(hours=6)
+
+
+def _wf_format_timedelta_ago(delta: timedelta) -> str:
+    """'2d 3h ago' / '5h 12m ago' / '3m ago' — coarse, human-scale duration
+    for the webhook staleness indicator. Not precision-sensitive."""
+    total_seconds = int(delta.total_seconds())
+    if total_seconds < 60:
+        return "just now"
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h ago"
+    if hours:
+        return f"{hours}h {minutes}m ago"
+    return f"{minutes}m ago"
+
+
 def _show_wf_campaign_history(zid: str) -> None:
     """📊 Campaign History — Phase 4 of the bulk-send build plan. Revisit
     past campaigns (sent/failed are final the moment a send loop finishes,
@@ -3673,6 +3697,31 @@ def _show_wf_campaign_history(zid: str) -> None:
         st.info("No real campaigns yet — check the box above to also see test sends.")
         return
 
+    # ── Webhook pipeline staleness — a real production incident
+    #    (2026-09-15) showed Delivered/Read/Delivery Failed all reading 0
+    #    for a real, successfully-sent 37-recipient campaign — not because
+    #    nothing had delivered, but because WhatsFly had silently stopped
+    #    calling the webhook entirely, ~39h before the campaign was even
+    #    sent (confirmed via server logs: every webhook call this server
+    #    has EVER received returned 200 OK with zero drops, and none were
+    #    for that campaign — the gap was upstream, not a failure here).
+    #    Nothing in the UI could tell "confirmed zero" apart from "we have
+    #    no idea, the pipeline's been silent for days". One cheap global
+    #    check (MAX(received_at), not scoped to any one campaign/wamid)
+    #    closes that gap. ──────────────────────────────────────────────
+    staleness_error = None
+    last_webhook_at = None
+    try:
+        last_webhook_at = whatsapp_webhook_db.get_last_webhook_received_at()
+    except Exception as e:
+        staleness_error = str(e)
+    now_utc = datetime.now(timezone.utc)
+    webhook_gap = None
+    if last_webhook_at is not None:
+        _lw = last_webhook_at if last_webhook_at.tzinfo else last_webhook_at.replace(tzinfo=timezone.utc)
+        webhook_gap = now_utc - _lw
+    pipeline_stale = webhook_gap is not None and webhook_gap > _WF_WEBHOOK_STALE_THRESHOLD
+
     # One recipient-status pass per campaign — sent/rejected-at-send from
     # our own records, delivered/read/delivery-failed enriched live from
     # the webhook receiver's database via wamid (best-effort: a wamid with
@@ -3715,6 +3764,16 @@ def _show_wf_campaign_history(zid: str) -> None:
         delivery_failed = sum(1 for s in status_map.values() if s == "failed")
         cost = float(row.actual_cost) if pd.notna(row.actual_cost) else None
         cost_per_delivered = (cost / delivered) if (cost is not None and delivered > 0) else None
+        # This campaign's own Delivered/Read/Delivery Failed figures are
+        # unconfirmed (not necessarily wrong, just unverifiable) when it
+        # was sent/created AFTER the last webhook activity this server
+        # has seen at all — there's been zero opportunity for ANY status
+        # to arrive back for it yet, of any kind, from any recipient.
+        campaign_started = row.created_at
+        webhook_unconfirmed = last_webhook_at is not None and campaign_started is not None and (
+            (campaign_started if campaign_started.tzinfo else campaign_started.replace(tzinfo=timezone.utc))
+            > (last_webhook_at if last_webhook_at.tzinfo else last_webhook_at.replace(tzinfo=timezone.utc))
+        )
         summaries.append({
             "id": row.id, "created_at": row.created_at, "zid": row.zid,
             "template_name": row.template_name, "status": row.status,
@@ -3722,6 +3781,7 @@ def _show_wf_campaign_history(zid: str) -> None:
             "delivered": delivered, "read": read,
             "delivery_failed": delivery_failed, "send_failed": send_failed,
             "cost": cost, "cost_per_delivered": cost_per_delivered,
+            "webhook_unconfirmed": webhook_unconfirmed,
         })
     summary_df = pd.DataFrame(summaries)
 
@@ -3732,6 +3792,39 @@ def _show_wf_campaign_history(zid: str) -> None:
             "this is fixed, **not** because nothing has arrived yet. Check "
             f"`config/whatsapp_webhook_db.ini` on this server. Error: {enrichment_error}"
         )
+    elif staleness_error:
+        st.warning(
+            "⚠️ Could not check webhook pipeline staleness (the enrichment lookup above "
+            f"still ran fine). Error: {staleness_error}"
+        )
+    else:
+        any_unconfirmed = bool(summary_df["webhook_unconfirmed"].any()) if not summary_df.empty else False
+        if last_webhook_at is None:
+            st.warning(
+                "⚠️ No webhook activity has EVER been recorded for this account — Delivered/"
+                "Read/Delivery Failed below can't be confirmed for any campaign. Check that "
+                "WhatsFly's webhook subscription is actually configured and pointed at this server."
+            )
+        elif pipeline_stale and any_unconfirmed:
+            affected = summary_df.loc[summary_df["webhook_unconfirmed"], "id"].tolist()
+            st.warning(
+                f"⚠️ **No webhook activity received — last one was {_wf_format_timedelta_ago(webhook_gap)}** "
+                f"({last_webhook_at:%Y-%m-%d %H:%M}) — yet campaign(s) "
+                f"{', '.join(f'#{i}' for i in affected)} were sent since then. Their Delivered/"
+                "Read/Delivery Failed figures below are **not confirmed zeros** — the webhook "
+                "pipeline has had no opportunity to report back on them at all. This usually "
+                "means WhatsFly has stopped calling the webhook (check its dashboard/account "
+                "status), not a bug in this app — the receiver has a clean track record on "
+                "every request it's actually gotten. Marked with 🕐 below."
+            )
+        elif pipeline_stale:
+            st.caption(
+                f"📡 Last webhook activity: {_wf_format_timedelta_ago(webhook_gap)} "
+                f"({last_webhook_at:%Y-%m-%d %H:%M}) — quiet a while, but no campaign has been "
+                "sent since, so this may just be normal low traffic."
+            )
+        else:
+            st.caption(f"📡 Last webhook activity: {_wf_format_timedelta_ago(webhook_gap)} ({last_webhook_at:%Y-%m-%d %H:%M}).")
 
     # ── Overview — totals across everything shown above ───────────────────
     st.markdown("**📈 Overview**")
@@ -3774,12 +3867,20 @@ def _show_wf_campaign_history(zid: str) -> None:
     st.markdown("**📋 Past Campaigns**")
     display_df = summary_df.copy()
     display_df["created_at"] = pd.to_datetime(display_df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
+    # 🕐 marks a campaign sent after the last webhook activity this server
+    # has recorded at all — its Delivered/Read/Delivery Failed columns are
+    # NOT confirmed zeros, just "no data back yet" (see the staleness
+    # warning above). Blank for every other campaign — those genuinely
+    # had the opportunity to report back.
+    display_df["webhook_status"] = display_df["webhook_unconfirmed"].map(
+        {True: "🕐 Unconfirmed", False: ""}
+    )
     st.dataframe(
         display_df[[
             "id", "created_at", "zid", "template_name", "status", "total_recipients",
             "sent", "delivered", "read", "delivery_failed", "send_failed",
-            "cost", "cost_per_delivered",
-        ]],
+            "cost", "cost_per_delivered", "webhook_status",
+        ]].rename(columns={"webhook_status": "Webhook"}),
         width="stretch", hide_index=True,
     )
 
@@ -3793,6 +3894,14 @@ def _show_wf_campaign_history(zid: str) -> None:
     chosen_label = st.selectbox("Select a campaign", list(campaign_labels.keys()), key="wch_selected_campaign")
     chosen_id = int(campaign_labels[chosen_label])
     chosen_row = campaigns_df[campaigns_df["id"] == chosen_id].iloc[0]
+
+    chosen_summary = summary_df[summary_df["id"] == chosen_id]
+    if not chosen_summary.empty and bool(chosen_summary.iloc[0]["webhook_unconfirmed"]):
+        st.caption(
+            "🕐 This campaign was sent after the last webhook activity this server has recorded — "
+            "the delivery_status/failure_reason columns below reflect send-call status only, not "
+            "confirmed delivery (see the staleness warning above)."
+        )
 
     current_cost = float(chosen_row["actual_cost"]) if pd.notna(chosen_row["actual_cost"]) else 0.0
     new_cost = st.number_input(
