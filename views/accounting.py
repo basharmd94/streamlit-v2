@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from typing import Tuple
 from core.analytics import Analytics
-from processing import common
+from processing import common, usage_log
 from utils.utils import timed
 
 
@@ -236,6 +236,11 @@ def _compute_ledger(zid: str, ac_type: str, ac_codes: list[str], year: int, mont
 
 @timed
 def display_accounting_analysis_main(current_page, zid: str):
+    usage_log.log_view("Accounting Analysis")
+    # Page-level only — st.tabs() has no server-readable "which tab is
+    # active" state (all three tab bodies execute every rerun regardless
+    # of which one the user's actually looking at), so radio-level detail
+    # isn't tracked for this page.
     st.title("Accounting Analysis")
 
     tab_ar, tab_ap, tab_ledger = st.tabs([

@@ -35,6 +35,7 @@ from processing.marketing_leads import (
     build_leads_upload_template,
 )
 from processing.common import normalize_phone_cols, customer_whatsapp_numbers
+from processing import usage_log
 from core.analytics import Analytics
 
 
@@ -5125,6 +5126,7 @@ def display_marketing_analysis(zid: str, proj: str, data_dict: dict, selected_ye
         horizontal=True,
         label_visibility="collapsed",
     )
+    usage_log.log_view("Marketing Analysis", mode)
 
     st.markdown("---")
 

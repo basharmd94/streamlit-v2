@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-from processing import common, purchase
+from processing import common, purchase, usage_log
 from utils.utils import timed
 
 
@@ -1332,6 +1332,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
         horizontal=True,
         index=0,
     )
+    usage_log.log_view("Purchase Analysis", mode)
 
     # Cross-ZID mapping is a reference report available for all ZIDs
     if mode == "🔗 Cross-ZID Mapping":

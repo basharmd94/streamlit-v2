@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from core.analytics import Analytics
-from processing import manufacturing as mfg
+from processing import manufacturing as mfg, usage_log
 from utils.utils import timed
 
 # ── ZID scope ──────────────────────────────────────────────────────────────────
@@ -807,6 +807,7 @@ def display_manufacturing_analysis_page(current_page, zid: str):
          "⚠️ RM Stock Coverage", "🔍 BOM Variance / Wastage", "📋 MO Detail", "🔄 Warehouse Flow"],
         horizontal=True, key="mfg_view_mode",
     )
+    usage_log.log_view("Manufacturing Analysis", view_mode)
 
     if str(zid) not in _MANUFACTURING_ZIDS:
         st.warning(

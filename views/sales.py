@@ -2,7 +2,7 @@ import calendar
 import streamlit as st
 import pandas as pd
 import numpy as np
-from processing import common, overall_sales
+from processing import common, overall_sales, usage_log
 from utils.utils import timed
 
 _CROSS_ZID_PAIR = {"100000", "100001"}
@@ -106,6 +106,7 @@ def display_overall_sales_analysis_page(current_page, zid, data_dict):
         return filtered_data, filtered_data_r
 
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview", "Comparison", "Distributions", "Descriptive Stats", "📈 Order Analytics", "👥 Customer Cycles"],horizontal=True)
+    usage_log.log_view("Overall Sales Analysis", analysis_mode)
 
     if analysis_mode == "Overview":
         st.subheader("📈 Select Plot Type")
@@ -1586,6 +1587,7 @@ def display_customer_data_view_page(current_page, zid, data_dict):
         "View", ["🔍 Individual DO/SR Check", "⚖️ Rate Mismatch Audit"],
         horizontal=True, key="cdv_mode",
     )
+    usage_log.log_view("Customer Data View", mode)
     st.markdown("---")
 
     if mode == "⚖️ Rate Mismatch Audit":

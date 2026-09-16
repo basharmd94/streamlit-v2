@@ -7,7 +7,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from processing import customer_support as cs
+from processing import customer_support as cs, usage_log
 from processing.common import normalize_phone_cols, highlight_overdue_date
 from views.call_log_shared import (
     OUTCOMES as _OUTCOMES,
@@ -138,6 +138,7 @@ def display_customer_support(zid, project):
         horizontal=True,
         key="cs_radio",
     )
+    usage_log.log_view("Customer Support", radio)
     if radio == "📋 90-Day Activity":
         _render_90day_activity()
     else:

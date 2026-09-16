@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import calendar
 from core.analytics import Analytics, basket_prepare
+from processing import usage_log
 from utils.utils import timed
 
 
@@ -238,6 +239,7 @@ def _basket_recommendations_groups(df: pd.DataFrame,order_id_col: str,group_col:
     return base.reset_index(drop=True)
 
 def display_basket_analysis_page(current_page, zid: str, data_dict: dict, selected_filters: dict):
+    usage_log.log_view("Basket Analysis")
     # ── Basket Analysis is temporarily disabled ──
     st.info("Basket Analysis is currently unavailable.")
 

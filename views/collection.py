@@ -3,7 +3,7 @@ import pandas as pd
 import calendar
 from datetime import datetime
 from core.analytics import Analytics
-from processing import common, collection, salesman_due
+from processing import common, collection, salesman_due, usage_log
 from utils.utils import timed
 from views.call_log_shared import render_call_log_readonly as _render_call_log_readonly
 from views.glpmt_shared import render_glpmt_panel as _render_glpmt_panel
@@ -406,6 +406,7 @@ def display_collection_analysis_page(current_page, zid, project, data_dict):
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","CP",
         # "CPA",   # temporarily muted — uncomment to restore
         "Customer Ledger","Salesman Due","📈 Order Analytics","📲 App Collections"],horizontal=True)
+    usage_log.log_view("Collection Analysis", analysis_mode)
 
     if analysis_mode == "📲 App Collections":
         _render_glpmt_panel(str(zid), key_suffix="_ca")

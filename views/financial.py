@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from processing import common, financial
+from processing import common, financial, usage_log
 from processing import consolidation as _consol
 from utils.utils import timed
 from core import queries
@@ -1556,6 +1556,7 @@ def display_financial_statements(current_page, zid):
         ],
         index=0,
     )
+    usage_log.log_view("Financial Statements", selected_perspective)
 
     # ── Config Editor: early return, no data loading needed ──────────────────
     if selected_perspective == '⚙️ Config Editor':

@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import calendar
 from datetime import datetime
-from processing import common, overall_margin
+from processing import common, overall_margin, usage_log
 from utils.utils import timed
 
 
@@ -11,6 +11,7 @@ def display_margin_analysis_page(current_page, zid, data_dict):
     st.sidebar.title("Overall Margin Analysis")
     filtered_data,filtered_data_r = common.data_copy_add_columns(data_dict['sales'], data_dict['return'])
     analysis_mode = st.radio("Choose Analysis Mode:",["Overview","Comparison","Distributions","Descriptive Stats","Metric Comparison","📈 Order Analytics"],horizontal=True)
+    usage_log.log_view("Overall Margin Analysis", analysis_mode)
 
     if analysis_mode == "Overview":
         st.subheader("📈 Select Plot Type")

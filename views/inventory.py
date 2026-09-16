@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import calendar
 from core.analytics import Analytics
-from processing import common
+from processing import common, usage_log
 from utils.utils import timed
 
 
@@ -299,6 +299,7 @@ def display_inventory_analysis_main(current_page, zid: str):
         horizontal=True,
         key="inv_analysis_mode",
     )
+    usage_log.log_view("Inventory Analysis", analysis_mode)
     if analysis_mode.startswith("📊"):
         _render_statistical_analysis(zid)
         return

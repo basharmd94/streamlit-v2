@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 from processing import (
     common, target_management as tm, buying_pattern as bp, daily_sales as ds,
-    salesman_score as ssc,
+    salesman_score as ssc, usage_log,
 )
 from utils.utils import timed
 
@@ -1081,6 +1081,7 @@ def display_target_management_page(current_page, zid, data_dict):
         horizontal=True,
         key="tm_view_mode",
     )
+    usage_log.log_view("Target Management", _view_mode)
 
     # ── Public holidays management (always accessible) ───────────────────────
     with st.expander("🗓 Manage Public Holidays", expanded=False):
