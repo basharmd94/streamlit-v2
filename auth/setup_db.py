@@ -137,29 +137,34 @@ def setup_auth_tables():
         cur.execute("""
             INSERT INTO page_permissions (role, page_name) VALUES
             -- Admin (full access)
+            -- 'Distribution & Histograms'/'Descriptive Statistics' (now Overall
+            -- Sales/Margin Analysis's own "Distributions"/"Descriptive Stats"
+            -- analysis-mode radio options) and 'Daily Sales Analysis'/'AR
+            -- Analysis' (now folded into Target Management and Accounting
+            -- Analysis's own AR Analysis tab, respectively) were removed here
+            -- and below (2026-09-16) -- stale page names from an earlier menu
+            -- structure that no longer match any real app.py menu item, so
+            -- check_page_access() could never match them anyway. Every role
+            -- that had one already has the page it folded into granted
+            -- separately, so no access is lost by removing these.
             ('admin', 'Home'),
             ('admin', 'Overall Sales Analysis'),
             ('admin', 'Overall Margin Analysis'),
             ('admin', 'Purchase Analysis'),
             ('admin', 'Collection Analysis'),
-            ('admin', 'Distribution & Histograms'),
-            ('admin', 'Descriptive Statistics'),
             ('admin', 'Basket Analysis'),
             ('admin', 'Financial Statements'),
             ('admin', 'Manufacturing Analysis'),
             ('admin', 'Accounting Analysis'),
             ('admin', 'Inventory Analysis'),
             ('admin', 'Customer Data View'),
-            ('admin', 'Daily Sales Analysis'),
             ('admin', 'Target Management'),
-            ('admin', 'AR Analysis'),
             ('admin', 'Customer Support'),
             ('admin', 'Marketing Analysis'),
             ('admin', 'Usage Stats'),
             -- Sales
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
-            ('sales', 'Daily Sales Analysis'),
             ('sales', 'Collection Analysis'),
             ('sales', 'Basket Analysis'),
             ('sales', 'Customer Data View'),
@@ -175,19 +180,16 @@ def setup_auth_tables():
             ('finance', 'Inventory Analysis'),
             ('finance', 'Manufacturing Analysis'),
             ('finance', 'Customer Support'),
-            ('finance', 'AR Analysis'),
             -- Purchase
             ('purchase', 'Home'),
             ('purchase', 'Purchase Analysis'),
             ('purchase', 'Overall Sales Analysis'),
             ('purchase', 'Basket Analysis'),
-            ('purchase', 'Distribution & Histograms'),
             ('purchase', 'Inventory Analysis'),
             ('purchase', 'Manufacturing Analysis'),
             -- CRM
             ('crm', 'Home'),
             ('crm', 'Overall Sales Analysis'),
-            ('crm', 'Daily Sales Analysis'),
             ('crm', 'Collection Analysis'),
             ('crm', 'Customer Data View'),
             ('crm', 'Target Management'),
@@ -201,7 +203,6 @@ def setup_auth_tables():
             -- Production
             ('production', 'Home'),
             ('production', 'Overall Sales Analysis'),
-            ('production', 'Daily Sales Analysis'),
             ('production', 'Manufacturing Analysis'),
             ('production', 'Inventory Analysis')
         """)
