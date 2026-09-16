@@ -155,6 +155,7 @@ def setup_auth_tables():
             ('admin', 'AR Analysis'),
             ('admin', 'Customer Support'),
             ('admin', 'Marketing Analysis'),
+            ('admin', 'Usage Stats'),
             -- Sales
             ('sales', 'Home'),
             ('sales', 'Overall Sales Analysis'),
