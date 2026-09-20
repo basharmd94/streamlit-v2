@@ -4,6 +4,8 @@
 # directly (same FIFO due-by-origin-month methodology as Collection Analysis
 # -> Salesman Due -> main due report) so the numbers match exactly.
 
+import calendar
+
 import numpy as np
 import pandas as pd
 
@@ -114,3 +116,109 @@ def compute_salesman_scores(rows_df: pd.DataFrame) -> pd.DataFrame:
     ).clip(lower=0.0, upper=100.0).round(1)
 
     return d.sort_values("score", ascending=True).reset_index(drop=True)
+
+
+def build_pooled_monthly_scores(
+    sel_year: int, sel_month: int, today: pd.Timestamp,
+    sales_df: pd.DataFrame, returns_df: pd.DataFrame, collection_df: pd.DataFrame,
+    ar_clean: pd.DataFrame, target_by_sp: dict,
+) -> pd.DataFrame:
+    """Same row-building + `compute_salesman_scores` pipeline
+    `views/salesman_score.py::_render_salesman_score` already uses for ONE
+    month — extracted here 2026-09-20 so Commissions' A.1 Best Performer
+    ranking (which always pools 100001+100000, confirmed by the user) calls
+    the EXACT same engine the Salesman Score tab uses, not a
+    reimplementation with its own drift risk.
+
+    This function is ZID-agnostic — the caller is responsible for pooling
+    `sales_df`/`returns_df`/`collection_df`/`ar_clean` across whichever
+    ZID(s) it wants scored together first (same pattern B.1/3/4's and A.2's
+    own pooled loaders already use), and for pre-summing `target_by_sp`
+    (`{spid: target}`) across those same ZID(s) for this (year, month) —
+    targets are looked up per-ZID from `data/targets.json`, not derivable
+    from a dataframe, so the caller owns that lookup (see
+    `views/_tm_shared.py::_get_target`).
+
+    Returns the full `compute_salesman_scores` output (one row per salesman
+    who has ANY sales activity in the given calendar YEAR — not just this
+    month — same as the Salesman Score tab; a salesman with zero activity
+    in this specific month still gets a row, correctly scoring near 0 on
+    the components that need this month's own data).
+    """
+    df = sales_df.copy() if sales_df is not None else pd.DataFrame()
+    if df.empty or "date" not in df.columns:
+        return pd.DataFrame()
+    df["_dt"] = pd.to_datetime(df["date"], errors="coerce")
+
+    is_current = is_real_current_month(sel_year, sel_month, today)
+    mo_start = pd.Timestamp(sel_year, sel_month, 1)
+    mo_end_full = pd.Timestamp(sel_year, sel_month, calendar.monthrange(sel_year, sel_month)[1])
+    mo_end = today if is_current else mo_end_full
+    mo_data = df[(df["_dt"] >= mo_start) & (df["_dt"] <= mo_end)]
+
+    ret_by_sp: dict = {}
+    if returns_df is not None and not returns_df.empty and "treturnamt" in returns_df.columns:
+        r = returns_df.copy()
+        r["_dt"] = pd.to_datetime(r["date"], errors="coerce")
+        r_mo = r[(r["_dt"] >= mo_start) & (r["_dt"] <= mo_end)]
+        if "spid" in r_mo.columns:
+            ret_by_sp = r_mo.groupby(r_mo["spid"].astype(str))["treturnamt"].sum().astype(float).to_dict()
+
+    coll_by_sp: dict = {}
+    if collection_df is not None and not collection_df.empty and "value" in collection_df.columns:
+        c = collection_df.copy()
+        c["spid"] = c["spid"].astype(str)
+        c["year"] = pd.to_numeric(c["year"], errors="coerce")
+        c["month"] = pd.to_numeric(c["month"], errors="coerce")
+        coll_by_sp = (
+            c[(c["year"] == sel_year) & (c["month"] == sel_month)]
+             .groupby("spid")["value"].sum().astype(float).to_dict()
+        )
+
+    sp_list = df[["spid", "spname"]].dropna().drop_duplicates().sort_values("spname")
+    if sp_list.empty:
+        return pd.DataFrame()
+
+    cur = pd.Timestamp(sel_year, sel_month, 1)
+    bal_months = [
+        (int((cur - pd.DateOffset(months=i)).year), int((cur - pd.DateOffset(months=i)).month))
+        for i in (2, 1, 0)
+    ]
+    bal_table = compute_salesman_balances_trickledown(ar_clean, months_back=5)
+
+    def _bal_lookup(spid: str, y: int, m: int) -> float:
+        col = f"{y}_{m:02d}"
+        if bal_table.empty or col not in bal_table.columns or spid not in bal_table.index:
+            return 0.0
+        return float(bal_table.loc[spid, col])
+
+    (oldest_y, oldest_m), (mid_y, mid_m), (newest_y, newest_m) = bal_months
+
+    rows = []
+    for _, sp_row in sp_list.iterrows():
+        spid = str(sp_row["spid"])
+        spname = sp_row["spname"]
+        sp_mo = mo_data[mo_data["spid"].astype(str) == spid]
+
+        sales = float(sp_mo["final_sales"].sum())
+        ret = round(ret_by_sp.get(spid, 0.0), 0)
+        net_sales = round(sales - ret, 0)
+        target = float(target_by_sp.get(spid, 0.0) or 0.0)
+        coll = round(float(coll_by_sp.get(spid, 0.0)), 0)
+
+        uc_mo = int(sp_mo["cusid"].nunique()) if "cusid" in sp_mo.columns else 0
+        up_mo = int(sp_mo["itemcode"].nunique()) if "itemcode" in sp_mo.columns else 0
+
+        bal_oldest = _bal_lookup(spid, oldest_y, oldest_m)
+        bal_mid = _bal_lookup(spid, mid_y, mid_m)
+        bal_newest = _bal_lookup(spid, newest_y, newest_m)
+
+        rows.append({
+            "spid": spid, "spname": spname,
+            "target": target, "sales": sales, "net_sales": net_sales, "coll": coll,
+            "uniq_prods": up_mo, "uniq_cust": uc_mo,
+            "balance_recent2": bal_oldest + bal_mid,
+            "balance_this_month": bal_newest,
+        })
+
+    return compute_salesman_scores(pd.DataFrame(rows))

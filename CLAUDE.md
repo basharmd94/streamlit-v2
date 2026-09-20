@@ -1067,6 +1067,67 @@ fixed BDT amount per rank position to the top N.
   browser against real 2024 sales data — Total Payout ৳9,000 exactly matched the 3 configured rank amounts,
   full ranking table showed real salesmen in correct rank order with only the top 3 carrying a payout.
 
+### A.1 — Best Performer (ranked)
+
+`processing/salesman_score.py::build_pooled_monthly_scores` (row-building, one month at a time) +
+`processing/commission_campaigns.py::compute_best_performer_ranking` (averaging/ranking/payout/gate) +
+`views/commission_best_performer_view.py` (UI). Full spec: `commission_tracking_design.md` §A.1. Ranks
+salesmen by their **average Salesman Score** over an admin-chosen number of months and pays a fixed BDT
+amount per rank position to the top N — same per-rank-payout mechanism as A.2, different scoring source.
+
+- **Calls the EXACT existing Salesman Score engine, not a reimplementation** — explicit ask: "the weights of
+  sales and collections and returns and the negatives will be exactly the same as the engine that is built."
+  `build_pooled_monthly_scores` is a new, ZID-agnostic extraction of `views/salesman_score.py`'s own
+  row-building pipeline (the shipped, view-embedded version is deliberately untouched — no regression risk to
+  the existing Salesman Score tab); it calls `compute_salesman_scores` internally, so the formula (+45 target,
+  +45 collection, +5 products, +5 customers, -6 returns, -12/-2 AR balance) is byte-for-byte the same.
+- **Salesman-only, no `recipient_type` toggle** — a deliberate deviation from the design doc's "for future
+  note" table (which listed A.1 as "Salesman or Customer"): the score's own inputs (target achievement,
+  collection %, AR balance) don't have a customer-equivalent meaning.
+- **Reuses the SAME `commission_campaigns` table as B.1/3/4 and A.2 — a 3rd `campaign_type` value,
+  `"Best Performer"`** (same "no separate table per campaign type" pattern). `product_rates` (JSONB) holds
+  `{"num_months": M, "num_winners": N, "payouts_by_rank": [amt1, ...]}`. `window_start`/`window_end` on the
+  stored row are **informational only** — set to the window at save time, but the real evaluation window is
+  always recomputed live from `today` + `num_months` at view time (never the stored dates), since "I have to
+  set the commission standards before" — the window must always end at the CURRENT, ongoing month, never a
+  lagging "last month" figure. Each section's picker filters to its own `campaign_type` — verified A.1's new
+  value doesn't leak into A.2's or B.1/3/4's existing filters and vice versa (same check done when A.2 was
+  added).
+- **Months to average: 1-3, always ending at the current month** — `views/commission_best_performer_view.py`'s
+  `_eval_months` slices `ssc.month_choices(today)` (already correct on year-rollover) to `num_months`. A
+  3-month window can span a calendar-year boundary, so the view loads pooled sales/returns/collection **per
+  distinct year needed**, not per month, then builds one scored table per month via
+  `build_pooled_monthly_scores`. Winners: 2-10 (a different range from A.2's 2-5).
+- **Pooled 100001+100000 throughout, same as every other commission section** — sales/returns/collection/AR
+  ledger all pulled and concatenated across both ZIDs before scoring; per-salesman target is summed across
+  both ZIDs for the same spid (`_get_target("100001", spid, y, m) + _get_target("100000", spid, y, m)`), same
+  consolidated-target logic `views/salesman_score.py`'s own 100001↔100000 toggle already uses.
+- **The 100001/100000 target gate applies here too** (explicit ask) — `compute_best_performer_ranking` calls
+  `check_gate` (same function B.1/3/4 uses) over the full N-month evaluation span; if either ZID misses its
+  target, `total_payout` zeroes but the computed ranking/figures still show, captioned, same convention as
+  every other gated section.
+- **Averaging**: a salesman's `avg_score` is the mean of their `score` across only the months they actually
+  appear in (a salesman with zero sales activity in a given calendar year doesn't get a phantom 0 for that
+  year) — `months_scored` shows how many of the N months contributed.
+- **Known pre-existing data quirk, not introduced here**: at least one real `spid` (`SA--000290`) maps to two
+  different salesman names in the raw sales data (an ERP employee code reused over time) — the existing,
+  shipped Salesman Score tab already builds one row per `(spid, spname)` pair and would show this as two
+  separate rows too. Here it surfaces as a `months_scored` count that can exceed `num_months` for that one
+  spid (both "identities" get scored and averaged together under the one spid). Deliberately not deduped —
+  doing so would diverge from "exactly the same engine," and the underlying data issue isn't this feature's to
+  fix.
+- Same setup/results split as the rest of the feature — admin Commissions page: Create/Edit/Delete only, no
+  scoring ever runs there. Target Management "💰 Commission Results": gate banner + 3 metrics + one ranking
+  table (Rank/Salesman Code/Salesman/Avg Score/Months Scored/Payout, `—` for non-winners).
+- Verified end-to-end against real Postgres: a standalone script confirmed `build_pooled_monthly_scores` +
+  `compute_best_performer_ranking` reproduce the correct averaged ranking and payout for a real 2-month window
+  (Total Payout ৳9,500 exactly matching 3 configured rank amounts, gate passed with real ZID sales totals);
+  the campaign_type filter isolation was re-verified with a live create/list/delete round trip (A.1's row
+  invisible to A.2's and B.1/3/4's pickers); live in the browser as a real admin — created a real 2-month/
+  3-winner campaign, confirmed the setup page shows no results, confirmed Target Management's Commission
+  Results computed the identical ranking/payout/gate the standalone script found, full ranking table rendered
+  correctly with `—` for non-winning ranks.
+
 ---
 
 ## Git / Deployment

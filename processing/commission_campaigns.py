@@ -769,3 +769,93 @@ def compute_campaign_payout(
         "excluded_do_count": excluded_do_count,
         "uptick": uptick,
     }
+
+
+# ── A.1 — Best Performer (ranked) ───────────────────────────────────────────
+# Confirmed 2026-09-20: a 3rd campaign_type sharing the same commission_campaigns
+# table (same reuse-the-columns/JSONB pattern as A.2 above) — `product_rates`
+# holds {"num_months": M (1-3), "num_winners": N (2-10), "payouts_by_rank":
+# [amt_rank1, ...]}. Salesman-only (no recipient_type toggle) — a deliberate
+# deviation from the design doc's "for future note" table, since the scoring
+# formula's own inputs (target achievement, collection %, AR balance) don't
+# have a customer-equivalent meaning. Explicitly required to reuse
+# processing.salesman_score.compute_salesman_scores' exact existing weights
+# (not the design doc's own "proposed" recalibrated ones) and the same
+# 100001/100000 pooling + target gate as B.1/3/4/A.2.
+
+def compute_best_performer_ranking(
+    campaign: dict, monthly_scored_tables: list, pooled_sales_df: pd.DataFrame,
+) -> dict:
+    """Averages each salesman's `compute_salesman_scores` score across the
+    campaign's configured number of months, ranks descending, and pays a
+    fixed BDT amount per rank position to the top `num_winners` — same
+    per-rank-payout mechanism as compute_highest_product_sales_ranking
+    above, different scoring source (the existing Salesman Score engine,
+    called via processing.salesman_score.build_pooled_monthly_scores, not
+    reimplemented here).
+
+    `monthly_scored_tables` — one build_pooled_monthly_scores() output
+    DataFrame per evaluation month (1-3 of them, per `num_months` in
+    product_rates), built by the CALLER — the view owns loading/pooling
+    sales/returns/collection/AR data per calendar year, since a 3-month
+    window can cross a year boundary and each month's own scored table
+    needs its own year's data. A salesman missing from a given month's
+    table (no sales activity that whole calendar year) is averaged over
+    only the months they DO appear in — not penalized with a phantom 0 for
+    a year they had no presence in at all.
+
+    `pooled_sales_df` — pooled (100001+100000) sales for the SAME
+    100001/100000 target gate B.1/3/4 and now A.1 both use (`check_gate`,
+    confirmed 2026-09-20 the gate applies here too), evaluated over the
+    campaign's own window_start/window_end (the full N-month evaluation
+    span, set live by the view from `today` + `num_months` — window_start/
+    window_end on the stored row are informational only, same as A.2).
+
+    Returns `{"ranking": DataFrame[rank, recipient, recipient_name,
+    avg_score, months_scored, payout], "num_winners", "num_months", "gate",
+    "gate_passed", "total_payout_if_gate_passed", "total_payout"}` — same
+    gate-zeroes-total-but-keeps-the-computed-figure convention as
+    compute_campaign_payout.
+    """
+    config = campaign.get("product_rates") or {}
+    num_months = int(config.get("num_months") or len(monthly_scored_tables) or 1)
+    payouts_by_rank = [float(v) for v in config.get("payouts_by_rank", [])]
+    num_winners = int(config.get("num_winners") or len(payouts_by_rank))
+    window_start, window_end = campaign["window_start"], campaign["window_end"]
+
+    empty = pd.DataFrame(columns=["rank", "recipient", "recipient_name", "avg_score", "months_scored", "payout"])
+    gate = check_gate(pooled_sales_df, window_start, window_end)
+    tables = [t for t in (monthly_scored_tables or []) if t is not None and not t.empty]
+    if not tables:
+        return {
+            "ranking": empty, "num_winners": num_winners, "num_months": num_months,
+            "gate": gate, "gate_passed": gate["passed"],
+            "total_payout_if_gate_passed": 0.0, "total_payout": 0.0,
+        }
+
+    combined = pd.concat(
+        [t[["spid", "spname", "score"]].assign(spid=t["spid"].astype(str)) for t in tables],
+        ignore_index=True,
+    )
+    agg = (
+        combined.groupby("spid")
+                .agg(spname=("spname", "first"), avg_score=("score", "mean"), months_scored=("score", "count"))
+                .reset_index()
+    )
+    agg["avg_score"] = agg["avg_score"].round(1)
+    agg = agg.sort_values(["avg_score", "spid"], ascending=[False, True]).reset_index(drop=True)
+    agg["rank"] = agg.index + 1
+    agg["payout"] = 0.0
+    for i in range(min(num_winners, len(payouts_by_rank), len(agg))):
+        agg.loc[i, "payout"] = payouts_by_rank[i]
+
+    raw_total = float(agg["payout"].sum())
+    ranking = agg.rename(columns={"spid": "recipient", "spname": "recipient_name"})[
+        ["rank", "recipient", "recipient_name", "avg_score", "months_scored", "payout"]
+    ]
+    return {
+        "ranking": ranking, "num_winners": num_winners, "num_months": num_months,
+        "gate": gate, "gate_passed": gate["passed"],
+        "total_payout_if_gate_passed": raw_total,
+        "total_payout": raw_total if gate["passed"] else 0.0,
+    }

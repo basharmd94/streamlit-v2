@@ -13,7 +13,12 @@ import streamlit as st
 
 from core.analytics import Analytics
 from processing import commissions as comm, usage_log
-from views import commission_campaigns_view, commission_rankings_view, commission_shared
+from views import (
+    commission_best_performer_view,
+    commission_campaigns_view,
+    commission_rankings_view,
+    commission_shared,
+)
 from views.marketing import _load_final_items  # noqa: F401 — re-exported; avoids duplicate cache
 
 
@@ -258,12 +263,8 @@ def _render_placeholder(section: str, note: str = "") -> None:
     )
 
 
-def _render_best_performer(zid: str) -> None:
-    _render_placeholder(
-        "🏆 A.1 — Best Performer",
-        "One open point: the 3-month averaging method (per-month average vs. pooled "
-        "totals) isn't decided yet — confirm with the user before building.",
-    )
+def _render_best_performer(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    commission_best_performer_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
 def _render_highest_product_sales(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
@@ -310,7 +311,8 @@ def _sections(read_only: bool, key_suffix: str) -> dict:
     ignores read_only — there's nothing to hide yet."""
     return {
         "📋 Product Tracking": lambda zid: _render_product_tracking(zid, read_only=read_only),
-        "🏆 Best Performer": _render_best_performer,
+        "🏆 Best Performer":
+            lambda zid: _render_best_performer(zid, read_only=read_only, key_suffix=key_suffix),
         "📦 Highest Product Sales":
             lambda zid: _render_highest_product_sales(zid, read_only=read_only, key_suffix=key_suffix),
         "📱 Best App User": _render_best_app_user,

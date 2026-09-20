@@ -20,7 +20,7 @@ anything new.
 
 | Piece | Status | Blocker (if any) |
 |---|---|---|
-| A.1 Best Performer | ✅ buildable | one minor open point: 3-month averaging method (§A.1) — doesn't block starting, the engine/weights/scope are all specified |
+| A.1 Best Performer | ✅ **built 2026-09-20** | none — see §A.1 for what shipped |
 | A.2 Highest Product Sales | ✅ **built 2026-09-20** | none — see §A.2 for what shipped |
 | A.3 Best Disciplined | ✅ n/a | excluded by design |
 | A.4 Best App User | 🚫 **deferred by design** | user will supply the actual list of app data-hit locations when this specific section gets built — not something to chase before then, don't build against the guess in §A.4 |
@@ -32,9 +32,9 @@ anything new.
 | The 100001/100000 gate itself | ✅ buildable | none |
 
 **If asked "where do you want to start building," don't re-ask this as an open question —
-the table above already answers it.** Product Tracking, A.2, and B.1/3/4 are all built now
-(2026-09-19/20) — good remaining self-contained starting points with zero open items: A.2's
-own sibling A.1 (once its 3-month-averaging open point is resolved) or B.2.
+the table above already answers it.** Product Tracking, A.1, A.2, and B.1/3/4 are all built
+now (2026-09-19/20) — B.2 is the best remaining self-contained starting point with zero
+open items.
 
 ---
 
@@ -62,31 +62,66 @@ own sibling A.1 (once its 3-month-averaging open point is resolved) or B.2.
 ## A. Rankings (no persistence — pure reports)
 
 ### A.1 Best Performer
-- Scope: **100001 + 100000 combined**, trailing 3 months.
-- Reuses `processing/salesman_score.py`'s existing peer-relative scoring engine (same shape:
-  positive components build a ceiling, negative components erode it, clipped to [0, 100]),
-  but **recalibrated weights**, and **the weights must be adjustable** (a config, not
-  hardcoded) — the score recomputes live whenever the weights change, not baked into code.
 
-  Proposed starting weights (confirm/adjust in the UI once built, not fixed by this doc):
-  ```
-  +45  Sales Target Achievement   (net_sales / target, clipped 0-100%)
-  +45  Collection                 (collected / net_sales — same definition
-                                    Salesman Score already uses today)
-  +5   Unique Products sold       (peer-relative)
-  +5   Unique Customers sold to   (peer-relative)
-  -20  Returns %                  (peer-relative)   ["Lowest Return"]
-  -20  Balance / Dues             (peer-relative)   ["Lowest Outstanding Dues"]
-  ```
-  Today's actual Salesman Score (for reference/diff, NOT what to ship): `+45 target, +45
-  collection, +5 products, +5 customers, -6 returns, -12 balance(2mo), -2 balance(this mo)`.
-  The doc's 3 named criteria (Target Achievement / Lowest Return / Lowest Outstanding Dues)
-  are all real components above; "Collection" and the two peer-relative bonus components
-  are carried over from the existing engine, not newly asked for.
+Status: **built 2026-09-20** (`processing/salesman_score.py::build_pooled_monthly_scores` +
+`processing/commission_campaigns.py::compute_best_performer_ranking` +
+`views/commission_best_performer_view.py`) — verified against real Postgres.
 
-- Payout: **a fixed BDT amount** (e.g. 2,000) to the winner — NOT a %, NOT proportional.
-- "Last 3 months" — averaging each month's own score, vs. computing the components off
-  pooled 3-month totals directly, is not yet decided — confirm with the user before building.
+- Scope: **100001 + 100000 combined**, same pooling every other commission section uses.
+- **Confirmed 2026-09-20: calls the EXISTING Salesman Score engine exactly as-is, not the
+  "proposed" recalibrated weights above** — explicit instruction: "the weights of sales and
+  collections and returns and the negatives will be exactly the same as the engine that is
+  built." `build_pooled_monthly_scores` is a new, ZID-agnostic extraction of
+  `views/salesman_score.py`'s own row-building pipeline (the shipped, view-embedded version
+  is untouched, avoiding regression risk) that calls `compute_salesman_scores` internally —
+  so the actual shipped weights are `+45 target, +45 collection, +5 products, +5 customers,
+  -6 returns, -12 balance(2mo), -2 balance(this month)` (today's real engine, NOT the
+  `-20/-20` proposal above, which was never built). Not admin-adjustable — same fixed
+  formula as the Salesman Score tab.
+- **Averaging period, confirmed 2026-09-20, resolving the "not yet decided" open point
+  above**: admin picks **1-3 months to average**, always ending at the CURRENT, ongoing
+  month — never "last month" ("I have to set the commission standards before"). A
+  salesman's `avg_score` is the mean of their score across only the months they actually
+  have a row in (no phantom 0 for a month/year with zero activity). This settles the
+  "per-month average vs. pooled totals" question in favor of per-month averaging.
+- **Payout mechanism — same per-rank-payout pattern as A.2, not a single fixed amount to
+  one winner** (the "fixed BDT amount to the winner" line above was superseded once A.2's
+  own ranked-payout mechanism was confirmed and reused here): admin picks **2-10 winners**
+  (a wider range than A.2's 2-5) and enters one payout amount per rank position, ranked by
+  average score descending.
+- **Salesman-only, no `recipient_type` toggle** — a deliberate deviation from the "for
+  future note" table further down (§For future note): the score's own inputs (target
+  achievement, collection %, AR balance) don't have a customer-equivalent meaning.
+- **Reuses the SAME `commission_campaigns` table as B.1/3/4 and A.2 — a 3rd
+  `campaign_type` value, `"Best Performer"`** (same "no separate table per campaign type"
+  pattern as A.2). `product_rates` (JSONB) holds `{"num_months": M, "num_winners": N,
+  "payouts_by_rank": [amt1, ...]}`. `window_start`/`window_end` on the stored row are
+  informational only (set at save time) — the real evaluation window is always
+  recomputed live from `today` + `num_months`. Verified A.1's `campaign_type` doesn't leak
+  into A.2's or B.1/3/4's existing picker filters and vice versa, same check done for A.2.
+- **The 100001/100000 target gate applies here too** (explicit ask, "make sure one hundred
+  thousand one and one hundred thousand is applied here as well. The gate") —
+  `compute_best_performer_ranking` calls the same `check_gate` B.1/3/4 uses, over the full
+  N-month evaluation span; either ZID missing target zeroes `total_payout` but the
+  computed ranking still shows, same convention as every other gated section.
+- **Same setup/results split as the rest of the feature**: admin Commissions page shows
+  only Create/Edit/Delete, Target Management's "💰 Commission Results" shows only the gate
+  banner + metrics + one ranking table (Rank/Salesman Code/Salesman/Avg Score/Months
+  Scored/Payout, `—` for non-winners).
+- **Known pre-existing data quirk, not introduced by this feature**: at least one real
+  `spid` (`SA--000290`) maps to two different salesman names in the raw sales data (a
+  reused ERP employee code) — the existing, shipped Salesman Score tab already builds one
+  row per `(spid, spname)` pair and would show this as two rows too. Here it surfaces as a
+  `months_scored` count that can exceed `num_months` for that one spid. Deliberately not
+  deduped, since doing so would diverge from "exactly the same engine."
+- **Verified** against real Postgres: a standalone script confirmed `build_pooled_monthly_scores`
+  + `compute_best_performer_ranking` reproduce the correct averaged ranking for a real
+  2-month window (Total Payout ৳9,500 exactly matching 3 configured rank amounts, gate
+  passed against real ZID sales totals); the campaign_type filter isolation re-verified
+  with a live create/list/delete round trip; live in the browser as a real admin — created
+  a real 2-month/3-winner campaign, confirmed the setup page shows no results, confirmed
+  Target Management's Commission Results computed the identical ranking/payout/gate the
+  standalone script found.
 
 ### A.2 Highest Product Sales
 
@@ -585,15 +620,15 @@ all 3 metrics including real ৳ figures for Net Revenue.
 
 #### For future note (2026-09-19/20) — recipient type across the rest of A/B
 
-Not yet relevant to anything built, but worth knowing before scoping A.1/A.2/A.4/B.2/B.5:
-the commission for a given section can go to a **salesman**, a **customer**, or either,
+Not yet relevant to everything below, but worth knowing before scoping A.4/B.2/B.5: the
+commission for a given section can go to a **salesman**, a **customer**, or either,
 depending on the section — confirmed by the user while starting B.1/3/4, as general
 guidance for the whole feature, not specific to this one campaign type:
 
 | Section | Can be paid to |
 |---|---|
-| A.1 Best Performer | Salesman **or** Customer |
-| A.2 Highest Product Sales | Salesman **or** Customer |
+| A.1 Best Performer | **Salesman only — built 2026-09-20**, a deliberate deviation from this table's original "Salesman or Customer" guess: the score engine's own inputs (target achievement, collection %, AR balance) don't have a customer-equivalent meaning |
+| A.2 Highest Product Sales | Salesman **or** Customer — built |
 | A.4 Best App User | Salesman **only** |
 | B.1/3/4 (this section) | Salesman **or** Customer — built |
 | B.2 Individual Target Achievement | Salesman **or** Customer |
@@ -707,15 +742,10 @@ just unresolved details on an otherwise-buildable piece.
 1. **A.4** — deferred by the user's own choice, not a blocker to chase — they'll supply the
    actual list of app data-hit locations when this specific section gets built. Do not build
    against the guess in §A.4 in the meantime, and don't ask for this again before then.
-2. **A.1** — "trailing 3 months" averaging method (per-month average vs. pooled totals) not
-   yet decided. Doesn't block starting A.1.
-3. **A.1** — the -20/-20 Returns/Dues weights (and the 45/45/5/5 carried over from today's
-   Salesman Score) are a proposed starting point, not locked — the weights need to be
-   adjustable in the UI regardless, so this matters less at build time than it would if the
-   weights were going to be hardcoded.
-4. **B.2 / gate interaction** — assumed the 100001/100000 gate also applies to B.2, not
+2. **B.2 / gate interaction** — assumed the 100001/100000 gate also applies to B.2, not
    explicitly confirmed. Doesn't block starting B.2.
-5. **B.5** — no design work done yet beyond "existing logic doesn't fit, needs something
+3. **B.5** — no design work done yet beyond "existing logic doesn't fit, needs something
    new" — scope this properly with the user when it's picked up, don't guess at a shape.
 
-Product Tracking's redesign open items are resolved — see §Product Tracking, now marked built.
+Product Tracking's, A.1's, and A.2's own open items are all resolved — see their own
+sections, now marked built.
