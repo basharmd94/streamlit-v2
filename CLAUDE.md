@@ -1031,6 +1031,42 @@ by a deadline, pooled across 100001+100000, gated on both ZIDs hitting their own
   not-yet-built sections are salesman-only, customer-or-salesman, or salesman-only-for-a-different-reason (New
   Customer Creation) — noted for whenever each is picked up, not yet relevant to what's built.
 
+### A.2 — Highest Product Sales (ranked)
+
+`processing/commission_campaigns.py::compute_highest_product_sales_ranking` (engine) +
+`views/commission_rankings_view.py` (UI). Full spec: `commission_tracking_design.md` §A.2. Ranks recipients
+(salesman or customer) by DISTINCT product count sold in an admin-set window (breadth, not volume) and pays a
+fixed BDT amount per rank position to the top N.
+
+- **Reuses the SAME `commission_campaigns` table as B.1/3/4 — no separate table** (explicit ask: "I don't want
+  to create a different table for every campaign... designate data to the right columns if it's possible, if
+  not just use the JSONB column that's there"). `campaign_name`/`recipient_type`/`window_start`/`window_end`
+  are reused with their existing meaning; `product_rates` (JSONB) is repurposed to hold
+  `{"num_winners": N, "payouts_by_rank": [amt1, amt2, ...]}` instead of per-product rates;
+  `cap`/`payout_groups`/`uptick_baseline_months` are unused for these rows.
+- **`campaign_type` now also doubles as the mechanism discriminator** — `"Highest Product Sales"` for A.2 rows,
+  distinct from B.1/3/4's 3 values — since the table is shared, each section's own campaign picker filters
+  `list_campaigns()`'s output to its own `campaign_type` value(s)
+  (`views/commission_rankings_view.py::_list_ranking_campaigns` for A.2;
+  `views/commission_campaigns_view.py::render` filters to `_CAMPAIGN_TYPES` for B.1/3/4). **This filter was
+  missing on the B.1/3/4 side when A.2 was first wired up — a real bug, fixed in the same pass** — without it,
+  an A.2 ranking row would show up in B.1/3/4's own picker and likely crash its Edit form (which assumes
+  `product_rates` is `{itemcode: rate}`, not `{num_winners, payouts_by_rank}`). Any future section that also
+  writes to this shared table needs the same filter on every existing section's picker, not just its own.
+- **Payout config**: admin picks 2-5 winners, then enters ONE payout amount per rank position (1st, 2nd, ...) —
+  not a flat amount to everyone in the top N, each rank has its own figure. Ties (identical distinct-product-
+  count) are broken by total quantity sold, then recipient code — an assumption, not an explicit rule from the
+  user.
+- **Same setup/results split as the rest of the feature** — admin Commissions page: Create/Edit/Delete only,
+  no ranking computation ever runs there. Target Management "💰 Commission Results": one table only — every
+  recipient with sales activity in the window (not just winners), columns Rank/Code/Name/Distinct Products/
+  Total Qty/Payout (`—` for non-winners) — same "show everyone with an outcome column" pattern as B.1/3/4's
+  `line_items` table, not a separate winners-only table.
+- Verified end-to-end against real Postgres: a synthetic tie-break test; the shared-table campaign_type
+  filtering (created one B.1/3/4 row + one A.2 row, confirmed each picker only shows its own); live in the
+  browser against real 2024 sales data — Total Payout ৳9,000 exactly matched the 3 configured rank amounts,
+  full ranking table showed real salesmen in correct rank order with only the top 3 carrying a payout.
+
 ---
 
 ## Git / Deployment

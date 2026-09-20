@@ -244,6 +244,89 @@ def delete_campaign(campaign_id: int) -> bool:
     return execute_write("DELETE FROM commission_campaigns WHERE id = %s", (campaign_id,))
 
 
+# ── A.2 — Highest Product Sales (ranked) ────────────────────────────────────
+# Confirmed 2026-09-20: reuses the SAME `commission_campaigns` table as
+# B.1/3/4 — explicit ask, "I don't want to create a different table for
+# every campaign... designate data to the right columns if possible, if not
+# just use the JSONB column that's there." `campaign_name`/`recipient_type`/
+# `window_start`/`window_end` are reused as-is (same meaning as for B.1/3/4);
+# `product_rates` (JSONB) is repurposed to hold this ranking's own config
+# instead of per-product rates: {"num_winners": N, "payouts_by_rank":
+# [amt_rank1, amt_rank2, ...]}. `cap`/`payout_groups`/`uptick_baseline_months`
+# are unused for these rows (no cap concept, no collection-deadline groups).
+# `campaign_type` (a free-text label, "just a UI category" for B.1/3/4's own
+# 3 values) now also doubles as the discriminator between mechanisms —
+# views/commission_rankings_view.py filters commission_campaigns rows by
+# `campaign_type == "Highest Product Sales"` so B.1/3/4's own campaign
+# picker never sees these rows and vice versa.
+
+def compute_highest_product_sales_ranking(campaign: dict, sales_df: pd.DataFrame) -> dict:
+    """A.2: ranks recipients (salesman or customer, per `recipient_type`) by
+    DISTINCT product count sold within the campaign's window — breadth, not
+    volume, confirmed 2026-09-20 — and pays a fixed BDT amount per rank
+    position to the top `num_winners` (2-5, admin-set). Both the winner
+    count and each rank's own payout amount are read from `product_rates`
+    (see module note above).
+
+    Ties (identical distinct-product-count) are broken by total quantity
+    sold, then by recipient code for a fully deterministic order — this
+    tie-break isn't an explicit rule from the user, it's an assumption
+    flagged here for visibility, not confirmed.
+
+    Returns `{"recipient_type", "ranking" (DataFrame: rank, recipient,
+    recipient_name, distinct_products, total_qty, payout — payout is 0 for
+    every non-winning row, never blank/NaN), "num_winners", "total_payout"}`.
+    """
+    recipient_type = campaign.get("recipient_type") or "salesman"
+    window_start, window_end = campaign["window_start"], campaign["window_end"]
+    config = campaign.get("product_rates") or {}
+    payouts_by_rank = [float(v) for v in config.get("payouts_by_rank", [])]
+    num_winners = int(config.get("num_winners") or len(payouts_by_rank))
+
+    recip_key = "spid" if recipient_type == "salesman" else "cusid"
+    recip_name_key = "spname" if recipient_type == "salesman" else "cusname"
+
+    empty = pd.DataFrame(columns=["rank", "recipient", "recipient_name", "distinct_products", "total_qty", "payout"])
+    if sales_df is None or sales_df.empty or recip_key not in sales_df.columns:
+        return {"recipient_type": recipient_type, "ranking": empty, "num_winners": num_winners, "total_payout": 0.0}
+
+    d = sales_df.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    start, end = pd.Timestamp(window_start), pd.Timestamp(window_end)
+    d = d[(d["date"] >= start) & (d["date"] <= end)]
+    if d.empty:
+        return {"recipient_type": recipient_type, "ranking": empty, "num_winners": num_winners, "total_payout": 0.0}
+
+    d["itemcode"] = d["itemcode"].astype(str)
+    d["quantity"] = pd.to_numeric(d["quantity"], errors="coerce")
+
+    grouped = (
+        d.groupby(recip_key)
+         .agg(
+             recipient_name=(recip_name_key, "first"),
+             distinct_products=("itemcode", "nunique"),
+             total_qty=("quantity", "sum"),
+         )
+         .reset_index()
+         .rename(columns={recip_key: "recipient"})
+    )
+    grouped = grouped.sort_values(
+        ["distinct_products", "total_qty", "recipient"], ascending=[False, False, True]
+    ).reset_index(drop=True)
+    grouped["rank"] = grouped.index + 1
+    grouped["payout"] = 0.0
+    for i in range(min(num_winners, len(payouts_by_rank), len(grouped))):
+        grouped.loc[i, "payout"] = payouts_by_rank[i]
+
+    total_payout = float(grouped["payout"].sum())
+    return {
+        "recipient_type": recipient_type,
+        "ranking": grouped[["rank", "recipient", "recipient_name", "distinct_products", "total_qty", "payout"]],
+        "num_winners": num_winners,
+        "total_payout": total_payout,
+    }
+
+
 # ── Pooled FIFO DO/collection resolver ──────────────────────────────────────
 
 def build_do_totals(sales_df: pd.DataFrame) -> pd.DataFrame:

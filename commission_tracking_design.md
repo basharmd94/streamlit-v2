@@ -21,7 +21,7 @@ anything new.
 | Piece | Status | Blocker (if any) |
 |---|---|---|
 | A.1 Best Performer | ✅ buildable | one minor open point: 3-month averaging method (§A.1) — doesn't block starting, the engine/weights/scope are all specified |
-| A.2 Highest Product Sales | ✅ buildable | none |
+| A.2 Highest Product Sales | ✅ **built 2026-09-20** | none — see §A.2 for what shipped |
 | A.3 Best Disciplined | ✅ n/a | excluded by design |
 | A.4 Best App User | 🚫 **deferred by design** | user will supply the actual list of app data-hit locations when this specific section gets built — not something to chase before then, don't build against the guess in §A.4 |
 | B.1/3/4 core (rate/cap/FIFO/gate payout math) | ✅ **built 2026-09-19** | none — verified against real Postgres (see §B.1/3/4) |
@@ -32,9 +32,9 @@ anything new.
 | The 100001/100000 gate itself | ✅ buildable | none |
 
 **If asked "where do you want to start building," don't re-ask this as an open question —
-the table above already answers it.** Good self-contained starting points with zero open
-items: Product Tracking, A.2, or B.1/3/4's core payout mechanism (add the uptick metric
-once its baseline window is confirmed, as a follow-up, not a prerequisite).
+the table above already answers it.** Product Tracking, A.2, and B.1/3/4 are all built now
+(2026-09-19/20) — good remaining self-contained starting points with zero open items: A.2's
+own sibling A.1 (once its 3-month-averaging open point is resolved) or B.2.
 
 ---
 
@@ -89,8 +89,54 @@ once its baseline window is confirmed, as a follow-up, not a prerequisite).
   pooled 3-month totals directly, is not yet decided — confirm with the user before building.
 
 ### A.2 Highest Product Sales
-- Current month, ranked by **distinct product count** (breadth, not volume) per salesman.
-- No open questions.
+
+Status: **built 2026-09-20** (`processing/commission_campaigns.py::compute_highest_product_sales_ranking`
++ `views/commission_rankings_view.py`) — verified against real Postgres.
+
+- Ranked by **distinct product count** (breadth, not volume) per recipient (salesman or
+  customer), within an admin-set window (defaults to the current calendar month, but not
+  hardcoded — an admin can run it for any window, same as B.1/3/4).
+- **Payout mechanism confirmed 2026-09-20**, resolving the one thing the original doc left
+  unstated: "Yes, both of these are ranked... the number of people who get the prize [is
+  variable]... up till five... this could be two till five... the prizes will be given out
+  on a ranked basis... I can enter the amount that I want to give out... for the first,
+  second, third, based on the number of people I want to give it out to." So: the admin
+  picks **how many winners (2-5)**, then enters **one payout amount per rank position**
+  (1st, 2nd, ... up to that many) — the app ranks recipients by distinct product count and
+  assigns each rank's own amount to whoever lands there. Not a % or proportional payout,
+  and not a single flat amount to everyone in the top N — each rank has its own figure.
+- **Reuses the SAME `commission_campaigns` table as B.1/3/4 — explicit ask: "I don't want
+  to create a different table for every campaign... designate data to the right columns if
+  it's possible. If not, just use the JSONB column that's there."** `campaign_name`,
+  `recipient_type`, `window_start`/`window_end` are reused with their existing meaning;
+  `product_rates` (JSONB) is repurposed to hold `{"num_winners": N, "payouts_by_rank":
+  [amt1, amt2, ...]}` instead of per-product rates; `cap`/`payout_groups`/
+  `uptick_baseline_months` are unused for these rows. `campaign_type` (documented
+  elsewhere as "just a UI category" for B.1/3/4's own 3 values) now also doubles as the
+  mechanism discriminator — `"Highest Product Sales"` for these rows — so each section's
+  own campaign picker filters to its own `campaign_type` value(s) and never shows the
+  other's rows. **A real bug caught during this same build**: B.1/3/4's own picker
+  (`commission_campaigns_view.py::render`) wasn't filtering by `campaign_type` at all
+  before this — a ranking campaign would have shown up in its dropdown and likely crashed
+  its Edit form (which assumes `product_rates` is `{itemcode: rate}`, not
+  `{num_winners, payouts_by_rank}`). Fixed in the same pass.
+- **Same setup/results split as the rest of the feature**: admin Commissions page shows
+  only Create/Edit/Delete, Target Management's "💰 Commission Results" shows only the
+  ranking table — one table, every recipient with sales activity in the window (not just
+  the winners), columns Rank / Code / Name / Distinct Products / Total Qty / Payout (BDT,
+  `—` for non-winners) — same "show everyone with an outcome column" pattern as B.1/3/4's
+  `line_items` table.
+- Ties (identical distinct-product-count at a cutoff rank) are broken by total quantity
+  sold, then by recipient code — not an explicit rule from the user, flagged as an
+  assumption in the code, not confirmed.
+- **Verified** against real Postgres: a synthetic tie-break test (two salesmen tied on
+  distinct-product-count, correctly ranked by quantity as the tiebreak); the
+  `commission_campaigns`-sharing fix (created one B.1/3/4 row and one A.2 row in the same
+  table, confirmed each section's picker only ever sees its own); live in the browser
+  against real sales data (2024, a wide historical window) — Total Payout ৳9,000 (5,000 +
+  3,000 + 1,000) exactly matched the 3 configured rank amounts, and the full ranking table
+  correctly showed real salesmen (Md. Suruj Mia #1 at 211 distinct products, etc.) with the
+  correct rank order, only the top 3 carrying a payout, everyone else showing `—`.
 
 ### A.3 Best Disciplined Salesperson
 - **Excluded** — not trackable from any DB this app touches (selfie/location/dress

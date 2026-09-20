@@ -474,7 +474,15 @@ def render(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
         _render_derived_groups()
         _render_create_campaign()
 
+    # commission_campaigns is now a shared table (A.2's ranking campaigns
+    # write to it too, confirmed 2026-09-20) — filter to this section's own
+    # campaign_type values so a ranking campaign never shows up in this
+    # picker (its product_rates JSONB has a completely different shape:
+    # {num_winners, payouts_by_rank}, not {itemcode: rate}, and would break
+    # the Create/Edit form here if opened).
     campaigns = cc.list_campaigns()
+    if not campaigns.empty:
+        campaigns = campaigns[campaigns["campaign_type"].isin(_CAMPAIGN_TYPES)].reset_index(drop=True)
     if campaigns.empty:
         st.info("No campaigns yet." + (" Create one above." if is_admin else " Ask an admin to create one."))
         return

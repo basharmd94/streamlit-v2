@@ -13,7 +13,7 @@ import streamlit as st
 
 from core.analytics import Analytics
 from processing import commissions as comm, usage_log
-from views import commission_campaigns_view, commission_shared
+from views import commission_campaigns_view, commission_rankings_view, commission_shared
 from views.marketing import _load_final_items  # noqa: F401 — re-exported; avoids duplicate cache
 
 
@@ -266,8 +266,8 @@ def _render_best_performer(zid: str) -> None:
     )
 
 
-def _render_highest_product_sales(zid: str) -> None:
-    _render_placeholder("📦 A.2 — Highest Product Sales")
+def _render_highest_product_sales(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    commission_rankings_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
 def _render_best_app_user(zid: str) -> None:
@@ -311,7 +311,8 @@ def _sections(read_only: bool, key_suffix: str) -> dict:
     return {
         "📋 Product Tracking": lambda zid: _render_product_tracking(zid, read_only=read_only),
         "🏆 Best Performer": _render_best_performer,
-        "📦 Highest Product Sales": _render_highest_product_sales,
+        "📦 Highest Product Sales":
+            lambda zid: _render_highest_product_sales(zid, read_only=read_only, key_suffix=key_suffix),
         "📱 Best App User": _render_best_app_user,
         "🎯 Product / Stock Clearance / Slow-Moving Campaign":
             lambda zid: _render_campaign_payout(zid, read_only=read_only, key_suffix=key_suffix),
