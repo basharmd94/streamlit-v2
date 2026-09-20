@@ -154,12 +154,12 @@ def _render_create_campaign() -> None:
         if product_codes:
             st.caption(
                 "Rate = the per-unit incentive/discount BDT amount for that product "
-                "(e.g. 5 or 3) — not the product's sales price. Cap is optional, per "
-                f"product per {recipient_type}."
+                "(e.g. 5 or 3) — not the product's sales price. Varies per product; "
+                "set the Cap for the whole campaign below."
             )
             for code in product_codes:
                 label = next((l for l, c in label_map.items() if c == code), code)
-                rc1, rc2, rc3 = st.columns([3, 2, 2])
+                rc1, rc2 = st.columns([3, 2])
                 with rc1:
                     st.markdown(f"`{code}`")
                     st.caption(label.split(" - ", 1)[-1])
@@ -167,11 +167,14 @@ def _render_create_campaign() -> None:
                     rate = st.number_input(
                         "Rate (BDT/unit)", min_value=0.0, step=0.5, key=f"cc_new_rate_{code}",
                     )
-                with rc3:
-                    cap_val = st.number_input(
-                        "Cap (BDT, 0 = no cap)", min_value=0.0, step=100.0, key=f"cc_new_cap_{code}",
-                    )
-                product_rates[code] = {"rate": rate, "cap": (cap_val if cap_val > 0 else None)}
+                product_rates[code] = rate
+
+        cap_val = st.number_input(
+            "Cap (BDT, 0 = no cap)", min_value=0.0, step=100.0, key="cc_new_cap",
+            help=f"ONE ceiling for the whole campaign — caps a single {recipient_type}'s TOTAL "
+                 "payout, summed across every product picked above (not a separate cap per product).",
+        )
+        campaign_cap = cap_val if cap_val > 0 else None
 
         today = pd.Timestamp.today().normalize().date()
         c3, c4 = st.columns(2)
@@ -191,7 +194,7 @@ def _render_create_campaign() -> None:
         baseline_months = st.selectbox("Uptick baseline window (months)", [3, 6], key="cc_new_baseline")
         notes = st.text_area("Notes (optional)", key="cc_new_notes")
 
-        all_rates_set = bool(product_rates) and all(v["rate"] > 0 for v in product_rates.values())
+        all_rates_set = bool(product_rates) and all(v > 0 for v in product_rates.values())
         can_create = bool(name.strip()) and all_rates_set
         if not product_codes:
             st.caption("Pick at least one product above.")
@@ -200,7 +203,7 @@ def _render_create_campaign() -> None:
         if st.button("✅ Create Campaign", key="cc_new_create_btn", disabled=not can_create):
             cid = cc.create_campaign(
                 campaign_name=name.strip(), campaign_type=ctype, recipient_type=recipient_type,
-                product_rates=product_rates,
+                product_rates=product_rates, cap=campaign_cap,
                 window_start=str(window_start), window_end=str(window_end),
                 payout_groups=payout_groups, uptick_baseline_months=baseline_months,
                 created_by=st.session_state.get("username", ""), notes=notes,
@@ -220,19 +223,29 @@ def _fmt_bdt(v) -> str:
     return f"৳{v:,.0f}"
 
 
-def _render_campaign_detail(campaign: dict) -> None:
+def _render_campaign_detail(campaign: dict, read_only: bool = False, key_suffix: str = "") -> None:
     recipient_type = campaign.get("recipient_type") or "salesman"
     product_rates = campaign["product_rates"]
-    st.markdown(f"### {campaign['campaign_name']}")
+    cap = campaign.get("cap")
+    cap = float(cap) if cap not in (None, "") and not pd.isna(cap) else None
+
+    today = pd.Timestamp.today().normalize().date()
+    window_end = pd.Timestamp(campaign["window_end"]).date()
+    is_ongoing = window_end >= today
+    status_badge = "🟢 Ongoing" if is_ongoing else "🔴 Closed"
+
+    st.markdown(f"### {campaign['campaign_name']} — {status_badge}")
     st.caption(
         f"{campaign.get('campaign_type') or '—'} · Paid to: **{recipient_type.capitalize()}** · "
         f"Window: {campaign['window_start']} → {campaign['window_end']}"
     )
-    rates_line = " · ".join(
-        f"`{code}`: {_fmt_bdt(v['rate'])}/unit" + (f" (cap {_fmt_bdt(v['cap'])})" if v.get("cap") else "")
-        for code, v in product_rates.items()
-    )
+    rates_line = " · ".join(f"`{code}`: {_fmt_bdt(rate)}/unit" for code, rate in product_rates.items())
     st.caption(f"Rates: {rates_line}")
+    st.caption(
+        f"Cap: **{_fmt_bdt(cap)}** per {recipient_type}, across every product in this campaign combined"
+        if cap is not None else
+        f"Cap: **none** — no ceiling on a {recipient_type}'s total payout"
+    )
 
     with st.spinner("Computing payout (pooled 100001+100000, full-history FIFO)…"):
         sales = _load_pooled_sales()
@@ -267,33 +280,37 @@ def _render_campaign_detail(campaign: dict) -> None:
     if rt_df.empty:
         st.info("No eligible payout yet.")
     else:
-        disp = rt_df.rename(columns={
+        rename_cols = {
             "recipient": f"{recipient_label} Code", "recipient_name": recipient_label,
-            "total_payout": "Payout (BDT)",
-        })
-        st.dataframe(
-            disp.style.format({"Payout (BDT)": "{:,.0f}"}), width="stretch", hide_index=True,
-        )
+            "raw_total_payout": "Raw Total (BDT)", "total_payout": "Payout (BDT)",
+        }
+        # Only show the "Raw Total" column (pre-cap) when a cap is actually
+        # set — with no cap the two columns would always be identical, which
+        # is just noise.
+        cols = ["recipient", "recipient_name"] + (["raw_total_payout"] if cap is not None else []) + ["total_payout"]
+        disp = rt_df[cols].rename(columns=rename_cols)
+        fmt = {"Payout (BDT)": "{:,.0f}"}
+        if cap is not None:
+            fmt["Raw Total (BDT)"] = "{:,.0f}"
+        st.dataframe(disp.style.format(fmt), width="stretch", hide_index=True)
 
     with st.expander(f"Per-{recipient_label}-Per-Product breakdown"):
         rp_df = result["recipient_product"]
         if rp_df.empty:
             st.info("No eligible lines yet.")
         else:
+            st.caption(
+                "Payout per line is uncapped (quantity × rate) — the campaign-wide cap "
+                f"shown above applies once to each {recipient_type}'s TOTAL across every "
+                "product, not to any one line here."
+            )
             disp = rp_df.rename(columns={
                 "recipient": f"{recipient_label} Code", "recipient_name": recipient_label,
-                "itemcode": "Item Code", "quantity": "Qty", "rate": "Rate", "cap": "Cap",
-                "raw_payout": "Raw Payout", "capped_payout": "Capped Payout",
+                "itemcode": "Item Code", "quantity": "Qty", "rate": "Rate", "payout": "Payout",
             })
-            # Pre-format Cap as a string ("—" for no-cap) rather than relying on
-            # Styler na_rep — st.dataframe doesn't reliably respect it for a NaN
-            # in an otherwise-numeric column (same class of issue as CLAUDE.md's
-            # documented TOTAL-row/Styler pitfall).
-            disp["Cap"] = disp["Cap"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
             st.dataframe(
                 disp.style.format({
-                    "Qty": "{:,.0f}", "Rate": "{:,.2f}",
-                    "Raw Payout": "{:,.0f}", "Capped Payout": "{:,.0f}",
+                    "Qty": "{:,.0f}", "Rate": "{:,.2f}", "Payout": "{:,.0f}",
                 }),
                 width="stretch", hide_index=True,
             )
@@ -322,16 +339,24 @@ def _render_campaign_detail(campaign: dict) -> None:
             f"{pct:+.1f}% vs {_fmt_bdt(uptick['baseline_avg_revenue'])}" if pct is not None else "no baseline data",
         )
 
-    if st.session_state.get("user_role") == "admin":
+    if not read_only and st.session_state.get("user_role") == "admin":
         st.divider()
-        if st.button("🗑 Delete This Campaign", key=f"cc_delete_{campaign['id']}"):
+        if st.button("🗑 Delete This Campaign", key=f"cc_delete_{campaign['id']}{key_suffix}"):
             cc.delete_campaign(int(campaign["id"]))
             st.rerun()
 
 
 # ── Top-level section entry point ───────────────────────────────────────────
 
-def render(zid: str) -> None:
+def render(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    """`read_only=True` (used by Target Management's manager-facing Commission
+    Results view, see views/commissions.py::render_section_picker) hides
+    every setup control (roster, create, delete) regardless of the viewer's
+    own role — that view is results-only by design, never a place to set up
+    a campaign, even for an admin who happens to open it from there.
+    `key_suffix` keeps widget keys unique when this is mounted at more than
+    one page (the admin Commissions page and Target Management both call
+    this, same pattern as e.g. views/glpmt_shared.py's key_suffix)."""
     st.subheader("🎯 Product / Stock Clearance / Slow-Moving Campaign")
     st.caption(
         "Rate per unit sold, paid only if the customer's DO is fully collected by a "
@@ -340,7 +365,7 @@ def render(zid: str) -> None:
         "every number below is calculated live from current sales/collection data."
     )
 
-    is_admin = st.session_state.get("user_role") == "admin"
+    is_admin = (not read_only) and st.session_state.get("user_role") == "admin"
     if is_admin:
         _render_derived_groups()
         _render_create_campaign()
@@ -354,7 +379,7 @@ def render(zid: str) -> None:
         f"#{r.id} — {r.campaign_name} ({r.window_start} → {r.window_end})": r.id
         for r in campaigns.itertuples()
     }
-    pick = st.selectbox("Select a campaign", list(labels.keys()), key="cc_select_campaign")
+    pick = st.selectbox("Select a campaign", list(labels.keys()), key=f"cc_select_campaign{key_suffix}")
     campaign = cc.get_campaign(labels[pick])
     if campaign:
-        _render_campaign_detail(campaign)
+        _render_campaign_detail(campaign, read_only=read_only, key_suffix=key_suffix)

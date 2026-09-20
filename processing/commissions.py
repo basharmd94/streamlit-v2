@@ -190,6 +190,29 @@ def build_product_comparisons(
         after_rev = _window_sum(s, itemcode, cutoff, after_end, "totalsales")
         after_ret = _window_sum(r, itemcode, cutoff, after_end, "returnqty")
 
+        before = {
+            "qty_sold": before_sold, "sales_revenue": before_rev,
+            "qty_returned": before_ret, "net_qty": before_sold - before_ret,
+        }
+        after = {
+            "qty_sold": after_sold, "sales_revenue": after_rev,
+            "qty_returned": after_ret, "net_qty": after_sold - after_ret,
+        }
+
+        # Before spans a fixed [back_to, cutoff) window; After is still
+        # running ([cutoff, as_of], growing every day) — so raw totals aren't
+        # a fair comparison once the two windows are different lengths (the
+        # normal case, since After keeps elapsing while Before stays fixed).
+        # Prorate Before's own daily rate to the number of days After has
+        # actually covered so far, giving an apples-to-apples "what Before's
+        # pace would have produced over a period this short" baseline — e.g.
+        # cutoff 2026-09-13, back_to 2026-08-01, as_of 2026-09-20:
+        # before_days=43, after_days=8, prorated = before_total * 8/43.
+        before_days = (cutoff - back_to).days
+        after_days = (as_of - cutoff).days + 1
+        proration = (after_days / before_days) if before_days > 0 else 0.0
+        before_avg_prorated = {k: v * proration for k, v in before.items()}
+
         meta = meta_lookup.get(itemcode, {})
         rows.append({
             "itemcode": itemcode,
@@ -199,14 +222,11 @@ def build_product_comparisons(
             "cutoff": cutoff,
             "back_to": back_to,
             "as_of": as_of,
-            "before": {
-                "qty_sold": before_sold, "sales_revenue": before_rev,
-                "qty_returned": before_ret, "net_qty": before_sold - before_ret,
-            },
-            "after": {
-                "qty_sold": after_sold, "sales_revenue": after_rev,
-                "qty_returned": after_ret, "net_qty": after_sold - after_ret,
-            },
+            "before_days": before_days,
+            "after_days": after_days,
+            "before": before,
+            "before_avg_prorated": before_avg_prorated,
+            "after": after,
         })
 
     rows.sort(key=lambda d: (d["itemname"] or "").lower())

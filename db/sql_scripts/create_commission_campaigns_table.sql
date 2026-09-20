@@ -20,13 +20,21 @@
 -- sync by hand.) payout_groups below only carries each group's own deadline
 -- FOR THIS campaign.
 --
--- Schema revised 2026-09-20 (before this table was ever deployed to the live
--- server -- no ALTER/migration needed, this replaces the original CREATE):
--- product_codes/rate_per_unit/cap_per_salesman_per_product collapsed into one
--- product_rates JSONB (rate AND cap now vary per product, not campaign-wide),
--- and recipient_type added -- the commission can go to the salesman OR the
--- customer on the DO; the collection/deadline eligibility logic is identical
--- either way, only who gets paid differs.
+-- Schema revised 2026-09-20 twice, both before this table was ever deployed
+-- to the live server (confirmed empty before each revision -- no ALTER/
+-- migration needed, straight DROP+recreate both times):
+--   1) product_codes/rate_per_unit/cap_per_salesman_per_product collapsed
+--      into one product_rates JSONB (rate AND cap varying per product), and
+--      recipient_type added -- the commission can go to the salesman OR the
+--      customer on the DO; the collection/deadline eligibility logic is
+--      identical either way, only who gets paid differs.
+--   2) SAME-DAY CORRECTION: the per-product cap in (1) was a
+--      misunderstanding -- the user clarified the cap is meant to be ONE
+--      value for the whole campaign (a ceiling on a recipient's TOTAL
+--      payout summed across every product in the campaign), not a separate
+--      cap per product. product_rates collapsed further to {itemcode: rate}
+--      (plain float, no nested object) and a new top-level `cap` column
+--      holds the single campaign-wide ceiling.
 --
 -- Run this once against the live app database:
 --   psql -h <host> -U <user> -d <dbname> -f db/sql_scripts/create_commission_campaigns_table.sql
@@ -39,14 +47,17 @@ CREATE TABLE IF NOT EXISTS commission_campaigns (
                                              -- 'Stock Clearance' / 'Slow-Moving' -- same
                                              -- mechanism regardless, just a UI category
     recipient_type    VARCHAR(20) NOT NULL DEFAULT 'salesman',  -- 'salesman' or 'customer'
-    product_rates     JSONB NOT NULL,       -- {"ITEMCODE1": {"rate": 5.0, "cap": 2000.0},
-                                             --  "ITEMCODE2": {"rate": 3.0, "cap": null}}
+    product_rates     JSONB NOT NULL,       -- {"ITEMCODE1": 5.0, "ITEMCODE2": 3.0}
                                              -- rate = per-unit INCENTIVE/discount amount
                                              -- (e.g. 5 or 3 BDT), NOT the product's sales
-                                             -- price -- both rate and cap vary per product
+                                             -- price -- varies per product, cap does not
+                                             -- (see `cap` column below)
+    cap               NUMERIC(18,2),        -- ONE ceiling for the whole campaign -- caps a
+                                             -- single recipient's TOTAL payout, summed across
+                                             -- every product in this campaign. NULL = no cap.
     window_start      DATE NOT NULL,        -- sales window: which DOs are eligible
     window_end        DATE NOT NULL,
-    payout_groups     JSONB NOT NULL,       -- {"Dhaka": "2026-10-15", "District": "2026-10-31"}
+    payout_groups     JSONB NOT NULL,       -- {"Dhaka retail": "2026-10-15", "District": "2026-10-31"}
                                              -- group name -> this campaign's own collection
                                              -- deadline for that group -- always keyed off
                                              -- the DO's own salesman's group, regardless of

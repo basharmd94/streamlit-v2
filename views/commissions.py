@@ -179,23 +179,39 @@ def _render_comparison_table(entry: dict) -> None:
     itemgroup = entry["itemgroup"] or "—"
     stock = entry["current_stock"]
     before, after = entry["before"], entry["after"]
-    change = {k: after[k] - before[k] for k in before}
+    before_avg = entry["before_avg_prorated"]
+    before_days, after_days = entry["before_days"], entry["after_days"]
+    # Change is measured against the PRORATED Before average, not the raw
+    # Before total — After is still an in-progress window (elapsed since
+    # cutoff, growing daily) while Before is a fixed, usually much longer,
+    # window; comparing raw totals of two differently-sized windows would
+    # always make After look artificially small. The prorated row is the
+    # fair baseline.
+    change = {k: after[k] - before_avg[k] for k in after}
 
     with st.container(border=True):
         st.markdown(f"#### `{itemcode}` — {itemname}")
         stock_txt = _fmt_metric(stock)
         st.caption(f"Item Group: {itemgroup} · Current Stock: {stock_txt}")
         st.caption(
-            f"Before: **{entry['back_to'].date()} → {entry['cutoff'].date()}**  |  "
-            f"After: **{entry['cutoff'].date()} → {entry['as_of'].date()}**"
+            f"Before: **{entry['back_to'].date()} → {entry['cutoff'].date()}** ({before_days}d)  |  "
+            f"After: **{entry['cutoff'].date()} → {entry['as_of'].date()}** ({after_days}d, ongoing)"
+        )
+        st.caption(
+            f"Before Avg (prorated) = Before × ({after_days}d ÷ {before_days}d) — what Before's own "
+            f"daily pace would have produced over a period as short as After's {after_days} days so far."
         )
 
         metric_cols = ["Qty Sold", "Sales Revenue", "Qty Returned", "Net Qty"]
         key_map = {"Qty Sold": "qty_sold", "Sales Revenue": "sales_revenue",
                    "Qty Returned": "qty_returned", "Net Qty": "net_qty"}
         rows = []
-        for label, metrics, signed in [("Before", before, False), ("After", after, False),
-                                        ("Change (After − Before)", change, True)]:
+        for label, metrics, signed in [
+            ("Before", before, False),
+            (f"Before Avg (prorated to {after_days}d)", before_avg, False),
+            ("After", after, False),
+            ("Change (After − Prorated Avg)", change, True),
+        ]:
             row = {"Period": label}
             for col in metric_cols:
                 row[col] = _fmt_metric(metrics[key_map[col]], signed)
@@ -217,19 +233,23 @@ def _comparisons_to_long_df(rows: list) -> pd.DataFrame:
     """Raw-numeric long format (one row per product per period) for CSV export."""
     out = []
     for entry in rows:
-        for period, metrics in [("Before", entry["before"]), ("After", entry["after"])]:
+        periods = [
+            ("Before", entry["before"], entry["back_to"], entry["cutoff"]),
+            ("Before Avg (Prorated)", entry["before_avg_prorated"], entry["back_to"], entry["cutoff"]),
+            ("After", entry["after"], entry["cutoff"], entry["as_of"]),
+        ]
+        for period, metrics, wstart, wend in periods:
             out.append({
                 "Item Code": entry["itemcode"], "Item Name": entry["itemname"],
                 "Item Group": entry["itemgroup"], "Period": period,
-                "Window Start": (entry["back_to"] if period == "Before" else entry["cutoff"]).date(),
-                "Window End": (entry["cutoff"] if period == "Before" else entry["as_of"]).date(),
+                "Window Start": wstart.date(), "Window End": wend.date(),
                 "Qty Sold": metrics["qty_sold"], "Sales Revenue": metrics["sales_revenue"],
                 "Qty Returned": metrics["qty_returned"], "Net Qty": metrics["net_qty"],
             })
     return pd.DataFrame(out)
 
 
-def _render_product_tracking(zid: str) -> None:
+def _render_product_tracking(zid: str, read_only: bool = False) -> None:
     st.subheader("📋 Product Tracking")
     st.caption(
         "A small hand-picked watchlist of products, each with its own Before/After "
@@ -241,7 +261,11 @@ def _render_product_tracking(zid: str) -> None:
     items_df = _load_final_items(str(zid))
     watchlist = comm.load_watchlist(zid)
 
-    is_admin = st.session_state.get("user_role") == "admin"
+    # read_only=True (Target Management's manager-facing Commission Results
+    # view, see render_section_picker below) never shows the editor, even
+    # for an admin viewing it from there — that view is results-only by
+    # design.
+    is_admin = (not read_only) and st.session_state.get("user_role") == "admin"
     if is_admin:
         with st.expander(
             f"⚙️ Manage Watchlist ({len(watchlist)}/{comm.MAX_WATCHLIST_ITEMS})",
@@ -274,7 +298,7 @@ def _render_product_tracking(zid: str) -> None:
         data=long_df.to_csv(index=False).encode("utf-8"),
         file_name=f"product_tracking_{zid}_{today:%Y_%m_%d}.csv",
         mime="text/csv",
-        key="dl_product_tracking",
+        key=f"dl_product_tracking{'_ro' if read_only else ''}",
     )
 
 
@@ -309,11 +333,11 @@ def _render_best_app_user(zid: str) -> None:
     )
 
 
-def _render_campaign_payout(zid: str) -> None:
-    commission_campaigns_view.render(zid)
+def _render_campaign_payout(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    commission_campaigns_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
-def _render_individual_target(zid: str) -> None:
+def _render_individual_target(zid: str, read_only: bool = False) -> None:
     _render_placeholder(
         "🎯 B.2 — Individual Target Achievement",
         "Buildable now. One unconfirmed assumption: whether the 100001/100000 "
@@ -321,7 +345,7 @@ def _render_individual_target(zid: str) -> None:
     )
 
 
-def _render_new_customer(zid: str) -> None:
+def _render_new_customer(zid: str, read_only: bool = False) -> None:
     _render_placeholder(
         "🆕 B.5 — New Customer Creation",
         "Not scoped yet — needs real design work with the user before building "
@@ -330,15 +354,40 @@ def _render_new_customer(zid: str) -> None:
     )
 
 
-_SECTIONS = {
-    "📋 Product Tracking": _render_product_tracking,
-    "🏆 Best Performer": _render_best_performer,
-    "📦 Highest Product Sales": _render_highest_product_sales,
-    "📱 Best App User": _render_best_app_user,
-    "🎯 Product / Stock Clearance / Slow-Moving Campaign": _render_campaign_payout,
-    "🎯 Individual Target Achievement": _render_individual_target,
-    "🆕 New Customer Creation": _render_new_customer,
-}
+def _sections(read_only: bool, key_suffix: str) -> dict:
+    """One entry per commission_tracking_design.md item — every section
+    renderer takes `read_only` (Product Tracking's watchlist editor / B.1/3/4's
+    roster+create+delete controls all hide when True, regardless of the
+    viewer's actual role) so the exact same dict can back both the admin
+    Commissions page (read_only=False) and Target Management's manager-facing
+    "no setup, just results" Commission Results view (read_only=True, see
+    render_section_picker below). A not-yet-built section's placeholder
+    ignores read_only — there's nothing to hide yet."""
+    return {
+        "📋 Product Tracking": lambda zid: _render_product_tracking(zid, read_only=read_only),
+        "🏆 Best Performer": _render_best_performer,
+        "📦 Highest Product Sales": _render_highest_product_sales,
+        "📱 Best App User": _render_best_app_user,
+        "🎯 Product / Stock Clearance / Slow-Moving Campaign":
+            lambda zid: _render_campaign_payout(zid, read_only=read_only, key_suffix=key_suffix),
+        "🎯 Individual Target Achievement": _render_individual_target,
+        "🆕 New Customer Creation": _render_new_customer,
+    }
+
+
+def render_section_picker(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    """The shared "pick a commission type, see that section" picker — mounted
+    on the admin Commissions page (read_only=False) and, per explicit ask
+    2026-09-20, on Target Management's "🎯 Commission Results" mode
+    (read_only=True) so managers can check results without admin setup
+    access. Covers every section in commission_tracking_design.md, built or
+    not — a not-yet-built one shows the same placeholder either place."""
+    sections = _sections(read_only, key_suffix)
+    section = st.selectbox("Commission Campaign", list(sections.keys()), key=f"comm_section{key_suffix}")
+    usage_log.log_view("Commissions", section)
+
+    st.divider()
+    sections[section](zid)
 
 
 def display_commissions_page(current_page: str, zid: str) -> None:
@@ -347,9 +396,4 @@ def display_commissions_page(current_page: str, zid: str) -> None:
         "Design doc: `commission_tracking_design.md` (status: agreed design). "
         "Sections below are built one at a time, discussed before coding."
     )
-
-    section = st.selectbox("Commission Campaign", list(_SECTIONS.keys()), key="comm_section")
-    usage_log.log_view("Commissions", section)
-
-    st.divider()
-    _SECTIONS[section](zid)
+    render_section_picker(zid, read_only=False)

@@ -136,7 +136,7 @@ def derive_spid_group_map(area_group_map: dict | None = None, valid_spids: set |
 
 def create_campaign(
     campaign_name: str, campaign_type: str, recipient_type: str, product_rates: dict,
-    window_start, window_end, payout_groups: dict,
+    cap: float | None, window_start, window_end, payout_groups: dict,
     uptick_baseline_months: int, created_by: str, notes: str = "",
 ) -> int | None:
     """Inserts a new campaign row, returns its id (None on failure).
@@ -144,21 +144,26 @@ def create_campaign(
     `recipient_type`: "salesman" or "customer" — who the commission is paid
     to. Confirmed 2026-09-19: the underlying payment/date/collection-deadline
     structure is identical either way; only who receives the payout differs.
-    `product_rates`: {itemcode: {"rate": float, "cap": float|None}} — rate is
-    the per-unit INCENTIVE/discount amount (e.g. 5 or 3 BDT), not the
-    product's sales price, and both rate and cap can differ per product
-    (confirmed 2026-09-19 — was a single campaign-wide rate/cap before).
+    `product_rates`: {itemcode: float} — rate is the per-unit
+    INCENTIVE/discount amount (e.g. 5 or 3 BDT), not the product's sales
+    price, and varies per product.
+    `cap`: ONE ceiling for the whole campaign (or None for no cap) — caps a
+    single recipient's TOTAL payout, summed across every product in this
+    campaign. Confirmed 2026-09-20 (same day as the recipient_type/
+    per-product-rate correction above): the cap is campaign-wide, not
+    per-product — an earlier version of this function had it per product,
+    which was a misunderstanding, corrected same-day.
     """
     sql = """
         INSERT INTO commission_campaigns
-            (campaign_name, campaign_type, recipient_type, product_rates,
+            (campaign_name, campaign_type, recipient_type, product_rates, cap,
              window_start, window_end, payout_groups, uptick_baseline_months,
              created_by, notes)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """
     params = (
-        campaign_name, campaign_type, recipient_type, json.dumps(product_rates),
+        campaign_name, campaign_type, recipient_type, json.dumps(product_rates), cap,
         window_start, window_end, json.dumps(payout_groups),
         uptick_baseline_months, created_by, notes,
     )
@@ -168,7 +173,7 @@ def create_campaign(
 
 def list_campaigns() -> pd.DataFrame:
     sql = """
-        SELECT id, campaign_name, campaign_type, recipient_type, product_rates,
+        SELECT id, campaign_name, campaign_type, recipient_type, product_rates, cap,
                window_start, window_end, payout_groups, uptick_baseline_months,
                created_by, created_at, notes
         FROM commission_campaigns
@@ -180,6 +185,7 @@ def list_campaigns() -> pd.DataFrame:
     df = pd.DataFrame(records, columns=cols)
     df["product_rates"] = df["product_rates"].apply(lambda v: v if isinstance(v, dict) else json.loads(v))
     df["payout_groups"] = df["payout_groups"].apply(lambda v: v if isinstance(v, dict) else json.loads(v))
+    df["cap"] = pd.to_numeric(df["cap"], errors="coerce")
     return df
 
 
@@ -429,10 +435,16 @@ def compute_campaign_payout(
     off the DO's own salesman's payout group, since the deadline is a
     logistics/territory concept, not a recipient concept.
 
-    `product_rates` = {itemcode: {"rate": float, "cap": float|None}} — rate
-    is the per-unit incentive/discount amount (confirmed 2026-09-19, e.g. 5
-    or 3 BDT — NOT the product's sales price), and both rate and cap can
-    differ per product.
+    `product_rates` = {itemcode: float} — rate is the per-unit
+    incentive/discount amount (confirmed 2026-09-19, e.g. 5 or 3 BDT — NOT
+    the product's sales price), and varies per product.
+
+    `cap` (on the campaign dict, may be None) — ONE ceiling for the whole
+    campaign, confirmed 2026-09-20: caps a single recipient's TOTAL payout,
+    summed across every product in the campaign — NOT a per-product cap
+    (an earlier version had it per-product; corrected same day). Applied at
+    the recipient_total level below, after summing every product's payout
+    for that recipient.
 
     `spid_group_map` = {spid: group}, from derive_spid_group_map() — derived
     live from prmst.xdisease + cacus.xstate (confirmed 2026-09-20), not a
@@ -440,6 +452,8 @@ def compute_campaign_payout(
     """
     product_rates = campaign["product_rates"]
     product_codes = list(product_rates.keys())
+    cap = campaign.get("cap")
+    cap = float(cap) if cap not in (None, "") and not pd.isna(cap) else None
     recipient_type = campaign.get("recipient_type") or "salesman"
     window_start, window_end = campaign["window_start"], campaign["window_end"]
     groups_deadlines = campaign["payout_groups"]  # {"Dhaka retail": "2026-10-15", ...}
@@ -494,11 +508,13 @@ def compute_campaign_payout(
         )
 
     rates_df = pd.DataFrame(
-        [{"itemcode": code, "rate": float(v["rate"]), "cap": (float(v["cap"]) if v.get("cap") not in (None, "") else None)}
-         for code, v in product_rates.items()]
+        [{"itemcode": code, "rate": float(rate)} for code, rate in product_rates.items()]
     )
 
-    recipient_product = pd.DataFrame(columns=["recipient", "recipient_name", "itemcode", "quantity", "rate", "cap", "raw_payout", "capped_payout"])
+    # No per-product cap anymore — each line is just quantity x rate. The
+    # single campaign-wide `cap` (if set) applies once, below, to a
+    # recipient's TOTAL across every product, not to any one line here.
+    recipient_product = pd.DataFrame(columns=["recipient", "recipient_name", "itemcode", "quantity", "rate", "payout"])
     if not line_detail.empty:
         recipient_product = (
             line_detail.groupby(["recipient", "recipient_name", "itemcode"], as_index=False)
@@ -506,17 +522,16 @@ def compute_campaign_payout(
         )
         recipient_product["quantity"] = pd.to_numeric(recipient_product["quantity"], errors="coerce")
         recipient_product = recipient_product.merge(rates_df, on="itemcode", how="left")
-        recipient_product["raw_payout"] = recipient_product["quantity"] * recipient_product["rate"]
-        cap_filled = recipient_product["cap"].astype(float)
-        cap_filled = cap_filled.where(cap_filled.notna(), other=float("inf"))
-        recipient_product["capped_payout"] = recipient_product["raw_payout"].clip(upper=cap_filled)
+        recipient_product["payout"] = recipient_product["quantity"] * recipient_product["rate"]
 
-    recipient_total = pd.DataFrame(columns=["recipient", "recipient_name", "total_payout"])
+    recipient_total = pd.DataFrame(columns=["recipient", "recipient_name", "raw_total_payout", "total_payout"])
     if not recipient_product.empty:
         recipient_total = (
             recipient_product.groupby(["recipient", "recipient_name"], as_index=False)
-                             .agg(total_payout=("capped_payout", "sum"))
+                             .agg(raw_total_payout=("payout", "sum"))
         )
+        cap_upper = cap if cap is not None else float("inf")
+        recipient_total["total_payout"] = recipient_total["raw_total_payout"].clip(upper=cap_upper)
 
     gate = check_gate(sales_line_items, window_start, window_end)
     uptick = compute_uptick(sales_line_items, product_codes, window_start, window_end, campaign["uptick_baseline_months"])
@@ -525,6 +540,7 @@ def compute_campaign_payout(
 
     return {
         "recipient_type": recipient_type,
+        "cap": cap,
         "gate": gate,
         "gate_passed": gate["passed"],
         "total_payout_if_gate_passed": total_payout,

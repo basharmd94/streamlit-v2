@@ -113,13 +113,18 @@ These three items in the source doc are mechanically identical per the user's ow
 B.4 ("same as product incentives, nothing different") — one feature, not three:
 
 - Pick product(s), set a **rate per unit sold**, an optional **cap**.
-- **Rate and cap both vary PER PRODUCT, not one flat value for the whole campaign —
-  confirmed 2026-09-20** (corrected from an earlier single-campaign-wide framing). **Rate
-  is the per-unit incentive/discount BDT amount being offered on that product (e.g. 5 or
-  3), NOT the product's sales price** — this was explicitly ambiguous and the user
-  resolved it directly: "the commissions for these I will set the discount rate so BDT 5
-  or BDT 3 etc and per product." Cap is "per recipient per product" (see recipient_type
-  below), also settable per product, optional.
+- **Rate varies PER PRODUCT; cap is ONE value for the whole campaign — confirmed
+  2026-09-20, in two steps.** First correction: rate is the per-unit incentive/discount
+  BDT amount being offered on that product (e.g. 5 or 3), NOT the product's sales price —
+  this was explicitly ambiguous and the user resolved it directly: "the commissions for
+  these I will set the discount rate so BDT 5 or BDT 3 etc and per product," and at the
+  same time both rate AND cap were made to vary per product (corrected from an earlier
+  single-campaign-wide framing). **Second, same-day correction**: the per-product cap was
+  a misunderstanding on top of the first correction — the user clarified directly: "the
+  cap is one cap that applies to all salesman. Not per product. I think I did not explain
+  this properly before." The cap is ONE ceiling for the whole campaign, capping a single
+  recipient's (salesman or customer, per recipient_type below) TOTAL payout summed across
+  every product in the campaign — not a separate ceiling per product line.
 - **The commission can be paid to either the SALESMAN or the CUSTOMER on the DO —
   confirmed 2026-09-19/20.** "The underlying payment, date structure, after payment
   structure will remain the same" regardless of which — i.e. DO eligibility (fully
@@ -204,19 +209,22 @@ CREATE TABLE commission_campaigns (
                                            -- mechanism either way, just lets the user
                                            -- categorize campaigns in a list view
     recipient_type    VARCHAR(20) NOT NULL DEFAULT 'salesman',  -- 'salesman' or 'customer'
-    product_rates     JSONB NOT NULL,     -- {"ITEMCODE1": {"rate": 5.0, "cap": 2000.0},
-                                           --  "ITEMCODE2": {"rate": 3.0, "cap": null}}
+    product_rates     JSONB NOT NULL,     -- {"ITEMCODE1": 5.0, "ITEMCODE2": 3.0}
                                            -- rate = per-unit INCENTIVE/discount amount
                                            -- (e.g. 5 or 3 BDT), NOT the product's sales
-                                           -- price -- both rate and cap vary per product
+                                           -- price -- varies per product, cap does not
+                                           -- (see `cap` column below)
+    cap               NUMERIC(18,2),      -- ONE ceiling for the whole campaign -- caps a
+                                           -- single recipient's TOTAL payout, summed
+                                           -- across every product. NULL = no cap.
     window_start      DATE NOT NULL,      -- sales window: which DOs are even eligible
     window_end        DATE NOT NULL,
-    payout_groups     JSONB NOT NULL,     -- {"Dhaka": "2026-10-15", "District": "2026-10-31"}
+    payout_groups     JSONB NOT NULL,     -- {"Dhaka retail": "2026-10-15", "District": "2026-10-31"}
                                            -- group name -> THIS campaign's own collection
-                                           -- deadline for that group. Salesman roster per
-                                           -- group comes from the separate JSON file above.
-                                           -- Always salesman-keyed regardless of
-                                           -- recipient_type -- see note above.
+                                           -- deadline for that group. Salesman group
+                                           -- membership is derived live, not stored here
+                                           -- (see above). Always salesman-keyed regardless
+                                           -- of recipient_type -- see note above.
     uptick_baseline_months INTEGER DEFAULT 3,  -- companion-metric baseline window
     created_by        VARCHAR(50),
     created_at        TIMESTAMPTZ DEFAULT now(),
@@ -248,15 +256,18 @@ form, campaign list/detail) — wired into the Commissions page's dropdown. The
   overpay with no further DOs, a DO that never gets paid) — all pass.
   `build_do_totals` carries both salesman AND customer id/name on every DO row (added
   2026-09-20) so either `recipient_type` can be served from the same resolved ledger.
-- **Payout**: eligible DOs (in the campaign's sales window, salesman in a roster group,
+- **Payout**: eligible DOs (in the campaign's sales window, salesman in a payout group,
   paid by that group's deadline) → sum qty of the picked product(s) on that DO → × that
-  product's own rate → capped per recipient (salesman or customer) per product → summed
-  per recipient. Verified against real data down to the individual line (22 units × ৳5 =
-  ৳110, cross-checked against a standalone computation) and cap-clipping verified with a
-  deliberately low cap. **Verified the recipient-grouping choice is capping-neutral the
-  way it should be**: summed raw (pre-cap) payout came out identical (312) whether grouped
-  by salesman or by customer against the same real data — same underlying line items
-  either way, only where the cap binds differs, correctly, by recipient granularity.
+  product's own rate → summed per recipient ACROSS every product → then the single
+  campaign-wide cap (if set) is applied ONCE to that recipient's total (see the
+  same-day cap redesign note below — this bullet already reflects the corrected,
+  shipped behavior, not the original per-product-cap version). Verified against real
+  data down to the individual line (22 units × ৳5 = ৳110, cross-checked against a
+  standalone computation). **Verified the recipient-grouping choice is capping-neutral
+  the way it should be**: summed raw (pre-cap) payout came out identical (312) whether
+  grouped by salesman or by customer against the same real data — same underlying line
+  items either way, only where the cap binds differs, correctly, by recipient
+  granularity.
 - **Gate**: `zid_target_sum` (sum of `data/targets.json` entries for the ZID across the
   window's calendar months) vs. `zid_actual_sales` (`final_sales` summed in-window) —
   fails the whole campaign's payout if either ZID misses.
@@ -313,6 +324,82 @@ no crash — gate/payout/uptick all rendered correctly at zero. The DO-exclusion
 itself wasn't re-exercised with a real historical window in this pass (unchanged code,
 already verified in the original build above) — flagged only for completeness, not treated
 as a gap.
+
+#### Cap redesign, Product Tracking prorated row, and a Target Management results view (2026-09-20)
+
+Three follow-up asks in one message, after the user tried the shipped feature on the live
+server:
+
+1. **Cap corrected from per-product to campaign-wide.** The user's own words: "In
+   product/stock clearance commissions, the cap is one cap that applies to all salesman.
+   Not per product. I think I did not explain this properly before." `product_rates`
+   collapsed from `{itemcode: {"rate", "cap"}}` to plain `{itemcode: rate}`, and a new
+   top-level `cap` column on `commission_campaigns` holds ONE ceiling for the whole
+   campaign. `compute_campaign_payout` now sums `quantity x rate` per product per
+   recipient with no capping at that level, groups to `recipient_total` (raw, summed
+   across every product), and applies the cap once there
+   (`raw_total_payout.clip(upper=cap)`). The table had zero real rows on the live server
+   (confirmed with the user before touching the schema) so this was a straight
+   drop+recreate of `commission_campaigns`, not a migration. UI: the create-campaign form
+   now has ONE "Cap (BDT, 0 = no cap)" input below the per-product rate rows (not one per
+   product); the campaign detail view shows a "Raw Total (BDT)" column alongside "Payout
+   (BDT)" in the per-recipient table only when a cap is actually set (otherwise the two
+   would always be identical, which is just noise), and the per-product breakdown table
+   dropped its "Cap"/"Capped Payout" columns entirely — a line there is just
+   quantity × rate, uncapped, with a caption pointing at the campaign-wide cap shown
+   above. **Verified**: a synthetic case (one salesman, two products, 150+90=240 raw)
+   correctly capped to 100 at the recipient-total level, not per product; live in the
+   browser, a real 2-product campaign with rate 5/3 and cap 100 rendered the single Cap
+   input and the correct capped-total caption end to end.
+
+2. **Product Tracking gained a prorated "Before Avg" row.** The user's own example: cutoff
+   2026-09-13, back_to 2026-08-01 (Before spans ~6 weeks), today 2026-09-20 (After has
+   only run ~1 week so far) — Before totaled 453 units, After only 61 so far. Comparing
+   453 to 61 directly is misleading since the two windows are wildly different lengths (43
+   days vs. 8); the user wants a fair baseline: "453/6 thats 75.5. Means this product lost
+   sales over the last 7 days." `processing/commissions.py::build_product_comparisons` now
+   computes `before_days = (cutoff - back_to).days`, `after_days = (as_of - cutoff).days +
+   1`, and a new `before_avg_prorated` dict = `before_total × (after_days / before_days)`
+   for every metric (qty sold, revenue, qty returned, net qty) — the exact-day-count
+   version of the user's own hand-rounded-to-weeks approximation (453 × 8/43 = 84.28 here,
+   vs. the user's manually-rounded 75.5; same direction, more precise). Rendered as a new
+   row between Before and After (`_render_comparison_table` in `views/commissions.py`),
+   and the **Change row's formula changed from `After − Before` to `After − Prorated
+   Avg`** — comparing After against the raw (much longer) Before total would always make
+   it look artificially small, the prorated row is the fair comparison. Both captions and
+   the CSV export were updated to include the new row. **Verified**: a script reproducing
+   the user's own numbers (453 before, cutoff/back_to as given) confirms before_days=43,
+   after_days=8, prorated=84.28; live in the browser, a real watchlist product rendered
+   all 4 rows (Before 25, Before Avg (prorated to 1d) 1, After 0, Change -1) correctly.
+
+3. **A read-only "Commission Results" view in Target Management, for managers.** The
+   user's own framing: "the admin will setup the commissions, But i would like a radio
+   view within target management which just shows the result of whatever commission
+   campaign my managers would like to see... no setup just result based on campaign
+   choice," explicitly scoped to cover every section "from product tracker to new
+   customer creation," present and future. Rather than duplicate the Commissions page's
+   section list, `views/commissions.py::display_commissions_page` was refactored: the
+   `_SECTIONS` dict became `_sections(read_only, key_suffix)` (a function, so every
+   section renderer can be parameterized) behind a new shared
+   `render_section_picker(zid, read_only, key_suffix)`. Every section renderer that has
+   setup controls (`_render_product_tracking`'s watchlist editor,
+   `commission_campaigns_view.render`'s roster/create/delete) now takes `read_only: bool`
+   and hides those controls when `True` — **regardless of the viewer's own role**, not
+   just because a non-admin already couldn't see them; this guarantees the Target
+   Management mount point is never a setup surface even for an admin who opens it from
+   there. `views/target_management.py` gained a new `"💰 Commission Results"` radio option
+   calling `commissions.render_section_picker(zid, read_only=True, key_suffix="_tm")` —
+   no new page_permissions grant needed, since Target Management access already covers
+   every role that should see this. Also added while touching the shared detail
+   renderer: a 🟢 Ongoing / 🔴 Closed status badge on each campaign (`window_end >= today`)
+   — the user asked for "whether its on going or not" alongside the result, and this
+   applies wherever `_render_campaign_detail` is used, not just the new view. **Verified**:
+   logged in as a real non-admin role (`sales`, which already has Target Management
+   access) and confirmed the new radio option shows both Product Tracking and the Stock
+   Clearance campaign with zero setup controls (no Manage Watchlist expander, no Payout
+   Groups/Create New Campaign expanders, no Delete button) while still showing full
+   detail, status, and current result — same campaign, same data, as the admin-only
+   Commissions page.
 
 #### For future note (2026-09-19/20) — recipient type across the rest of A/B
 

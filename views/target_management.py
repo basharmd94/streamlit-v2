@@ -1078,7 +1078,8 @@ def display_target_management_page(current_page, zid, data_dict):
         ["👤 Individual Salesman", "📅 Daily Breakdown", "📊 All Salesmen Overview", "🎯 Salesman Score",
          "📊 3 Month Averages", "🧾 SR Trn",
          "📦 Current Stock", "🔮 Next Month Target", "🗺️ Field Tracking",
-         "📲 App Collections", "↩️ Returns Registry", "💬 Feedback", "🚦 DO Creation Audit"],
+         "📲 App Collections", "↩️ Returns Registry", "💬 Feedback", "🚦 DO Creation Audit",
+         "💰 Commission Results"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -1236,6 +1237,18 @@ def display_target_management_page(current_page, zid, data_dict):
 
     if _view_mode == "🚦 DO Creation Audit":
         render_do_creation_audit_panel(str(zid), key_suffix="_tm")
+        return
+
+    if _view_mode == "💰 Commission Results":
+        # Manager-facing, no setup — same commission engines/sections as the
+        # admin-only Commissions page, but read_only=True hides every
+        # create/edit/delete control regardless of the viewer's own role.
+        # Explicit ask 2026-09-20: covers every commission type (Product
+        # Tracking through New Customer Creation), same picker either place.
+        from views import commissions as _commissions_view
+        st.subheader("💰 Commission Results")
+        st.caption("Pick a commission type below to see its current result — setup happens on the Commissions page (admin only).")
+        _commissions_view.render_section_picker(str(zid), read_only=True, key_suffix="_tm")
         return
 
     # ── Filters: salesman (single), customer, area (cascading) ────────────────

@@ -855,16 +855,42 @@ Full design (rankings, campaigns, the pooled-FIFO/gate mechanics) lives in **`co
 time, discussed with the user before each piece, per that doc's own "discuss before building" rule.
 
 - **Page structure**: a single top-level `st.selectbox("Commission Campaign", ...)` dropdown routes to one
-  section-renderer per doc item (`_SECTIONS` dict in `views/commissions.py`). Every design-doc section
-  (A.1 Best Performer, A.2 Highest Product Sales, A.4 Best App User, B.1/3/4 Campaign, B.2 Individual Target,
-  B.5 New Customer) already has a dropdown entry — sections not yet built show a `st.info` placeholder pointing
-  back at the relevant doc section instead of a blank/missing option, so the dropdown's shape doesn't need to
-  change as each piece gets picked up.
+  section-renderer per doc item — `views/commissions.py::_sections(read_only, key_suffix)` (a function, not a
+  plain dict, since 2026-09-20 — see below) returns the same 7-entry map every time (A.1 Best Performer, A.2
+  Highest Product Sales, A.4 Best App User, B.1/3/4 Campaign, B.2 Individual Target, B.5 New Customer). Sections
+  not yet built show a `st.info` placeholder pointing back at the relevant doc section instead of a
+  blank/missing option, so the dropdown's shape doesn't need to change as each piece gets picked up. The picker
+  itself is `render_section_picker(zid, read_only, key_suffix)`, called both by `display_commissions_page`
+  (admin page, `read_only=False`) and by Target Management's "💰 Commission Results" mode (`read_only=True`) —
+  see that section's own note below.
 - **Access**: `page_permissions` grants `'admin'` only for now (`db/sql_scripts/grant_commissions_page_permission.sql`,
   same non-destructive-INSERT convention as `create_view_usage_log_table.sql`'s "Usage Stats" grant) — a new,
-  compensation-sensitive page defaults to admin-only; widen to other roles later if actually wanted.
+  compensation-sensitive page defaults to admin-only; widen to other roles later if actually wanted. Managers
+  see RESULTS ONLY via Target Management instead (see below) — that's a separate, narrower access path, not a
+  widening of this page's own admin-only gate.
 - **Instrumented** in Usage Stats the same way every other page is — `usage_log.log_view("Commissions", section)`
   right after the dropdown, `"Commissions"` added to `usage_log.ALL_PAGES`.
+
+### Commission Results — read-only view in Target Management (2026-09-20)
+
+`views/target_management.py`'s `"💰 Commission Results"` radio mode — explicit ask: "the admin will setup the
+commissions, But i would like a radio view within target management which just shows the result of whatever
+commission campaign my managers would like to see," covering every section "from product tracker to new
+customer creation," not just B.1/3/4. Calls the exact same `commissions.render_section_picker(zid,
+read_only=True, key_suffix="_tm")` the admin Commissions page uses — same sections, same data, same campaign
+picker — no new page_permissions grant needed since Target Management access already covers this.
+
+**`read_only: bool` threads through every section renderer that has setup controls**
+(`_render_product_tracking`'s watchlist editor, `commission_campaigns_view.render`'s payout-groups/create/delete)
+and hides them when `True` — **regardless of the viewer's own `user_role`**, not merely because a non-admin
+couldn't already see them. This guarantees the Target Management mount point is never a setup surface, even for
+an admin who happens to open it from there. `key_suffix` (mirroring `views/glpmt_shared.py`'s existing pattern)
+keeps widget keys from colliding since the exact same picker/campaign-detail widgets are now mounted at two
+different pages.
+
+Also added while touching the shared detail renderer (benefits both mount points): a 🟢 Ongoing / 🔴 Closed
+status badge on each campaign in `_render_campaign_detail`, based on `window_end >= today` — explicit ask
+("whether its on going or not").
 
 ### Product Tracking (only section built so far)
 
@@ -887,8 +913,18 @@ committed) into a **per-product Before/After comparison** — see
   `update_product_dates` and by the date-input widgets' own `min_value`/`max_value`, so an
   invalid combination is hard to even enter, not just rejected after the fact.
 - **Each watched product has its own cutoff/back_to** — rendered as its own separate
-  table (`_render_comparison_table`: Before row, After row, Change row = After − Before,
-  signed), not one shared grid across products.
+  table (`_render_comparison_table`), not one shared grid across products. **4 rows as of
+  2026-09-20**: Before, **Before Avg (prorated)**, After, Change (After − Prorated Avg).
+  Explicit ask: the raw Before total (a fixed, usually much longer window) isn't a fair
+  comparison against the After total (a still-running window, growing every day) — the
+  user's own example: Before 453 over ~6 weeks vs. After 61 over ~1 week so far, "453/6
+  thats 75.5. Means this product lost sales over the last 7 days." The prorated row =
+  `before_total × (after_days / before_days)` (exact day counts, computed in
+  `build_product_comparisons` — `before_days = (cutoff - back_to).days`, `after_days =
+  (as_of - cutoff).days + 1`), giving the more-precise version of the user's own
+  hand-rounded-to-weeks math. **Change is now `After − Prorated Avg`, not `After −
+  Before`** — comparing After against the full-length raw Before would always make it
+  look artificially small.
 - Editing (add product with its own dates, edit an existing product's dates, remove) is
   gated to `st.session_state.user_role == "admin"` in-page, on top of the page-level
   admin-only gate. A non-admin with an empty watchlist sees a plain "ask an admin" message.
@@ -931,14 +967,19 @@ ZIDs hitting their own sales target.
   `processing/commission_campaigns.py::build_do_totals` carries both identities (and both
   names) on every DO row for exactly this reason, regardless of which type a given
   campaign uses.
-- **Rate AND cap vary PER PRODUCT, not campaign-wide — confirmed 2026-09-20** (this
-  replaced an earlier single-campaign-wide rate/cap; see git history if resurrecting the
-  old shape). `commission_campaigns.product_rates` (JSONB) is
-  `{itemcode: {"rate": float, "cap": float|null}}` — **`rate` is the per-unit
-  incentive/discount BDT amount being offered (e.g. 5 or 3), NOT the product's sales
-  price** — this ambiguity was explicitly raised and resolved by the user; don't
-  re-litigate it. `cap` (optional) caps how much ONE recipient (whichever `recipient_type`
-  applies) can earn from ONE product across the whole campaign.
+- **Rate varies PER PRODUCT; cap is ONE value for the whole campaign — confirmed
+  2026-09-20, corrected same day from an earlier per-product-cap version** (the user's own
+  words: "the cap is one cap that applies to all salesman. Not per product. I think I did
+  not explain this properly before" — don't re-litigate this, it's the final, shipped
+  behavior). `commission_campaigns.product_rates` (JSONB) is now plain `{itemcode: float}`
+  — **`rate` is the per-unit incentive/discount BDT amount being offered (e.g. 5 or 3),
+  NOT the product's sales price** — that part of the ambiguity was resolved earlier and
+  still stands. A new top-level `commission_campaigns.cap` column (`NUMERIC`, nullable)
+  holds ONE ceiling for the whole campaign — caps a single recipient's (whichever
+  `recipient_type` applies) TOTAL payout, summed across every product picked for the
+  campaign, applied once at the `recipient_total` level in `compute_campaign_payout` (NOT
+  per product/per line — `recipient_product`'s own `payout` column is always uncapped,
+  quantity × rate).
 - **One Postgres table, `commission_campaigns`** (`db/sql_scripts/create_commission_campaigns_table.sql`)
   holds campaign *definitions* only (name, type, recipient_type, product_rates, sales
   window, and a `payout_groups` JSONB of `{group: deadline}` for that campaign) — no
@@ -1002,12 +1043,14 @@ ZIDs hitting their own sales target.
   using it for `INSERT ... RETURNING id` (to create a campaign and get its new id back)
   silently discarded the insert. Added `core/db.py::execute_write_returning` (commits AND
   fetches the RETURNING row) for this and any future write that needs its own id back.
-  (2) A missing per-product `cap` (`None`/`NaN`) rendered as the literal string `"None"` in
-  the Per-Product breakdown table instead of `.style.format(na_rep=...)`'s intended
-  `"—"` — `st.dataframe` doesn't reliably respect Styler `na_rep` for this case (same
-  class of issue as the TOTAL-row/Styler pitfall already documented above). Fixed the same
-  way that pitfall recommends: pre-format the Cap column to a display string (with `"—"`
-  for missing) before it ever reaches `.style.format()`, rather than leaving it numeric.
+  (2) [historical — the per-product cap this applied to was itself replaced by a single
+  campaign-wide cap the same day, see below; kept for the Styler pattern, not because the
+  Cap column it describes still exists] A missing per-product `cap` (`None`/`NaN`)
+  rendered as the literal string `"None"` in the Per-Product breakdown table instead of
+  `.style.format(na_rep=...)`'s intended `"—"` — `st.dataframe` doesn't reliably respect
+  Styler `na_rep` for this case (same class of issue as the TOTAL-row/Styler pitfall
+  already documented above). Fixed by pre-formatting the column to a display string before
+  it ever reached `.style.format()`.
 - Verified end-to-end live: created a real campaign (2 real products with their own
   rate/cap, salesman recipient type), got a real payout that matched a standalone
   hand-computation exactly, confirmed the gate-passed banner, the per-product breakdown
