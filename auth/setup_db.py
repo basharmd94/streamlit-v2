@@ -161,6 +161,7 @@ def setup_auth_tables():
             ('admin', 'Target Management'),
             ('admin', 'Customer Support'),
             ('admin', 'Marketing Analysis'),
+            ('admin', 'Commissions'),
             ('admin', 'Usage Stats'),
             -- Sales
             ('sales', 'Home'),

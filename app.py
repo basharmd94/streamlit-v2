@@ -1,6 +1,6 @@
 import streamlit as st
 from core.analytics import Analytics
-from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, target_management as target_mgmt_view, manufacturing, customer_support, marketing, usage_stats
+from views import sales, margin, collection, basket, purchase, financial, accounting, inventory, target_management as target_mgmt_view, manufacturing, customer_support, marketing, usage_stats, commissions
 from views.home import display_home_page
 import pandas as pd
 from io import BytesIO
@@ -477,6 +477,7 @@ class BaseApp:
             "Manufacturing Analysis",
             "Marketing Analysis",
             "Customer Support",
+            "Commissions",
             "Usage Stats",
         ]
 
@@ -762,6 +763,8 @@ class BaseApp:
             self.call_if_data_loaded(self.target_management_analysis)
         elif self.current_page == "Customer Support":
             self.customer_support()
+        elif self.current_page == "Commissions":
+            self.commissions_page()
         elif self.current_page == "Usage Stats":
             self.usage_stats_page()
 
@@ -867,6 +870,10 @@ class BaseApp:
     @timed
     def usage_stats_page(self):
         usage_stats.display_usage_stats_page()
+
+    @timed
+    def commissions_page(self):
+        commissions.display_commissions_page(self.current_page, st.session_state.zid)
 
 if __name__ == "__main__":
     app = BaseApp()

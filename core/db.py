@@ -67,6 +67,32 @@ def execute_write(sql: str, params: tuple = ()) -> bool:
             _get_pool().putconn(conn)
 
 
+def execute_write_returning(sql: str, params: tuple = ()):
+    """Like execute_write, but for an INSERT/UPDATE ... RETURNING statement --
+    commits AND returns the fetched row (or None on failure/no row). get_data
+    doesn't commit (it's SELECT-only, see above), so a write that needs its
+    RETURNING value back (e.g. a new SERIAL id) needs this instead of get_data."""
+    conn = None
+    try:
+        conn = _get_pool().getconn()
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+        conn.commit()
+        return row
+    except Exception as e:
+        LogManager.logger.error(f"execute_write_returning error: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return None
+    finally:
+        if conn:
+            _get_pool().putconn(conn)
+
+
 def execute_values_insert(sql_template: str, rows: list) -> int:
     """Bulk INSERT via psycopg2.extras.execute_values in one round trip.
 

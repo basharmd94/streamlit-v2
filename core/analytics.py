@@ -102,6 +102,7 @@ class Analytics:
             "ar_due_ledger":    queries.get_ar_due_ledger,
             "cacus_master":     queries.get_cacus_master,
             "prmst_simple":     queries.get_prmst_simple,
+            "prmst_area":       queries.get_prmst_area,
             "mo_header":        queries.get_mo_header_data,
             "mo_detail":        queries.get_mo_detail_data,
             "manufacturing_flow_detail": queries.get_manufacturing_flow_detail,

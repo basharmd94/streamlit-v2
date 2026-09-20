@@ -2548,6 +2548,29 @@ def get_prmst_simple(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_prmst_area(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Salesman code/name + current working area(s) + active status, used to
+    derive Commission payout-group membership live (see
+    processing/commission_campaigns.py::derive_spid_group_map) instead of a
+    hand-maintained roster. `xdisease` holds the salesman's current area(s),
+    comma-separated (e.g. "Ibrahimpur, Askona") despite the column name;
+    `xstatusemp` = 'A-Active' means payroll is currently issued. See
+    CLAUDE.md "Key column mappings" — as of 2026-09-20 both are mid-rollout
+    on the live server, so don't trust this against the local Postgres
+    mirror yet."""
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            xemp       AS spid,
+            xname      AS spname,
+            xdisease   AS area,
+            xstatusemp AS status
+        FROM prmst
+        WHERE zid = %s
+    """
+    return sql, (zid,)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Manufacturing Analysis (moord/moodt) — 100000 / 100005 / 100009
 # ─────────────────────────────────────────────────────────────────────────────

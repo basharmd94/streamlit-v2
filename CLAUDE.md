@@ -102,6 +102,38 @@ df = Analytics("table_name", zid=zid, filters={"year": [2026], "month": [6]}).da
 - `imtrn.xval` -> `cost` (COGS)
 - `cacus.xtaxnum` -> `whatsapp`
 - `gldetail.xprime` -> GL posting amount (Revenue = negative credit, Expense = positive debit)
+- `prmst.xstatusemp` -> employee status. `'A-Active'` = payroll is currently issued to that
+  person — the confirmed way to check if someone is still active (other real values seen:
+  `R-Resigned`, `T-Terminated`, `H-Hold`, `D-Dismissed`, blank/`NULL`). Not yet wired into any
+  view as of 2026-09-20 — see session memory for why (real rollout of this field's *data* is
+  in progress on the live server, don't trust it against the local Postgres mirror yet).
+- `prmst.xdisease` -> despite the name, this is NOT medical data — it holds the salesman's
+  **current working area(s)**, comma-separated free text (e.g. `"Ibrahimpur, Askona"`). Take
+  the value exactly as stored, don't reformat. **As of 2026-09-20 this is mid-rollout on the
+  live server** — the local Postgres mirror still has old placeholder junk in most rows
+  (`"Ok"`, `"OK."`, etc.), not real area data — confirm against the live server, not local,
+  before building anything that reads this column. Wired into
+  `processing/commission_campaigns.py::derive_spid_group_map` (see B.1/3/4 below) — correctly
+  returns nothing locally until the live rollout finishes.
+- `cacus.xstate` -> despite the "state" name, this is NOT a geographic state — it's a
+  sales-zone/channel classification per customer area (`xcity`), confirmed real values (both
+  100001 and 100000): `Dhaka retail`, `District`, `Dhaka General`, `Nawab pur`,
+  `Kawranbazar`, `Alubazar`, `Imamgonj`, `Rahima enterprise`, `Sylhet Retail`. Already used
+  elsewhere as a Retail/District split (`processing/ar_analysis.py`'s "Market" column: `xstate`
+  contains "retail" case-insensitive -> "Retail", else "District"). Per `xcity` the value is
+  highly (not 100%) consistent — a handful of stray mistagged rows per area don't change the
+  majority. Also used by `processing/commission_campaigns.py::build_area_group_map` (see
+  B.1/3/4 below) to derive salesman payout-group membership live, matched against
+  `prmst.xdisease`.
+- **A person is a real, currently-active salesman if they appear in the `op*` tables**
+  (`opdor`/`opddt`/etc., i.e. `Analytics("sales", ...)`'s own `spid`) — **not** by checking
+  `xemp`'s prefix. `SA--` is the common prefix but real exceptions exist (confirmed on real
+  100001 data: `FI--000003`, `AD--000028`, `AD--000099` all post real sales). Any salesman
+  picker that already sources its options from actual sales/collection rows (rather than
+  filtering `prmst` by an `SA--` pattern) is already correct on this — e.g.
+  `processing/commission_campaigns.py::derive_spid_group_map`'s `valid_spids` filter, which
+  restricts prmst-derived payout groups to spids that actually appear in `Analytics("sales")`
+  (otherwise non-salesman prmst rows with an area on file would show up too).
 
 ### Sign convention
 - **Level 0 / raw GL**: Revenue = negative, Expense = positive
@@ -787,6 +819,183 @@ App-owned table logging which page + primary radio-level mode each user opens, a
 **Reports** (`views/usage_stats.py`, date-range picker at top, default last 30 days, capped to the 1-year retention window): Overview metrics (total views / active users / sessions), Most-Used Pages (bar chart + table), Most-Used Pages by Mode, **Usage by User** (per explicit follow-up ask — views, distinct pages touched, total time, last active, with a CSV download), Usage by Role, Usage Over Time (daily trend), and Least-Used Pages — the last one lists **every** page in `usage_log.ALL_PAGES` (kept in sync with `app.py`'s own `menu` list by hand, documented as such), including ones with zero views in the selected window, so a genuinely unused feature stays visible instead of silently vanishing from a plain `groupby`.
 
 Verified end-to-end against the real local Postgres mirror (not synthetic assumptions): direct DB round-trip confirmed `compute_durations`' gap math to the second (three consecutive views spaced 120s/480s/900s apart computed exactly those durations, with the session's last view correctly landing on `NaN`); all six report-building functions produced correctly-aggregated output; `build_least_used_pages` correctly listed all 14 real menu pages including zero-view ones; retention cleanup correctly removed a synthetic 400-day-old row while leaving recent rows untouched. Confirmed live in a real Streamlit rerun cycle too (not just a script): clicking through Home → Marketing Analysis/Leads → Collection Analysis/Salesman Due as a real admin session correctly logged 4 genuine transitions (plus the Usage Stats page's own self-logging interleaved between them) under one stable `session_id`, and the live Usage Stats page picked up and displayed that real data correctly (Total Views: 9, Active Users: 1, Sessions: 1 — exactly matching the underlying rows).
+
+---
+
+## Sales Commissions & Incentive Tracking (`views/commissions.py`, "Commissions" menu item)
+
+Full design (rankings, campaigns, the pooled-FIFO/gate mechanics) lives in **`commission_tracking_design.md`**
+(repo root, status "agreed design") — that file is the source of truth, not this section. Built one piece at a
+time, discussed with the user before each piece, per that doc's own "discuss before building" rule.
+
+- **Page structure**: a single top-level `st.selectbox("Commission Campaign", ...)` dropdown routes to one
+  section-renderer per doc item (`_SECTIONS` dict in `views/commissions.py`). Every design-doc section
+  (A.1 Best Performer, A.2 Highest Product Sales, A.4 Best App User, B.1/3/4 Campaign, B.2 Individual Target,
+  B.5 New Customer) already has a dropdown entry — sections not yet built show a `st.info` placeholder pointing
+  back at the relevant doc section instead of a blank/missing option, so the dropdown's shape doesn't need to
+  change as each piece gets picked up.
+- **Access**: `page_permissions` grants `'admin'` only for now (`db/sql_scripts/grant_commissions_page_permission.sql`,
+  same non-destructive-INSERT convention as `create_view_usage_log_table.sql`'s "Usage Stats" grant) — a new,
+  compensation-sensitive page defaults to admin-only; widen to other roles later if actually wanted.
+- **Instrumented** in Usage Stats the same way every other page is — `usage_log.log_view("Commissions", section)`
+  right after the dropdown, `"Commissions"` added to `usage_log.ALL_PAGES`.
+
+### Product Tracking (only section built so far)
+
+Redesigned 2026-09-19 from an initial plain-MTD version (replaced before it was ever
+committed) into a **per-product Before/After comparison** — see
+`commission_tracking_design.md`'s "Product Tracking" section for the full spec.
+
+- Admin-edited JSON watchlist, **scoped per ZID** (products differ per business) —
+  `data/commission_product_watchlist.json` (gitignored, same convention as
+  `targets.json`/`public_holidays.json`) — but each entry now carries its own date pair:
+  `{zid: {itemcode: {"cutoff": "YYYY-MM-DD", "back_to": "YYYY-MM-DD"}}}`
+  (`processing/commissions.py::load_watchlist`/`save_watchlist`/`add_product`/
+  `remove_product`/`update_product_dates`). Capped at **20 items per ZID** — "more
+  wouldn't make sense" per the user.
+- **Before/After windows, not one shared "current month"**: `After = [cutoff, today]`,
+  `Before = [back_to, cutoff)` — cutoff belongs to After only, so the two windows never
+  double-count it (`processing/commissions.py::build_product_comparisons`, boundary
+  verified against real Postgres sales rows). `back_to` is capped at **6 months before
+  cutoff** (`comm.min_back_to`) — enforced both by validation in `add_product`/
+  `update_product_dates` and by the date-input widgets' own `min_value`/`max_value`, so an
+  invalid combination is hard to even enter, not just rejected after the fact.
+- **Each watched product has its own cutoff/back_to** — rendered as its own separate
+  table (`_render_comparison_table`: Before row, After row, Change row = After − Before,
+  signed), not one shared grid across products.
+- Editing (add product with its own dates, edit an existing product's dates, remove) is
+  gated to `st.session_state.user_role == "admin"` in-page, on top of the page-level
+  admin-only gate. A non-admin with an empty watchlist sees a plain "ask an admin" message.
+- Metrics (qty sold, sales revenue, qty returned, net qty) sourced from
+  `sales_daily_item`/`returns_daily_item` (`mv_sales_daily_item`/`mv_returns_daily_item`,
+  full history per ZID, cached `ttl=3600`, sliced per-product per-window in pandas) joined
+  to `final_items_view` for name/group/current-stock (current stock shown as point-in-time
+  context above each table, not per-window). **DB `NUMERIC` columns arrive as
+  `Decimal`/object-dtype** (same class of bug as WhatsFly Bulk Messaging's Decimal
+  Arrow-serialization crash) — explicitly `pd.to_numeric(...)`'d right after merging.
+- **Two real Streamlit widget-state bugs hit and fixed while building this**: (1) a
+  widget's `session_state` key cannot be assigned in the same script run where that widget
+  was already instantiated — resetting the "Add a product" picker after a successful add
+  needs a pending-reset flag checked at the *top* of the next run (`_comm_wl_add_reset`),
+  not an immediate post-add assignment, which raises `StreamlitAPIException`. (2) a
+  dependent widget's stored value (Back To) can fall outside newly-computed min/max bounds
+  when the widget it depends on (Cutoff) changes on the same rerun — `_clamp_session_date`
+  pre-clamps the stored value before the Back To widget is instantiated, and the call site
+  skips passing `value=` on the run a clamp just happened (passing both raises/warns).
+- Verified end-to-end against real Postgres (100001): add/remove/save round-tripped
+  correctly through the live UI; the cutoff-date boundary was checked against a real sale
+  record (`before`/`after` sums matched a manual split at that exact date); the 6-month
+  clamp was exercised live (moving Cutoff back to July correctly snapped Back To to
+  `cutoff − 1 day` with no crash and no stray warning); Change-row arithmetic and signed
+  formatting (`+`/`-`) matched hand computation.
+
+### Product / Stock Clearance / Slow-Moving Campaign (B.1/3/4)
+
+`processing/commission_campaigns.py` (engine) + `views/commission_campaigns_view.py` (UI).
+Full spec: `commission_tracking_design.md` §B.1/3/4. Rate per unit sold, paid only if the
+customer's DO is fully collected by a deadline, pooled across 100001+100000, gated on both
+ZIDs hitting their own sales target.
+
+- **`recipient_type` ("salesman" or "customer") — confirmed 2026-09-19/20: this campaign
+  type's commission can be paid to either the salesman OR the customer on the DO.** The
+  eligibility logic (DO fully collected, by which deadline) is completely unchanged either
+  way and is always keyed off the DO's own **salesman's** payout group — the deadline is a
+  logistics/territory concept, not a recipient concept. Only the final aggregation step
+  differs: group by `spid` (+`spname`) or by `cusid` (+`cusname`).
+  `processing/commission_campaigns.py::build_do_totals` carries both identities (and both
+  names) on every DO row for exactly this reason, regardless of which type a given
+  campaign uses.
+- **Rate AND cap vary PER PRODUCT, not campaign-wide — confirmed 2026-09-20** (this
+  replaced an earlier single-campaign-wide rate/cap; see git history if resurrecting the
+  old shape). `commission_campaigns.product_rates` (JSONB) is
+  `{itemcode: {"rate": float, "cap": float|null}}` — **`rate` is the per-unit
+  incentive/discount BDT amount being offered (e.g. 5 or 3), NOT the product's sales
+  price** — this ambiguity was explicitly raised and resolved by the user; don't
+  re-litigate it. `cap` (optional) caps how much ONE recipient (whichever `recipient_type`
+  applies) can earn from ONE product across the whole campaign.
+- **One Postgres table, `commission_campaigns`** (`db/sql_scripts/create_commission_campaigns_table.sql`)
+  holds campaign *definitions* only (name, type, recipient_type, product_rates, sales
+  window, and a `payout_groups` JSONB of `{group: deadline}` for that campaign) — no
+  salesman/customer/DO/payout numbers are stored. Every payout figure is recomputed live
+  whenever a campaign is opened. Schema was revised 2026-09-20 (table had zero real rows
+  at the time — a straight `DROP`+recreate, not an `ALTER` migration).
+- **Salesman → payout-group membership is derived LIVE, not a manual roster — confirmed
+  2026-09-20 (replaced a same-day-earlier hand-maintained
+  `data/commission_payout_groups.json` roster + editor UI, both removed outright).**
+  `processing/commission_campaigns.py::build_area_group_map` maps `{xcity -> group}` from
+  pooled 100001+100000 `cacus.xstate` (majority value per area; `"Sylhet Retail"` folds
+  into `"District"`, confirmed by the user — everything else keeps its real `xstate` name
+  as its own group, e.g. `"Dhaka retail"`, `"Nawab pur"`); `derive_spid_group_map` matches
+  each salesman's `prmst.xdisease` area list against that map (majority vote across their
+  listed areas, tie broken by whichever tied group's area is listed first), filtered by
+  `valid_spids` to real salesmen only (per the op-tables-not-prefix rule above — otherwise
+  non-salesman `prmst` rows with an area on file would show up too).
+  `views/commission_campaigns_view.py::_render_derived_groups` replaced the roster editor
+  with a read-only view (group list + which salesmen resolved). This roster is always
+  salesman-based (it drives DO eligibility, see above) regardless of `recipient_type`.
+  **Correctly returns nothing locally** — `derive_spid_group_map` returns `{}` against the
+  local Postgres mirror, verified, since `prmst.xdisease` is still mid-rollout there (see
+  "Key column mappings" above); `build_area_group_map` itself has no such gap and returns
+  the real 8 groups locally today.
+- **`resolve_do_paid_dates`** — the pooled FIFO resolver: per customer, a chronological
+  walk where each collection pays off the oldest open DO(s) first, in full, before moving
+  on; leftover collection becomes a "prepaid credit" applied to that customer's next DO(s).
+  **Pre-groups by customer before the walk** (`{cusid: sub_df}` built once) — an earlier
+  version that re-filtered the full collection DataFrame per customer inside the loop
+  never finished on real data (~10k customers × 1M+ combined sales/collection events).
+  With the fix, full 100001+100000 history resolves in ~15-20s.
+  Verified two ways: hand-computed against a real customer's full DO/collection history
+  (a collection that split its payment across two DOs, matched exactly, including which
+  DO the split landed on); plus synthetic tests for prepaid credit applied to a future DO,
+  a large overpay with no further DOs (no crash), and a DO that never gets paid (stays NaT).
+- **Payout** = for each DO in-window whose salesman is in a roster group and was paid by
+  that group's deadline: qty of the picked product(s) on that DO × that product's own
+  rate, capped per recipient per product, summed per recipient (salesman or customer,
+  per `recipient_type`). DOs that don't qualify are kept with their exclusion reason (not
+  yet collected / no payout group / group has no deadline set / collected after the
+  deadline) and shown in the UI, not silently dropped. **Verified the grouping choice is
+  capping-neutral in the way it should be**: summed *raw* (pre-cap) payout is identical
+  whether grouped by salesman or by customer (confirmed against real data — 312 either
+  way) since it's the same underlying line items either way; only how the cap binds
+  differs, correctly, by recipient granularity.
+- **Gate** = `zid_target_sum` (sum of `data/targets.json` entries for that ZID across the
+  window's calendar months) vs. `zid_actual_sales` (`final_sales` summed in-window,
+  reusing `processing.common.data_copy_add_columns`) — if either 100001 or 100000 misses,
+  `total_payout` is zeroed but the computed (pre-gate) figure still shows, captioned, so
+  the gate failing doesn't look like "nothing sold."
+- **Uptick** (companion metric, not a payout gate) — campaign-window qty/revenue for the
+  picked product(s) vs. a trailing `uptick_baseline_months` average ending the day before
+  the window starts. Returns `None` (not a crash or a misleading number) when the
+  baseline period has zero sales — hit for real in testing (a genuine multi-month gap in
+  one test product's sales history) and confirmed correct, not a bug to chase.
+- **Caching**: the FIFO resolution + pooled sales/collection loads are
+  `st.cache_data(ttl=3600)`-wrapped in `views/commission_campaigns_view.py` and shared
+  across every campaign view — opening/switching campaigns doesn't re-pay the ~15-20s cost
+  each time, only once per hour app-wide.
+- **Two real bugs fixed**: (1) `core/db.py::get_data` is SELECT-only and never commits —
+  using it for `INSERT ... RETURNING id` (to create a campaign and get its new id back)
+  silently discarded the insert. Added `core/db.py::execute_write_returning` (commits AND
+  fetches the RETURNING row) for this and any future write that needs its own id back.
+  (2) A missing per-product `cap` (`None`/`NaN`) rendered as the literal string `"None"` in
+  the Per-Product breakdown table instead of `.style.format(na_rep=...)`'s intended
+  `"—"` — `st.dataframe` doesn't reliably respect Styler `na_rep` for this case (same
+  class of issue as the TOTAL-row/Styler pitfall already documented above). Fixed the same
+  way that pitfall recommends: pre-format the Cap column to a display string (with `"—"`
+  for missing) before it ever reaches `.style.format()`, rather than leaving it numeric.
+- Verified end-to-end live: created a real campaign (2 real products with their own
+  rate/cap, salesman recipient type), got a real payout that matched a standalone
+  hand-computation exactly, confirmed the gate-passed banner, the per-product breakdown
+  (including the Cap fix), the excluded-DO reasons table, and campaign deletion, all
+  against real Postgres data — no stubbed/mocked data anywhere in this feature. The
+  customer-recipient path and the raw-sum-invariant check above were verified standalone
+  (not re-driven through the live UI in the same pass — the UI code path for
+  `recipient_type="customer"` is the same rendering code with a different string, already
+  exercised for "salesman").
+- **Not yet built**: B.2 (Individual Target Achievement, fully specified) and B.5 (New
+  Customer Creation, needs design work) — see `commission_tracking_design.md`. Also see
+  that doc for which of A/B's *other* not-yet-built sections are salesman-only,
+  customer-or-salesman, or salesman-only-for-a-different-reason (New Customer Creation) —
+  noted for whenever each is picked up, not yet relevant to what's built.
 
 ---
 

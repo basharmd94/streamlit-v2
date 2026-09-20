@@ -60,6 +60,7 @@ ALL_PAGES = [
     "Manufacturing Analysis",
     "Marketing Analysis",
     "Customer Support",
+    "Commissions",
 ]
 
 
