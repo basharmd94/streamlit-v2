@@ -904,11 +904,16 @@ def compute_best_performer_ranking(
 def compute_customer_best_performer_ranking(campaign: dict, customer_score_df: pd.DataFrame) -> dict:
     """Ranks customers by their EXISTING Customer Score
     (processing.marketing.build_customer_marketing_table's own
-    composite_score, unmodified) and pays a fixed BDT amount per rank
-    position to the top `num_winners` (2-100, admin-set) — same per-rank
-    mechanism as A.1/A.2, just a wider winner range (up to 100, explicit
-    ask) since a customer campaign can reasonably span far more recipients
-    than a salesman one.
+    composite_score, unmodified) and pays out by RANK-BAND TIER, not a
+    distinct amount per individual rank — confirmed 2026-09-20, same day,
+    right after first shipping this with per-rank amounts: with up to 100
+    winners, entering a separate BDT figure for every single rank was
+    "hectic" (explicit ask). `product_rates["tiers"]` is a list of
+    `{"start_rank", "end_rank", "amount", "gift"}` — a tier can be a single
+    rank (start == end, for an individually-differentiated top prize) or a
+    wide band (e.g. 11-50) sharing one reward. Each tier can carry a BDT
+    `amount`, a physical `gift` (free text — "it doesn't necessarily have
+    to be a cash prize... a mug or a pen or a cap"), or both.
 
     `customer_score_df` — the caller's own already-scoped, already-scored
     output of build_customer_marketing_table (one zid GROUP — 100001+100000
@@ -917,14 +922,15 @@ def compute_customer_best_performer_ranking(campaign: dict, customer_score_df: p
     the score itself.
 
     Returns `{"ranking": DataFrame[rank, recipient, recipient_name,
-    composite_score, payout], "num_winners", "total_payout"}` — no gate,
-    so total_payout is always the raw computed figure (never zeroed).
+    composite_score, payout, gift], "num_winners", "total_payout"}` — no
+    gate, so total_payout (the sum of BDT `payout` only, gifts aren't
+    priced) is always the raw computed figure, never zeroed.
     """
     config = campaign.get("product_rates") or {}
-    payouts_by_rank = [float(v) for v in config.get("payouts_by_rank", [])]
-    num_winners = int(config.get("num_winners") or len(payouts_by_rank))
+    tiers = config.get("tiers") or []
+    num_winners = int(config.get("num_winners") or 0)
 
-    empty = pd.DataFrame(columns=["rank", "recipient", "recipient_name", "composite_score", "payout"])
+    empty = pd.DataFrame(columns=["rank", "recipient", "recipient_name", "composite_score", "payout", "gift"])
     if (
         customer_score_df is None or customer_score_df.empty
         or "composite_score" not in customer_score_df.columns
@@ -935,12 +941,21 @@ def compute_customer_best_performer_ranking(campaign: dict, customer_score_df: p
     d["cusid"] = d["cusid"].astype(str)
     d = d.sort_values(["composite_score", "cusid"], ascending=[False, True]).reset_index(drop=True)
     d["rank"] = d.index + 1
-    d["payout"] = 0.0
-    for i in range(min(num_winners, len(payouts_by_rank), len(d))):
-        d.loc[i, "payout"] = payouts_by_rank[i]
+
+    def _tier_for_rank(rank: int) -> tuple:
+        if rank > num_winners:
+            return 0.0, ""
+        for t in tiers:
+            if int(t.get("start_rank", 0)) <= rank <= int(t.get("end_rank", 0)):
+                return float(t.get("amount", 0) or 0), str(t.get("gift", "") or "")
+        return 0.0, ""
+
+    payout_gift = d["rank"].apply(_tier_for_rank)
+    d["payout"] = payout_gift.apply(lambda pg: pg[0])
+    d["gift"] = payout_gift.apply(lambda pg: pg[1])
 
     total_payout = float(d["payout"].sum())
     ranking = d.rename(columns={"cusid": "recipient", "cusname": "recipient_name"})[
-        ["rank", "recipient", "recipient_name", "composite_score", "payout"]
+        ["rank", "recipient", "recipient_name", "composite_score", "payout", "gift"]
     ]
     return {"ranking": ranking, "num_winners": num_winners, "total_payout": total_payout}

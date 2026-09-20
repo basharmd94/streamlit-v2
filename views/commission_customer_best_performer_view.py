@@ -46,6 +46,7 @@ from views.marketing import _load_ar_balance, _load_cacus
 CAMPAIGN_TYPE = "Customer Best Performer"
 MIN_WINNERS = 2
 MAX_WINNERS = 100
+MAX_TIERS = 10
 
 _ZID_GROUPS = {
     "100001": {"label": "HMBR + GI Corporation (pooled)", "zids": ["100001", "100000"]},
@@ -53,14 +54,6 @@ _ZID_GROUPS = {
     "100005": {"label": "Zepto Chemicals", "zids": ["100005"]},
 }
 _PROJ_BY_ZID = {"100001": "GULSHAN TRADING", "100000": "GI Corporation", "100005": "Zepto Chemicals"}
-
-
-def _ordinal(n: int) -> str:
-    if 10 <= n % 100 <= 20:
-        suffix = "th"
-    else:
-        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
 
 
 def _fmt_bdt(v) -> str:
@@ -91,6 +84,71 @@ def _reporting_year_choices(today: pd.Timestamp, years_forward: int = 5) -> list
     reporting month, applied at the year level (confirmed 2026-09-20: "I
     can't set it for a [period] that already passed")."""
     return [today.year + i for i in range(years_forward + 1)]
+
+
+# ── Rank-band payout tiers — replaced individual per-rank payout entry
+# 2026-09-20 (a same-day follow-up): with up to 100 winners, entering a
+# separate BDT amount for every single rank was "hectic" (explicit ask).
+# Instead the admin defines up to MAX_TIERS rank BANDS (start_rank..end_rank
+# inclusive) — a band can be a single rank (start == end, for a genuinely
+# individual top prize) or a wide range (e.g. 11-50) sharing one reward.
+# Each tier can carry a BDT amount, a physical gift (free text — "it
+# doesn't necessarily have to be a cash prize... a mug or a pen or a cap"),
+# or both. Same "leave a slot at 0/disabled" convention as the existing
+# Quantity-Tier Revenue Simulation feature elsewhere in this app
+# (views/sales.py Product Orders) — a proven, already-shipped pattern for
+# admin-defined tiers, reused here rather than inventing a new one.
+
+def _tier_for_rank(rank: int, tiers: list, num_winners: int) -> tuple:
+    """(amount, gift) for one ranked customer — 0.0/"" if the rank is
+    beyond num_winners or not covered by any tier."""
+    if rank > num_winners:
+        return 0.0, ""
+    for t in tiers:
+        if int(t.get("start_rank", 0)) <= rank <= int(t.get("end_rank", 0)):
+            return float(t.get("amount", 0) or 0), str(t.get("gift", "") or "")
+    return 0.0, ""
+
+
+def _rank_label(t: dict) -> str:
+    start, end = int(t.get("start_rank", 0)), int(t.get("end_rank", 0))
+    return f"Rank {start}" if start == end else f"Rank {start}-{end}"
+
+
+def _tier_reward_label(t: dict) -> str:
+    parts = []
+    amount = float(t.get("amount", 0) or 0)
+    if amount > 0:
+        parts.append(_fmt_bdt(amount))
+    gift = str(t.get("gift", "") or "").strip()
+    if gift:
+        parts.append(gift)
+    return " + ".join(parts) if parts else "—"
+
+
+def _tiers_summary(tiers: list) -> str:
+    if not tiers:
+        return "No tiers configured"
+    ordered = sorted(tiers, key=lambda t: int(t.get("start_rank", 0)))
+    return " · ".join(f"{_rank_label(t)}: {_tier_reward_label(t)}" for t in ordered)
+
+
+def _validate_tiers(tiers: list) -> list:
+    """Returns a list of human-readable error strings — empty means valid."""
+    errors = []
+    if not tiers:
+        errors.append("Add at least one tier.")
+    for t in tiers:
+        start, end = int(t.get("start_rank", 0)), int(t.get("end_rank", 0))
+        if start < 1 or start > end:
+            errors.append(f"{_rank_label(t)}: invalid rank range.")
+        if float(t.get("amount", 0) or 0) <= 0 and not str(t.get("gift", "") or "").strip():
+            errors.append(f"{_rank_label(t)}: needs a BDT amount, a gift, or both.")
+    ordered = sorted(tiers, key=lambda t: int(t.get("start_rank", 0)))
+    for a, b in zip(ordered, ordered[1:]):
+        if int(a.get("end_rank", 0)) >= int(b.get("start_rank", 0)):
+            errors.append(f"{_rank_label(a)} and {_rank_label(b)} overlap.")
+    return errors
 
 
 # ── Pooled data loaders (own cache, per (zid, year) — pooled across a
@@ -205,36 +263,57 @@ def _render_form(zid: str = "", existing: dict | None = None) -> None:
         value=winners_default, step=1, key=f"{key_prefix}_numwinners",
     )
 
-    existing_payouts = existing_config.get("payouts_by_rank", []) if is_edit else []
-    st.caption("Payout amount per rank position (ranked by Customer Score, highest first):")
-    payouts_by_rank = []
-    n_cols = min(int(num_winners), 10)
-    for row_start in range(0, int(num_winners), n_cols):
-        payout_cols = st.columns(min(n_cols, int(num_winners) - row_start))
-        for j, col in enumerate(payout_cols):
-            i = row_start + j
-            default_amt = float(existing_payouts[i]) if i < len(existing_payouts) else 0.0
-            with col:
-                amt = st.number_input(
-                    f"{_ordinal(i + 1)} (BDT)", min_value=0.0, step=100.0, value=default_amt,
-                    key=f"{key_prefix}_payout_{i}",
-                )
-            payouts_by_rank.append(amt)
+    existing_tiers = existing_config.get("tiers", []) if is_edit else []
+    st.caption(
+        f"Reward tiers by rank BAND (up to {MAX_TIERS}) — e.g. individual top prizes for ranks 1-5, "
+        f"then a shared reward for 6-10, another for 11-50, etc. Leave a tier's End Rank at 0 to "
+        f"disable it. Each tier can carry a BDT amount, a physical gift (e.g. \"Mug\", \"Pen\", "
+        f"\"Cap\"), or both — doesn't have to be a cash prize."
+    )
+    tiers = []
+    for i in range(MAX_TIERS):
+        existing_tier = existing_tiers[i] if i < len(existing_tiers) else {}
+        t_cols = st.columns([1, 1, 1.3, 1.6])
+        with t_cols[0]:
+            start_rank = st.number_input(
+                f"Tier {i + 1} Start Rank", min_value=0, max_value=MAX_WINNERS,
+                value=int(existing_tier.get("start_rank", 0)), step=1, key=f"{key_prefix}_tier_{i}_start",
+            )
+        with t_cols[1]:
+            end_rank = st.number_input(
+                "End Rank", min_value=0, max_value=MAX_WINNERS,
+                value=int(existing_tier.get("end_rank", 0)), step=1, key=f"{key_prefix}_tier_{i}_end",
+            )
+        with t_cols[2]:
+            amount = st.number_input(
+                "Amount (BDT)", min_value=0.0, step=100.0,
+                value=float(existing_tier.get("amount", 0.0) or 0.0), key=f"{key_prefix}_tier_{i}_amount",
+            )
+        with t_cols[3]:
+            gift = st.text_input(
+                "Gift (optional)", value=str(existing_tier.get("gift", "") or ""),
+                key=f"{key_prefix}_tier_{i}_gift",
+            )
+        if end_rank > 0:
+            tiers.append({
+                "start_rank": int(start_rank), "end_rank": int(end_rank),
+                "amount": float(amount), "gift": gift.strip(),
+            })
 
     notes = st.text_area(
         "Notes (optional)", value=(existing.get("notes") or "" if is_edit else ""), key=f"{key_prefix}_notes",
     )
 
-    all_payouts_set = all(a > 0 for a in payouts_by_rank)
-    can_submit = bool(name.strip()) and all_payouts_set
-    if not all_payouts_set:
-        st.caption("Every rank position needs a payout amount > 0.")
+    tier_errors = _validate_tiers(tiers)
+    can_submit = bool(name.strip()) and not tier_errors
+    for err in tier_errors:
+        st.caption(f"⚠️ {err}")
 
     btn_label = "💾 Save Changes" if is_edit else "✅ Create Customer Best Performer Campaign"
     if st.button(btn_label, key=f"{key_prefix}_submit_btn", disabled=not can_submit):
         product_rates_payload = {
             "zids": campaign_zids, "reporting_year": int(reporting_year),
-            "num_winners": int(num_winners), "payouts_by_rank": payouts_by_rank,
+            "num_winners": int(num_winners), "tiers": tiers,
         }
         # window_start/window_end are informational display bounds only
         # here (the whole reporting year) — computation always reads
@@ -293,7 +372,7 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
     group_label = _label_for_zids(campaign_zids)
     reporting_year = int(config.get("reporting_year") or pd.Timestamp.today().year)
     num_winners = config.get("num_winners")
-    payouts_by_rank = config.get("payouts_by_rank", [])
+    tiers = config.get("tiers", [])
 
     today = pd.Timestamp.today().normalize()
     if reporting_year == today.year:
@@ -308,10 +387,7 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
         f"Customer Best Performer (ranked by Customer Score) · Business group: {group_label} "
         f"· Reporting year {reporting_year} ({status_note})"
     )
-    payouts_line = " · ".join(
-        f"{_ordinal(i + 1)}: {_fmt_bdt(a)}" for i, a in enumerate(payouts_by_rank)
-    )
-    st.caption(f"{num_winners} winner(s) — {payouts_line}")
+    st.caption(f"{num_winners} winner(s) — {_tiers_summary(tiers)}")
 
     if not read_only:
         if st.session_state.get("user_role") == "admin":
@@ -338,10 +414,11 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
 
     disp = ranking_df.rename(columns={
         "rank": "Rank", "recipient": "Customer Code", "recipient_name": "Customer",
-        "composite_score": "Score", "payout": "Payout (BDT)",
+        "composite_score": "Score", "payout": "Payout (BDT)", "gift": "Gift",
     })
     disp["Score"] = disp["Score"].apply(lambda v: f"{v:,.1f}" if pd.notna(v) else "—")
     disp["Payout (BDT)"] = disp["Payout (BDT)"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) and v > 0 else "—")
+    disp["Gift"] = disp["Gift"].apply(lambda v: v if v else "—")
     st.dataframe(disp, width="stretch", hide_index=True)
 
 
@@ -362,11 +439,12 @@ def render(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
     st.caption(
         "Ranks customers by their existing Customer Score — the EXACT same engine as Marketing "
         "Analysis's own 📊 Customer Scoring (unmodified) — for an admin-chosen reporting year, and "
-        "pays a fixed BDT amount per rank position to the top 2-100 customers. HMBR (100001) and GI "
-        "Corporation (100000) are pooled together (their customers share the same code — confirmed "
-        "by a real audit, and a customer doesn't distinguish between the two businesses); Zepto "
-        "(100005) is scored separately. Pinned to whichever business group was active when the "
-        "campaign was created."
+        "pays out by RANK-BAND TIER (e.g. individual top prizes for ranks 1-5, a shared reward for "
+        "6-10, etc.) across up to 100 winners — each tier can be a BDT amount, a physical gift, or "
+        "both. HMBR (100001) and GI Corporation (100000) are pooled together (their customers share "
+        "the same code — confirmed by a real audit, and a customer doesn't distinguish between the "
+        "two businesses); Zepto (100005) is scored separately. Pinned to whichever business group "
+        "was active when the campaign was created."
     )
 
     is_admin = (not read_only) and st.session_state.get("user_role") == "admin"

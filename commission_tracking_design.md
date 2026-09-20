@@ -162,9 +162,24 @@ but this would follow the customer scoring that is already in marketing analysis
   unmodified (weights: 25% total sales, 20% monthly activity rate, 15% YoY sales growth,
   15% avg days to collection (lower better), 10% total collection, 10% avg order interval
   (lower better), 5% YoY collection growth — all peer-relative, min-max scaled within
-  whichever customer population is pulled). Pays a fixed BDT amount per rank position to
-  the top `num_winners` — same per-rank mechanism as A.1/A.2, but **2-100 winners**
-  (explicit ask — a much wider range than A.1's 2-10 or A.2's 2-5).
+  whichever customer population is pulled). **2-100 winners** (explicit ask — a much wider
+  range than A.1's 2-10 or A.2's 2-5).
+- **Pays out by RANK-BAND TIER, not a distinct amount per individual rank — corrected
+  2026-09-20, same day, right after first shipping this with per-rank amounts.** With up
+  to 100 winners, entering a separate BDT figure for every single rank was "hectic"
+  (explicit ask). The admin now defines up to 10 rank BANDS instead (`start_rank..end_rank`
+  inclusive — a band can be a single rank, e.g. `1-1`, for an individually-differentiated
+  top prize, or a wide range, e.g. `11-50`, sharing one reward). **Each tier can also carry
+  a physical GIFT, not just cash** — explicit ask: "it doesn't necessarily have to be a
+  cash prize... a mug or a pen or a cap." A tier can have a BDT amount, a gift, or both.
+  Mirrors the already-shipped **Quantity-Tier Revenue Simulation** feature elsewhere in
+  this app (Sales Analysis → Order Analytics → Product Orders) — same "admin-defined tier
+  slots, leave a slot at 0 to disable it" pattern, reused rather than inventing a new one.
+  `product_rates["tiers"]` = `[{"start_rank", "end_rank", "amount", "gift"}, ...]`.
+  Overlapping tiers and tiers with neither an amount nor a gift are rejected at save time
+  (`views/commission_customer_best_performer_view.py::_validate_tiers`). The results table
+  gets a new **Gift** column alongside Payout (BDT); `total_payout` sums only the BDT side
+  (gifts aren't priced).
 - **ZID pooling — corrected 2026-09-20, same day, right after first shipping this as
   single-ZID-only.** Original assumption: a customer code is only unique WITHIN one ZID
   (unlike a salesman, who genuinely works both), so never pool. **Wrong for 100001/100000
@@ -223,6 +238,17 @@ but this would follow the customer scoring that is already in marketing analysis
   resolved to "HMBR + GI Corporation (pooled)", confirmed the setup page shows no results,
   and confirmed Target Management's Commission Results computed the identical pooled
   ranking (real customers, real scores) with the correct ৳6,000 total payout.
+- **Tier-payout redesign separately verified**: `_validate_tiers` confirmed to accept a
+  valid 6-tier config, reject overlapping tiers, reject a tier with neither an amount nor
+  a gift, and reject an empty tier list; the engine test (a 6-tier config spanning ranks
+  1-100 against real pooled 100001+100000 scores) confirmed the exact expected total
+  payout (৳41,000) and the exact expected payout/gift at every tier boundary (rank 1 =
+  ৳10,000 alone, ranks 3-5 = ৳3,000 + "Mug" each, rank 11 = "Cap" only with ৳0 payout, rank
+  101 beyond num_winners = nothing). Live in the browser: created a real 2-tier campaign
+  (Rank 1 = ৳5,000 alone; Ranks 2-5 = "Mug" only) — the setup summary correctly rendered
+  "Rank 1: ৳5,000 · Rank 2-5: Mug", and Target Management's results table showed the
+  correct split across a new Gift column, with Total Payout correctly counting only the
+  ৳5,000 cash tier (the gift-only tier contributes nothing to the BDT total, by design).
 
 ### A.2 Highest Product Sales
 
