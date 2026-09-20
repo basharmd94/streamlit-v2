@@ -1086,18 +1086,33 @@ amount per rank position to the top N — same per-rank-payout mechanism as A.2,
   collection %, AR balance) don't have a customer-equivalent meaning.
 - **Reuses the SAME `commission_campaigns` table as B.1/3/4 and A.2 — a 3rd `campaign_type` value,
   `"Best Performer"`** (same "no separate table per campaign type" pattern). `product_rates` (JSONB) holds
-  `{"num_months": M, "num_winners": N, "payouts_by_rank": [amt1, ...]}`. `window_start`/`window_end` on the
-  stored row are **informational only** — set to the window at save time, but the real evaluation window is
-  always recomputed live from `today` + `num_months` at view time (never the stored dates), since "I have to
-  set the commission standards before" — the window must always end at the CURRENT, ongoing month, never a
-  lagging "last month" figure. Each section's picker filters to its own `campaign_type` — verified A.1's new
-  value doesn't leak into A.2's or B.1/3/4's existing filters and vice versa (same check done when A.2 was
-  added).
-- **Months to average: 1-3, always ending at the current month** — `views/commission_best_performer_view.py`'s
-  `_eval_months` slices `ssc.month_choices(today)` (already correct on year-rollover) to `num_months`. A
-  3-month window can span a calendar-year boundary, so the view loads pooled sales/returns/collection **per
-  distinct year needed**, not per month, then builds one scored table per month via
-  `build_pooled_monthly_scores`. Winners: 2-10 (a different range from A.2's 2-5).
+  `{"num_months": M, "num_winners": N, "payouts_by_rank": [amt1, ...]}`. Each section's picker filters to its
+  own `campaign_type` — verified A.1's value doesn't leak into A.2's or B.1/3/4's existing filters and vice
+  versa (same check done when A.2 was added).
+- **Reporting month, pinned at setup — corrected 2026-09-20, a real bug caught by the user right after first
+  shipping this.** Original (wrong) design: `window_start`/`window_end` were "informational only" and the
+  evaluation window was recomputed live from `today` + `num_months` on EVERY view — so a campaign set up in
+  September would silently show September+October (mostly-empty, just-started October) the moment October
+  began, instead of staying on September's completed results. The user's own framing: "once the month is
+  over, I will need the performance of the last month... do you understand what I mean?" — confirming the
+  window must stay pinned to the month the campaign was actually set up for. Fixed: `window_start`/
+  `window_end` are now REAL, load-bearing dates (matching every other campaign type) — the admin picks a
+  **Reporting month** at setup (`views/commission_best_performer_view.py::_anchor_month_choices`, defaults to
+  the current month, current + up to 12 prior months selectable so a campaign can also be set up
+  retroactively for a recently-closed month), `window_end` = the last day of that month, `window_start` = the
+  first day of the oldest of the `num_months` months ending there. At results time,
+  `_compute_ranking` reads the anchor month back out of the STORED `window_end` (`_months_for_window`), never
+  from wall-clock `today` — so re-opening the same campaign months later reproduces the identical ranking
+  every time. The existing per-month `is_real_current_month` check inside `build_pooled_monthly_scores` (fed
+  a separate, genuinely-live `today`) is what gives the two states for free with no extra logic: while the
+  reporting month is still the real current month, that month's own figures stay live/capped-to-today; once
+  it passes, they're just that month's full, completed totals, frozen forever after. The results caption
+  reflects this directly: "...ending {Month YYYY} (still tracking live / closed — final numbers)".
+- **Months to average: 1-3, trailing back from the reporting month** — `_months_for_window` slices
+  `ssc.month_choices(anchor_ts)` (already correct on year-rollover) to `num_months`, anchored at the STORED
+  reporting month, not `today`. A 3-month window can span a calendar-year boundary, so the view loads pooled
+  sales/returns/collection **per distinct year needed**, not per month, then builds one scored table per
+  month via `build_pooled_monthly_scores`. Winners: 2-10 (a different range from A.2's 2-5).
 - **Pooled 100001+100000 throughout, same as every other commission section** — sales/returns/collection/AR
   ledger all pulled and concatenated across both ZIDs before scoring; per-salesman target is summed across
   both ZIDs for the same spid (`_get_target("100001", spid, y, m) + _get_target("100000", spid, y, m)`), same
@@ -1127,6 +1142,16 @@ amount per rank position to the top N — same per-rank-payout mechanism as A.2,
   3-winner campaign, confirmed the setup page shows no results, confirmed Target Management's Commission
   Results computed the identical ranking/payout/gate the standalone script found, full ranking table rendered
   correctly with `—` for non-winning ranks.
+- **Reporting-month pinning fix, separately verified end-to-end**: a standalone script confirmed
+  `_window_for_anchor`/`_months_for_window` derive the correct window for a current-month anchor, a past-month
+  anchor, and a January anchor spanning a year boundary (`Nov/Dec` of the prior year + `Jan`); a direct
+  regression test computed the same past-month-anchored campaign's ranking twice from two independently-built
+  campaign dicts (simulating "open it now" vs. "open it again later") and got a byte-identical
+  `DataFrame` both times — confirming the window truly stays pinned rather than drifting with wall-clock time.
+  Live in the browser: created a real campaign anchored to a **closed** month (August, while today is
+  September) — the setup page correctly showed "Averaged over 1 month ending August 2026 (closed — final
+  numbers)", and Target Management's Commission Results computed a ranking that exactly matched the
+  standalone script's past-month-anchor result (same top-3 salesmen, same scores, same ৳7,500 total payout).
 
 ---
 

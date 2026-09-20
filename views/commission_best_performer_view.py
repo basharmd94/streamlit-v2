@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import calendar
+
 import pandas as pd
 import streamlit as st
 
@@ -122,28 +124,57 @@ def _target_by_sp(sales_df: pd.DataFrame, year: int, month: int) -> dict:
     }
 
 
-def _eval_months(num_months: int, today: pd.Timestamp) -> list:
-    """[(year, month), ...] oldest first — reuses ssc.month_choices (already
-    correct on year-rollover), sliced to num_months and reversed so the
-    evaluation window reads oldest-to-newest, ending at the CURRENT, ongoing
-    month (never "last month" — confirmed 2026-09-20, commission standards
-    need to be set ahead of time)."""
-    choices = ssc.month_choices(today)[:num_months]
+def _anchor_month_choices(today: pd.Timestamp, months_back: int = 12) -> list:
+    """[(label, year, month), ...] most recent first: the current month plus
+    up to `months_back` prior ones — options for the "reporting month"
+    picker (see module note above `_render_form`). A campaign can be set up
+    for the current month (the common case — live tracking while it's
+    ongoing) or retroactively for a recently-closed one."""
+    cur = pd.Timestamp(today.year, today.month, 1)
+    return [
+        ((cur - pd.DateOffset(months=i)).strftime("%b %Y"),
+         int((cur - pd.DateOffset(months=i)).year),
+         int((cur - pd.DateOffset(months=i)).month))
+        for i in range(months_back + 1)
+    ]
+
+
+def _months_for_window(anchor_year: int, anchor_month: int, num_months: int) -> list:
+    """[(year, month), ...] oldest first, num_months entries ending at the
+    campaign's own reporting month (anchor_year, anchor_month) — fixed at
+    setup time. Confirmed 2026-09-20: a campaign must keep showing its own
+    reporting month's results after that month closes, not silently roll
+    forward to whatever month happens to be current when it's re-opened —
+    so this is anchored to the STORED reporting month, never to wall-clock
+    "today" at view time (that's a separate, real `today` still passed into
+    `build_pooled_monthly_scores` below, only to decide whether the
+    reporting month itself is still live-in-progress)."""
+    choices = ssc.month_choices(pd.Timestamp(anchor_year, anchor_month, 1))[:num_months]
     return list(reversed([(y, m) for (_lbl, y, m) in choices]))
 
 
-def _current_window(num_months: int, today: pd.Timestamp) -> tuple:
-    """Informational window_start/window_end for the stored campaign row
-    only — NOT used to gate computation (see _compute_ranking, which always
-    recomputes the live window from num_months + today at view time)."""
-    months = _eval_months(num_months, today)
+def _window_for_anchor(anchor_year: int, anchor_month: int, num_months: int) -> tuple:
+    """(window_start, window_end) dates for the campaign row — real,
+    load-bearing values now (previously informational-only, corrected
+    2026-09-20): window_end is the LAST day of the reporting month
+    (anchor_year, anchor_month), window_start is the first day of the
+    oldest of the num_months months ending there. `window_end`'s own
+    (year, month) is what `_compute_ranking` reads back out as the anchor
+    on every later view — the campaign's reporting month never moves once
+    saved."""
+    months = _months_for_window(anchor_year, anchor_month, num_months)
     oldest_year, oldest_month = months[0]
-    return pd.Timestamp(oldest_year, oldest_month, 1).date(), today.date()
+    last_day = calendar.monthrange(anchor_year, anchor_month)[1]
+    window_start = pd.Timestamp(oldest_year, oldest_month, 1).date()
+    window_end = pd.Timestamp(anchor_year, anchor_month, last_day).date()
+    return window_start, window_end
 
 
 def _compute_ranking(campaign: dict, num_months: int) -> dict:
     today = pd.Timestamp.today().normalize()
-    months = _eval_months(num_months, today)
+    anchor_end = pd.Timestamp(campaign["window_end"])
+    anchor_year, anchor_month = int(anchor_end.year), int(anchor_end.month)
+    months = _months_for_window(anchor_year, anchor_month, num_months)
     years_needed = sorted({y for y, _m in months})
 
     sales_by_year = {y: _load_pooled_sales_year(y) for y in years_needed}
@@ -155,6 +186,10 @@ def _compute_ranking(campaign: dict, num_months: int) -> dict:
     for (y, m) in months:
         sales_df = sales_by_year.get(y, pd.DataFrame())
         target_by_sp = _target_by_sp(sales_df, y, m)
+        # `today` here is real wall-clock today, not the campaign's anchor —
+        # build_pooled_monthly_scores uses it only to decide whether THIS
+        # specific (y, m) is still the genuinely current month (live,
+        # capped to today) or already closed (full completed month).
         table = ssc.build_pooled_monthly_scores(
             y, m, today, sales_df, returns_by_year.get(y, pd.DataFrame()),
             collection_by_year.get(y, pd.DataFrame()), ar_clean, target_by_sp,
@@ -165,14 +200,25 @@ def _compute_ranking(campaign: dict, num_months: int) -> dict:
         pd.concat(list(sales_by_year.values()), ignore_index=True) if sales_by_year else pd.DataFrame()
     )
     oldest_year, oldest_month = months[0]
+    last_day = calendar.monthrange(anchor_year, anchor_month)[1]
     campaign_for_gate = dict(campaign)
     campaign_for_gate["window_start"] = pd.Timestamp(oldest_year, oldest_month, 1)
-    campaign_for_gate["window_end"] = today
+    campaign_for_gate["window_end"] = pd.Timestamp(anchor_year, anchor_month, last_day)
 
     return cc.compute_best_performer_ranking(campaign_for_gate, monthly_tables, pooled_sales_full)
 
 
 # ── Create / Edit Best Performer campaign (admin-only) — shared body ───────
+#
+# Reporting month, confirmed 2026-09-20 after the user flagged a real bug:
+# the window must be pinned to whichever month the campaign is SET UP for
+# (chosen here, stored as the real window_end), not recomputed from
+# wall-clock "today" on every later view. Concretely: while the reporting
+# month is still the real, ongoing month, results track live (capped to
+# today) — matching the original "current month" behavior. Once that month
+# closes, results stay frozen at its final numbers forever after, even if
+# the campaign is reopened months later — they never roll forward to
+# whatever month happens to be current at view time.
 
 def _render_form(existing: dict | None = None) -> None:
     is_edit = existing is not None
@@ -182,11 +228,33 @@ def _render_form(existing: dict | None = None) -> None:
         "Campaign name", value=(existing["campaign_name"] if is_edit else ""), key=f"{key_prefix}_name",
     )
 
+    today = pd.Timestamp.today().normalize()
+    month_opts = _anchor_month_choices(today)
+    month_labels = [lbl for lbl, _y, _m in month_opts]
+    if is_edit:
+        existing_end = pd.Timestamp(existing["window_end"])
+        default_label = next(
+            (lbl for lbl, y, m in month_opts if y == existing_end.year and m == existing_end.month),
+            month_labels[0],
+        )
+    else:
+        default_label = month_labels[0]
+    sel_label = st.selectbox(
+        "Reporting month — the month this campaign is for", month_labels,
+        index=month_labels.index(default_label), key=f"{key_prefix}_month",
+    )
+    anchor_year, anchor_month = next((y, m) for lbl, y, m in month_opts if lbl == sel_label)
+    st.caption(
+        "Tracks live while this is the current, ongoing month. Once the month ends, results "
+        "stay fixed at that month's final numbers — reopening this campaign later won't roll "
+        "the window forward to whatever month is current by then."
+    )
+
     existing_config = (existing.get("product_rates") or {}) if is_edit else {}
     months_default = int(existing_config.get("num_months", 1)) if is_edit else 1
     months_default = min(max(months_default, MIN_MONTHS), MAX_MONTHS)
     num_months = st.number_input(
-        f"Months to average ({MIN_MONTHS}-{MAX_MONTHS}) — always ending at the current, ongoing month",
+        f"Months to average ({MIN_MONTHS}-{MAX_MONTHS}), trailing back from the reporting month",
         min_value=MIN_MONTHS, max_value=MAX_MONTHS, value=months_default, step=1, key=f"{key_prefix}_nummonths",
     )
 
@@ -227,8 +295,7 @@ def _render_form(existing: dict | None = None) -> None:
         product_rates_payload = {
             "num_months": int(num_months), "num_winners": int(num_winners), "payouts_by_rank": payouts_by_rank,
         }
-        today = pd.Timestamp.today().normalize()
-        window_start, window_end = _current_window(int(num_months), today)
+        window_start, window_end = _window_for_anchor(anchor_year, anchor_month, int(num_months))
         if is_edit:
             ok = cc.update_campaign(
                 campaign_id=int(existing["id"]), campaign_name=name.strip(), campaign_type=CAMPAIGN_TYPE,
@@ -298,9 +365,16 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
 
     st.markdown(f"### {campaign['campaign_name']}")
     month_label = "month" if num_months == 1 else "months"
+    reporting_month = pd.Timestamp(campaign["window_end"]).strftime("%B %Y")
+    today = pd.Timestamp.today().normalize()
+    is_ongoing = (
+        int(pd.Timestamp(campaign["window_end"]).year) == today.year
+        and int(pd.Timestamp(campaign["window_end"]).month) == today.month
+    )
+    status_note = "still tracking live" if is_ongoing else "closed — final numbers"
     st.caption(
         f"Best Performer (ranked by average Salesman Score) · Averaged over "
-        f"{num_months} {month_label} ending this month"
+        f"{num_months} {month_label} ending {reporting_month} ({status_note})"
     )
     payouts_line = " · ".join(
         f"{_ordinal(i + 1)}: {_fmt_bdt(a)}" for i, a in enumerate(payouts_by_rank)
@@ -353,11 +427,11 @@ def render(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
         "Ranks salesmen by their average Salesman Score — the EXACT same engine as "
         "Target Management's own 🎯 Salesman Score tab (same weights: +45 target, "
         "+45 collection, +5 products, +5 customers, -6 returns, -12/-2 AR balance) — "
-        "averaged over the admin-chosen number of months, always ending at the "
-        "CURRENT, ongoing month (never a lagging 'last month' figure, since "
-        "commission standards need to be set ahead of time). Pooled across "
-        "100001+100000 and gated on both ZIDs hitting their own sales target, same "
-        "as the other commission sections."
+        "averaged over the admin-chosen number of months, ending at a reporting month "
+        "picked at setup. Tracks live while that month is still ongoing, then stays "
+        "fixed at its final numbers once the month closes — reopening a campaign later "
+        "never rolls the window forward. Pooled across 100001+100000 and gated on both "
+        "ZIDs hitting their own sales target, same as the other commission sections."
     )
 
     is_admin = (not read_only) and st.session_state.get("user_role") == "admin"
@@ -370,7 +444,7 @@ def render(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
         return
 
     labels = {
-        f"#{r.id} — {r.campaign_name}": r.id
+        f"#{r.id} — {r.campaign_name} ({pd.Timestamp(r.window_end).strftime('%b %Y')})": r.id
         for r in campaigns.itertuples()
     }
     pick = st.selectbox("Select a campaign", list(labels.keys()), key=f"a1_select_campaign{key_suffix}")

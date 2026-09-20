@@ -79,11 +79,24 @@ Status: **built 2026-09-20** (`processing/salesman_score.py::build_pooled_monthl
   `-20/-20` proposal above, which was never built). Not admin-adjustable — same fixed
   formula as the Salesman Score tab.
 - **Averaging period, confirmed 2026-09-20, resolving the "not yet decided" open point
-  above**: admin picks **1-3 months to average**, always ending at the CURRENT, ongoing
-  month — never "last month" ("I have to set the commission standards before"). A
-  salesman's `avg_score` is the mean of their score across only the months they actually
-  have a row in (no phantom 0 for a month/year with zero activity). This settles the
-  "per-month average vs. pooled totals" question in favor of per-month averaging.
+  above**: admin picks **1-3 months to average**. A salesman's `avg_score` is the mean of
+  their score across only the months they actually have a row in (no phantom 0 for a
+  month/year with zero activity). This settles the "per-month average vs. pooled totals"
+  question in favor of per-month averaging.
+- **Reporting month, pinned at setup — corrected 2026-09-20, same day, after a real bug the
+  user caught right after first shipping this.** First version anchored the window to
+  wall-clock "today" and recomputed it live on every view — so a campaign set up in
+  September would silently show September+October the moment October began, instead of
+  staying on September's own completed results. The user's own words, catching it: "once
+  the month is over, I will need the performance of the last month... do you understand
+  what I mean?" Fixed: the admin now picks an explicit **Reporting month** at setup
+  (defaults to the current month, but selectable up to 12 months back, so a campaign can
+  also be set up retroactively for an already-closed month) — `window_start`/`window_end`
+  become the campaign's real, load-bearing evaluation bounds (no longer "informational
+  only"), and every later view re-derives the N-month list from the STORED reporting month,
+  never from `today`. While the reporting month is still genuinely current, results track
+  live (capped to today); once it closes, they freeze at that month's final numbers
+  forever, however long the campaign is left open before being checked again.
 - **Payout mechanism — same per-rank-payout pattern as A.2, not a single fixed amount to
   one winner** (the "fixed BDT amount to the winner" line above was superseded once A.2's
   own ranked-payout mechanism was confirmed and reused here): admin picks **2-10 winners**
@@ -95,10 +108,8 @@ Status: **built 2026-09-20** (`processing/salesman_score.py::build_pooled_monthl
 - **Reuses the SAME `commission_campaigns` table as B.1/3/4 and A.2 — a 3rd
   `campaign_type` value, `"Best Performer"`** (same "no separate table per campaign type"
   pattern as A.2). `product_rates` (JSONB) holds `{"num_months": M, "num_winners": N,
-  "payouts_by_rank": [amt1, ...]}`. `window_start`/`window_end` on the stored row are
-  informational only (set at save time) — the real evaluation window is always
-  recomputed live from `today` + `num_months`. Verified A.1's `campaign_type` doesn't leak
-  into A.2's or B.1/3/4's existing picker filters and vice versa, same check done for A.2.
+  "payouts_by_rank": [amt1, ...]}`. Verified A.1's `campaign_type` doesn't leak into A.2's
+  or B.1/3/4's existing picker filters and vice versa, same check done for A.2.
 - **The 100001/100000 target gate applies here too** (explicit ask, "make sure one hundred
   thousand one and one hundred thousand is applied here as well. The gate") —
   `compute_best_performer_ranking` calls the same `check_gate` B.1/3/4 uses, over the full
@@ -122,6 +133,14 @@ Status: **built 2026-09-20** (`processing/salesman_score.py::build_pooled_monthl
   a real 2-month/3-winner campaign, confirmed the setup page shows no results, confirmed
   Target Management's Commission Results computed the identical ranking/payout/gate the
   standalone script found.
+- **Reporting-month pinning fix separately verified**: a standalone script confirmed the
+  window/month derivation for a current-month anchor, a past-month anchor, and a January
+  anchor crossing a year boundary; a direct regression test built the same past-anchored
+  campaign twice (simulating opening it "now" vs. "again later") and got a byte-identical
+  ranking both times. Live in the browser: created a real campaign anchored to a **closed**
+  month (August, with today in September) — setup correctly showed "...ending August 2026
+  (closed — final numbers)", and Target Management computed a ranking exactly matching the
+  standalone script's own past-month-anchor result (same top 3, same scores, ৳7,500 total).
 
 ### A.2 Highest Product Sales
 
