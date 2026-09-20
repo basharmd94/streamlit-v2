@@ -455,6 +455,88 @@ today." **Verified** with 5 synthetic prmst rows (`A-Active`, `R-Resigned`, `T-T
 `H-Hold`, and a lowercase `a-active` to confirm case-insensitivity) — only the two active
 ones resolved.
 
+#### Reporting consolidated to 1-2 tables, setup and results split across two pages (2026-09-20)
+
+A voice-transcribed follow-up message, several asks at once, all pointing at the same
+underlying principle the user stated directly: "the admin will setup the commissions...
+target management you can see the results... maximum one or two tables... consolidated in
+a very direct kind of way."
+
+**1. Setup and results are now two separate surfaces, never both on one page.** "My admin
+commissions page where I edit, that place, whatever, let's just leave like the editing and
+the stuff, no need to show anything else, honestly." The admin Commissions page now shows
+ONLY setup controls (watchlist editor for Product Tracking; roster view, create form, edit
+form, delete button for B.1/3/4) — it never computes a payout at all anymore, so opening a
+campaign to fix a typo no longer pays the ~15-20s FIFO cost. Target Management's "💰
+Commission Results" mode shows ONLY the results below — never setup. Implemented via a
+`read_only: bool` threaded through every section renderer, gating setup controls
+regardless of the viewer's own role (see CLAUDE.md's "Architecture: setup vs. results" for
+the mechanics).
+
+**2. B.1/3/4's own results collapsed to 2 tables.** Previously: a Per-Recipient Payout
+table, a separate Per-Recipient-Per-Product breakdown expander, a separate Excluded-DOs
+expander (two tables inside it), and bare Sales Uptick metric cards — five-ish separate
+pieces. The user's own words: "I want to see one table... the salesman, the DO number, the
+product code, the quantity sold... the fixed amount of commissions... and finally the
+total amount paid... And I want to see what salesmen were removed and what not... in a
+secondary table, how about we see the before after, like you do in product tracking."
+- **Table 1** — `processing/commission_campaigns.py::compute_campaign_payout`'s new
+  `line_items`: one row per (recipient, DO, product) for EVERY in-window DO carrying a
+  picked product, eligible or excluded alike, with a `Status` column (Eligible, or the
+  specific exclusion reason) right there in the same table — this is how "what salesmen
+  were removed and what not" is answered, not a separate table. Columns match the user's
+  own list exactly: Salesman (Code + Name), DO Number, Product Code, Qty, Rate, Payout
+  (0 for excluded rows — never a phantom uncapped number), Status.
+- **Table 2** — a new per-product Before/After table
+  (`compute_campaign_product_before_after`), Before = the campaign's existing baseline
+  window, After = the campaign's own sales window (capped to today if still ongoing). Uses
+  the exact same rendering component as Product Tracking's own redesign (see below) — one
+  table, one row per picked product, a Metric dropdown above it.
+- The gate banner and 3 top-line metrics (Total Payout / Eligible DOs / Excluded DOs) are
+  kept — not tables, just a compact status header above the two tables.
+
+**3. Product Tracking collapsed the same way** — "the product tracking honestly can be the
+same way. Instead of looking at five tables, I would like it to be in one table... the
+before after can only be in the column header." One table, rows = every tracked product,
+columns = Before / Before Avg (Prorated) / After / Change, for whichever metric is
+currently picked.
+
+**4. A Metric dropdown replaces always-showing every number at once** — "the total revenue
+is not very necessary. You can have a filter... to see if you want to see returns, if you
+want to see net revenue, or you want to see net units sold." Three choices only: Net Units
+Sold, Returns, Net Revenue (gross Qty Sold / gross Sales Revenue dropped from the picker,
+still computed internally since Net Revenue needs gross revenue as an input). **Net
+Revenue is a genuinely new metric** — revenue net of the return's own BDT value, not just
+net of return quantity — which required switching both Product Tracking's and the
+campaign's own returns data source from the lightweight `returns_daily_item` MV
+(quantity-only) to the full `"return"` Analytics table (`get_return_data`, has
+`treturnamt`).
+
+**Shared engine, not two parallel implementations**: `processing/commissions.py` gained
+`_window_metrics` (the 5-metric bundle: qty sold, sales revenue, qty returned, net qty, net
+revenue, for one window) and `_prorate_before` (the day-count proration), both used by
+BOTH Product Tracking's `build_product_comparisons` and B.1/3/4's new
+`compute_campaign_product_before_after` — one before/after "engine," two different
+window-boundary sources. The actual table rendering is one shared component,
+`views/commission_shared.py::render_before_after_table`, used by both
+`views/commissions.py` (Product Tracking) and `views/commission_campaigns_view.py`
+(the campaign's Table 2) — new file, specifically to avoid a circular import between those
+two view modules (commissions.py already imports commission_campaigns_view, so the shared
+piece couldn't live in either of them without creating a cycle).
+
+**Verified** end-to-end against real Postgres, deliberately including a real
+high-sales-volume item (not just a sparse test item) to exercise a real mix of
+eligible/excluded rows: item `1281` (61k+ historical DOs) over a real 2024 window produced
+1,399 rows in `line_items`, all correctly showing real salesman names, DO numbers,
+quantities, and the exclusion reason `"Excluded: salesman not in any payout group"`
+(expected — `derive_spid_group_map` still resolves nothing locally, per `xdisease`'s
+ongoing live-server rollout, not a bug); the same campaign's Table 2 showed correct real
+Before/Prorated/After figures. Separately confirmed live: the admin page's campaign detail
+view loads without ever showing the "Computing payout..." spinner (the FIFO path is
+provably skipped); the Target Management results view shows the full report with zero
+setup controls anywhere; Product Tracking's consolidated table correctly switches between
+all 3 metrics including real ৳ figures for Net Revenue.
+
 #### For future note (2026-09-19/20) — recipient type across the rest of A/B
 
 Not yet relevant to anything built, but worth knowing before scoping A.1/A.2/A.4/B.2/B.5:
@@ -531,17 +613,29 @@ ever committed — no migration/cleanup needed.
     so the two windows never overlap or double-count it. `back_to` can be **at most 6
     months before the cutoff** (`processing/commissions.py::min_back_to`).
   - **Each watched product has its own cutoff + back_to** — not one shared pair for the
-    whole watchlist. Rendered as **one separate table per product** (own Before row, own
-    After row, plus a Change row = After − Before), not a combined multi-product grid.
+    whole watchlist.
+- **Reporting — one consolidated table across every tracked product, not one table per
+  product (redesigned 2026-09-20).** Rows = products; columns = Before / Before Avg
+  (Prorated) / After / Change, for ONE metric picked from a dropdown above the table (Net
+  Units Sold / Returns / Net Revenue — gross Qty Sold/Sales Revenue are computed internally
+  but not user-selectable). Rendered by the shared
+  `views/commission_shared.py::render_before_after_table` component — also used by
+  B.1/3/4's own campaign-product Before/After table, see §B.1/3/4's own redesign note. Net
+  Revenue required switching the returns data source from the lightweight
+  `returns_daily_item` MV (qty only) to the full `"return"` Analytics table (has the
+  return's own BDT value, `treturnamt`).
+- **Setup (watchlist editor) and results (the table above) are two separate surfaces** —
+  the admin Commissions page shows only the editor, Target Management's "💰 Commission
+  Results" mode shows only the table, never both on one page. See §B.1/3/4's redesign note
+  for the shared `read_only` mechanism.
 - **Persistence**: per product, only the item code + its own `cutoff`/`back_to` dates are
   saved — nothing computed. Shape: `data/commission_product_watchlist.json` →
   `{zid: {itemcode: {"cutoff": "YYYY-MM-DD", "back_to": "YYYY-MM-DD"}}}`. All metrics are
   still recomputed live off those saved dates on every view (`build_product_comparisons`),
   same "recompute, don't store" pattern as the rest of this app.
 - **Tracks both sales AND returns**, per window — qty sold, sales revenue, qty returned,
-  net qty, sourced from `sales_daily_item`/`returns_daily_item` (`mv_sales_daily_item` /
-  `mv_returns_daily_item`), joined to `final_items_view` for name/group/current stock
-  (current stock shown as point-in-time context above each product's table, not per-window).
+  net qty, net revenue, sourced from `sales_daily_item` + the full `"return"` table, joined
+  to `final_items_view` for name/group/current stock.
 - **UI**: add-product row (product picker + Cutoff + Back To date inputs + Add) followed by
   one edit block per tracked item (its own Cutoff/Back To date inputs + Save + Remove) in
   the "⚙️ Manage Watchlist" expander (admin-only, same as before); the date inputs

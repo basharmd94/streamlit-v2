@@ -111,17 +111,61 @@ def update_product_dates(zid: str, itemcode: str, cutoff: pd.Timestamp, back_to:
 
 
 # ── Before/After computation (live, nothing computed here is persisted) ────
+# _window_sum / _window_metrics / _prorate_before are shared with the B.1/3/4
+# campaign's own product Before/After table
+# (processing/commission_campaigns.py::compute_campaign_product_before_after)
+# — one before/after "engine," two window-boundary sources (cutoff/back_to
+# for Product Tracking, campaign-window/baseline for a campaign), same shape
+# out so both feed the same table renderer (views/commission_shared.py).
+# Redesigned 2026-09-20: consolidated from one table per product into a
+# single table (rows=products, columns=Before/Avg/After for ONE
+# dropdown-picked metric) — explicit ask, "instead of looking at five
+# tables, I would like it to be in one table."
 
 def _window_sum(df: pd.DataFrame, itemcode: str, start: pd.Timestamp, end: pd.Timestamp, col: str) -> float:
     """Sum of `col` for one item within [start, end) — end EXCLUSIVE, so a
     Before window and the After window starting at the same cutoff date never
     both count that date."""
-    if df.empty:
+    if df.empty or col not in df.columns:
         return 0.0
     sub = df[(df["itemcode"] == itemcode) & (df["_dt"] >= start) & (df["_dt"] < end)]
     if sub.empty:
         return 0.0
     return float(sub[col].sum())
+
+
+def _window_metrics(
+    sales_df: pd.DataFrame, returns_df: pd.DataFrame, itemcode: str,
+    start: pd.Timestamp, end: pd.Timestamp,
+    qty_col: str = "quantity", revenue_col: str = "totalsales",
+    ret_qty_col: str = "returnqty", ret_val_col: str = "treturnamt",
+) -> dict:
+    """One window's worth of metrics for one item: qty sold, sales revenue
+    (gross), qty returned, net qty (sold − returned), net revenue (revenue −
+    returns' own BDT value). `sales_df`/`returns_df` must already have `_dt`
+    (parsed date) and the given columns prepared — callers own that prep
+    since the two call sites source data differently (Product Tracking:
+    mv_sales_daily_item/full return history; B.1/3/4: pooled sales/return
+    Analytics tables with different column names, hence the column-name
+    params)."""
+    sold = _window_sum(sales_df, itemcode, start, end, qty_col)
+    revenue = _window_sum(sales_df, itemcode, start, end, revenue_col)
+    returned = _window_sum(returns_df, itemcode, start, end, ret_qty_col)
+    returned_val = _window_sum(returns_df, itemcode, start, end, ret_val_col)
+    return {
+        "qty_sold": sold, "sales_revenue": revenue,
+        "qty_returned": returned, "net_qty": sold - returned,
+        "net_revenue": revenue - returned_val,
+    }
+
+
+def _prorate_before(before: dict, before_days: int, after_days: int) -> dict:
+    """Scales every metric in `before` to the number of days `after_days`
+    covers, using Before's own daily rate — see build_product_comparisons's
+    docstring for the full rationale (fair comparison between a fixed-length
+    Before window and a usually-different-length After window)."""
+    proration = (after_days / before_days) if before_days > 0 else 0.0
+    return {k: v * proration for k, v in before.items()}
 
 
 def build_product_comparisons(
@@ -140,6 +184,16 @@ def build_product_comparisons(
     The cutoff date itself belongs to After only, so the two windows never
     overlap. A malformed/unparseable saved entry is skipped rather than
     crashing the whole page.
+
+    Before Avg (prorated) — Before spans a fixed [back_to, cutoff) window;
+    After is still running ([cutoff, as_of], growing every day) — so raw
+    totals aren't a fair comparison once the two windows are different
+    lengths (the normal case, since After keeps elapsing while Before stays
+    fixed). Prorate Before's own daily rate to the number of days After has
+    actually covered so far, giving an apples-to-apples "what Before's pace
+    would have produced over a period this short" baseline — e.g. cutoff
+    2026-09-13, back_to 2026-08-01, as_of 2026-09-20: before_days=43,
+    after_days=8, prorated = before_total * 8/43.
     """
     if not watchlist:
         return []
@@ -158,6 +212,8 @@ def build_product_comparisons(
         r["itemcode"] = r["itemcode"].astype(str)
         r["_dt"] = pd.to_datetime(r["date"], errors="coerce")
         r["returnqty"] = pd.to_numeric(r["returnqty"], errors="coerce")
+        if "treturnamt" in r.columns:
+            r["treturnamt"] = pd.to_numeric(r["treturnamt"], errors="coerce")
 
     meta_lookup = {}
     if items_df is not None and not items_df.empty and "item_id" in items_df.columns:
@@ -182,36 +238,12 @@ def build_product_comparisons(
         if pd.isna(cutoff) or pd.isna(back_to):
             continue
 
-        before_sold = _window_sum(s, itemcode, back_to, cutoff, "quantity")
-        before_rev = _window_sum(s, itemcode, back_to, cutoff, "totalsales")
-        before_ret = _window_sum(r, itemcode, back_to, cutoff, "returnqty")
+        before = _window_metrics(s, r, itemcode, back_to, cutoff)
+        after = _window_metrics(s, r, itemcode, cutoff, after_end)
 
-        after_sold = _window_sum(s, itemcode, cutoff, after_end, "quantity")
-        after_rev = _window_sum(s, itemcode, cutoff, after_end, "totalsales")
-        after_ret = _window_sum(r, itemcode, cutoff, after_end, "returnqty")
-
-        before = {
-            "qty_sold": before_sold, "sales_revenue": before_rev,
-            "qty_returned": before_ret, "net_qty": before_sold - before_ret,
-        }
-        after = {
-            "qty_sold": after_sold, "sales_revenue": after_rev,
-            "qty_returned": after_ret, "net_qty": after_sold - after_ret,
-        }
-
-        # Before spans a fixed [back_to, cutoff) window; After is still
-        # running ([cutoff, as_of], growing every day) — so raw totals aren't
-        # a fair comparison once the two windows are different lengths (the
-        # normal case, since After keeps elapsing while Before stays fixed).
-        # Prorate Before's own daily rate to the number of days After has
-        # actually covered so far, giving an apples-to-apples "what Before's
-        # pace would have produced over a period this short" baseline — e.g.
-        # cutoff 2026-09-13, back_to 2026-08-01, as_of 2026-09-20:
-        # before_days=43, after_days=8, prorated = before_total * 8/43.
         before_days = (cutoff - back_to).days
         after_days = (as_of - cutoff).days + 1
-        proration = (after_days / before_days) if before_days > 0 else 0.0
-        before_avg_prorated = {k: v * proration for k, v in before.items()}
+        before_avg_prorated = _prorate_before(before, before_days, after_days)
 
         meta = meta_lookup.get(itemcode, {})
         rows.append({

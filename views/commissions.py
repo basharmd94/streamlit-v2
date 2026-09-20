@@ -13,7 +13,7 @@ import streamlit as st
 
 from core.analytics import Analytics
 from processing import commissions as comm, usage_log
-from views import commission_campaigns_view
+from views import commission_campaigns_view, commission_shared
 from views.marketing import _load_final_items  # noqa: F401 — re-exported; avoids duplicate cache
 
 
@@ -26,8 +26,12 @@ def _load_sales_daily(zid: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def _load_returns_daily(zid: str) -> pd.DataFrame:
-    df = Analytics("returns_daily_item", zid=zid, filters={}).data
+def _load_returns_full(zid: str) -> pd.DataFrame:
+    """Full return line-item history (itemcode/date/returnqty/treturnamt) —
+    switched from the lightweight returns_daily_item MV (qty only) since Net
+    Revenue (added 2026-09-20) needs the return's own BDT value (treturnamt),
+    which that MV doesn't carry."""
+    df = Analytics("return", zid=zid, filters={}).data
     return df if df is not None else pd.DataFrame()
 
 
@@ -165,70 +169,6 @@ def _render_watchlist_editor(zid: str, items_df: pd.DataFrame, watchlist: dict) 
         _render_tracked_item_editor(zid, itemcode, name_lookup.get(itemcode), dates)
 
 
-def _fmt_metric(v, signed: bool = False) -> str:
-    if v is None or pd.isna(v):
-        return "—"
-    return f"{v:+,.0f}" if signed else f"{v:,.0f}"
-
-
-def _render_comparison_table(entry: dict) -> None:
-    """One product's own Before/After block — a separate table per product,
-    since each one has its own date range and they can't share columns."""
-    itemcode = entry["itemcode"]
-    itemname = entry["itemname"] or "(name unavailable)"
-    itemgroup = entry["itemgroup"] or "—"
-    stock = entry["current_stock"]
-    before, after = entry["before"], entry["after"]
-    before_avg = entry["before_avg_prorated"]
-    before_days, after_days = entry["before_days"], entry["after_days"]
-    # Change is measured against the PRORATED Before average, not the raw
-    # Before total — After is still an in-progress window (elapsed since
-    # cutoff, growing daily) while Before is a fixed, usually much longer,
-    # window; comparing raw totals of two differently-sized windows would
-    # always make After look artificially small. The prorated row is the
-    # fair baseline.
-    change = {k: after[k] - before_avg[k] for k in after}
-
-    with st.container(border=True):
-        st.markdown(f"#### `{itemcode}` — {itemname}")
-        stock_txt = _fmt_metric(stock)
-        st.caption(f"Item Group: {itemgroup} · Current Stock: {stock_txt}")
-        st.caption(
-            f"Before: **{entry['back_to'].date()} → {entry['cutoff'].date()}** ({before_days}d)  |  "
-            f"After: **{entry['cutoff'].date()} → {entry['as_of'].date()}** ({after_days}d, ongoing)"
-        )
-        st.caption(
-            f"Before Avg (prorated) = Before × ({after_days}d ÷ {before_days}d) — what Before's own "
-            f"daily pace would have produced over a period as short as After's {after_days} days so far."
-        )
-
-        metric_cols = ["Qty Sold", "Sales Revenue", "Qty Returned", "Net Qty"]
-        key_map = {"Qty Sold": "qty_sold", "Sales Revenue": "sales_revenue",
-                   "Qty Returned": "qty_returned", "Net Qty": "net_qty"}
-        rows = []
-        for label, metrics, signed in [
-            ("Before", before, False),
-            (f"Before Avg (prorated to {after_days}d)", before_avg, False),
-            ("After", after, False),
-            ("Change (After − Prorated Avg)", change, True),
-        ]:
-            row = {"Period": label}
-            for col in metric_cols:
-                row[col] = _fmt_metric(metrics[key_map[col]], signed)
-            rows.append(row)
-        df = pd.DataFrame(rows)
-
-        def _hl_change(row):
-            if row["Period"].startswith("Change"):
-                return ["font-weight: bold; background-color: rgba(127,127,127,0.15)"] * len(row)
-            return [""] * len(row)
-
-        try:
-            st.dataframe(df.style.apply(_hl_change, axis=1), width="stretch", hide_index=True)
-        except Exception:
-            st.dataframe(df, width="stretch", hide_index=True)
-
-
 def _comparisons_to_long_df(rows: list) -> pd.DataFrame:
     """Raw-numeric long format (one row per product per period) for CSV export."""
     out = []
@@ -245,52 +185,57 @@ def _comparisons_to_long_df(rows: list) -> pd.DataFrame:
                 "Window Start": wstart.date(), "Window End": wend.date(),
                 "Qty Sold": metrics["qty_sold"], "Sales Revenue": metrics["sales_revenue"],
                 "Qty Returned": metrics["qty_returned"], "Net Qty": metrics["net_qty"],
+                "Net Revenue": metrics["net_revenue"],
             })
     return pd.DataFrame(out)
 
 
 def _render_product_tracking(zid: str, read_only: bool = False) -> None:
     st.subheader("📋 Product Tracking")
-    st.caption(
-        "A small hand-picked watchlist of products, each with its own Before/After "
-        "comparison — pick a cutoff date and how far back to compare (up to 6 months); "
-        f"'After' runs from the cutoff to today. Admin-edited, up to "
-        f"{comm.MAX_WATCHLIST_ITEMS} items, scoped to the active business (ZID)."
-    )
-
     items_df = _load_final_items(str(zid))
     watchlist = comm.load_watchlist(zid)
 
-    # read_only=True (Target Management's manager-facing Commission Results
-    # view, see render_section_picker below) never shows the editor, even
-    # for an admin viewing it from there — that view is results-only by
-    # design.
-    is_admin = (not read_only) and st.session_state.get("user_role") == "admin"
-    if is_admin:
-        with st.expander(
-            f"⚙️ Manage Watchlist ({len(watchlist)}/{comm.MAX_WATCHLIST_ITEMS})",
-            expanded=not watchlist,
-        ):
-            _render_watchlist_editor(zid, items_df, watchlist)
-        watchlist = comm.load_watchlist(zid)  # pick up any add/remove/save just made
-    elif not watchlist:
-        st.info("No products are being tracked yet. Ask an admin to add some via ⚙️ Manage Watchlist.")
+    # Setup (admin Commissions page, read_only=False) vs. results (Target
+    # Management's "💰 Commission Results", read_only=True) — confirmed
+    # 2026-09-20: "admin has the ear to set up, but target management you
+    # can see the results." The admin page shows only the watchlist editor,
+    # never the before/after data; Target Management shows only the
+    # consolidated table, never editing controls — regardless of viewer role.
+    if not read_only:
+        st.caption(
+            "Pick which products to track and their own cutoff/back-to dates (up to 6 "
+            f"months back) — up to {comm.MAX_WATCHLIST_ITEMS} items, scoped to the active "
+            "business (ZID). Results show in Target Management → 💰 Commission Results."
+        )
+        if st.session_state.get("user_role") == "admin":
+            with st.expander(
+                f"⚙️ Manage Watchlist ({len(watchlist)}/{comm.MAX_WATCHLIST_ITEMS})",
+                expanded=not watchlist,
+            ):
+                _render_watchlist_editor(zid, items_df, watchlist)
+        else:
+            st.info("Setup is admin-only.")
+        return
 
+    st.caption(
+        "Before/After comparison for each tracked product — 'After' runs from that "
+        "product's own cutoff date to today."
+    )
     if not watchlist:
+        st.info("No products are being tracked yet. Ask an admin to add some via the Commissions page.")
         return
 
     today = pd.Timestamp.today().normalize()
     with st.spinner("Loading sales & returns…"):
         sales_df = _load_sales_daily(str(zid))
-        returns_df = _load_returns_daily(str(zid))
+        returns_df = _load_returns_full(str(zid))
 
     comparisons = comm.build_product_comparisons(sales_df, returns_df, items_df, watchlist, today)
     if not comparisons:
         st.info("No data for the tracked products.")
         return
 
-    for entry in comparisons:
-        _render_comparison_table(entry)
+    commission_shared.render_before_after_table(comparisons, key_suffix=f"_pt_{zid}")
 
     long_df = _comparisons_to_long_df(comparisons)
     st.download_button(

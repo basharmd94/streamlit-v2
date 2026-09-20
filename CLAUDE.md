@@ -856,238 +856,180 @@ Full design (rankings, campaigns, the pooled-FIFO/gate mechanics) lives in **`co
 (repo root, status "agreed design") — that file is the source of truth, not this section. Built one piece at a
 time, discussed with the user before each piece, per that doc's own "discuss before building" rule.
 
-- **Page structure**: a single top-level `st.selectbox("Commission Campaign", ...)` dropdown routes to one
-  section-renderer per doc item — `views/commissions.py::_sections(read_only, key_suffix)` (a function, not a
-  plain dict, since 2026-09-20 — see below) returns the same 7-entry map every time (A.1 Best Performer, A.2
-  Highest Product Sales, A.4 Best App User, B.1/3/4 Campaign, B.2 Individual Target, B.5 New Customer). Sections
-  not yet built show a `st.info` placeholder pointing back at the relevant doc section instead of a
-  blank/missing option, so the dropdown's shape doesn't need to change as each piece gets picked up. The picker
-  itself is `render_section_picker(zid, read_only, key_suffix)`, called both by `display_commissions_page`
-  (admin page, `read_only=False`) and by Target Management's "💰 Commission Results" mode (`read_only=True`) —
-  see that section's own note below.
-- **Access**: `page_permissions` grants `'admin'` only for now (`db/sql_scripts/grant_commissions_page_permission.sql`,
-  same non-destructive-INSERT convention as `create_view_usage_log_table.sql`'s "Usage Stats" grant) — a new,
-  compensation-sensitive page defaults to admin-only; widen to other roles later if actually wanted. Managers
-  see RESULTS ONLY via Target Management instead (see below) — that's a separate, narrower access path, not a
-  widening of this page's own admin-only gate.
-- **Instrumented** in Usage Stats the same way every other page is — `usage_log.log_view("Commissions", section)`
-  right after the dropdown, `"Commissions"` added to `usage_log.ALL_PAGES`.
+### Architecture: setup vs. results are two separate surfaces (confirmed 2026-09-20)
 
-### Commission Results — read-only view in Target Management (2026-09-20)
+**The admin Commissions page is setup-only; Target Management's "💰 Commission Results" mode is results-only —
+never both on the same page.** The user's own framing: "the admin will setup the commissions... target
+management you can see the results... maximum one or two tables... consolidated in a very direct kind of way."
 
-`views/target_management.py`'s `"💰 Commission Results"` radio mode — explicit ask: "the admin will setup the
-commissions, But i would like a radio view within target management which just shows the result of whatever
-commission campaign my managers would like to see," covering every section "from product tracker to new
-customer creation," not just B.1/3/4. Calls the exact same `commissions.render_section_picker(zid,
-read_only=True, key_suffix="_tm")` the admin Commissions page uses — same sections, same data, same campaign
-picker — no new page_permissions grant needed since Target Management access already covers this.
+- **Page structure**: one shared picker, `views/commissions.py::render_section_picker(zid, read_only,
+  key_suffix)`, drives both surfaces. `_sections(read_only, key_suffix)` returns the same 7-entry map every
+  time (A.1 Best Performer, A.2 Highest Product Sales, A.4 Best App User, B.1/3/4 Campaign, B.2 Individual
+  Target, B.5 New Customer) — a not-yet-built section shows the same `st.info` placeholder either place.
+  `display_commissions_page` (the admin page) calls it with `read_only=False`;
+  `views/target_management.py`'s `"💰 Commission Results"` radio mode calls it with `read_only=True,
+  key_suffix="_tm"`.
+- **`read_only: bool` threads through every section renderer that has setup controls**
+  (`_render_product_tracking`'s watchlist editor; `commission_campaigns_view.render`'s payout-groups view,
+  create form, edit form, delete button) and gates them on `not read_only`, **regardless of the viewer's own
+  `user_role`** — not merely because a non-admin couldn't already see them. This guarantees Target Management
+  is never a setup surface even for an admin who opens it from there, and — just as importantly — guarantees
+  the admin page never runs the campaign's own ~15-20s FIFO payout computation just to let someone fix a date.
+  `key_suffix` (mirroring `views/glpmt_shared.py`'s pattern) keeps widget keys from colliding across the two
+  mount points.
+- **Access**: the admin page's `page_permissions` grants `'admin'` only
+  (`db/sql_scripts/grant_commissions_page_permission.sql`) — managers get results-only access through Target
+  Management instead, which is a separate, narrower path, not a widening of the admin page's own gate. No new
+  `page_permissions` grant was needed for the Target Management mode since that page is already multi-role.
+- **Instrumented** in Usage Stats the same way every other page is — `usage_log.log_view("Commissions",
+  section)` right after the dropdown, `"Commissions"` added to `usage_log.ALL_PAGES`.
 
-**`read_only: bool` threads through every section renderer that has setup controls**
-(`_render_product_tracking`'s watchlist editor, `commission_campaigns_view.render`'s payout-groups/create/delete)
-and hides them when `True` — **regardless of the viewer's own `user_role`**, not merely because a non-admin
-couldn't already see them. This guarantees the Target Management mount point is never a setup surface, even for
-an admin who happens to open it from there. `key_suffix` (mirroring `views/glpmt_shared.py`'s existing pattern)
-keeps widget keys from colliding since the exact same picker/campaign-detail widgets are now mounted at two
-different pages.
+### Product Tracking
 
-Also added while touching the shared detail renderer (benefits both mount points): a 🟢 Ongoing / 🔴 Closed
-status badge on each campaign in `_render_campaign_detail`, based on `window_end >= today` — explicit ask
-("whether its on going or not").
-
-### Product Tracking (only section built so far)
-
-Redesigned 2026-09-19 from an initial plain-MTD version (replaced before it was ever
-committed) into a **per-product Before/After comparison** — see
-`commission_tracking_design.md`'s "Product Tracking" section for the full spec.
+Admin side (`read_only=False`): only the watchlist editor — add/remove a tracked product and its own
+cutoff/back-to dates. Results side (`read_only=True`, Target Management): only the consolidated comparison
+table below. Neither surface shows the other.
 
 - Admin-edited JSON watchlist, **scoped per ZID** (products differ per business) —
-  `data/commission_product_watchlist.json` (gitignored, same convention as
-  `targets.json`/`public_holidays.json`) — but each entry now carries its own date pair:
+  `data/commission_product_watchlist.json` (gitignored, same convention as `targets.json`/
+  `public_holidays.json`) — each entry carries its own date pair:
   `{zid: {itemcode: {"cutoff": "YYYY-MM-DD", "back_to": "YYYY-MM-DD"}}}`
-  (`processing/commissions.py::load_watchlist`/`save_watchlist`/`add_product`/
-  `remove_product`/`update_product_dates`). Capped at **20 items per ZID** — "more
-  wouldn't make sense" per the user.
-- **Before/After windows, not one shared "current month"**: `After = [cutoff, today]`,
-  `Before = [back_to, cutoff)` — cutoff belongs to After only, so the two windows never
-  double-count it (`processing/commissions.py::build_product_comparisons`, boundary
-  verified against real Postgres sales rows). `back_to` is capped at **6 months before
-  cutoff** (`comm.min_back_to`) — enforced both by validation in `add_product`/
-  `update_product_dates` and by the date-input widgets' own `min_value`/`max_value`, so an
-  invalid combination is hard to even enter, not just rejected after the fact.
-- **Each watched product has its own cutoff/back_to** — rendered as its own separate
-  table (`_render_comparison_table`), not one shared grid across products. **4 rows as of
-  2026-09-20**: Before, **Before Avg (prorated)**, After, Change (After − Prorated Avg).
-  Explicit ask: the raw Before total (a fixed, usually much longer window) isn't a fair
-  comparison against the After total (a still-running window, growing every day) — the
-  user's own example: Before 453 over ~6 weeks vs. After 61 over ~1 week so far, "453/6
-  thats 75.5. Means this product lost sales over the last 7 days." The prorated row =
-  `before_total × (after_days / before_days)` (exact day counts, computed in
-  `build_product_comparisons` — `before_days = (cutoff - back_to).days`, `after_days =
-  (as_of - cutoff).days + 1`), giving the more-precise version of the user's own
-  hand-rounded-to-weeks math. **Change is now `After − Prorated Avg`, not `After −
-  Before`** — comparing After against the full-length raw Before would always make it
-  look artificially small.
-- Editing (add product with its own dates, edit an existing product's dates, remove) is
-  gated to `st.session_state.user_role == "admin"` in-page, on top of the page-level
-  admin-only gate. A non-admin with an empty watchlist sees a plain "ask an admin" message.
-- Metrics (qty sold, sales revenue, qty returned, net qty) sourced from
-  `sales_daily_item`/`returns_daily_item` (`mv_sales_daily_item`/`mv_returns_daily_item`,
-  full history per ZID, cached `ttl=3600`, sliced per-product per-window in pandas) joined
-  to `final_items_view` for name/group/current-stock (current stock shown as point-in-time
-  context above each table, not per-window). **DB `NUMERIC` columns arrive as
-  `Decimal`/object-dtype** (same class of bug as WhatsFly Bulk Messaging's Decimal
-  Arrow-serialization crash) — explicitly `pd.to_numeric(...)`'d right after merging.
-- **Two real Streamlit widget-state bugs hit and fixed while building this**: (1) a
-  widget's `session_state` key cannot be assigned in the same script run where that widget
-  was already instantiated — resetting the "Add a product" picker after a successful add
-  needs a pending-reset flag checked at the *top* of the next run (`_comm_wl_add_reset`),
-  not an immediate post-add assignment, which raises `StreamlitAPIException`. (2) a
-  dependent widget's stored value (Back To) can fall outside newly-computed min/max bounds
-  when the widget it depends on (Cutoff) changes on the same rerun — `_clamp_session_date`
-  pre-clamps the stored value before the Back To widget is instantiated, and the call site
-  skips passing `value=` on the run a clamp just happened (passing both raises/warns).
-- Verified end-to-end against real Postgres (100001): add/remove/save round-tripped
-  correctly through the live UI; the cutoff-date boundary was checked against a real sale
-  record (`before`/`after` sums matched a manual split at that exact date); the 6-month
-  clamp was exercised live (moving Cutoff back to July correctly snapped Back To to
-  `cutoff − 1 day` with no crash and no stray warning); Change-row arithmetic and signed
-  formatting (`+`/`-`) matched hand computation.
+  (`processing/commissions.py::load_watchlist`/`save_watchlist`/`add_product`/`remove_product`/
+  `update_product_dates`). Capped at **20 items per ZID** — "more wouldn't make sense" per the user.
+- **Before/After windows, not one shared "current month"**: `After = [cutoff, today]`, `Before = [back_to,
+  cutoff)` — cutoff belongs to After only, so the two windows never double-count it. `back_to` is capped at
+  **6 months before cutoff** (`comm.min_back_to`) — enforced both by validation and by the date-input widgets'
+  own `min_value`/`max_value`.
+- **One consolidated table across every tracked product — confirmed 2026-09-20, replacing an earlier
+  one-table-per-product layout.** The user's own words: "instead of looking at five tables, I would like it to
+  be in one table... the before after can only be in the column header." Rows = products; columns = Before /
+  Before Avg (Prorated) / After / Change, for ONE metric picked from a `st.selectbox` above the table (see
+  "Metric dropdown" below) — shared with the B.1/3/4 campaign's own product table via
+  `views/commission_shared.py::render_before_after_table`.
+  - **Before Avg (Prorated)**: Before is a fixed window, After is still running and growing daily, so raw
+    totals aren't a fair comparison — the user's own example: Before 453 over ~6 weeks vs. After 61 over ~1
+    week so far, "453/6 thats 75.5. Means this product lost sales over the last 7 days." Prorated =
+    `before_total × (after_days / before_days)` using exact day counts
+    (`processing/commissions.py::_prorate_before`), the precise version of that hand-rounded-to-weeks math.
+    **Change = `After − Prorated Avg`**, not `After − Before` — comparing After to the full-length raw Before
+    would always make it look artificially small.
+  - **Metric dropdown** (`views/commission_shared.py`) — one of **Net Units Sold**, **Returns**, or **Net
+    Revenue**; gross Qty Sold/Sales Revenue are computed internally but not user-selectable ("total revenue is
+    not very necessary"). **Net Revenue required switching the returns data source** — the lightweight
+    `returns_daily_item` MV (`mv_returns_daily_item`) only has quantity, no BDT value, so
+    `views/commissions.py::_load_returns_full` switched to the full `"return"` Analytics table
+    (`get_return_data`, has `treturnamt`) — same convention as this app's other full-history pulls (e.g. the
+    B.1/3/4 FIFO resolver's own pooled sales/collections).
+- Editing (add/edit/remove) is admin-only on top of the page-level gate; a non-admin sees a plain message.
+- Metrics sourced from `sales_daily_item` (qty/revenue) + the full `"return"` table (qty/value), joined to
+  `final_items_view` for name/group/current-stock. **DB `NUMERIC` columns arrive as `Decimal`/object-dtype**
+  (same class of bug as WhatsFly Bulk Messaging's) — explicitly `pd.to_numeric(...)`'d after merging.
+- **Two real Streamlit widget-state bugs fixed while building this** (both still relevant, unrelated to the
+  later table redesign): (1) a widget's `session_state` key can't be assigned in the same run where that
+  widget was already instantiated — resetting the "Add a product" picker after a successful add needs a
+  pending-reset flag checked at the *top* of the next run (`_comm_wl_add_reset`). (2) a dependent widget's
+  stored value (Back To) can fall outside newly-computed min/max bounds when the widget it depends on (Cutoff)
+  changes on the same rerun — `_clamp_session_date` pre-clamps session_state before the dependent widget is
+  instantiated (same pattern reused for B.1/3/4's own Sales window end field, see below).
+- Verified end-to-end against real Postgres: add/remove/save round-tripped through the live UI; the
+  cutoff-date boundary matched a manual split of a real sale record; the 6-month clamp was exercised live with
+  no crash; the consolidated table (all 3 metrics, including Net Revenue's real ৳ figures) and the CSV export
+  were confirmed live against real data.
 
 ### Product / Stock Clearance / Slow-Moving Campaign (B.1/3/4)
 
-`processing/commission_campaigns.py` (engine) + `views/commission_campaigns_view.py` (UI).
-Full spec: `commission_tracking_design.md` §B.1/3/4. Rate per unit sold, paid only if the
-customer's DO is fully collected by a deadline, pooled across 100001+100000, gated on both
-ZIDs hitting their own sales target.
+`processing/commission_campaigns.py` (engine) + `views/commission_campaigns_view.py` (UI) +
+`views/commission_shared.py` (the Before/After table renderer, shared with Product Tracking). Full spec:
+`commission_tracking_design.md` §B.1/3/4. Rate per unit sold, paid only if the customer's DO is fully collected
+by a deadline, pooled across 100001+100000, gated on both ZIDs hitting their own sales target.
 
-- **`recipient_type` ("salesman" or "customer") — confirmed 2026-09-19/20: this campaign
-  type's commission can be paid to either the salesman OR the customer on the DO.** The
-  eligibility logic (DO fully collected, by which deadline) is completely unchanged either
-  way and is always keyed off the DO's own **salesman's** payout group — the deadline is a
-  logistics/territory concept, not a recipient concept. Only the final aggregation step
-  differs: group by `spid` (+`spname`) or by `cusid` (+`cusname`).
-  `processing/commission_campaigns.py::build_do_totals` carries both identities (and both
-  names) on every DO row for exactly this reason, regardless of which type a given
-  campaign uses.
-- **Rate varies PER PRODUCT; cap is ONE value for the whole campaign — confirmed
-  2026-09-20, corrected same day from an earlier per-product-cap version** (the user's own
-  words: "the cap is one cap that applies to all salesman. Not per product. I think I did
-  not explain this properly before" — don't re-litigate this, it's the final, shipped
-  behavior). `commission_campaigns.product_rates` (JSONB) is now plain `{itemcode: float}`
-  — **`rate` is the per-unit incentive/discount BDT amount being offered (e.g. 5 or 3),
-  NOT the product's sales price** — that part of the ambiguity was resolved earlier and
-  still stands. A new top-level `commission_campaigns.cap` column (`NUMERIC`, nullable)
-  holds ONE ceiling for the whole campaign — caps a single recipient's (whichever
-  `recipient_type` applies) TOTAL payout, summed across every product picked for the
-  campaign, applied once at the `recipient_total` level in `compute_campaign_payout` (NOT
-  per product/per line — `recipient_product`'s own `payout` column is always uncapped,
-  quantity × rate).
-- **One Postgres table, `commission_campaigns`** (`db/sql_scripts/create_commission_campaigns_table.sql`)
-  holds campaign *definitions* only (name, type, recipient_type, product_rates, sales
-  window, and a `payout_groups` JSONB of `{group: deadline}` for that campaign) — no
-  salesman/customer/DO/payout numbers are stored. Every payout figure is recomputed live
-  whenever a campaign is opened. Schema was revised 2026-09-20 (table had zero real rows
-  at the time — a straight `DROP`+recreate, not an `ALTER` migration).
-- **Salesman → payout-group membership is derived LIVE, not a manual roster — confirmed
-  2026-09-20 (replaced a same-day-earlier hand-maintained
-  `data/commission_payout_groups.json` roster + editor UI, both removed outright).**
-  `processing/commission_campaigns.py::build_area_group_map` maps `{xcity -> group}` from
-  pooled 100001+100000 `cacus.xstate` (majority value per area; `"Sylhet Retail"` folds
-  into `"District"`, confirmed by the user — everything else keeps its real `xstate` name
-  as its own group, e.g. `"Dhaka retail"`, `"Nawab pur"`); `derive_spid_group_map` matches
-  each salesman's `prmst.xdisease` area list against that map (majority vote across their
-  listed areas, tie broken by whichever tied group's area is listed first), filtered by
-  `valid_spids` to real salesmen only (per the op-tables-not-prefix rule above — otherwise
-  non-salesman `prmst` rows with an area on file would show up too) **and by
-  `prmst.xstatusemp == 'A-Active'` (case-insensitive) — confirmed 2026-09-20, explicit
-  ask: "make sure the active emp status employees are only taken into account."** Checked
-  in ADDITION to `valid_spids`, not instead of it — a since-resigned/terminated employee
-  who made real sales while still employed would otherwise still resolve to a payout
-  group; `xstatusemp` answers "are they still employed today," `valid_spids` answers "were
-  they ever really a salesman."
-  `views/commission_campaigns_view.py::_render_derived_groups` replaced the roster editor
-  with a read-only view (group list + which salesmen resolved). This roster is always
-  salesman-based (it drives DO eligibility, see above) regardless of `recipient_type`.
-  **Correctly returns nothing locally** — `derive_spid_group_map` returns `{}` against the
-  local Postgres mirror, verified, since `prmst.xdisease` is still mid-rollout there (see
-  "Key column mappings" above); `build_area_group_map` itself has no such gap and returns
-  the real 8 groups locally today.
-- **`resolve_do_paid_dates`** — the pooled FIFO resolver: per customer, a chronological
-  walk where each collection pays off the oldest open DO(s) first, in full, before moving
-  on; leftover collection becomes a "prepaid credit" applied to that customer's next DO(s).
-  **Pre-groups by customer before the walk** (`{cusid: sub_df}` built once) — an earlier
-  version that re-filtered the full collection DataFrame per customer inside the loop
-  never finished on real data (~10k customers × 1M+ combined sales/collection events).
-  With the fix, full 100001+100000 history resolves in ~15-20s.
-  Verified two ways: hand-computed against a real customer's full DO/collection history
-  (a collection that split its payment across two DOs, matched exactly, including which
-  DO the split landed on); plus synthetic tests for prepaid credit applied to a future DO,
-  a large overpay with no further DOs (no crash), and a DO that never gets paid (stays NaT).
-- **Payout** = for each DO in-window whose salesman is in a roster group and was paid by
-  that group's deadline: qty of the picked product(s) on that DO × that product's own
-  rate, capped per recipient per product, summed per recipient (salesman or customer,
-  per `recipient_type`). DOs that don't qualify are kept with their exclusion reason (not
-  yet collected / no payout group / group has no deadline set / collected after the
-  deadline) and shown in the UI, not silently dropped. **Verified the grouping choice is
-  capping-neutral in the way it should be**: summed *raw* (pre-cap) payout is identical
-  whether grouped by salesman or by customer (confirmed against real data — 312 either
-  way) since it's the same underlying line items either way; only how the cap binds
-  differs, correctly, by recipient granularity.
-- **Gate** = `zid_target_sum` (sum of `data/targets.json` entries for that ZID across the
-  window's calendar months) vs. `zid_actual_sales` (`final_sales` summed in-window,
-  reusing `processing.common.data_copy_add_columns`) — if either 100001 or 100000 misses,
-  `total_payout` is zeroed but the computed (pre-gate) figure still shows, captioned, so
-  the gate failing doesn't look like "nothing sold."
-- **Uptick** (companion metric, not a payout gate) — campaign-window qty/revenue for the
-  picked product(s) vs. a trailing `uptick_baseline_months` average ending the day before
-  the window starts. Returns `None` (not a crash or a misleading number) when the
-  baseline period has zero sales — hit for real in testing (a genuine multi-month gap in
-  one test product's sales history) and confirmed correct, not a bug to chase.
-- **Caching**: the FIFO resolution + pooled sales/collection loads are
-  `st.cache_data(ttl=3600)`-wrapped in `views/commission_campaigns_view.py` and shared
-  across every campaign view — opening/switching campaigns doesn't re-pay the ~15-20s cost
-  each time, only once per hour app-wide.
-- **Two real bugs fixed**: (1) `core/db.py::get_data` is SELECT-only and never commits —
-  using it for `INSERT ... RETURNING id` (to create a campaign and get its new id back)
-  silently discarded the insert. Added `core/db.py::execute_write_returning` (commits AND
-  fetches the RETURNING row) for this and any future write that needs its own id back.
-  (2) [historical — the per-product cap this applied to was itself replaced by a single
-  campaign-wide cap the same day, see below; kept for the Styler pattern, not because the
-  Cap column it describes still exists] A missing per-product `cap` (`None`/`NaN`)
-  rendered as the literal string `"None"` in the Per-Product breakdown table instead of
-  `.style.format(na_rep=...)`'s intended `"—"` — `st.dataframe` doesn't reliably respect
-  Styler `na_rep` for this case (same class of issue as the TOTAL-row/Styler pitfall
-  already documented above). Fixed by pre-formatting the column to a display string before
-  it ever reached `.style.format()`.
-- **Edit Campaign (admin-only, 2026-09-20)** — `processing/commission_campaigns.py::update_campaign`
-  (`UPDATE ... WHERE id = %s`, same field list as `create_campaign`, `id`/`created_by`/
-  `created_at` untouched) + `views/commission_campaigns_view.py::_render_edit_campaign`.
-  Added after the user (as admin) hit a real setup mistake ("I made a mistake with the
-  dates") with no fix short of delete+recreate. The Create form's body was factored into a
-  shared `_render_campaign_form(available_groups, items_df, existing=None)` — `existing`
-  is `None` for Create, or a campaign dict for Edit (every field pre-filled: products,
-  rate per product, cap, window dates, each payout group's own saved deadline or today if
-  never set, baseline months, notes). Fixed a real latent bug while at it: Sales window
-  end's `date_input` (`min_value=window_start`) could raise if its stored value fell below
-  a newly-moved window_start — same class of bug as the Product Tracking Cutoff/Back-To
-  clamp issue below, fixed the same way (`_clamp_min_session_date`, pre-clamp
-  session_state before the widget is instantiated). Editing is always safe here since
-  nothing about a campaign is pre-computed. Delete is kept alongside Edit, not replaced by
-  it.
-- Verified end-to-end live: created a real campaign (2 real products with their own
-  rate/cap, salesman recipient type), got a real payout that matched a standalone
-  hand-computation exactly, confirmed the gate-passed banner, the per-product breakdown
-  (including the Cap fix), the excluded-DO reasons table, and campaign deletion, all
-  against real Postgres data — no stubbed/mocked data anywhere in this feature. The
-  customer-recipient path and the raw-sum-invariant check above were verified standalone
-  (not re-driven through the live UI in the same pass — the UI code path for
-  `recipient_type="customer"` is the same rendering code with a different string, already
-  exercised for "salesman").
-- **Not yet built**: B.2 (Individual Target Achievement, fully specified) and B.5 (New
-  Customer Creation, needs design work) — see `commission_tracking_design.md`. Also see
-  that doc for which of A/B's *other* not-yet-built sections are salesman-only,
-  customer-or-salesman, or salesman-only-for-a-different-reason (New Customer Creation) —
-  noted for whenever each is picked up, not yet relevant to what's built.
+- **`recipient_type` ("salesman" or "customer")** — this campaign type's commission can be paid to either the
+  salesman OR the customer on the DO. DO eligibility (fully collected, by which deadline) is unchanged either
+  way and always keyed off the DO's own **salesman's** payout group — the deadline is a logistics/territory
+  concept, not a recipient concept. Only the final aggregation step differs: group by `spid`/`spname` or
+  `cusid`/`cusname`. `build_do_totals` carries both identities on every DO row for this reason.
+- **Rate varies PER PRODUCT; cap is ONE value for the whole campaign.** `commission_campaigns.product_rates`
+  (JSONB) is `{itemcode: float}` — rate is the per-unit incentive/discount BDT amount (e.g. 5 or 3), NOT the
+  product's sales price. A top-level `commission_campaigns.cap` column (`NUMERIC`, nullable) is ONE ceiling for
+  the whole campaign — caps a recipient's TOTAL payout summed across every product, applied once at the
+  `recipient_total` level in `compute_campaign_payout` (never per line — every line in `line_items`, see below,
+  is always uncapped `quantity × rate`).
+- **One Postgres table, `commission_campaigns`** (`db/sql_scripts/create_commission_campaigns_table.sql`) holds
+  campaign *definitions* only — no salesman/customer/DO/payout numbers stored. Every figure is recomputed live
+  whenever a campaign is opened.
+- **Salesman → payout-group membership is derived LIVE, not a manual roster.**
+  `build_area_group_map` maps `{xcity -> group}` from pooled 100001+100000 `cacus.xstate` (majority value per
+  area; `"Sylhet Retail"` folds into `"District"`, everything else keeps its real `xstate` name as its own
+  group, e.g. `"Dhaka retail"`, `"Nawab pur"`); `derive_spid_group_map` matches each salesman's `prmst.xdisease`
+  area list against that map (majority vote, tie broken by whichever tied group's area is listed first),
+  filtered by `valid_spids` to real salesmen (per the op-tables-not-prefix rule above) **and by
+  `prmst.xstatusemp == 'A-Active'`** (case-insensitive, checked IN ADDITION to `valid_spids` — a
+  since-resigned/terminated employee who made real sales while still employed must not still resolve to a
+  payout group). `views/commission_campaigns_view.py::_render_derived_groups` (admin-only) shows this as a
+  read-only view — there's nothing to edit; fix a salesman's group by correcting their area on the ERP side.
+  **Correctly returns `{}` locally** since `prmst.xdisease` is still mid-rollout there — `build_area_group_map`
+  itself has no such gap and returns the real groups locally today.
+- **`resolve_do_paid_dates`** — the pooled FIFO resolver: per customer, a chronological walk where each
+  collection pays off the oldest open DO(s) first, in full, before moving on; leftover collection becomes a
+  "prepaid credit" applied to that customer's next DO(s). Pre-groups by customer before the walk (an earlier
+  per-customer-refilter version never finished on real data). Full 100001+100000 history resolves in ~15-20s,
+  `st.cache_data(ttl=3600)`-wrapped and shared across every campaign view.
+- **`line_items` — one unified table replacing three separate pieces (Per-Recipient Payout, Per-Product
+  breakdown, Excluded DOs) — confirmed 2026-09-20.** The user's own words: "I want to see what salesmen were
+  removed and what not," in the same table, "one or two maximum tables." One row per (recipient, DO voucher,
+  product) for EVERY in-window DO that carries at least one of the campaign's picked products — eligible and
+  excluded alike — with a `status` column ("Eligible" or the specific reason: not in any payout group, group
+  has no deadline set, not yet fully collected, or collected after the deadline) and `payout` (quantity × rate
+  for Eligible rows, always `0` for excluded ones — never a phantom uncapped number for a DO that isn't
+  actually being paid). `eligible_do_count`/`excluded_do_count` are scoped to DOs that actually carry a picked
+  product (matching what the table shows), not every DO in the window regardless of product.
+  `recipient_total`/`total_payout` are still computed from Eligible rows only, with the cap applied once there.
+- **Gate** = `zid_target_sum` (sum of `data/targets.json` entries for that ZID across the window's calendar
+  months) vs. `zid_actual_sales` (`final_sales` summed in-window) — if either 100001 or 100000 misses,
+  `total_payout` is zeroed but the pre-gate figure still shows, captioned.
+- **Product Before/After table** (`compute_campaign_product_before_after`) — confirmed 2026-09-20, the user's
+  own words: "in a secondary table, how about we see the before after, like you do in product tracking."
+  Same shared engine as Product Tracking (`processing/commissions.py::_window_metrics`/`_prorate_before`,
+  imported into `processing/commission_campaigns.py`), different window source: Before = the same trailing
+  baseline `compute_uptick` already used, After = the campaign's own sales window, **capped to today if the
+  campaign is still ongoing** (`window_end >= today`) so an in-progress campaign's After reflects what's
+  actually elapsed, not padded with future zeros. Rendered with the same
+  `views/commission_shared.py::render_before_after_table` component Product Tracking uses — one row per picked
+  product, same Metric dropdown (Net Units Sold / Returns / Net Revenue). Needs pooled full return history too
+  (`views/commission_campaigns_view.py::_load_pooled_returns_full`, same `"return"` Analytics table Product
+  Tracking switched to). The older bare-metric-cards "Sales Uptick" display was replaced by this table, not
+  kept alongside it.
+- **Caching**: the FIFO resolution + pooled sales/collection/return loads are all `st.cache_data(ttl=3600)` in
+  `views/commission_campaigns_view.py`, shared across every campaign view.
+- **Edit Campaign (admin-only)** — `update_campaign` (`UPDATE ... WHERE id = %s`, same field list as
+  `create_campaign`, `id`/`created_by`/`created_at` untouched) + `_render_edit_campaign`. Added after the user
+  (as admin) hit a real setup mistake with no fix short of delete+recreate: "I made a mistake with the dates
+  while setting up the campaign... can you make an option of editing." The Create form's body is a shared
+  `_render_campaign_form(available_groups, items_df, existing=None)` — `existing=None` is Create,
+  `existing=<campaign dict>` is Edit (every field pre-filled). Fixed a real latent bug while at it: Sales
+  window end's `date_input` (`min_value=window_start`) could raise if its stored value fell below a
+  newly-moved window_start — same class of bug as Product Tracking's Cutoff/Back-To clamp issue, fixed the
+  same way (`_clamp_min_session_date`). Editing is always safe here since nothing about a campaign is
+  pre-computed. Delete is kept alongside Edit, not replaced by it.
+- **Two real bugs fixed**: (1) `core/db.py::get_data` is SELECT-only and never commits — using it for `INSERT
+  ... RETURNING id` silently discarded the insert; added `core/db.py::execute_write_returning`. (2)
+  [historical, from before the `line_items` redesign folded the old Per-Product breakdown table away entirely
+  — kept only for the Styler pattern] a missing cap value once rendered as the literal string `"None"` instead
+  of `"—"` in a since-removed table — same class of issue as the TOTAL-row/Styler pitfall documented above,
+  fixed by pre-formatting to a display string before `.style.format()`.
+- Verified end-to-end against real Postgres, including with genuinely populated data (not just synthetic
+  edge cases): a campaign against a real high-volume item (`1281`, 61k+ DOs) over a real historical window
+  correctly showed 1,399 excluded DOs in `line_items` with real salesman names, DO numbers, quantities, and the
+  correct exclusion reason (`derive_spid_group_map` resolves nothing locally, so every row correctly reads
+  "Excluded: salesman not in any payout group" — expected given `xdisease`'s live-rollout status, not a bug);
+  the Product Before/After table showed correct real Before/After/Prorated figures for the same campaign and
+  product. Separately verified live: the admin page shows only campaign info + Edit + Delete with the FIFO
+  payout computation never running there at all (confirmed by absence of its spinner and fast page load); the
+  Target Management results view shows the full report with zero setup controls.
+- **Not yet built**: B.2 (Individual Target Achievement, fully specified) and B.5 (New Customer Creation, needs
+  design work) — see `commission_tracking_design.md`. Also see that doc for which of A/B's *other*
+  not-yet-built sections are salesman-only, customer-or-salesman, or salesman-only-for-a-different-reason (New
+  Customer Creation) — noted for whenever each is picked up, not yet relevant to what's built.
 
 ---
 

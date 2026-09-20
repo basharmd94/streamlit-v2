@@ -21,6 +21,7 @@ from collections import deque
 import pandas as pd
 
 from core.db import execute_write, execute_write_returning, get_data
+from processing.commissions import _prorate_before, _window_metrics
 
 
 # ── Payout-group derivation (Cacus xstate + PRMST xdisease) ─────────────────
@@ -459,6 +460,81 @@ def compute_uptick(sales_df: pd.DataFrame, product_codes: list, window_start, wi
     }
 
 
+def compute_campaign_product_before_after(
+    sales_df: pd.DataFrame, returns_df: pd.DataFrame, product_codes: list,
+    window_start, window_end, baseline_months: int, items_meta: dict,
+) -> list:
+    """Per-product Before/After for a campaign's own picked product(s) —
+    added 2026-09-20, explicit ask: "in a secondary table, how about we see
+    the before after, like you do in product tracking." Same shared engine
+    as processing/commissions.py::build_product_comparisons
+    (_window_metrics/_prorate_before), different window source:
+
+      Before = the baseline window compute_uptick already uses (baseline_months
+               trailing window_start)
+      After  = the campaign's own sales window, capped to today if the
+               campaign is still ongoing (window_end >= today) so an
+               in-progress campaign's After reflects what's actually
+               elapsed so far, not padded with future zeros — mirrors
+               Product Tracking's own "After runs to today" framing.
+
+    Returns the same per-product dict shape build_product_comparisons does,
+    so both feed views/commission_shared.py::render_before_after_table.
+    `items_meta` = {itemcode: {"item_name":, "item_group":, "stock":}} (a
+    combined-catalog lookup dict, built by the caller from
+    views/commission_campaigns_view.py::_load_combined_item_catalog()).
+    """
+    if not product_codes:
+        return []
+
+    today = pd.Timestamp.today().normalize()
+    window_start_ts = pd.Timestamp(window_start)
+    window_end_ts = pd.Timestamp(window_end)
+    after_end = min(window_end_ts, today)
+    baseline_start = window_start_ts - pd.DateOffset(months=baseline_months)
+
+    s = pd.DataFrame()
+    if sales_df is not None and not sales_df.empty and {"itemcode", "date"}.issubset(sales_df.columns):
+        s = sales_df.copy()
+        s["itemcode"] = s["itemcode"].astype(str)
+        s["_dt"] = pd.to_datetime(s["date"], errors="coerce")
+        s["quantity"] = pd.to_numeric(s["quantity"], errors="coerce")
+        s["final_sales"] = pd.to_numeric(s["final_sales"], errors="coerce")
+
+    r = pd.DataFrame()
+    if returns_df is not None and not returns_df.empty and {"itemcode", "date"}.issubset(returns_df.columns):
+        r = returns_df.copy()
+        r["itemcode"] = r["itemcode"].astype(str)
+        r["_dt"] = pd.to_datetime(r["date"], errors="coerce")
+        r["returnqty"] = pd.to_numeric(r["returnqty"], errors="coerce")
+        if "treturnamt" in r.columns:
+            r["treturnamt"] = pd.to_numeric(r["treturnamt"], errors="coerce")
+
+    before_days = (window_start_ts - baseline_start).days
+    after_days = (after_end - window_start_ts).days + 1
+    after_end_excl = after_end + pd.Timedelta(days=1)
+
+    rows = []
+    for itemcode in product_codes:
+        before = _window_metrics(s, r, itemcode, baseline_start, window_start_ts, revenue_col="final_sales")
+        after = _window_metrics(s, r, itemcode, window_start_ts, after_end_excl, revenue_col="final_sales")
+        before_avg_prorated = _prorate_before(before, before_days, after_days)
+
+        meta = items_meta.get(itemcode, {})
+        rows.append({
+            "itemcode": itemcode,
+            "itemname": meta.get("item_name"),
+            "itemgroup": meta.get("item_group"),
+            "current_stock": meta.get("stock"),
+            "before_days": before_days,
+            "after_days": after_days,
+            "before": before,
+            "before_avg_prorated": before_avg_prorated,
+            "after": after,
+        })
+    return rows
+
+
 # ── Payout computation ──────────────────────────────────────────────────────
 
 def compute_campaign_payout(
@@ -466,8 +542,9 @@ def compute_campaign_payout(
     spid_group_map: dict,
 ) -> dict:
     """The full B.1/3/4 payout for one campaign, computed live — nothing here
-    is persisted. Returns a dict with per-recipient payout, per-DO detail
-    (including DOs excluded and why), the gate result, and the uptick metric.
+    is persisted. Returns a dict with a single unified line-level table
+    (`line_items`, see below), the per-recipient totals, the gate result,
+    and the uptick metric.
 
     `recipient_type` ("salesman" or "customer", confirmed 2026-09-19) only
     changes WHO the payout is grouped/attributed to — DO eligibility (fully
@@ -489,6 +566,16 @@ def compute_campaign_payout(
     `spid_group_map` = {spid: group}, from derive_spid_group_map() — derived
     live from prmst.xdisease + cacus.xstate (confirmed 2026-09-20), not a
     hand-maintained roster.
+
+    `line_items` — added 2026-09-20, replacing the earlier separate
+    `recipient_product`/`excluded` pieces, per explicit ask: "I want to see
+    what salesmen were removed and what not," in ONE table, not a separate
+    excluded-DOs table. One row per (voucher, recipient, itemcode) for EVERY
+    in-window DO that carries at least one picked product — eligible AND
+    excluded alike — with a `status` column ("Eligible" or the specific
+    exclusion reason) and `payout` (quantity × rate for Eligible rows, 0 for
+    excluded ones — never a phantom uncapped number for a DO that isn't
+    actually being paid).
     """
     product_rates = campaign["product_rates"]
     product_codes = list(product_rates.keys())
@@ -504,46 +591,46 @@ def compute_campaign_payout(
     do["date"] = pd.to_datetime(do["date"], errors="coerce")
     in_window = do[(do["date"] >= start) & (do["date"] <= end)].copy()
 
-    excluded = []  # [{"voucher":, "spid":, "reason":}]
-    eligible_vouchers = []
+    # Status for EVERY in-window DO, not just excluded ones — so the unified
+    # line table below can show every DO's outcome in one place.
+    status_map = {}
     for r in in_window.itertuples():
         group = spid_group.get(r.spid)
         if group is None:
-            excluded.append({"voucher": r.voucher, "spid": r.spid, "reason": "salesman not in any payout group"})
-            continue
-        deadline = groups_deadlines.get(group)
-        if not deadline:
-            excluded.append({"voucher": r.voucher, "spid": r.spid, "reason": f"group '{group}' has no deadline set on this campaign"})
-            continue
-        if pd.isna(r.paid_date):
-            excluded.append({"voucher": r.voucher, "spid": r.spid, "reason": "not yet fully collected"})
-            continue
-        if pd.Timestamp(r.paid_date) > pd.Timestamp(deadline):
-            excluded.append({"voucher": r.voucher, "spid": r.spid, "reason": f"collected after the {group} deadline ({deadline})"})
-            continue
-        eligible_vouchers.append(r.voucher)
+            status_map[r.voucher] = "Excluded: salesman not in any payout group"
+        elif not groups_deadlines.get(group):
+            status_map[r.voucher] = f"Excluded: group '{group}' has no deadline set on this campaign"
+        elif pd.isna(r.paid_date):
+            status_map[r.voucher] = "Excluded: not yet fully collected"
+        elif pd.Timestamp(r.paid_date) > pd.Timestamp(groups_deadlines[group]):
+            status_map[r.voucher] = f"Excluded: collected after the {group} deadline ({groups_deadlines[group]})"
+        else:
+            status_map[r.voucher] = "Eligible"
 
-    # Recipient identity (both salesman and customer id/name) per eligible DO,
-    # carried along regardless of recipient_type so the UI can always show
-    # who + a readable name, whichever type this campaign pays out to.
+    # Recipient identity (both salesman and customer id/name) for EVERY
+    # in-window DO — carried along regardless of recipient_type, and
+    # regardless of eligibility, so an excluded DO's recipient is still
+    # visible in the unified table.
     recip_key = "spid" if recipient_type == "salesman" else "cusid"
     recip_name_key = "spname" if recipient_type == "salesman" else "cusname"
     voucher_meta = (
-        in_window[in_window["voucher"].isin(eligible_vouchers)]
-        [["voucher", recip_key, recip_name_key]]
+        in_window[["voucher", recip_key, recip_name_key]]
         .rename(columns={recip_key: "recipient", recip_name_key: "recipient_name"})
     )
+    voucher_meta["status"] = voucher_meta["voucher"].map(status_map)
 
-    # Per-DO quantity of the picked product(s), for eligible DOs only.
+    # Every in-window DO's picked-product lines, eligible or not — a DO with
+    # none of the picked products never appears here at all, matching "the
+    # DOs of that product" scope.
     li = sales_line_items.copy()
     li["itemcode"] = li["itemcode"].astype(str)
-    li = li[li["voucher"].isin(eligible_vouchers) & li["itemcode"].isin(set(product_codes))]
+    li = li[li["voucher"].isin(set(in_window["voucher"])) & li["itemcode"].isin(set(product_codes))]
     li = li.merge(voucher_meta, on="voucher", how="left")
 
-    line_detail = pd.DataFrame(columns=["voucher", "recipient", "recipient_name", "itemcode", "quantity"])
+    line_detail = pd.DataFrame(columns=["voucher", "recipient", "recipient_name", "status", "itemcode", "quantity"])
     if not li.empty:
         line_detail = (
-            li.groupby(["voucher", "recipient", "recipient_name", "itemcode"], as_index=False)
+            li.groupby(["voucher", "recipient", "recipient_name", "status", "itemcode"], as_index=False)
               .agg(quantity=("quantity", "sum"))
         )
 
@@ -551,24 +638,24 @@ def compute_campaign_payout(
         [{"itemcode": code, "rate": float(rate)} for code, rate in product_rates.items()]
     )
 
-    # No per-product cap anymore — each line is just quantity x rate. The
-    # single campaign-wide `cap` (if set) applies once, below, to a
-    # recipient's TOTAL across every product, not to any one line here.
-    recipient_product = pd.DataFrame(columns=["recipient", "recipient_name", "itemcode", "quantity", "rate", "payout"])
+    line_items = pd.DataFrame(columns=["voucher", "recipient", "recipient_name", "status", "itemcode", "quantity", "rate", "payout"])
     if not line_detail.empty:
-        recipient_product = (
-            line_detail.groupby(["recipient", "recipient_name", "itemcode"], as_index=False)
-                       .agg(quantity=("quantity", "sum"))
-        )
-        recipient_product["quantity"] = pd.to_numeric(recipient_product["quantity"], errors="coerce")
-        recipient_product = recipient_product.merge(rates_df, on="itemcode", how="left")
-        recipient_product["payout"] = recipient_product["quantity"] * recipient_product["rate"]
+        line_items = line_detail.merge(rates_df, on="itemcode", how="left")
+        line_items["quantity"] = pd.to_numeric(line_items["quantity"], errors="coerce")
+        line_items["payout"] = line_items["quantity"] * line_items["rate"]
+        # Payout is only real for Eligible lines — an excluded DO shows 0,
+        # never an uncapped number for a DO that isn't actually being paid.
+        line_items.loc[line_items["status"] != "Eligible", "payout"] = 0.0
 
+    # recipient_total / total_payout: eligible lines only. The single
+    # campaign-wide cap (if set) applies once here, to a recipient's TOTAL
+    # across every product — never per line/per product.
+    eligible_lines = line_items[line_items["status"] == "Eligible"] if not line_items.empty else line_items
     recipient_total = pd.DataFrame(columns=["recipient", "recipient_name", "raw_total_payout", "total_payout"])
-    if not recipient_product.empty:
+    if not eligible_lines.empty:
         recipient_total = (
-            recipient_product.groupby(["recipient", "recipient_name"], as_index=False)
-                             .agg(raw_total_payout=("payout", "sum"))
+            eligible_lines.groupby(["recipient", "recipient_name"], as_index=False)
+                          .agg(raw_total_payout=("payout", "sum"))
         )
         cap_upper = cap if cap is not None else float("inf")
         recipient_total["total_payout"] = recipient_total["raw_total_payout"].clip(upper=cap_upper)
@@ -578,6 +665,14 @@ def compute_campaign_payout(
 
     total_payout = float(recipient_total["total_payout"].sum()) if not recipient_total.empty else 0.0
 
+    # DO counts scoped to DOs that actually carry a picked product (matching
+    # what line_items shows), not every DO in the window regardless of
+    # product — the original scoping (any DO in window) is still what drives
+    # the gate above, unrelated to this count.
+    relevant_vouchers = set(line_items["voucher"].unique()) if not line_items.empty else set()
+    eligible_do_count = sum(1 for v in relevant_vouchers if status_map.get(v) == "Eligible")
+    excluded_do_count = len(relevant_vouchers) - eligible_do_count
+
     return {
         "recipient_type": recipient_type,
         "cap": cap,
@@ -586,9 +681,8 @@ def compute_campaign_payout(
         "total_payout_if_gate_passed": total_payout,
         "total_payout": total_payout if gate["passed"] else 0.0,
         "recipient_total": recipient_total,
-        "recipient_product": recipient_product,
-        "eligible_do_count": len(eligible_vouchers),
-        "excluded_do_count": len(excluded),
-        "excluded": pd.DataFrame(excluded),
+        "line_items": line_items,
+        "eligible_do_count": eligible_do_count,
+        "excluded_do_count": excluded_do_count,
         "uptick": uptick,
     }

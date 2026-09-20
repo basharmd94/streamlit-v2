@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from processing import commission_campaigns as cc
+from views import commission_shared
 from views.marketing import _load_final_items
 
 _CAMPAIGN_TYPES = ["Product-Specific", "Stock Clearance", "Slow-Moving"]
@@ -58,6 +59,33 @@ def _load_combined_item_catalog() -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True).drop_duplicates("item_id")
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_pooled_returns_full() -> pd.DataFrame:
+    """Full pooled (100001+100000) return line-item history — feeds the
+    campaign's own product Before/After table (2026-09-20 addition), same
+    "return" Analytics table (itemcode/date/returnqty/treturnamt) Product
+    Tracking switched to for the same reason (Net Revenue needs the
+    return's own BDT value, which the lightweight daily-qty MV doesn't
+    carry)."""
+    from core.analytics import Analytics
+    r1 = Analytics("return", zid="100001", filters={}).data
+    r0 = Analytics("return", zid="100000", filters={}).data
+    return pd.concat([r1, r0], ignore_index=True) if r1 is not None and r0 is not None else pd.DataFrame()
+
+
+def _combined_item_catalog_meta() -> dict:
+    """{item_id: {"item_name":, "item_group":, "stock":}} — the same combined
+    catalog _render_create_campaign uses, reshaped as a lookup dict for
+    compute_campaign_product_before_after."""
+    items_df = _load_combined_item_catalog()
+    if items_df.empty or "item_id" not in items_df.columns:
+        return {}
+    m = items_df[["item_id", "item_name", "item_group", "stock"]].copy()
+    m["item_id"] = m["item_id"].astype(str)
+    m["stock"] = pd.to_numeric(m["stock"], errors="coerce")
+    return m.drop_duplicates("item_id").set_index("item_id").to_dict("index")
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -315,6 +343,12 @@ def _fmt_bdt(v) -> str:
 
 
 def _render_campaign_detail(campaign: dict, read_only: bool = False, key_suffix: str = "") -> None:
+    """Setup (read_only=False, admin Commissions page) shows only campaign
+    info + Edit/Delete — no payout computation at all, so the ~15-20s FIFO
+    resolution never runs just to edit a date. Results (read_only=True,
+    Target Management) shows the full live-computed report instead — never
+    both on the same page. Confirmed 2026-09-20: "the admin will setup the
+    commissions... target management you can see the results.\""""
     recipient_type = campaign.get("recipient_type") or "salesman"
     product_rates = campaign["product_rates"]
     cap = campaign.get("cap")
@@ -338,6 +372,16 @@ def _render_campaign_detail(campaign: dict, read_only: bool = False, key_suffix:
         f"Cap: **none** — no ceiling on a {recipient_type}'s total payout"
     )
 
+    if not read_only:
+        if st.session_state.get("user_role") == "admin":
+            st.divider()
+            _render_edit_campaign(campaign)
+            if st.button("🗑 Delete This Campaign", key=f"cc_delete_{campaign['id']}{key_suffix}"):
+                cc.delete_campaign(int(campaign["id"]))
+                st.rerun()
+        return
+
+    # ── Results (Target Management "💰 Commission Results") ────────────────
     with st.spinner("Computing payout (pooled 100001+100000, full-history FIFO)…"):
         sales = _load_pooled_sales()
         resolved = _load_resolved_do_ledger()
@@ -365,77 +409,45 @@ def _render_campaign_detail(campaign: dict, read_only: bool = False, key_suffix:
     m2.metric("Eligible DOs", f"{result['eligible_do_count']:,}")
     m3.metric("Excluded DOs", f"{result['excluded_do_count']:,}")
 
+    # Table 1 — one row per (recipient, DO, product): qty, rate, payout, and
+    # status (Eligible, or the specific exclusion reason) all in one table.
+    # Redesigned 2026-09-20, replacing the earlier separate Per-Recipient /
+    # Per-Product / Excluded-DOs pieces — explicit ask: "I want to see what
+    # salesmen were removed and what not" in the SAME table, "one or two
+    # maximum tables."
     recipient_label = result["recipient_type"].capitalize()
-    st.markdown(f"**Per-{recipient_label} Payout**")
-    rt_df = result["recipient_total"]
-    if rt_df.empty:
-        st.info("No eligible payout yet.")
+    st.markdown(f"**{recipient_label} / DO / Product detail**")
+    li_df = result["line_items"]
+    if li_df.empty:
+        st.info("No DOs carrying this campaign's product(s) fall in the sales window yet.")
     else:
-        rename_cols = {
+        disp = li_df.rename(columns={
             "recipient": f"{recipient_label} Code", "recipient_name": recipient_label,
-            "raw_total_payout": "Raw Total (BDT)", "total_payout": "Payout (BDT)",
-        }
-        # Only show the "Raw Total" column (pre-cap) when a cap is actually
-        # set — with no cap the two columns would always be identical, which
-        # is just noise.
-        cols = ["recipient", "recipient_name"] + (["raw_total_payout"] if cap is not None else []) + ["total_payout"]
-        disp = rt_df[cols].rename(columns=rename_cols)
-        fmt = {"Payout (BDT)": "{:,.0f}"}
-        if cap is not None:
-            fmt["Raw Total (BDT)"] = "{:,.0f}"
-        st.dataframe(disp.style.format(fmt), width="stretch", hide_index=True)
+            "voucher": "DO Number", "itemcode": "Product Code", "quantity": "Qty",
+            "rate": "Rate (BDT/unit)", "payout": "Payout (BDT)", "status": "Status",
+        })
+        disp["Qty"] = disp["Qty"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+        disp["Rate (BDT/unit)"] = disp["Rate (BDT/unit)"].apply(lambda v: f"{v:,.2f}" if pd.notna(v) else "—")
+        disp["Payout (BDT)"] = disp["Payout (BDT)"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+        cols = [f"{recipient_label} Code", recipient_label, "DO Number", "Product Code",
+                "Qty", "Rate (BDT/unit)", "Payout (BDT)", "Status"]
+        st.dataframe(disp[cols].sort_values("Status"), width="stretch", hide_index=True)
 
-    with st.expander(f"Per-{recipient_label}-Per-Product breakdown"):
-        rp_df = result["recipient_product"]
-        if rp_df.empty:
-            st.info("No eligible lines yet.")
-        else:
-            st.caption(
-                "Payout per line is uncapped (quantity × rate) — the campaign-wide cap "
-                f"shown above applies once to each {recipient_type}'s TOTAL across every "
-                "product, not to any one line here."
-            )
-            disp = rp_df.rename(columns={
-                "recipient": f"{recipient_label} Code", "recipient_name": recipient_label,
-                "itemcode": "Item Code", "quantity": "Qty", "rate": "Rate", "payout": "Payout",
-            })
-            st.dataframe(
-                disp.style.format({
-                    "Qty": "{:,.0f}", "Rate": "{:,.2f}", "Payout": "{:,.0f}",
-                }),
-                width="stretch", hide_index=True,
-            )
-
-    with st.expander(f"Excluded DOs ({result['excluded_do_count']:,}) — why they didn't qualify"):
-        exc = result["excluded"]
-        if exc.empty:
-            st.info("None excluded.")
-        else:
-            st.dataframe(exc["reason"].value_counts().rename("Count"), width="stretch")
-            st.dataframe(exc, width="stretch", hide_index=True, height=300)
-
-    uptick = result["uptick"]
-    st.markdown("**Sales Uptick (companion metric, not a payout gate)**")
-    u1, u2 = st.columns(2)
-    with u1:
-        pct = uptick["qty_uptick_pct"]
-        u1.metric(
-            "Qty vs. baseline avg", f"{uptick['campaign_qty']:,.0f}",
-            f"{pct:+.1f}% vs {uptick['baseline_avg_qty']:,.0f}" if pct is not None else "no baseline data",
-        )
-    with u2:
-        pct = uptick["revenue_uptick_pct"]
-        u2.metric(
-            "Revenue vs. baseline avg", _fmt_bdt(uptick["campaign_revenue"]),
-            f"{pct:+.1f}% vs {_fmt_bdt(uptick['baseline_avg_revenue'])}" if pct is not None else "no baseline data",
-        )
-
-    if not read_only and st.session_state.get("user_role") == "admin":
-        st.divider()
-        _render_edit_campaign(campaign)
-        if st.button("🗑 Delete This Campaign", key=f"cc_delete_{campaign['id']}{key_suffix}"):
-            cc.delete_campaign(int(campaign["id"]))
-            st.rerun()
+    # Table 2 — this campaign's own product(s), Before (baseline) vs. After
+    # (the campaign window itself), same consolidated renderer Product
+    # Tracking uses. Added 2026-09-20: "in a secondary table, how about we
+    # see the before after, like you do in product tracking."
+    st.markdown("**Product Before/After (vs. baseline)**")
+    returns_full = _load_pooled_returns_full()
+    items_meta = _combined_item_catalog_meta()
+    before_after_rows = cc.compute_campaign_product_before_after(
+        sales, returns_full, list(product_rates.keys()),
+        campaign["window_start"], campaign["window_end"],
+        campaign["uptick_baseline_months"], items_meta,
+    )
+    commission_shared.render_before_after_table(
+        before_after_rows, key_suffix=f"_campaign_{campaign['id']}{key_suffix}",
+    )
 
 
 # ── Top-level section entry point ───────────────────────────────────────────
