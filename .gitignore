@@ -72,6 +72,7 @@ logs/
 data/targets.json
 data/public_holidays.json
 data/warehouse_filters.json
+data/commission_product_watchlist.json
 data/crm_log.json
 data/level_p_projections.json
 data/level_p_breakeven.json
