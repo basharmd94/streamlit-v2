@@ -401,6 +401,60 @@ server:
    detail, status, and current result — same campaign, same data, as the admin-only
    Commissions page.
 
+#### Edit Campaign + active-employee-only payout groups (2026-09-20, same-day follow-up)
+
+The user (as admin) hit a real problem after using the merged feature: "I made a mistake
+with the dates while setting up the campaign" — the only fix available was delete +
+recreate, losing every other field entered. Explicit ask: "can you make an option of
+editing and changing or deleting the campaign whichever you think is better." Since a
+campaign is a pure definition with nothing pre-computed depending on it (payout is always
+computed live from the row + current data), editing in place is strictly safer than
+delete+recreate and was built as the primary fix, alongside keeping the existing Delete.
+
+- **`processing/commission_campaigns.py::update_campaign`** — same field list as
+  `create_campaign`, `UPDATE ... WHERE id = %s`, leaves `id`/`created_by`/`created_at`
+  untouched.
+- **`views/commission_campaigns_view.py`** — the Create form's body was factored out into
+  a shared `_render_campaign_form(available_groups, items_df, existing=None)`: `existing`
+  is `None` for Create (unchanged behavior) or a campaign dict for Edit (every field
+  pre-filled — product multiselect defaults to the campaign's own products, rate/cap/dates
+  default to its own values, per-group deadlines default to the campaign's own saved
+  deadline where one exists, otherwise today). A new `_render_edit_campaign(campaign)`
+  wraps it in a "✏️ Edit Campaign" expander next to the existing Delete button.
+- **Real latent bug fixed in the process, not just for Edit**: the Sales window end
+  `date_input`'s `min_value=window_start` could raise if a stored value fell below a newly
+  moved `window_start` on a rerun — the exact same class of issue as the Product Tracking
+  Cutoff/Back-To widget-clamp bug already documented above (CLAUDE.md's "two real
+  Streamlit widget-state bugs" note). Fixed with the identical pattern (pre-clamp
+  session_state before the dependent widget is instantiated,
+  `_clamp_min_session_date`) — applies to both Create and Edit now, since they share the
+  same form body.
+- **Verified**: `update_campaign` against real local Postgres — created a campaign, updated
+  every field (name, products+rate, cap, window dates, a payout-group deadline, baseline
+  months, notes) in one call, confirmed every field round-tripped correctly and `id`
+  stayed the same. Live in the browser: opened Edit on a real campaign and confirmed EVERY
+  field pre-filled exactly right, including the one payout group that actually had a saved
+  deadline (`Dhaka retail: 2026/02/01`) vs. every other group correctly defaulting to
+  today (never touched before); changed the campaign name via the form and saved,
+  confirmed the campaign list label and detail view picked up the new name immediately
+  with the same id and unchanged dates. (Date-picker fields specifically couldn't be
+  driven through the browser-automation tool used for this verification — same tool
+  limitation hit earlier with Product Tracking's date inputs — so the actual date-field
+  round-trip was verified via the direct script test instead, which is the more precise
+  check anyway.)
+
+**Second, unrelated fix in the same message**: "make sure the active emp status employees
+are only taken into account." `derive_spid_group_map` (the live payout-group derivation
+from `prmst.xdisease`, see above) was pulling every `prmst` row that passed the
+`valid_spids` filter (real sales history) regardless of current employment status — a
+since-resigned/terminated employee who made real sales while still employed would still
+resolve to a payout group. Now also filters `prmst.xstatusemp == 'A-Active'`
+(case-insensitive), checked in ADDITION to `valid_spids`, not instead of it —
+`valid_spids` answers "is this really a salesman," this answers "are they still employed
+today." **Verified** with 5 synthetic prmst rows (`A-Active`, `R-Resigned`, `T-Terminated`,
+`H-Hold`, and a lowercase `a-active` to confirm case-insensitivity) — only the two active
+ones resolved.
+
 #### For future note (2026-09-19/20) — recipient type across the rest of A/B
 
 Not yet relevant to anything built, but worth knowing before scoping A.1/A.2/A.4/B.2/B.5:

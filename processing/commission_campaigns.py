@@ -92,11 +92,24 @@ def derive_spid_group_map(area_group_map: dict | None = None, valid_spids: set |
     happen to have an area on file, and they'd otherwise show up in the
     derived roster despite never actually appearing on a DO.
 
-    CAVEAT (2026-09-20, see CLAUDE.md "Key column mappings"): prmst.xdisease
-    is mid-rollout on the live server — the local Postgres mirror still
-    holds old placeholder junk in most rows, not real areas. This function
-    is correct against real data but won't resolve much locally until that
-    rollout finishes.
+    **Active-employment filter — confirmed 2026-09-20: only currently-active
+    employees count.** `prmst.xstatusemp` is checked against `'A-Active'`
+    (case-insensitive) — an employee who has resigned/been terminated/is on
+    hold (other real values: `R-Resigned`, `T-Terminated`, `H-Hold`,
+    `D-Dismissed`) is excluded here even if `valid_spids` would otherwise
+    have let them through (e.g. they made real sales while still employed,
+    long before leaving). This is deliberately checked in ADDITION to
+    `valid_spids`, not instead of it — `valid_spids` answers "is this really
+    a salesman," this answers "are they still one today." A DO whose
+    salesman drops out for this reason is excluded downstream the same way
+    any unassigned salesman already was ("salesman not in any payout
+    group").
+
+    CAVEAT (2026-09-20, see CLAUDE.md "Key column mappings"): both
+    prmst.xdisease AND prmst.xstatusemp are mid-rollout on the live server
+    — the local Postgres mirror doesn't reflect real data for either yet.
+    This function is correct against real data but won't resolve much
+    locally until that rollout finishes.
     """
     from core.analytics import Analytics
 
@@ -116,6 +129,7 @@ def derive_spid_group_map(area_group_map: dict | None = None, valid_spids: set |
     d = pd.concat(frames, ignore_index=True).dropna(subset=["spid"]).drop_duplicates("spid")
     if valid_spids is not None:
         d = d[d["spid"].astype(str).isin({str(s) for s in valid_spids})]
+    d = d[d["status"].astype(str).str.strip().str.upper() == "A-ACTIVE"]
 
     out = {}
     for r in d.itertuples():
@@ -197,6 +211,32 @@ def get_campaign(campaign_id: int) -> dict | None:
     if row.empty:
         return None
     return row.iloc[0].to_dict()
+
+
+def update_campaign(
+    campaign_id: int, campaign_name: str, campaign_type: str, recipient_type: str,
+    product_rates: dict, cap: float | None, window_start, window_end, payout_groups: dict,
+    uptick_baseline_months: int, notes: str = "",
+) -> bool:
+    """Updates an existing campaign's definition in place (id/created_by/
+    created_at untouched) — added 2026-09-20 so a setup mistake (e.g. wrong
+    window dates) can be fixed directly instead of delete+recreate. Safe to
+    edit freely: nothing about a campaign is ever pre-computed (payout is
+    always live off the row + current sales/collection data), so there's no
+    stale derived data anywhere to invalidate."""
+    sql = """
+        UPDATE commission_campaigns
+        SET campaign_name = %s, campaign_type = %s, recipient_type = %s,
+            product_rates = %s, cap = %s, window_start = %s, window_end = %s,
+            payout_groups = %s, uptick_baseline_months = %s, notes = %s
+        WHERE id = %s
+    """
+    params = (
+        campaign_name, campaign_type, recipient_type, json.dumps(product_rates), cap,
+        window_start, window_end, json.dumps(payout_groups), uptick_baseline_months,
+        notes, campaign_id,
+    )
+    return execute_write(sql, params)
 
 
 def delete_campaign(campaign_id: int) -> bool:

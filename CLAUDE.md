@@ -104,9 +104,11 @@ df = Analytics("table_name", zid=zid, filters={"year": [2026], "month": [6]}).da
 - `gldetail.xprime` -> GL posting amount (Revenue = negative credit, Expense = positive debit)
 - `prmst.xstatusemp` -> employee status. `'A-Active'` = payroll is currently issued to that
   person — the confirmed way to check if someone is still active (other real values seen:
-  `R-Resigned`, `T-Terminated`, `H-Hold`, `D-Dismissed`, blank/`NULL`). Not yet wired into any
-  view as of 2026-09-20 — see session memory for why (real rollout of this field's *data* is
-  in progress on the live server, don't trust it against the local Postgres mirror yet).
+  `R-Resigned`, `T-Terminated`, `H-Hold`, `D-Dismissed`, blank/`NULL`). Wired into
+  `processing/commission_campaigns.py::derive_spid_group_map` as of 2026-09-20 (see B.1/3/4
+  below) — real rollout of this field's *data* is in progress on the live server, so it
+  still correctly resolves nothing against the local Postgres mirror; don't trust local
+  data for this column.
 - `prmst.xdisease` -> despite the name, this is NOT medical data — it holds the salesman's
   **current working area(s)**, comma-separated free text (e.g. `"Ibrahimpur, Askona"`). Take
   the value exactly as stored, don't reformat. **As of 2026-09-20 this is mid-rollout on the
@@ -996,7 +998,13 @@ ZIDs hitting their own sales target.
   each salesman's `prmst.xdisease` area list against that map (majority vote across their
   listed areas, tie broken by whichever tied group's area is listed first), filtered by
   `valid_spids` to real salesmen only (per the op-tables-not-prefix rule above — otherwise
-  non-salesman `prmst` rows with an area on file would show up too).
+  non-salesman `prmst` rows with an area on file would show up too) **and by
+  `prmst.xstatusemp == 'A-Active'` (case-insensitive) — confirmed 2026-09-20, explicit
+  ask: "make sure the active emp status employees are only taken into account."** Checked
+  in ADDITION to `valid_spids`, not instead of it — a since-resigned/terminated employee
+  who made real sales while still employed would otherwise still resolve to a payout
+  group; `xstatusemp` answers "are they still employed today," `valid_spids` answers "were
+  they ever really a salesman."
   `views/commission_campaigns_view.py::_render_derived_groups` replaced the roster editor
   with a read-only view (group list + which salesmen resolved). This roster is always
   salesman-based (it drives DO eligibility, see above) regardless of `recipient_type`.
@@ -1051,6 +1059,21 @@ ZIDs hitting their own sales target.
   Styler `na_rep` for this case (same class of issue as the TOTAL-row/Styler pitfall
   already documented above). Fixed by pre-formatting the column to a display string before
   it ever reached `.style.format()`.
+- **Edit Campaign (admin-only, 2026-09-20)** — `processing/commission_campaigns.py::update_campaign`
+  (`UPDATE ... WHERE id = %s`, same field list as `create_campaign`, `id`/`created_by`/
+  `created_at` untouched) + `views/commission_campaigns_view.py::_render_edit_campaign`.
+  Added after the user (as admin) hit a real setup mistake ("I made a mistake with the
+  dates") with no fix short of delete+recreate. The Create form's body was factored into a
+  shared `_render_campaign_form(available_groups, items_df, existing=None)` — `existing`
+  is `None` for Create, or a campaign dict for Edit (every field pre-filled: products,
+  rate per product, cap, window dates, each payout group's own saved deadline or today if
+  never set, baseline months, notes). Fixed a real latent bug while at it: Sales window
+  end's `date_input` (`min_value=window_start`) could raise if its stored value fell below
+  a newly-moved window_start — same class of bug as the Product Tracking Cutoff/Back-To
+  clamp issue below, fixed the same way (`_clamp_min_session_date`, pre-clamp
+  session_state before the widget is instantiated). Editing is always safe here since
+  nothing about a campaign is pre-computed. Delete is kept alongside Edit, not replaced by
+  it.
 - Verified end-to-end live: created a real campaign (2 real products with their own
   rate/cap, salesman recipient type), got a real payout that matched a standalone
   hand-computation exactly, confirmed the gate-passed banner, the per-product breakdown

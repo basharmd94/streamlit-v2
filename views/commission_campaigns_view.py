@@ -118,89 +118,155 @@ def _render_derived_groups() -> None:
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
-# ── Create campaign form (admin-only) ───────────────────────────────────────
+# ── Create / Edit campaign form (admin-only) — shared body ─────────────────
+# `existing=None` -> Create New Campaign (blank, calls create_campaign).
+# `existing=<campaign dict>` -> Edit Campaign (pre-filled, calls
+# update_campaign) — added 2026-09-20 so a setup mistake (e.g. wrong window
+# dates) can be fixed directly rather than delete+recreate; campaigns have
+# no pre-computed data to invalidate, so editing is always safe.
 
-def _render_create_campaign() -> None:
-    available_groups = sorted(set(_load_area_group_map().values()))
-    items_df = _load_combined_item_catalog()
+def _clamp_min_session_date(key: str, min_v) -> bool:
+    """Same pattern as views/commissions.py::_clamp_session_date (min-only
+    variant) — a widget's persisted value (window end) can fall below a
+    newly-raised min_value (window start, if the user pushes it forward on
+    a rerun) and Streamlit raises if that's not pre-clamped first. Returns
+    True if a clamp happened, so the caller skips passing `value=` this run."""
+    if key in st.session_state:
+        cur = st.session_state[key]
+        if cur < min_v:
+            st.session_state[key] = min_v
+            return True
+    return False
 
-    with st.expander("➕ Create New Campaign", expanded=False):
-        if not available_groups:
-            st.warning("No payout groups available — Cacus customer/area data couldn't be loaded.")
-            return
-        if items_df.empty or "item_id" not in items_df.columns:
-            st.warning("No product catalog available.")
-            return
 
-        name = st.text_input("Campaign name", key="cc_new_name")
-        c0a, c0b = st.columns(2)
-        with c0a:
-            ctype = st.selectbox("Campaign type", _CAMPAIGN_TYPES, key="cc_new_type")
-        with c0b:
-            recipient_type = st.radio(
-                "Commission paid to", ["salesman", "customer"], key="cc_new_recipient",
-                horizontal=True, format_func=lambda v: v.capitalize(),
-            )
+def _render_campaign_form(available_groups: list, items_df: pd.DataFrame, existing: dict | None = None) -> None:
+    is_edit = existing is not None
+    key_prefix = f"cc_edit_{existing['id']}" if is_edit else "cc_new"
 
-        opts_df = (
-            items_df[["item_id", "item_name"]].dropna().drop_duplicates()
-            .assign(item_id=lambda d: d["item_id"].astype(str)).sort_values("item_name")
+    name = st.text_input(
+        "Campaign name", value=(existing["campaign_name"] if is_edit else ""), key=f"{key_prefix}_name",
+    )
+    c0a, c0b = st.columns(2)
+    with c0a:
+        type_default = existing.get("campaign_type") if is_edit else None
+        type_idx = _CAMPAIGN_TYPES.index(type_default) if type_default in _CAMPAIGN_TYPES else 0
+        ctype = st.selectbox("Campaign type", _CAMPAIGN_TYPES, index=type_idx, key=f"{key_prefix}_type")
+    with c0b:
+        recip_options = ["salesman", "customer"]
+        recip_default = existing.get("recipient_type", "salesman") if is_edit else "salesman"
+        recip_idx = recip_options.index(recip_default) if recip_default in recip_options else 0
+        recipient_type = st.radio(
+            "Commission paid to", recip_options, index=recip_idx, key=f"{key_prefix}_recipient",
+            horizontal=True, format_func=lambda v: v.capitalize(),
         )
-        label_map = {f"{r.item_id} - {r.item_name}": r.item_id for r in opts_df.itertuples()}
-        picked_labels = st.multiselect("Product(s)", list(label_map.keys()), key="cc_new_products")
-        product_codes = [label_map[l] for l in picked_labels]
 
-        product_rates = {}
-        if product_codes:
-            st.caption(
-                "Rate = the per-unit incentive/discount BDT amount for that product "
-                "(e.g. 5 or 3) — not the product's sales price. Varies per product; "
-                "set the Cap for the whole campaign below."
-            )
-            for code in product_codes:
-                label = next((l for l, c in label_map.items() if c == code), code)
-                rc1, rc2 = st.columns([3, 2])
-                with rc1:
-                    st.markdown(f"`{code}`")
-                    st.caption(label.split(" - ", 1)[-1])
-                with rc2:
-                    rate = st.number_input(
-                        "Rate (BDT/unit)", min_value=0.0, step=0.5, key=f"cc_new_rate_{code}",
-                    )
-                product_rates[code] = rate
+    opts_df = (
+        items_df[["item_id", "item_name"]].dropna().drop_duplicates()
+        .assign(item_id=lambda d: d["item_id"].astype(str)).sort_values("item_name")
+    )
+    label_map = {f"{r.item_id} - {r.item_name}": r.item_id for r in opts_df.itertuples()}
+    code_to_label = {v: k for k, v in label_map.items()}
 
-        cap_val = st.number_input(
-            "Cap (BDT, 0 = no cap)", min_value=0.0, step=100.0, key="cc_new_cap",
-            help=f"ONE ceiling for the whole campaign — caps a single {recipient_type}'s TOTAL "
-                 "payout, summed across every product picked above (not a separate cap per product).",
+    default_labels = (
+        [code_to_label[c] for c in existing["product_rates"].keys() if c in code_to_label] if is_edit else []
+    )
+    picked_labels = st.multiselect(
+        "Product(s)", list(label_map.keys()), default=default_labels, key=f"{key_prefix}_products",
+    )
+    product_codes = [label_map[l] for l in picked_labels]
+
+    product_rates = {}
+    if product_codes:
+        st.caption(
+            "Rate = the per-unit incentive/discount BDT amount for that product "
+            "(e.g. 5 or 3) — not the product's sales price. Varies per product; "
+            "set the Cap for the whole campaign below."
         )
-        campaign_cap = cap_val if cap_val > 0 else None
+        for code in product_codes:
+            label = next((l for l, c in label_map.items() if c == code), code)
+            rc1, rc2 = st.columns([3, 2])
+            with rc1:
+                st.markdown(f"`{code}`")
+                st.caption(label.split(" - ", 1)[-1])
+            with rc2:
+                rate_default = float(existing["product_rates"].get(code, 0.0)) if is_edit else 0.0
+                rate = st.number_input(
+                    "Rate (BDT/unit)", min_value=0.0, step=0.5, value=rate_default,
+                    key=f"{key_prefix}_rate_{code}",
+                )
+            product_rates[code] = rate
 
-        today = pd.Timestamp.today().normalize().date()
-        c3, c4 = st.columns(2)
-        with c3:
-            window_start = st.date_input("Sales window start", value=today, key="cc_new_wstart")
-        with c4:
-            window_end = st.date_input("Sales window end", value=today, min_value=window_start, key="cc_new_wend")
+    existing_cap = existing.get("cap") if is_edit else None
+    cap_default = float(existing_cap) if is_edit and existing_cap not in (None, "") and not pd.isna(existing_cap) else 0.0
+    cap_val = st.number_input(
+        "Cap (BDT, 0 = no cap)", min_value=0.0, step=100.0, value=cap_default, key=f"{key_prefix}_cap",
+        help=f"ONE ceiling for the whole campaign — caps a single {recipient_type}'s TOTAL "
+             "payout, summed across every product picked above (not a separate cap per product).",
+    )
+    campaign_cap = cap_val if cap_val > 0 else None
 
-        st.caption("Collection deadline per payout group, for this campaign:")
-        payout_groups = {}
-        for group in available_groups:
-            deadline = st.date_input(
-                f"{group} deadline", value=today, key=f"cc_new_deadline_{group}",
+    today = pd.Timestamp.today().normalize().date()
+    wstart_default = pd.Timestamp(existing["window_start"]).date() if is_edit else today
+    wend_default = pd.Timestamp(existing["window_end"]).date() if is_edit else today
+    c3, c4 = st.columns(2)
+    with c3:
+        window_start = st.date_input("Sales window start", value=wstart_default, key=f"{key_prefix}_wstart")
+    just_clamped = _clamp_min_session_date(f"{key_prefix}_wend", window_start)
+    with c4:
+        wend_kwargs = dict(min_value=window_start, key=f"{key_prefix}_wend")
+        if not just_clamped:
+            wend_kwargs["value"] = max(wend_default, window_start)
+        window_end = st.date_input("Sales window end", **wend_kwargs)
+
+    st.caption("Collection deadline per payout group, for this campaign:")
+    payout_groups = {}
+    existing_deadlines = existing.get("payout_groups", {}) if is_edit else {}
+    # Union with the campaign's own already-set groups — a group can stop
+    # showing up here if Cacus's live data shifts; don't silently drop a
+    # deadline the campaign already has just because of that.
+    all_groups = list(dict.fromkeys(list(available_groups) + list(existing_deadlines.keys())))
+    for group in all_groups:
+        try:
+            deadline_default = pd.Timestamp(existing_deadlines[group]).date() if group in existing_deadlines else today
+        except Exception:
+            deadline_default = today
+        deadline = st.date_input(
+            f"{group} deadline", value=deadline_default, key=f"{key_prefix}_deadline_{group}",
+        )
+        payout_groups[group] = str(deadline)
+
+    baseline_options = [3, 6]
+    baseline_default = existing.get("uptick_baseline_months", 3) if is_edit else 3
+    baseline_idx = baseline_options.index(baseline_default) if baseline_default in baseline_options else 0
+    baseline_months = st.selectbox(
+        "Uptick baseline window (months)", baseline_options, index=baseline_idx, key=f"{key_prefix}_baseline",
+    )
+    notes = st.text_area(
+        "Notes (optional)", value=(existing.get("notes") or "" if is_edit else ""), key=f"{key_prefix}_notes",
+    )
+
+    all_rates_set = bool(product_rates) and all(v > 0 for v in product_rates.values())
+    can_submit = bool(name.strip()) and all_rates_set
+    if not product_codes:
+        st.caption("Pick at least one product above.")
+    elif not all_rates_set:
+        st.caption("Every picked product needs a rate > 0.")
+
+    btn_label = "💾 Save Changes" if is_edit else "✅ Create Campaign"
+    if st.button(btn_label, key=f"{key_prefix}_submit_btn", disabled=not can_submit):
+        if is_edit:
+            ok = cc.update_campaign(
+                campaign_id=int(existing["id"]), campaign_name=name.strip(), campaign_type=ctype,
+                recipient_type=recipient_type, product_rates=product_rates, cap=campaign_cap,
+                window_start=str(window_start), window_end=str(window_end),
+                payout_groups=payout_groups, uptick_baseline_months=baseline_months, notes=notes,
             )
-            payout_groups[group] = str(deadline)
-
-        baseline_months = st.selectbox("Uptick baseline window (months)", [3, 6], key="cc_new_baseline")
-        notes = st.text_area("Notes (optional)", key="cc_new_notes")
-
-        all_rates_set = bool(product_rates) and all(v > 0 for v in product_rates.values())
-        can_create = bool(name.strip()) and all_rates_set
-        if not product_codes:
-            st.caption("Pick at least one product above.")
-        elif not all_rates_set:
-            st.caption("Every picked product needs a rate > 0.")
-        if st.button("✅ Create Campaign", key="cc_new_create_btn", disabled=not can_create):
+            if ok:
+                st.success("Campaign updated.", icon="✅")
+                st.rerun()
+            else:
+                st.error("Could not update campaign.")
+        else:
             cid = cc.create_campaign(
                 campaign_name=name.strip(), campaign_type=ctype, recipient_type=recipient_type,
                 product_rates=product_rates, cap=campaign_cap,
@@ -213,6 +279,31 @@ def _render_create_campaign() -> None:
                 st.rerun()
             else:
                 st.error("Could not create campaign.")
+
+
+def _render_create_campaign() -> None:
+    available_groups = sorted(set(_load_area_group_map().values()))
+    items_df = _load_combined_item_catalog()
+
+    with st.expander("➕ Create New Campaign", expanded=False):
+        if not available_groups:
+            st.warning("No payout groups available — Cacus customer/area data couldn't be loaded.")
+            return
+        if items_df.empty or "item_id" not in items_df.columns:
+            st.warning("No product catalog available.")
+            return
+        _render_campaign_form(available_groups, items_df)
+
+
+def _render_edit_campaign(campaign: dict) -> None:
+    available_groups = sorted(set(_load_area_group_map().values()))
+    items_df = _load_combined_item_catalog()
+
+    with st.expander("✏️ Edit Campaign", expanded=False):
+        if items_df.empty or "item_id" not in items_df.columns:
+            st.warning("No product catalog available.")
+            return
+        _render_campaign_form(available_groups, items_df, existing=campaign)
 
 
 # ── Campaign detail / payout view ───────────────────────────────────────────
@@ -341,6 +432,7 @@ def _render_campaign_detail(campaign: dict, read_only: bool = False, key_suffix:
 
     if not read_only and st.session_state.get("user_role") == "admin":
         st.divider()
+        _render_edit_campaign(campaign)
         if st.button("🗑 Delete This Campaign", key=f"cc_delete_{campaign['id']}{key_suffix}"):
             cc.delete_campaign(int(campaign["id"]))
             st.rerun()
