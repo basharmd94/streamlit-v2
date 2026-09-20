@@ -83,20 +83,25 @@ Status: **built 2026-09-20** (`processing/salesman_score.py::build_pooled_monthl
   their score across only the months they actually have a row in (no phantom 0 for a
   month/year with zero activity). This settles the "per-month average vs. pooled totals"
   question in favor of per-month averaging.
-- **Reporting month, pinned at setup — corrected 2026-09-20, same day, after a real bug the
-  user caught right after first shipping this.** First version anchored the window to
-  wall-clock "today" and recomputed it live on every view — so a campaign set up in
-  September would silently show September+October the moment October began, instead of
-  staying on September's own completed results. The user's own words, catching it: "once
-  the month is over, I will need the performance of the last month... do you understand
-  what I mean?" Fixed: the admin now picks an explicit **Reporting month** at setup
-  (defaults to the current month, but selectable up to 12 months back, so a campaign can
-  also be set up retroactively for an already-closed month) — `window_start`/`window_end`
-  become the campaign's real, load-bearing evaluation bounds (no longer "informational
-  only"), and every later view re-derives the N-month list from the STORED reporting month,
-  never from `today`. While the reporting month is still genuinely current, results track
-  live (capped to today); once it closes, they freeze at that month's final numbers
-  forever, however long the campaign is left open before being checked again.
+- **Reporting month, pinned at setup — corrected 2026-09-20 across two rounds of user
+  feedback, same day, right after first shipping this.** Round 1 (a real bug): the window
+  was anchored to wall-clock "today" and recomputed live on every view — so a campaign set
+  up in September would silently show September+October the moment October began, instead
+  of staying on September's own completed results. The user's own words, catching it:
+  "once the month is over, I will need the performance of the last month... do you
+  understand what I mean?" Round 2 (scope correction, same day): the fix's first draft let
+  the reporting month be any of the past 12 months too ("retroactive setup") — the user
+  corrected this immediately: **"I can only set this current month and future months... I
+  can't set it for a month that already passed."** So: the admin picks an explicit
+  **Reporting month** at setup — current month, or any FUTURE month, never a past one (one
+  narrow exception: editing an already-existing campaign whose own reporting month has
+  since closed keeps that one real month available, so Save can't silently reassign it —
+  no OTHER past month is ever offered). `window_start`/`window_end` become the campaign's
+  real, load-bearing evaluation bounds (no longer "informational only"), and every later
+  view re-derives the N-month list from the STORED reporting month, never from `today`.
+  While the reporting month is still genuinely current (or hasn't arrived yet), results
+  track live/show zero as appropriate; once it closes, they freeze at that month's final
+  numbers forever, however long the campaign is left open before being checked again.
 - **Payout mechanism — same per-rank-payout pattern as A.2, not a single fixed amount to
   one winner** (the "fixed BDT amount to the winner" line above was superseded once A.2's
   own ranked-payout mechanism was confirmed and reused here): admin picks **2-10 winners**

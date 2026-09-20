@@ -1089,24 +1089,33 @@ amount per rank position to the top N — same per-rank-payout mechanism as A.2,
   `{"num_months": M, "num_winners": N, "payouts_by_rank": [amt1, ...]}`. Each section's picker filters to its
   own `campaign_type` — verified A.1's value doesn't leak into A.2's or B.1/3/4's existing filters and vice
   versa (same check done when A.2 was added).
-- **Reporting month, pinned at setup — corrected 2026-09-20, a real bug caught by the user right after first
-  shipping this.** Original (wrong) design: `window_start`/`window_end` were "informational only" and the
+- **Reporting month, pinned at setup — corrected 2026-09-20 across two rounds of user feedback, right after
+  first shipping this.** Round 1 (bug): `window_start`/`window_end` were "informational only" and the
   evaluation window was recomputed live from `today` + `num_months` on EVERY view — so a campaign set up in
   September would silently show September+October (mostly-empty, just-started October) the moment October
   began, instead of staying on September's completed results. The user's own framing: "once the month is
   over, I will need the performance of the last month... do you understand what I mean?" — confirming the
-  window must stay pinned to the month the campaign was actually set up for. Fixed: `window_start`/
-  `window_end` are now REAL, load-bearing dates (matching every other campaign type) — the admin picks a
-  **Reporting month** at setup (`views/commission_best_performer_view.py::_anchor_month_choices`, defaults to
-  the current month, current + up to 12 prior months selectable so a campaign can also be set up
-  retroactively for a recently-closed month), `window_end` = the last day of that month, `window_start` = the
-  first day of the oldest of the `num_months` months ending there. At results time,
-  `_compute_ranking` reads the anchor month back out of the STORED `window_end` (`_months_for_window`), never
-  from wall-clock `today` — so re-opening the same campaign months later reproduces the identical ranking
-  every time. The existing per-month `is_real_current_month` check inside `build_pooled_monthly_scores` (fed
-  a separate, genuinely-live `today`) is what gives the two states for free with no extra logic: while the
-  reporting month is still the real current month, that month's own figures stay live/capped-to-today; once
-  it passes, they're just that month's full, completed totals, frozen forever after. The results caption
+  window must stay pinned to the month the campaign was actually set up for. Round 2 (scope correction, same
+  day): the fix's first draft let the admin pick a reporting month from the past too ("retroactive setup");
+  the user corrected this immediately — **"I can only set this current month and future months... I can't set
+  it for a month that already passed."** A campaign is set up in advance or mid-month for the CURRENT or a
+  FUTURE month only, never backdated.
+  - `window_start`/`window_end` are now REAL, load-bearing dates (matching every other campaign type) — the
+    admin picks a **Reporting month** at setup (`views/commission_best_performer_view.py::_anchor_month_choices`,
+    current month + up to 12 FUTURE months, never past ones), `window_end` = the last day of that month,
+    `window_start` = the first day of the oldest of the `num_months` months ending there.
+  - **One narrow exception, in `_render_form`**: editing an already-existing campaign whose own reporting
+    month has since closed keeps that one real month selected/available (so Save can't silently reassign it
+    to the current month just because it's no longer in the normal forward-only options list) — but no OTHER
+    past month is ever offered as a fresh choice, even in Edit.
+  - At results time, `_compute_ranking` reads the anchor month back out of the STORED `window_end`
+    (`_months_for_window`), never from wall-clock `today` — so re-opening the same campaign months later
+    reproduces the identical ranking every time. The existing per-month `is_real_current_month` check inside
+    `build_pooled_monthly_scores` (fed a separate, genuinely-live `today`) is what gives the two states for
+    free with no extra logic: while the reporting month is still the real current month, that month's own
+    figures stay live/capped-to-today (this also naturally covers a FUTURE reporting month before it
+    arrives — it just shows zero activity until that month actually starts); once the reporting month passes,
+    it's just that month's full, completed totals, frozen forever after. The results caption
   reflects this directly: "...ending {Month YYYY} (still tracking live / closed — final numbers)".
 - **Months to average: 1-3, trailing back from the reporting month** — `_months_for_window` slices
   `ssc.month_choices(anchor_ts)` (already correct on year-rollover) to `num_months`, anchored at the STORED

@@ -124,18 +124,23 @@ def _target_by_sp(sales_df: pd.DataFrame, year: int, month: int) -> dict:
     }
 
 
-def _anchor_month_choices(today: pd.Timestamp, months_back: int = 12) -> list:
-    """[(label, year, month), ...] most recent first: the current month plus
-    up to `months_back` prior ones — options for the "reporting month"
-    picker (see module note above `_render_form`). A campaign can be set up
-    for the current month (the common case — live tracking while it's
-    ongoing) or retroactively for a recently-closed one."""
+def _anchor_month_choices(today: pd.Timestamp, months_forward: int = 12) -> list:
+    """[(label, year, month), ...] earliest first: the current month plus up
+    to `months_forward` FUTURE ones — options for the "reporting month"
+    picker (see module note above `_render_form`). **Current month or later
+    only — confirmed 2026-09-20, explicit correction from the user: "I can
+    only set this current month and future months... I can't set it for a
+    month that already passed."** A campaign can be set up mid-month for
+    the rest of the current month, or in advance for a future one; never
+    retroactively for one that's already closed (see `_render_form` for the
+    one narrow exception: an already-existing campaign keeps showing its
+    own past reporting month so editing it can't silently move it)."""
     cur = pd.Timestamp(today.year, today.month, 1)
     return [
-        ((cur - pd.DateOffset(months=i)).strftime("%b %Y"),
-         int((cur - pd.DateOffset(months=i)).year),
-         int((cur - pd.DateOffset(months=i)).month))
-        for i in range(months_back + 1)
+        ((cur + pd.DateOffset(months=i)).strftime("%b %Y"),
+         int((cur + pd.DateOffset(months=i)).year),
+         int((cur + pd.DateOffset(months=i)).month))
+        for i in range(months_forward + 1)
     ]
 
 
@@ -219,6 +224,17 @@ def _compute_ranking(campaign: dict, num_months: int) -> dict:
 # closes, results stay frozen at its final numbers forever after, even if
 # the campaign is reopened months later — they never roll forward to
 # whatever month happens to be current at view time.
+#
+# **Current month or later ONLY — corrected same day, second explicit
+# correction from the user**: "I can only set this current month and
+# future months... I can't set it for a month that already passed." A
+# campaign can be created mid-month for the rest of the current month (a
+# partial month is fine), or in advance for any future month; never
+# retroactively for one that's already closed. `_anchor_month_choices`
+# offers current + up to 12 future months, never past ones — the one
+# exception is editing an already-existing campaign whose own reporting
+# month has since closed, which keeps showing/selecting that one real
+# month (not offered as a fresh choice) so Save can't silently move it.
 
 def _render_form(existing: dict | None = None) -> None:
     is_edit = existing is not None
@@ -230,24 +246,31 @@ def _render_form(existing: dict | None = None) -> None:
 
     today = pd.Timestamp.today().normalize()
     month_opts = _anchor_month_choices(today)
-    month_labels = [lbl for lbl, _y, _m in month_opts]
     if is_edit:
         existing_end = pd.Timestamp(existing["window_end"])
-        default_label = next(
-            (lbl for lbl, y, m in month_opts if y == existing_end.year and m == existing_end.month),
-            month_labels[0],
-        )
+        already_offered = any(y == existing_end.year and m == existing_end.month for _l, y, m in month_opts)
+        if not already_offered:
+            # The campaign's own reporting month has already closed (this is
+            # editing an old campaign after the fact, e.g. just to fix the
+            # name/payouts) — keep showing/selecting its real month so Save
+            # can't silently move it forward to the current month, without
+            # offering any OTHER past month as a fresh choice.
+            month_opts = [(existing_end.strftime("%b %Y"), int(existing_end.year), int(existing_end.month))] + month_opts
+        default_label = existing_end.strftime("%b %Y")
     else:
-        default_label = month_labels[0]
+        default_label = month_opts[0][0]
+    month_labels = [lbl for lbl, _y, _m in month_opts]
     sel_label = st.selectbox(
         "Reporting month — the month this campaign is for", month_labels,
         index=month_labels.index(default_label), key=f"{key_prefix}_month",
     )
     anchor_year, anchor_month = next((y, m) for lbl, y, m in month_opts if lbl == sel_label)
     st.caption(
-        "Tracks live while this is the current, ongoing month. Once the month ends, results "
-        "stay fixed at that month's final numbers — reopening this campaign later won't roll "
-        "the window forward to whatever month is current by then."
+        "Current month or later only — you can set this up for the rest of this month, or in "
+        "advance for a future one, but not for a month that's already passed. Tracks live while "
+        "the reporting month is the current, ongoing one; once it ends, results stay fixed at "
+        "that month's final numbers — reopening this campaign later won't roll the window "
+        "forward to whatever month is current by then."
     )
 
     existing_config = (existing.get("product_rates") or {}) if is_edit else {}
