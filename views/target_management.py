@@ -30,6 +30,7 @@ from views.field_tracking import _render_field_tracking
 from views.glpmt_shared import render_glpmt_panel as _render_glpmt_panel
 from views.returns_registry import _render_returns_registry
 from views.feedback import _render_feedback
+from views.do_creation_audit_view import render_do_creation_audit_panel
 
 
 # ── Metric cards ───────────────────────────────────────────────────────────────
@@ -1077,7 +1078,7 @@ def display_target_management_page(current_page, zid, data_dict):
         ["👤 Individual Salesman", "📅 Daily Breakdown", "📊 All Salesmen Overview", "🎯 Salesman Score",
          "📊 3 Month Averages", "🧾 SR Trn",
          "📦 Current Stock", "🔮 Next Month Target", "🗺️ Field Tracking",
-         "📲 App Collections", "↩️ Returns Registry", "💬 Feedback"],
+         "📲 App Collections", "↩️ Returns Registry", "💬 Feedback", "🚦 DO Creation Audit"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -1231,6 +1232,10 @@ def display_target_management_page(current_page, zid, data_dict):
 
     if _view_mode == "🗺️ Field Tracking":
         _render_field_tracking(zid)
+        return
+
+    if _view_mode == "🚦 DO Creation Audit":
+        render_do_creation_audit_panel(str(zid), key_suffix="_tm")
         return
 
     # ── Filters: salesman (single), customer, area (cascading) ────────────────

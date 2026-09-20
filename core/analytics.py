@@ -116,6 +116,10 @@ class Analytics:
             "cus_delivery_payment_promise": queries.get_cus_delivery_payment_promise,
             "cus_return_entry_date":        queries.get_cus_return_entry_date,
             "feedback":                     queries.get_feedback_data,
+            "do_audit_pending_order":   queries.get_do_audit_pending_order,
+            "do_audit_pending_do":      queries.get_do_audit_pending_do,
+            "do_audit_partial_fulfillment": queries.get_do_audit_partial_fulfillment,
+            "do_audit_unpersisted":     queries.get_do_audit_unpersisted,
         }
 
         query_func = query_map.get(table_name)

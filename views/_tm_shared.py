@@ -8,6 +8,10 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from processing import salesman_due as sd
+from processing.holidays import (  # noqa: F401 — re-exported for existing call sites
+    _load_json, _save_json, _get_holidays, _prune_holidays, _toggle_holiday,
+    _is_working_day, _count_working_days,
+)
 from views.marketing import _load_final_items  # noqa: F401 — re-exported; avoids duplicate cache
 
 
@@ -17,21 +21,6 @@ from views.marketing import _load_final_items  # noqa: F401 — re-exported; avo
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 _TARGETS_FILE = _DATA_DIR / "targets.json"
-_HOLIDAYS_FILE = _DATA_DIR / "public_holidays.json"
-
-
-def _load_json(path: Path) -> dict:
-    try:
-        if path.exists():
-            return json.loads(path.read_text())
-    except Exception:
-        pass
-    return {}
-
-
-def _save_json(path: Path, data: dict):
-    _DATA_DIR.mkdir(exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, default=str))
 
 
 def _target_key(zid, spid: str, year: int, month: int) -> str:
@@ -46,11 +35,6 @@ def _save_target(zid, spid: str, year: int, month: int, value: float):
     data = _load_json(_TARGETS_FILE)
     data[_target_key(zid, spid, year, month)] = value
     _save_json(_TARGETS_FILE, data)
-
-
-def _get_holidays() -> set:
-    """Return all saved public holidays as a set of 'YYYY-MM-DD' strings."""
-    return set(_load_json(_HOLIDAYS_FILE).get("holidays", []))
 
 
 def _prune_targets():
@@ -75,49 +59,6 @@ def _prune_targets():
             pruned[key] = val  # keep unparseable entries
     if len(pruned) != len(data):
         _save_json(_TARGETS_FILE, pruned)
-
-
-def _prune_holidays():
-    """
-    Silently remove holidays from calendar years older than (current_year - 1).
-    Keeps exactly 2 calendar years: previous year and current year.
-    Runs on every page load — no prompt.
-    """
-    data = _load_json(_HOLIDAYS_FILE)
-    if not data:
-        return
-    keep_from = pd.Timestamp.today().year - 1
-    holidays = data.get("holidays", [])
-    pruned = [h for h in holidays if int(h[:4]) >= keep_from]
-    if len(pruned) != len(holidays):
-        data["holidays"] = sorted(pruned)
-        _save_json(_HOLIDAYS_FILE, data)
-
-
-def _toggle_holiday(date_str: str, add: bool):
-    data = _load_json(_HOLIDAYS_FILE)
-    holidays = set(data.get("holidays", []))
-    if add:
-        holidays.add(date_str)
-    else:
-        holidays.discard(date_str)
-    data["holidays"] = sorted(holidays)
-    _save_json(_HOLIDAYS_FILE, data)
-
-
-def _is_working_day(d, holidays: set) -> bool:
-    """Mon–Thu and Sat–Sun are working days; Friday and public holidays are off."""
-    return d.weekday() != 4 and d.strftime("%Y-%m-%d") not in holidays
-
-
-def _count_working_days(start_d, end_d, holidays: set) -> int:
-    count = 0
-    cur = start_d
-    while cur <= end_d:
-        if _is_working_day(cur, holidays):
-            count += 1
-        cur += timedelta(days=1)
-    return count
 
 
 # ── Filter helpers ─────────────────────────────────────────────────────────────

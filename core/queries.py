@@ -2401,6 +2401,128 @@ def get_opmob_all_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+# ── DO Creation Audit (opmob -> opord/COMO -> opdor/DO pipeline) ─────────────
+# Catches orders an SOP forgot to move forward: a mobile order (opmob) that
+# never got turned into a COMO order (opord), a COMO order that never got a
+# delivery order (opdor), an order that got a DO but was never fully
+# delivered, and a COMO number opmob claims was created but which never
+# actually landed in opord (a system-level gap, not an SOP miss). See
+# CLAUDE.md's "DO Creation Audit" section for the full design.
+
+def get_do_audit_pending_order(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """opmob rows still xstatusord='New' -- a mobile order nobody has acted
+    on yet. One row per (zid, invoiceno) -- opmob is one row per LINE ITEM
+    within a single mobile-order submission, confirmed via invoiceno/invoicesl
+    grouping same ztime/xordernum/xstatusord across a submission's rows."""
+    zids = [int(z) for z in filters["zid"]]
+    cutoff = filters["cutoff_date"][0]
+    sql = """
+        SELECT
+            om.zid, om.invoiceno,
+            om.xcus AS cusid, c.xshort AS cusname,
+            om.xemp AS spid, p.xname AS spname,
+            om.xdate AS order_date, min(om.ztime) AS ztime,
+            count(*) AS item_count, sum(om.xqty) AS total_qty,
+            sum(om.xlinetotal) AS total_value
+        FROM opmob om
+        LEFT JOIN cacus c ON om.xcus = c.xcus AND om.zid = c.zid
+        LEFT JOIN prmst p ON om.xemp = p.xemp AND om.zid = p.zid
+        WHERE om.zid = ANY(%s)
+          AND om.xstatusord = 'New'
+          AND om.xdate >= %s
+        GROUP BY om.zid, om.invoiceno, om.xcus, c.xshort, om.xemp, p.xname, om.xdate
+        ORDER BY om.xdate, min(om.ztime)
+    """
+    return sql, (zids, cutoff)
+
+
+def get_do_audit_pending_do(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Mobile-sourced opord rows (a real opmob submission became this COMO)
+    with no opdor (DO) row at all yet. EXISTS, not a JOIN, to avoid opmob's
+    one-row-per-line-item fan-out multiplying opord rows."""
+    zids = [int(z) for z in filters["zid"]]
+    cutoff = filters["cutoff_date"][0]
+    sql = """
+        SELECT
+            o.zid, o.xordernum, o.xdate, o.ztime,
+            o.xcus AS cusid, c.xshort AS cusname,
+            o.xsp AS spid, p.xname AS spname,
+            o.xtotamt AS order_amount
+        FROM opord o
+        LEFT JOIN cacus c ON o.xcus = c.xcus AND o.zid = c.zid
+        LEFT JOIN prmst p ON o.xsp = p.xemp AND o.zid = p.zid
+        WHERE o.zid = ANY(%s)
+          AND o.xdate >= %s
+          AND EXISTS (SELECT 1 FROM opmob m WHERE m.zid = o.zid AND m.xordernum = o.xordernum)
+          AND NOT EXISTS (SELECT 1 FROM opdor d WHERE d.zid = o.zid AND d.xordernum = o.xordernum)
+        ORDER BY o.xdate, o.ztime
+    """
+    return sql, (zids, cutoff)
+
+
+def get_do_audit_partial_fulfillment(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Mobile-sourced opord rows with at least one DO, but opodt's own
+    xqtyord/xqtydel (verified against real opddt DO-line sums -- reconciles
+    exactly) shows the order isn't fully delivered yet. Carries the most
+    recent DO's ztime so the caller can judge staleness from last delivery
+    activity, not from the order's original creation time."""
+    zids = [int(z) for z in filters["zid"]]
+    cutoff = filters["cutoff_date"][0]
+    sql = """
+        SELECT
+            o.zid, o.xordernum, o.xdate,
+            o.xcus AS cusid, c.xshort AS cusname,
+            o.xsp AS spid, p.xname AS spname,
+            t.ordered, t.delivered, (t.ordered - t.delivered) AS remaining,
+            ld.last_do_ztime
+        FROM opord o
+        JOIN LATERAL (
+            SELECT sum(xqtyord) AS ordered, sum(xqtydel) AS delivered
+            FROM opodt WHERE zid = o.zid AND xordernum = o.xordernum
+        ) t ON true
+        JOIN LATERAL (
+            SELECT max(ztime) AS last_do_ztime
+            FROM opdor WHERE zid = o.zid AND xordernum = o.xordernum
+        ) ld ON true
+        LEFT JOIN cacus c ON o.xcus = c.xcus AND o.zid = c.zid
+        LEFT JOIN prmst p ON o.xsp = p.xemp AND o.zid = p.zid
+        WHERE o.zid = ANY(%s)
+          AND o.xdate >= %s
+          AND EXISTS (SELECT 1 FROM opmob m WHERE m.zid = o.zid AND m.xordernum = o.xordernum)
+          AND ld.last_do_ztime IS NOT NULL
+          AND t.delivered < t.ordered
+        ORDER BY o.xdate
+    """
+    return sql, (zids, cutoff)
+
+
+def get_do_audit_unpersisted(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """opmob rows claiming xstatusord='Order Created' (a real COMO number
+    was generated) whose xordernum never actually landed in opord -- a
+    system-level gap (the SOP DID act; the backend order header never got
+    written), distinct from the SOP simply not having processed it yet."""
+    zids = [int(z) for z in filters["zid"]]
+    cutoff = filters["cutoff_date"][0]
+    sql = """
+        SELECT
+            om.zid, om.invoiceno, om.xordernum,
+            om.xcus AS cusid, c.xshort AS cusname,
+            om.xemp AS spid, p.xname AS spname,
+            om.xdate, min(om.ztime) AS ztime,
+            count(*) AS item_count, sum(om.xlinetotal) AS total_value
+        FROM opmob om
+        LEFT JOIN cacus c ON om.xcus = c.xcus AND om.zid = c.zid
+        LEFT JOIN prmst p ON om.xemp = p.xemp AND om.zid = p.zid
+        WHERE om.zid = ANY(%s)
+          AND om.xstatusord = 'Order Created'
+          AND om.xdate >= %s
+          AND NOT EXISTS (SELECT 1 FROM opord o WHERE o.zid = om.zid AND o.xordernum = om.xordernum)
+        GROUP BY om.zid, om.invoiceno, om.xordernum, om.xcus, c.xshort, om.xemp, p.xname, om.xdate
+        ORDER BY om.xdate, min(om.ztime)
+    """
+    return sql, (zids, cutoff)
+
+
 def get_ar_due_ledger(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """Row-level AR ledger for Salesman Due (Collection Analysis).
 

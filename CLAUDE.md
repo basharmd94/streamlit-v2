@@ -608,6 +608,32 @@ Verified against real data: a real September 2026 mismatch found (`COMO418641`, 
 
 ---
 
+## DO Creation Audit (`views/do_creation_audit_view.py` → Customer Data View "🚦 DO Creation Audit" mode + Target Management "🚦 DO Creation Audit" mode)
+
+Catches orders an SOP forgot to move forward through the real order-fulfillment pipeline. Studied against real data before building (per explicit ask), not guessed — see below for what that surfaced.
+
+**The real pipeline, confirmed column-by-column**: a mobile order lands in `opmob` (one row per LINE ITEM, not per order — `invoiceno`/`invoicesl` is the real grouping key for one submission, confirmed via a real 9-item order sharing one `invoiceno`). `opmob.xordernum` starts blank (`xstatusord='New'`); an SOP turns it into an order, at which point `xordernum` gets a real COMO number and `xstatusord` becomes `'Order Created'` — that same COMO number is the PK on `opord.xordernum`. Once stock is verified/packed, a delivery order (`opdor`, "DO") gets created referencing `opord.xordernum` via FK, with its own `opdor.xdornum`.
+
+**Two real surprises found while studying the data, both load-bearing for the query design:**
+- **`opord` is NOT exclusively mobile-order-sourced.** Of 703,148 `opord` rows (100001+100000), only 305,964 have a matching `opmob` row at all — `opord` goes back to 2014, `opmob` only exists from 2021 on, and a `CO--`-prefixed order (110,998 rows) never comes from the mobile app at all. **The query must `EXISTS`-join through `opmob`, not filter `opord` by COMO prefix** — a COMO-prefixed order isn't automatically mobile-sourced either (121,468 COMO rows have no matching `opmob` row).
+- **A genuine system-level anomaly, not an SOP miss**: 4,778 `opmob` rows (spread evenly 2021-2026, not a one-time migration artifact) say `xstatusord='Order Created'` with a real COMO number, but that COMO never landed in `opord` at all. The SOP DID act — the backend just never persisted the order header. Surfaced as its own table (**"⚠️ Order Never Persisted"**), never merged into the other tables, since there's no SOP action that fixes it and no "still in progress" state to wait out.
+
+**Fulfillment tracking needs no DO-line cross-join** — `opodt` (order line items) already carries `xqtyord` (ordered) vs `xqtydel` (delivered) directly on each row, confirmed to reconcile exactly against the real summed `opddt` DO-line quantities for a known multi-DO order (one real order fanned out into 7 separate DOs — a genuine 1-order-to-many-DOs relationship, confirmed live).
+
+**Four tables, one shared panel** (`views/do_creation_audit_view.py::render_do_creation_audit_panel`, mounted identically in both locations — edit that module, not either call site, same convention as `views/glpmt_shared.py`). Scope is whatever ZID is currently active — **not** hardcoded to 100001+100000 like Commission Tracking, since `opmob` has real (if small — 63 rows) activity on 100005 too, confirmed against real Postgres rather than assumed. Default rolling window: 30 days, adjustable via a slider (7–90 days).
+
+1. **🆕 Pending Order Creation** — `opmob` rows still `xstatusord='New'`, grouped to one row per `invoiceno`.
+2. **📦 Pending DO Creation** — mobile-sourced `opord` (via `EXISTS` on `opmob`) with no matching `opdor` row yet.
+3. **🚚 Partial Fulfillment** — at least one DO exists (`opdor` match found) but `SUM(opodt.xqtydel) < SUM(opodt.xqtyord)` for that order.
+4. **⚠️ Order Never Persisted** — the anomaly above. No staleness threshold (see above).
+5. `"Not enough stock to create Order"` (`opmob.xstatusord`, 67,848 rows historically — a legitimate terminal state, not a missed order) is **excluded entirely, not shown anywhere** in this feature, per explicit ask.
+
+**Holiday-aware "hours pending" threshold** (`processing/holidays.py::working_hours_elapsed`, new — extracted out of `views/_tm_shared.py` specifically so `processing/` code can use it without violating the views→processing layering rule; `_tm_shared.py` now re-exports the same names for every existing call site, unchanged). Computed as wall-clock elapsed hours minus 24h for every Friday or configured-holiday calendar date the order sat through — confirmed against a real Thursday/Friday/Saturday case: an order placed Thursday 10am shows **0** working hours elapsed by Friday 10am (24 wall-clock hours later — Friday doesn't count at all), and exactly **24** by Saturday 10am (48 wall-clock hours later) — matching the user's own description ("order placed Thursday... we come back Saturday and process this") exactly, not just approximately. Same 24-hour threshold applies to tables 1, 2, and 3 (table 3 measured from the most recent DO's own `ztime`, not the order's original creation time — an order still actively shipping shouldn't show up as stuck); table 4 has no threshold at all.
+
+Verified end-to-end against real Postgres (100001+100000, 30-day window from the local mirror's actual "now"): all 4 queries run in well under half a second each; table counts and customer names all check out against the real underlying data; the one genuinely rare Partial Fulfillment case found earlier while studying the data (`COMO003666`, 100000, ordered Aug 2025 — 144 of 156 units still undelivered over a year later) correctly falls outside a 30-day window and does NOT appear, confirming the window filter isn't accidentally too wide.
+
+---
+
 ## Manufacturing Analysis — "🔄 Warehouse Flow" (`views/manufacturing.py::_render_warehouse_flow`)
 
 An 8th `mfg_view_mode` radio option alongside FG Costing / FG Cost History / RM Rate Trend / RM Requirement / RM Stock Coverage / BOM Variance / MO Detail — for the same 3 entities (`_MANUFACTURING_ZIDS` = 100000/100005/100009). **Per-product** flow: `Raw Material → (MO) → Finished Goods warehouse → (transfer) → Sales Store → (DO) → market`. Independent of MO header/detail data, so it runs *before* the page's MO-empty early-return, not after. Branches into an inner `mfg_flow_mode` radio, both sharing the one cached `flow_raw` load and the `same_wh` (100009) detection at the top of `_render_warehouse_flow`:

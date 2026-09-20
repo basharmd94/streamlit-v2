@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from processing import common, overall_sales, usage_log
+from views.do_creation_audit_view import render_do_creation_audit_panel
 from utils.utils import timed
 
 _CROSS_ZID_PAIR = {"100000", "100001"}
@@ -1584,7 +1585,7 @@ def display_customer_data_view_page(current_page, zid, data_dict):
     st.header("Customer Data View")
 
     mode = st.radio(
-        "View", ["🔍 Individual DO/SR Check", "⚖️ Rate Mismatch Audit"],
+        "View", ["🔍 Individual DO/SR Check", "⚖️ Rate Mismatch Audit", "🚦 DO Creation Audit"],
         horizontal=True, key="cdv_mode",
     )
     usage_log.log_view("Customer Data View", mode)
@@ -1592,6 +1593,10 @@ def display_customer_data_view_page(current_page, zid, data_dict):
 
     if mode == "⚖️ Rate Mismatch Audit":
         _render_rate_mismatch_audit(str(zid))
+        return
+
+    if mode == "🚦 DO Creation Audit":
+        render_do_creation_audit_panel(str(zid), key_suffix="_cdv")
         return
 
     _render_individual_do_sr_check(zid, data_dict)
