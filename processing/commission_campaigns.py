@@ -869,13 +869,23 @@ def compute_best_performer_ranking(
 # (same JSONB-reuse pattern as A.1/A.2), but with two deliberate departures
 # from A.1, both confirmed with the user before building:
 #
-#   1. SINGLE ZID, never pooled 100001+100000 — a customer code is only
-#      unique WITHIN one ZID (unlike a salesman, who genuinely appears in
-#      both), so pooling would risk merging two unrelated customers who
-#      happen to share a code under one ranking row. The campaign's own ZID
-#      is chosen at setup (whichever business is active then) and PINNED in
-#      product_rates — same "pin at setup, don't drift" discipline as A.1's
-#      reporting month.
+#   1. Pooled by ZID GROUP, not always all-3-separate and not always
+#      pooled-like-A.1 either — corrected 2026-09-20, same day, right after
+#      first shipping this as single-ZID-only. The user ran a real audit:
+#      100001 (HMBR) and 100000 (GI Corporation) share the SAME cacus
+#      customer code 99.9% of the time (~10 mismatches out of ~10,000, none
+#      of them current customers) — "when a salesman goes to a customer,
+#      the customer doesn't understand the difference between 100,000 and
+#      100,001." So those two ARE pooled together for scoring, same as A.1
+#      (salesmen) and B.1/3/4 already pool them, for the same underlying
+#      reason (one shared field sales team/customer relationship). **100005
+#      (Zepto) stays separate** — a genuinely independent consumer brand,
+#      no shared codes, explicitly confirmed to stay its own group. See
+#      `views/commission_customer_best_performer_view.py::_ZID_GROUPS` —
+#      the single source of truth for this grouping. The campaign's own
+#      zid GROUP (a list, not one zid) is chosen at setup (whichever
+#      business is active then) and PINNED in product_rates — same "pin at
+#      setup, don't drift" discipline as A.1's reporting month.
 #   2. A reporting YEAR, not a reporting month, no month-averaging —
 #      processing.marketing.build_customer_marketing_table (the existing
 #      Customer Score engine, reused unmodified per the explicit ask) only
@@ -901,9 +911,10 @@ def compute_customer_best_performer_ranking(campaign: dict, customer_score_df: p
     than a salesman one.
 
     `customer_score_df` — the caller's own already-scoped, already-scored
-    output of build_customer_marketing_table (one ZID, one reporting year)
-    — this function only ranks/pays off an existing `composite_score`
-    column, it doesn't compute the score itself.
+    output of build_customer_marketing_table (one zid GROUP — 100001+100000
+    pooled, or 100005 alone — one reporting year) — this function only
+    ranks/pays off an existing `composite_score` column, it doesn't compute
+    the score itself.
 
     Returns `{"ranking": DataFrame[rank, recipient, recipient_name,
     composite_score, payout], "num_winners", "total_payout"}` — no gate,

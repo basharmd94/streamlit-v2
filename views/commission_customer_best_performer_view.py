@@ -6,8 +6,28 @@
 # customer scoring that is already in marketing analysis."
 #
 # See processing/commission_campaigns.py::compute_customer_best_performer_ranking
-# for the two deliberate departures from A.1 (single-ZID, not pooled; a
-# reporting YEAR, not a reporting month) and why. This file is UI only.
+# for the reporting-YEAR (not month) departure from A.1 and why. This file
+# is UI only.
+#
+# ── ZID pooling — corrected 2026-09-20, same day, right after first
+# shipping this with single-ZID scoping. Original assumption: customer
+# codes aren't unique across ZIDs, so never pool. **Wrong for 100001/100000
+# specifically** — the user ran a real audit: out of ~10,000 customers,
+# 100001 (HMBR/Gulshan Trading) and 100000 (GI Corporation) share the SAME
+# cacus customer code 99.9% of the time (~10 mismatches, none of them
+# current/active customers). Business reason: "when a salesman goes to a
+# customer, the customer doesn't understand the difference between 100,000
+# and 100,001 — they just buy products from us directly." So scoring must
+# pool 100001+100000 together for this to be fair — same pooling A.1
+# (salesmen) and B.1/3/4 already use, for the same underlying reason (one
+# shared field sales team/customer relationship). **100005 (Zepto) stays
+# separate** — a genuinely independent consumer brand, no shared codes,
+# explicitly confirmed to stay its own group.
+#
+# _ZID_GROUPS below is the single source of truth for this grouping —
+# whichever ZID is active when a campaign is created resolves to its
+# group, and the group's full zid LIST (not a single zid) is what gets
+# pinned into product_rates and used for scoring from then on.
 #
 # Reuses the SAME commission_campaigns table as every other commission
 # section — CAMPAIGN_TYPE below is the free-text value that distinguishes
@@ -27,7 +47,12 @@ CAMPAIGN_TYPE = "Customer Best Performer"
 MIN_WINNERS = 2
 MAX_WINNERS = 100
 
-_ZID_PROJ = {"100001": "GULSHAN TRADING", "100000": "GI Corporation", "100005": "Zepto Chemicals"}
+_ZID_GROUPS = {
+    "100001": {"label": "HMBR + GI Corporation (pooled)", "zids": ["100001", "100000"]},
+    "100000": {"label": "HMBR + GI Corporation (pooled)", "zids": ["100001", "100000"]},
+    "100005": {"label": "Zepto Chemicals", "zids": ["100005"]},
+}
+_PROJ_BY_ZID = {"100001": "GULSHAN TRADING", "100000": "GI Corporation", "100005": "Zepto Chemicals"}
 
 
 def _ordinal(n: int) -> str:
@@ -44,9 +69,20 @@ def _fmt_bdt(v) -> str:
     return f"৳{v:,.0f}"
 
 
-def _business_label(zid: str) -> str:
-    proj = _ZID_PROJ.get(str(zid))
-    return f"{proj} ({zid})" if proj else str(zid)
+def _group_for_zid(zid: str) -> dict:
+    return _ZID_GROUPS.get(str(zid), {"label": str(zid), "zids": [str(zid)]})
+
+
+def _label_for_zids(zids: list) -> str:
+    """Derives the display label live from a zids list, rather than
+    storing it redundantly — a campaign's own group can only ever be one
+    of the two real _ZID_GROUPS combinations, so this can never drift out
+    of sync with _ZID_GROUPS the way a separately-stored label could."""
+    key = sorted(str(z) for z in zids)
+    for group in _ZID_GROUPS.values():
+        if sorted(group["zids"]) == key:
+            return group["label"]
+    return ", ".join(key) if key else "?"
 
 
 def _reporting_year_choices(today: pd.Timestamp, years_forward: int = 5) -> list:
@@ -57,10 +93,8 @@ def _reporting_year_choices(today: pd.Timestamp, years_forward: int = 5) -> list
     return [today.year + i for i in range(years_forward + 1)]
 
 
-# ── Pooled... no — SINGLE-ZID data loaders (own cache, per (zid, year)) ────
-# Deliberately NOT pooled across ZIDs, unlike every other commission
-# section — see the module note in compute_customer_best_performer_ranking
-# for why (a customer code isn't unique across businesses).
+# ── Pooled data loaders (own cache, per (zid, year) — pooled across a
+# group's zids at call time, same pattern A.1's own pooled loaders use) ──
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def _load_sales_year(zid: str, year: int) -> pd.DataFrame:
@@ -79,16 +113,42 @@ def _load_collection_year(zid: str, year: int) -> pd.DataFrame:
     return df if df is not None else pd.DataFrame()
 
 
-def _score_customers(zid: str, year: int) -> pd.DataFrame:
+def _pooled_sales_year(zids: list, year: int) -> pd.DataFrame:
+    frames = [df for z in zids if not (df := _load_sales_year(z, year)).empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _pooled_collection_year(zids: list, year: int) -> pd.DataFrame:
+    frames = [df for z in zids if not (df := _load_collection_year(z, year)).empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _pooled_ar_balance(zids: list) -> pd.DataFrame:
+    frames = []
+    for z in zids:
+        df = _load_ar_balance(z, _PROJ_BY_ZID.get(z, ""))
+        if df is not None and not df.empty:
+            frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _pooled_cacus(zids: list) -> pd.DataFrame:
+    frames = [df for z in zids if not (df := _load_cacus(z)).empty]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True).drop_duplicates(subset=["cusid"], keep="first")
+
+
+def _score_customers(zids: list, year: int) -> pd.DataFrame:
     """Calls processing.marketing.build_customer_marketing_table exactly as
     Marketing Analysis's own Customer Scoring does — same engine, same
-    weights, unmodified. Only the data-loading (one ZID, one reporting
-    year) is specific to this campaign type."""
-    proj = _ZID_PROJ.get(str(zid), "")
-    sales_df = _load_sales_year(zid, year)
-    collection_df = _load_collection_year(zid, year)
-    ar_df = _load_ar_balance(zid, proj)
-    cacus_df = _load_cacus(zid)
+    weights, unmodified. Only the data-loading (this group's zid(s), one
+    reporting year, pooled when the group has more than one zid) is
+    specific to this campaign type."""
+    sales_df = _pooled_sales_year(zids, year)
+    collection_df = _pooled_collection_year(zids, year)
+    ar_df = _pooled_ar_balance(zids)
+    cacus_df = _pooled_cacus(zids)
     return mkt.build_customer_marketing_table(
         sales_df=sales_df, collection_df=collection_df, ar_df=ar_df,
         selected_years=(year,), cacus_df=cacus_df if not cacus_df.empty else None,
@@ -102,11 +162,14 @@ def _render_form(zid: str = "", existing: dict | None = None) -> None:
     key_prefix = f"a1c_edit_{existing['id']}" if is_edit else "a1c_new"
 
     existing_config = (existing.get("product_rates") or {}) if is_edit else {}
-    # The campaign's own ZID is pinned at creation and NEVER changes on
-    # edit, even if the admin has since switched businesses in the
+    # The campaign's own ZID GROUP is pinned at creation and NEVER changes
+    # on edit, even if the admin has since switched businesses in the
     # sidebar — same "pin at setup, don't let a later view silently move
     # it" discipline as A.1's reporting month.
-    campaign_zid = str(existing_config.get("zid")) if is_edit else str(zid)
+    campaign_zids = (
+        [str(z) for z in existing_config.get("zids", [])] if is_edit else _group_for_zid(zid)["zids"]
+    )
+    group_label = _label_for_zids(campaign_zids)
 
     name = st.text_input(
         "Campaign name", value=(existing["campaign_name"] if is_edit else ""), key=f"{key_prefix}_name",
@@ -129,10 +192,10 @@ def _render_form(zid: str = "", existing: dict | None = None) -> None:
         year_opts, index=year_opts.index(default_year), key=f"{key_prefix}_year",
     )
     st.caption(
-        f"Current year or later only — never a year that's already passed. Business: "
-        f"**{_business_label(campaign_zid)}** (fixed to whichever business was active when this "
-        f"campaign was created — not editable afterward). Uses the SAME Customer Score already "
-        f"shown in Marketing Analysis → 📊 Customer Scoring, unmodified."
+        f"Current year or later only — never a year that's already passed. Business group: "
+        f"**{group_label}** (fixed to whichever business was active when this campaign was created "
+        f"— not editable afterward). Uses the SAME Customer Score already shown in Marketing "
+        f"Analysis → 📊 Customer Scoring, unmodified."
     )
 
     winners_default = int(existing_config.get("num_winners", 10)) if is_edit else 10
@@ -170,7 +233,7 @@ def _render_form(zid: str = "", existing: dict | None = None) -> None:
     btn_label = "💾 Save Changes" if is_edit else "✅ Create Customer Best Performer Campaign"
     if st.button(btn_label, key=f"{key_prefix}_submit_btn", disabled=not can_submit):
         product_rates_payload = {
-            "zid": campaign_zid, "reporting_year": int(reporting_year),
+            "zids": campaign_zids, "reporting_year": int(reporting_year),
             "num_winners": int(num_winners), "payouts_by_rank": payouts_by_rank,
         }
         # window_start/window_end are informational display bounds only
@@ -226,7 +289,8 @@ def _list_campaigns() -> pd.DataFrame:
 
 def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
     config = campaign.get("product_rates") or {}
-    campaign_zid = str(config.get("zid", ""))
+    campaign_zids = [str(z) for z in config.get("zids", [])]
+    group_label = _label_for_zids(campaign_zids)
     reporting_year = int(config.get("reporting_year") or pd.Timestamp.today().year)
     num_winners = config.get("num_winners")
     payouts_by_rank = config.get("payouts_by_rank", [])
@@ -241,7 +305,7 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
 
     st.markdown(f"### {campaign['campaign_name']}")
     st.caption(
-        f"Customer Best Performer (ranked by Customer Score) · Business: {_business_label(campaign_zid)} "
+        f"Customer Best Performer (ranked by Customer Score) · Business group: {group_label} "
         f"· Reporting year {reporting_year} ({status_note})"
     )
     payouts_line = " · ".join(
@@ -259,8 +323,8 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
         return
 
     # ── Results (Target Management "💰 Commission Results") ────────────────
-    with st.spinner(f"Scoring {_business_label(campaign_zid)} customers for {reporting_year}…"):
-        score_df = _score_customers(campaign_zid, reporting_year)
+    with st.spinner(f"Scoring {group_label} customers for {reporting_year}…"):
+        score_df = _score_customers(campaign_zids, reporting_year)
         result = cc.compute_customer_best_performer_ranking(campaign, score_df)
 
     m1, m2 = st.columns(2)
@@ -289,17 +353,20 @@ def render(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
     the viewer's own role. `read_only=False` (admin Commissions page) shows
     only setup, no ranking computation at all.
 
-    `zid` here only matters for CREATING a new campaign (which business it
-    defaults to) — the campaign picker itself lists every Customer Best
-    Performer campaign regardless of which business is currently active in
-    the sidebar, since each campaign carries its own pinned ZID."""
+    `zid` here only matters for CREATING a new campaign (which business
+    GROUP it defaults to, via _group_for_zid) — the campaign picker itself
+    lists every Customer Best Performer campaign regardless of which
+    business is currently active in the sidebar, since each campaign
+    carries its own pinned zid group."""
     st.subheader("🏆 Best Performer — Customers")
     st.caption(
         "Ranks customers by their existing Customer Score — the EXACT same engine as Marketing "
         "Analysis's own 📊 Customer Scoring (unmodified) — for an admin-chosen reporting year, and "
-        "pays a fixed BDT amount per rank position to the top 2-100 customers. Scoped to ONE "
-        "business at a time (a customer code isn't unique across businesses, unlike a salesman), "
-        "pinned to whichever business was active when the campaign was created."
+        "pays a fixed BDT amount per rank position to the top 2-100 customers. HMBR (100001) and GI "
+        "Corporation (100000) are pooled together (their customers share the same code — confirmed "
+        "by a real audit, and a customer doesn't distinguish between the two businesses); Zepto "
+        "(100005) is scored separately. Pinned to whichever business group was active when the "
+        "campaign was created."
     )
 
     is_admin = (not read_only) and st.session_state.get("user_role") == "admin"
@@ -317,9 +384,9 @@ def render(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
     labels = {}
     for r in campaigns.itertuples():
         cfg = r.product_rates or {}
-        c_zid = cfg.get("zid", "?")
+        c_zids = [str(z) for z in cfg.get("zids", [])]
         c_year = cfg.get("reporting_year", "?")
-        labels[f"#{r.id} — {r.campaign_name} ({_business_label(c_zid)}, {c_year})"] = r.id
+        labels[f"#{r.id} — {r.campaign_name} ({_label_for_zids(c_zids)}, {c_year})"] = r.id
     pick = st.selectbox("Select a campaign", list(labels.keys()), key=f"a1c_select_campaign{key_suffix}")
     campaign = cc.get_campaign(labels[pick])
     if campaign:

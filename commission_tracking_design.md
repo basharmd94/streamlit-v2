@@ -165,31 +165,40 @@ but this would follow the customer scoring that is already in marketing analysis
   whichever customer population is pulled). Pays a fixed BDT amount per rank position to
   the top `num_winners` — same per-rank mechanism as A.1/A.2, but **2-100 winners**
   (explicit ask — a much wider range than A.1's 2-10 or A.2's 2-5).
-- **Two deliberate departures from A.1, both confirmed with the user before building** (via
-  AskUserQuestion — this is architecturally different enough from A.1 that guessing wrong
-  would have meant a redo):
-  1. **SINGLE ZID, never pooled 100001+100000.** A.1 pools because salesmen genuinely work
-     both businesses; a customer CODE is only unique WITHIN one ZID (the same code can be a
-     completely different real customer in a different business) — pooling would risk
-     merging two unrelated customers under one ranking row. Matches how Customer Scoring
-     already works in Marketing Analysis (scoped to whichever ZID is active). The
-     campaign's own ZID is chosen at setup (whichever business is active then) and PINNED
-     in `product_rates` — same "pin at setup, don't let it drift" discipline as A.1's
-     reporting month. Works for ANY of the 3 ZIDs (100001/100000/100005), not just the two
-     that share a sales team — a genuine benefit over A.1's HMBR/GI-only scope.
-  2. **A reporting YEAR, not a reporting month — no month-averaging.**
-     `build_customer_marketing_table` only filters/aggregates by calendar YEAR (confirmed
-     by reading `_sales_metrics`/`_collection_metrics`: `monthly_activity_rate` divides by
-     `len(years) * 12`, assuming full years; YoY growth needs full-year comparisons) —
-     there's no clean way to cap it to a partial month without changing its own internal
-     logic, which "follow the customer scoring that is already in marketing analysis"
-     explicitly meant NOT to do (reuse as-is, don't reimplement). So the admin picks a
-     **Reporting year** instead — current year or later only, same no-retroactive-setup
-     rule as A.1's reporting month (confirmed with the user for A.1: "I can't set it for a
-     [period] that already passed"), applied here at the year level. One narrow exception
-     in the edit form, same pattern as A.1: an already-existing campaign whose own
-     reporting year has since closed keeps that ONE real year available/selected (so Save
-     can't silently reassign it), without offering any other past year as a fresh choice.
+- **ZID pooling — corrected 2026-09-20, same day, right after first shipping this as
+  single-ZID-only.** Original assumption: a customer code is only unique WITHIN one ZID
+  (unlike a salesman, who genuinely works both), so never pool. **Wrong for 100001/100000
+  specifically** — the user ran a real audit: out of ~10,000 customers, 100001 (HMBR) and
+  100000 (GI Corporation) share the SAME `cacus` customer code 99.9% of the time (~10
+  mismatches, none of them current/active customers). Business reason, the user's own
+  words: "when a salesman goes to a customer, the customer doesn't understand the
+  difference between 100,000 and 100,001 — they just buy products from us directly." So
+  100001+100000 ARE pooled together for scoring, same as A.1 (salesmen) and B.1/3/4 already
+  pool them, for the same underlying reason (one shared field sales team/customer
+  relationship). **100005 (Zepto) stays separate** — a genuinely independent consumer
+  brand, no shared codes, explicitly confirmed to stay its own group.
+  `views/commission_customer_best_performer_view.py::_ZID_GROUPS` is the single source of
+  truth for this grouping. The campaign's own ZID GROUP (a list, not a single zid) is
+  chosen at setup (whichever business is active then) and PINNED in `product_rates` — same
+  "pin at setup, don't let it drift" discipline as A.1's reporting month. Verified via a
+  standalone script: 2,675 real customers genuinely appear in both 100001 and 100000
+  individually, and a pooled score's `total_sales` for a sample customer exactly equals
+  the sum of both businesses' individual totals (760,432 = 588,240 + 172,192).
+- **A reporting YEAR, not a reporting month — no month-averaging, a second deliberate
+  departure from A.1, confirmed with the user before building** (via AskUserQuestion —
+  architecturally different enough from A.1 that guessing wrong would have meant a redo).
+  `build_customer_marketing_table` only filters/aggregates by calendar YEAR (confirmed by
+  reading `_sales_metrics`/`_collection_metrics`: `monthly_activity_rate` divides by
+  `len(years) * 12`, assuming full years; YoY growth needs full-year comparisons) — there's
+  no clean way to cap it to a partial month without changing its own internal logic, which
+  "follow the customer scoring that is already in marketing analysis" explicitly meant NOT
+  to do (reuse as-is, don't reimplement). So the admin picks a **Reporting year** instead —
+  current year or later only, same no-retroactive-setup rule as A.1's reporting month
+  (confirmed with the user for A.1: "I can't set it for a [period] that already passed"),
+  applied here at the year level. One narrow exception in the edit form, same pattern as
+  A.1: an already-existing campaign whose own reporting year has since closed keeps that
+  ONE real year available/selected (so Save can't silently reassign it), without offering
+  any other past year as a fresh choice.
 - **No 100001/100000 target gate** — that check is specific to the shared sales team
   between those two ZIDs; it doesn't generalize to a single-ZID mechanism that can also be
   used for 100005 (no shared team at all). `total_payout` is always the raw computed
@@ -197,19 +206,23 @@ but this would follow the customer scoring that is already in marketing analysis
 - **Same setup/results split as the rest of the feature**: admin Commissions page shows
   only Create/Edit/Delete, Target Management's "💰 Commission Results" shows only 2 metrics
   + one ranking table (Rank/Customer Code/Customer/Score/Payout, `—` for non-winners). The
-  campaign picker lists every Customer Best Performer campaign regardless of which ZID is
-  currently active in the sidebar (each campaign carries its own pinned ZID) — only
-  CREATING a new one is scoped to the currently-active business.
+  campaign picker lists every Customer Best Performer campaign regardless of which
+  business group is currently active in the sidebar (each campaign carries its own pinned
+  zid group) — only CREATING a new one is scoped to the currently-active business group.
 - **Verified** against real Postgres: a standalone script scored real 100001 customers
-  (3,610 scored, top-ranked `Rahima Enterprise` at 76.6) and confirmed a 5-winner ranking's
-  total payout exactly matched the 5 configured rank amounts; a second script confirmed
-  campaign_type isolation (invisible to A.1/A.2/B.1/3/4's pickers) via a live create/list/
-  delete round trip, and exercised the 100-winner edge case (100 winners × ৳100 = exactly
-  ৳10,000 total, matching `min(100, scored_customers) × 100`); the past-year edit exception
-  confirmed via script. Live in the browser as a real admin — created a real 3-winner
-  campaign for GI Corporation (100000), confirmed the setup page shows no results, and
-  confirmed Target Management's Commission Results computed the identical ranking (real
-  customers, real scores) with the correct ৳6,000 total payout.
+  (3,610 scored, top-ranked `Rahima Enterprise` at 76.6 single-ZID / 79.2 pooled) and
+  confirmed a 5-winner ranking's total payout exactly matched the 5 configured rank
+  amounts; a second script confirmed campaign_type isolation (invisible to A.1/A.2/B.1/3/4's
+  pickers) via a live create/list/delete round trip, and exercised the 100-winner edge
+  case (100 winners × ৳100 = exactly ৳10,000 total, matching
+  `min(100, scored_customers) × 100`); the past-year edit exception confirmed via script;
+  a separate script confirmed real 100001+100000 pooling (2,675 overlapping customers,
+  pooled totals exactly equal to the sum of both businesses' individual totals) and that
+  Zepto (100005) stays unpooled. Live in the browser as a real admin — created a real
+  3-winner campaign while GI Corporation (100000) was active, confirmed it correctly
+  resolved to "HMBR + GI Corporation (pooled)", confirmed the setup page shows no results,
+  and confirmed Target Management's Commission Results computed the identical pooled
+  ranking (real customers, real scores) with the correct ৳6,000 total payout.
 
 ### A.2 Highest Product Sales
 
