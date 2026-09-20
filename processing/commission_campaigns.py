@@ -859,3 +859,77 @@ def compute_best_performer_ranking(
         "total_payout_if_gate_passed": raw_total,
         "total_payout": raw_total if gate["passed"] else 0.0,
     }
+
+
+# ── Customer Best Performer (ranked) ────────────────────────────────────────
+# New 2026-09-20 — not in the original commission_tracking_design.md scope, a
+# customer-side sibling to A.1 requested directly: "same logic, everything...
+# but this would follow the customer scoring that is already in marketing
+# analysis." A 4th campaign_type sharing the same commission_campaigns table
+# (same JSONB-reuse pattern as A.1/A.2), but with two deliberate departures
+# from A.1, both confirmed with the user before building:
+#
+#   1. SINGLE ZID, never pooled 100001+100000 — a customer code is only
+#      unique WITHIN one ZID (unlike a salesman, who genuinely appears in
+#      both), so pooling would risk merging two unrelated customers who
+#      happen to share a code under one ranking row. The campaign's own ZID
+#      is chosen at setup (whichever business is active then) and PINNED in
+#      product_rates — same "pin at setup, don't drift" discipline as A.1's
+#      reporting month.
+#   2. A reporting YEAR, not a reporting month, no month-averaging —
+#      processing.marketing.build_customer_marketing_table (the existing
+#      Customer Score engine, reused unmodified per the explicit ask) only
+#      filters/aggregates by calendar YEAR (YoY growth, monthly activity
+#      rate assuming a full 12-month year) — there's no clean way to cap it
+#      to a partial month without changing its own internal logic, which
+#      "follow the customer scoring that is already in marketing analysis"
+#      explicitly meant NOT to do. Current year or later only, same
+#      no-retroactive-setup rule as A.1's reporting month, applied at the
+#      year level (see views/commission_customer_best_performer_view.py).
+#
+# No 100001/100000 target gate — that check is specific to the shared sales
+# team between those two ZIDs; it doesn't generalize to a single-ZID
+# mechanism that can also be used for 100005 (Zepto, no shared team at all).
+
+def compute_customer_best_performer_ranking(campaign: dict, customer_score_df: pd.DataFrame) -> dict:
+    """Ranks customers by their EXISTING Customer Score
+    (processing.marketing.build_customer_marketing_table's own
+    composite_score, unmodified) and pays a fixed BDT amount per rank
+    position to the top `num_winners` (2-100, admin-set) — same per-rank
+    mechanism as A.1/A.2, just a wider winner range (up to 100, explicit
+    ask) since a customer campaign can reasonably span far more recipients
+    than a salesman one.
+
+    `customer_score_df` — the caller's own already-scoped, already-scored
+    output of build_customer_marketing_table (one ZID, one reporting year)
+    — this function only ranks/pays off an existing `composite_score`
+    column, it doesn't compute the score itself.
+
+    Returns `{"ranking": DataFrame[rank, recipient, recipient_name,
+    composite_score, payout], "num_winners", "total_payout"}` — no gate,
+    so total_payout is always the raw computed figure (never zeroed).
+    """
+    config = campaign.get("product_rates") or {}
+    payouts_by_rank = [float(v) for v in config.get("payouts_by_rank", [])]
+    num_winners = int(config.get("num_winners") or len(payouts_by_rank))
+
+    empty = pd.DataFrame(columns=["rank", "recipient", "recipient_name", "composite_score", "payout"])
+    if (
+        customer_score_df is None or customer_score_df.empty
+        or "composite_score" not in customer_score_df.columns
+    ):
+        return {"ranking": empty, "num_winners": num_winners, "total_payout": 0.0}
+
+    d = customer_score_df.dropna(subset=["composite_score"]).copy()
+    d["cusid"] = d["cusid"].astype(str)
+    d = d.sort_values(["composite_score", "cusid"], ascending=[False, True]).reset_index(drop=True)
+    d["rank"] = d.index + 1
+    d["payout"] = 0.0
+    for i in range(min(num_winners, len(payouts_by_rank), len(d))):
+        d.loc[i, "payout"] = payouts_by_rank[i]
+
+    total_payout = float(d["payout"].sum())
+    ranking = d.rename(columns={"cusid": "recipient", "cusname": "recipient_name"})[
+        ["rank", "recipient", "recipient_name", "composite_score", "payout"]
+    ]
+    return {"ranking": ranking, "num_winners": num_winners, "total_payout": total_payout}

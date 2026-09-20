@@ -1162,6 +1162,52 @@ amount per rank position to the top N — same per-rank-payout mechanism as A.2,
   numbers)", and Target Management's Commission Results computed a ranking that exactly matched the
   standalone script's past-month-anchor result (same top-3 salesmen, same scores, same ৳7,500 total payout).
 
+### A.1b — Best Performer (Customers)
+
+`processing/commission_campaigns.py::compute_customer_best_performer_ranking` (engine) +
+`views/commission_customer_best_performer_view.py` (UI). **Not in `commission_tracking_design.md`'s original
+scope** — added 2026-09-20, same day as A.1, a customer-side sibling requested directly: "same logic,
+everything [as the salesman version]... but this would follow the customer scoring that is already in
+marketing analysis." Full spec: `commission_tracking_design.md` §A.1b.
+
+- **Ranks customers by their EXISTING Customer Score, not a reimplementation** — reuses
+  `processing/marketing.py::build_customer_marketing_table`'s own `composite_score` unmodified, the exact
+  same engine Marketing Analysis's own 📊 Customer Scoring already computes (peer-relative min-max scaling;
+  25% total sales, 20% monthly activity rate, 15% YoY sales growth, 15% avg days to collection (lower
+  better), 10% total collection, 10% avg order interval (lower better), 5% YoY collection growth). Pays a
+  fixed BDT amount per rank position to the top **2-100 winners** (explicit ask — wider than A.1's 2-10 or
+  A.2's 2-5) — same per-rank mechanism as A.1/A.2.
+- **SINGLE ZID, never pooled 100001+100000 — a deliberate departure from A.1, confirmed with the user
+  before building** (AskUserQuestion, since this is architecturally different enough from A.1 that guessing
+  wrong meant a real redo risk): a customer code is only unique WITHIN one ZID (the same code can be a
+  completely different real customer in a different business), unlike a salesman who genuinely works both —
+  pooling would risk merging two unrelated customers under one ranking row. Matches how Customer Scoring
+  already works in Marketing Analysis. The campaign's own ZID is chosen at setup (whichever business is
+  active then) and **pinned** in `product_rates` (`{"zid": ..., "reporting_year": ..., "num_winners": ...,
+  "payouts_by_rank": [...]}`) — same "pin at setup, don't let it drift" discipline as A.1's reporting month.
+  Works for any of the 3 ZIDs (100001/100000/100005), not just the two sharing a sales team.
+- **A reporting YEAR, not a reporting month — no month-averaging, a second deliberate departure from A.1,
+  also confirmed before building.** `build_customer_marketing_table` only filters/aggregates by calendar
+  YEAR (`monthly_activity_rate` divides by `len(years) * 12`, assuming full years; YoY growth needs full-year
+  comparisons) — there's no way to cap it to a partial month without changing its own internal logic, which
+  "follow the customer scoring that is already in marketing analysis" explicitly meant not to do. The admin
+  picks a **Reporting year** instead — current year or later only, same no-retroactive-setup rule as A.1's
+  reporting month, applied at the year level (`views/commission_customer_best_performer_view.py::_reporting_year_choices`).
+  Same edit-mode exception as A.1: an existing campaign whose reporting year has closed keeps that one real
+  year selected/available, without offering any other past year.
+- **No 100001/100000 target gate** — specific to the shared sales team between those two ZIDs; doesn't
+  generalize to a single-ZID mechanism usable for 100005 too. `total_payout` is always the raw figure.
+- **Same setup/results split as the rest of the feature.** The campaign picker (both admin setup and Target
+  Management results) lists every Customer Best Performer campaign regardless of which ZID is currently
+  active in the sidebar (each campaign carries its own pinned ZID) — only CREATING a new one is scoped to
+  the currently-active business.
+- Verified end-to-end against real Postgres: a standalone script scored real 100001 customers (3,610 scored,
+  top-ranked `Rahima Enterprise` at 76.6) and confirmed a 5-winner ranking's total payout exactly matched
+  the configured rank amounts; campaign_type isolation confirmed via a live create/list/delete round trip;
+  the 100-winner edge case exercised (100 × ৳100 = exactly ৳10,000); live in the browser as a real admin —
+  created a real 3-winner campaign for GI Corporation (100000), confirmed the setup page shows no results,
+  confirmed Target Management computed the identical ranking with the correct ৳6,000 total payout.
+
 ---
 
 ## Git / Deployment

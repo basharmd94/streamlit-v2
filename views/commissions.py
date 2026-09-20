@@ -16,6 +16,7 @@ from processing import commissions as comm, usage_log
 from views import (
     commission_best_performer_view,
     commission_campaigns_view,
+    commission_customer_best_performer_view,
     commission_rankings_view,
     commission_shared,
 )
@@ -267,6 +268,10 @@ def _render_best_performer(zid: str, read_only: bool = False, key_suffix: str = 
     commission_best_performer_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
+def _render_customer_best_performer(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    commission_customer_best_performer_view.render(zid, read_only=read_only, key_suffix=key_suffix)
+
+
 def _render_highest_product_sales(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
     commission_rankings_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
@@ -313,6 +318,8 @@ def _sections(read_only: bool, key_suffix: str) -> dict:
         "📋 Product Tracking": lambda zid: _render_product_tracking(zid, read_only=read_only),
         "🏆 Best Performer":
             lambda zid: _render_best_performer(zid, read_only=read_only, key_suffix=key_suffix),
+        "🏆 Best Performer (Customers)":
+            lambda zid: _render_customer_best_performer(zid, read_only=read_only, key_suffix=key_suffix),
         "📦 Highest Product Sales":
             lambda zid: _render_highest_product_sales(zid, read_only=read_only, key_suffix=key_suffix),
         "📱 Best App User": _render_best_app_user,
