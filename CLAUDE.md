@@ -865,8 +865,8 @@ management you can see the results... maximum one or two tables... consolidated 
 - **Page structure**: one shared picker, `views/commissions.py::render_section_picker(zid, read_only,
   key_suffix)`, drives both surfaces. `_sections(read_only, key_suffix)` returns the same map every time
   (Product Tracking, A.1 Best Performer, A.1b Best Performer (Customers), A.2 Highest Product Sales, A.4 App
-  Usage, B.1/3/4 Campaign, B.2 Individual Target, Customer Acquisition [B.5 + Unique Customers]) — B.2 (the
-  only remaining unbuilt piece) shows the same `st.info` placeholder either place.
+  Usage, B.1/3/4 Campaign, B.2 Individual Target, Customer Acquisition [B.5 + Unique Customers]) — every
+  entry is now built (as of 2026-09-21), no placeholder sections remain.
   `display_commissions_page` (the admin page) calls it with `read_only=False`;
   `views/target_management.py`'s `"💰 Commission Results"` radio mode calls it with `read_only=True,
   key_suffix="_tm"`.
@@ -1027,10 +1027,48 @@ by a deadline, pooled across 100001+100000, gated on both ZIDs hitting their own
   product. Separately verified live: the admin page shows only campaign info + Edit + Delete with the FIFO
   payout computation never running there at all (confirmed by absence of its spinner and fast page load); the
   Target Management results view shows the full report with zero setup controls.
-- **Not yet built**: B.2 (Individual Target Achievement, fully specified) and B.5 (New Customer Creation, needs
-  design work) — see `commission_tracking_design.md`. Also see that doc for which of A/B's *other*
-  not-yet-built sections are salesman-only, customer-or-salesman, or salesman-only-for-a-different-reason (New
-  Customer Creation) — noted for whenever each is picked up, not yet relevant to what's built.
+- B.2 (Individual Target Achievement) and B.5 (New Customer Creation) were the last two sections in
+  `commission_tracking_design.md` — both built 2026-09-21, see their own subsections below.
+
+### B.2 — Individual Target Achievement (built 2026-09-21)
+
+`processing/commission_campaigns.py::compute_individual_target_bonus` (engine) +
+`views/commission_individual_target_view.py` (UI). Full spec: `commission_tracking_design.md` §B.2.
+**Simplified vs. the design doc's original fixed-named-list guess, per direct user instruction**: "This
+will be set in advance and will follow the target set within target management for that month. If they
+achieve 100% of the target they will be rewarded one fixed amount for all. Fairly easy and
+straightforward."
+
+- **Population = every salesman with a target entry** in `data/targets.json` for the reporting month —
+  not a hand-maintained named roster, not everyone with sales activity. `views/_tm_shared.py::
+  _targets_for_month(zid, year, month)` (new) enumerates the whole JSON for one zid/month — unlike the
+  existing `_get_target`'s single-spid point lookup — and lives in `views/` (not `processing/`), same
+  views-own-the-JSON-lookup split `build_pooled_monthly_scores` already established for A.1.
+- **Salesman only, no `recipient_type` toggle** — confirmed by construction: `data/targets.json` only
+  ever holds per-salesman targets, no customer-target concept exists anywhere in this app.
+- **Threshold payout, not a ranking** — same shape as A.4's `compute_app_usage_bonus`. Achievement % =
+  own NET sales (`final_sales − returns`, same convention as `compute_salesman_scores`' own
+  `net_sales`) ÷ own target (summed across 100001+100000 for that spid, same "consolidated target"
+  logic A.1 uses) × 100, qualifies at >= 100%. Every qualifying salesman gets the same flat
+  `product_rates["bonus_amount"]` BDT.
+- **Pooled 100001+100000**, same scope as A.1/A.4. **Reporting month, current-or-future only, pinned at
+  setup** — same mechanism as A.1/A.4, reused rather than re-litigated; live while ongoing (sales capped
+  to today), frozen once closed.
+- **100001/100000 company gate NOT applied**, deliberately — a real open item in the design doc
+  ("assumed yes, not explicitly confirmed"); left unapplied per the user's "fairly easy and
+  straightforward" framing rather than guessed at. Flag with the user before adding it.
+- Same setup/results split as every other section — admin page: Create/Edit/Delete only. Target
+  Management results: Total Payout / Qualified / Salesmen With a Target metrics + one results table
+  (Salesman Code / Salesman / Target / Net Sales / Achievement % / Qualified / Payout).
+- **Verified via pure-function tests only, NOT live against real Postgres** — explicit ask to conserve
+  tokens this session ("no need to test live... just want to finish writing this out now"):
+  `_targets_for_month` parses the real local `data/targets.json`'s actual key format correctly;
+  `compute_individual_target_bonus` correctly qualifies a salesman landing exactly on the 100%
+  boundary, correctly excludes one well below target, correctly excludes a spid with sales but no
+  target on file from the population, and correctly caps a still-open reporting month's sales to
+  `today`. **Before treating this as fully shipped**: run a live create/list/delete `campaign_type`
+  isolation round trip and a real browser check against live Postgres, same discipline every other
+  section in this doc followed.
 
 ### A.2 — Highest Product Sales (ranked)
 
@@ -1275,7 +1313,7 @@ against live Postgres) rather than the doc's earlier guessed list. Full spec:
     component (nothing to evaluate), not punished with 0 or rewarded with 100 —
     `processing/commission_campaigns.py::_peer_scale_app_usage` passes NaN through, caller fills with 50.
 - **Payout is a THRESHOLD BONUS, not a ranking** — a different mechanism from A.1/A.1b/A.2's rank-based
-  tiers, closer to B.2's own (not yet built) "clear your own bar" shape. Explicit ask: "create a score
+  tiers, closer to B.2's own "clear your own bar" shape (built 2026-09-21, see its own subsection). Explicit ask: "create a score
   from 1 to 100, whoever scores more than 90 gets a fixed commission." Admin sets `threshold` (default 90)
   and one flat `bonus_amount` (BDT); every salesman scoring ABOVE it gets that same amount.
   `total_payout = qualified_count × bonus_amount`, no gate.

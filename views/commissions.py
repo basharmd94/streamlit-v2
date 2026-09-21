@@ -19,6 +19,7 @@ from views import (
     commission_campaigns_view,
     commission_customer_acquisition_view,
     commission_customer_best_performer_view,
+    commission_individual_target_view,
     commission_rankings_view,
     commission_shared,
 )
@@ -286,12 +287,8 @@ def _render_campaign_payout(zid: str, read_only: bool = False, key_suffix: str =
     commission_campaigns_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
-def _render_individual_target(zid: str, read_only: bool = False) -> None:
-    _render_placeholder(
-        "🎯 B.2 — Individual Target Achievement",
-        "Buildable now. One unconfirmed assumption: whether the 100001/100000 "
-        "company-target gate also applies here.",
-    )
+def _render_individual_target(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    commission_individual_target_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
 def _render_customer_acquisition(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
@@ -319,7 +316,8 @@ def _sections(read_only: bool, key_suffix: str) -> dict:
             lambda zid: _render_app_usage(zid, read_only=read_only, key_suffix=key_suffix),
         "🎯 Product / Stock Clearance / Slow-Moving Campaign":
             lambda zid: _render_campaign_payout(zid, read_only=read_only, key_suffix=key_suffix),
-        "🎯 Individual Target Achievement": _render_individual_target,
+        "🎯 Individual Target Achievement":
+            lambda zid: _render_individual_target(zid, read_only=read_only, key_suffix=key_suffix),
         "🆕 Customer Acquisition":
             lambda zid: _render_customer_acquisition(zid, read_only=read_only, key_suffix=key_suffix),
     }

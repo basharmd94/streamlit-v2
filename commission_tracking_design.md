@@ -27,15 +27,15 @@ anything new.
 | A.4 App Usage Commission | ✅ **built 2026-09-21** | none — see §A.4 for what shipped (renamed from "Best App User" — threshold bonus, not a ranking) |
 | B.1/3/4 core (rate/cap/FIFO/gate payout math) | ✅ **built 2026-09-19** | none — verified against real Postgres (see §B.1/3/4) |
 | B.1/3/4 sales-uptick companion metric | ✅ **built 2026-09-19** | baseline window is a user-adjustable parameter (3mo/6mo), as resolved 2026-09-17 |
-| B.2 Individual Target Achievement | ✅ buildable | one unconfirmed assumption (gate applies here too, §The 100001/100000 gate) — doesn't block starting |
+| B.2 Individual Target Achievement | ✅ **built 2026-09-21** | none — see §B.2 for what shipped. Not live-verified against real Postgres yet (only pure-function tests, per explicit ask to conserve tokens) — do that before treating it as fully done |
 | B.5 New Customer Creation | ✅ **built 2026-09-21** | none — see §Customer Acquisition (Unique Customers & New Customer Creation) for what shipped. Merged into one admin section with the "Number of Unique Customers" idea per explicit ask |
 | Product Tracking | ✅ **built 2026-09-19** (redesigned version) | none — see §Product Tracking for what shipped |
 | The 100001/100000 gate itself | ✅ buildable | none |
 
-**If asked "where do you want to start building," don't re-ask this as an open question —
-the table above already answers it.** Product Tracking, A.1, A.1b, A.2, A.4, and B.1/3/4
-are all built now (2026-09-19/21) — B.2 is the best remaining self-contained starting point
-with zero open items.
+**Every section in this doc is now built** (2026-09-19/21) — nothing left to pick up as a
+starting point. B.2 was the last one, shipped 2026-09-21 but not yet live-verified against
+real Postgres (see its own status row above) — that's the one remaining follow-up, not a
+fresh design question.
 
 ---
 
@@ -344,7 +344,7 @@ real design uses `opmob` (orders + GPS), `opcrn` (returns), `opdor.xdatepay` (pr
     evaluate for just that one component) gets a **neutral 50** on that component, not punished
     with a 0 or rewarded with a 100.
 - **Payout is a THRESHOLD BONUS, not a ranking — a genuinely different mechanism from A.1/A.1b/A.2's
-  rank-based payouts, closer to B.2's own (not yet built) "clear your own bar" shape.** Explicit ask:
+  rank-based payouts, closer to B.2's own "clear your own bar" shape (§B.2, built 2026-09-21).** Explicit ask:
   "create a score from 1 to 100, whoever scores more than 90 gets a fixed commission." Admin sets a
   `threshold` (defaults to 90) and one flat `bonus_amount` (BDT) — every salesman scoring ABOVE the
   threshold gets that same amount; no gate, `total_payout = qualified_count × bonus_amount`.
@@ -562,8 +562,8 @@ form, campaign list/detail) — wired into the Commissions page's dropdown. The
   `st.dataframe` doesn't reliably respect Styler `na_rep` here (same class of issue as
   CLAUDE.md's documented TOTAL-row/Styler pitfall) — fixed by pre-formatting the Cap
   column to a display string before it reaches `.style.format()`.
-- **Not yet built**: B.2 is the only remaining unbuilt piece in this doc (fully specified,
-  a natural next pick — B.5 was built 2026-09-21, see §Customer Acquisition below).
+- Every other piece in this doc is now built too — B.2 (2026-09-21, see its own section) and
+  B.5 (2026-09-21, see §Customer Acquisition below) were the last two.
 
 #### Payout-group derivation replaced the manual roster (2026-09-20, same-day follow-up)
 
@@ -823,25 +823,70 @@ guidance for the whole feature, not specific to this one campaign type:
 | A.2 Highest Product Sales | Salesman **or** Customer — built |
 | A.4 App Usage Commission | **Salesman only — built 2026-09-21**, confirmed by construction: every component (orders, GPS, returns, promised payment, collections) is inherently a salesman behavior, no customer-equivalent meaning |
 | B.1/3/4 (this section) | Salesman **or** Customer — built |
-| B.2 Individual Target Achievement | Salesman **or** Customer |
+| B.2 Individual Target Achievement | **Salesman only — built 2026-09-21**, by construction: `data/targets.json` only ever holds per-salesman targets, no customer-target concept exists anywhere in this app |
 | B.5 New Customer Creation | Salesman **only** (it's about who landed the customer) |
 
 Don't assume every future section needs a `recipient_type` toggle just because B.1/3/4
 has one — confirm scope with the user when each is actually picked up, same as everything
 else in this doc.
 
-### B.2 — Individual Target Achievement
-- Named list (fixed, hand-maintained — from the source doc: Sazzad, Sumon Sheikh, Mobarak,
-  Sobahan, Jamal, Kuddus, Sekandar–without Special Sales).
-- Each person on the list who hits **their own individual target** (already in
-  `data/targets.json`) gets a **fixed BDT amount** (e.g. 2,000) — a threshold check per
-  person, NOT a ranking, NOT proportional.
-- **No overlap/conflict logic needed with A.1.** Confirmed: these are run as alternating
-  monthly choices by the user (e.g. Best Performer this month, this individual-target
-  commission next month) — "1 campaign per [month]" — the system does not need to arbitrate
-  between them; it's an operational scheduling choice, not a data problem.
-- Whether the 100001/100000 gate applies here: **assumed yes** (also target-based), but not
-  explicitly confirmed — flag with the user before building; may need to be exempt.
+### B.2 — Individual Target Achievement (built 2026-09-21)
+
+`processing/commission_campaigns.py::compute_individual_target_bonus` (engine) +
+`views/commission_individual_target_view.py` (UI). **Simplified vs. the original source-doc
+guess, per direct user instruction 2026-09-21** — no fixed named list (the doc's original
+Sazzad/Sumon Sheikh/Mobarak/Sobahan/Jamal/Kuddus/"Sekandar without Special Sales" roster).
+The user's own framing this time: "This will be set in advance and will follow the target
+set within target management for that month. If they achieve 100% of the target they will
+be rewarded one fixed amount for all. Fairly easy and straightforward."
+
+- **Population = every salesman with a target entry** in `data/targets.json` for the
+  reporting month — not a hand-maintained roster, not everyone with sales activity. A
+  salesman with no target assigned simply can't be evaluated and doesn't appear.
+  `views/_tm_shared.py::_targets_for_month(zid, year, month)` (new — enumerates the whole
+  JSON for one zid/month, unlike the existing `_get_target`'s single-spid point lookup) is
+  the population source; `processing/` never touches the JSON file directly, same
+  views-own-the-JSON-lookup split `build_pooled_monthly_scores` already established for A.1.
+- **Salesman only, no `recipient_type` toggle** — confirmed by construction, not guessed:
+  `data/targets.json` only ever holds per-salesman targets, there's no customer-target
+  concept anywhere in this app.
+- **Threshold payout, not a ranking** — every qualifying salesman gets the SAME flat BDT
+  amount (`product_rates["bonus_amount"]`), same shape as A.4's `compute_app_usage_bonus`.
+  Achievement % = own NET sales (`final_sales − returns`, same convention as
+  `compute_salesman_scores`' own `net_sales`) ÷ own target (summed across 100001+100000 for
+  that spid, same "consolidated target" logic A.1 already uses) × 100 — qualifies at >= 100%.
+- **Pooled 100001+100000**, same scope as A.1/A.4 — the only scope that makes sense here,
+  since it's evaluating the same per-salesman targets A.1's own consolidated-target logic
+  already sums across both ZIDs.
+- **Reporting month, current-or-future only, pinned at setup** — same rule and mechanism as
+  A.1/A.4, reused rather than re-litigated. Live while the reporting month is still ongoing
+  (sales capped to today), frozen at final numbers once it closes.
+- **100001/100000 company gate: NOT applied**, deliberately — this was a real open item in
+  the design doc ("assumed yes, not explicitly confirmed"). Given the user's new framing
+  ("fairly easy and straightforward") and the explicit ask to just ship this and review
+  later, it was left unapplied rather than guessed at — **flag with the user before adding
+  it** if that's actually wanted.
+- **No overlap/conflict logic with A.1** — confirmed earlier in this doc: these are run as
+  alternating monthly choices by the user (e.g. Best Performer this month, this
+  individual-target commission next month), an operational scheduling choice, not something
+  the system needs to arbitrate.
+- Same setup/results split as every other section — admin Commissions page: Create/Edit/
+  Delete only, no computation ever runs there. Target Management "💰 Commission Results":
+  gate-free metrics (Total Payout / Qualified / Salesmen With a Target) + one results table
+  (Salesman Code / Salesman / Target / Net Sales / Achievement % / Qualified / Payout).
+- **Verified via pure-function tests** (not live-tested against real Postgres, per explicit
+  ask to conserve tokens this session — "no need to test live... just want to finish writing
+  this out now"): `views/_tm_shared.py::_targets_for_month` parses the real local
+  `data/targets.json`'s actual key format correctly; `compute_individual_target_bonus`
+  correctly qualifies a salesman landing exactly on the 100% boundary (net sales after a
+  return exactly equal to target), correctly excludes a salesman well below their target,
+  correctly excludes a spid with sales but no target on file from the population entirely,
+  and correctly caps a still-open reporting month's sales to `today` (a sale dated after
+  `today` within the reporting month is excluded, confirmed by a synthetic future-dated
+  row). **Not yet verified**: a live create/list/delete round trip for `campaign_type`
+  isolation, and a real end-to-end browser check against live Postgres data — do this before
+  treating the feature as fully shipped, same discipline every other section in this doc
+  followed.
 
 ### Customer Acquisition — Unique Customers & New Customer Creation (B.5, built 2026-09-21)
 
@@ -926,8 +971,10 @@ separate roster/excluded tables:
 - **Confirmed source of "did the ZID hit its target"**: the **sum of existing individual
   salesman targets** already in `data/targets.json` for that ZID — explicitly NOT a new
   standalone company-level target value. No new config table/field needed for this.
-- Applies to B.1/B.3/B.4 for certain; probably B.2 too (not explicitly confirmed — see
-  above).
+- Applies to B.1/B.3/B.4 for certain. **B.2 shipped 2026-09-21 without this gate** — a
+  deliberate choice per the user's own "fairly easy and straightforward" framing when B.2
+  was picked up, not a resolution of the open question — flag with the user if the gate
+  should actually apply there too.
 
 ---
 
@@ -994,11 +1041,17 @@ ever committed — no migration/cleanup needed.
 
 ## Open items before/while building
 
-See the status table near the top for which of these actually block starting vs. which are
-just unresolved details on an otherwise-buildable piece.
+Every section in this doc is now built. One real follow-up remains, not a blocker to
+anything:
 
-1. **B.2 / gate interaction** — assumed the 100001/100000 gate also applies to B.2, not
-   explicitly confirmed. Doesn't block starting B.2.
+1. **B.2 / gate interaction** — shipped 2026-09-21 WITHOUT the 100001/100000 gate, a
+   deliberate simplification per the user's own instruction at the time, not a resolution of
+   the original open question. Confirm with the user whether the gate should actually apply
+   here, same as B.1/B.3/B.4.
+2. **B.2 / live verification** — only pure-function tests were run when B.2 shipped (explicit
+   ask to conserve tokens that session); do a live create/list/delete `campaign_type`
+   isolation check and a real browser round trip against live Postgres before treating it as
+   fully verified, same as every other section in this doc.
 
 A.4's, B.5's, Product Tracking's, A.1's, and A.2's own open items are all resolved — see
 their own sections, now marked built.

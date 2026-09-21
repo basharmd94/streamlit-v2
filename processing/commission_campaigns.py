@@ -1430,3 +1430,100 @@ def compute_new_customer_creation(
         "excluded_count": excluded_count,
         "total_payout": total_payout,
     }
+
+
+# ── B.2 — Individual Target Achievement (threshold bonus) ──────────────────
+# Built 2026-09-21. Confirmed simplification vs. the design doc's original
+# guess: no fixed named list (Sazzad/Sumon Sheikh/Mobarak/.../"Sekandar
+# without Special Sales") -- the user's own framing this time was general:
+# "will follow the target set within target management for that month. If
+# they achieve 100% of the target they will be rewarded one fixed amount
+# for all." Population is therefore every salesman who HAS a target set
+# for the reporting month (data/targets.json, looked up by the view layer
+# via views/_tm_shared.py::_targets_for_month -- processing/ never touches
+# that JSON file directly, same views-own-the-JSON-lookup split
+# build_pooled_monthly_scores already established for A.1). The 100001/
+# 100000 company gate is a real open item in the design doc ("assumed yes,
+# not explicitly confirmed") -- deliberately NOT applied here, flagged for
+# a follow-up confirmation rather than guessed at.
+
+def compute_individual_target_bonus(
+    campaign: dict, sales_df: pd.DataFrame, returns_df: pd.DataFrame,
+    target_by_sp: dict, spname_map: dict, month_start, month_end, today,
+) -> dict:
+    """Threshold payout, NOT a ranking -- same shape as A.4's
+    compute_app_usage_bonus, simpler (raw target-achievement %, not a
+    composite score). Every salesman in `target_by_sp` (already
+    pre-summed by the caller across 100001+100000 for this spid/month,
+    same "consolidated target" logic A.1 uses) whose own NET sales
+    (final_sales - returns, same convention as compute_salesman_scores'
+    own `net_sales`) reach >= 100% of their target gets the SAME flat
+    `product_rates["bonus_amount"]` (BDT). A target of 0/unset for a spid
+    is skipped entirely (nothing to measure against). Sales are capped to
+    `today` while the reporting month is still the real current month
+    (live tracking), full-month once it's closed -- same
+    is_real_current_month logic as build_pooled_monthly_scores/A.1/A.4.
+
+    Returns `{"scores": DataFrame[spid, spname, target, net_sales,
+    achievement_pct, qualified, payout], "bonus_amount", "qualified_count",
+    "total_payout"}` -- `total_payout` = `qualified_count × bonus_amount`,
+    no gate applied (see module note above).
+    """
+    config = campaign.get("product_rates") or {}
+    bonus_amount = float(config.get("bonus_amount", 0) or 0)
+
+    cols = ["spid", "spname", "target", "net_sales", "achievement_pct", "qualified", "payout"]
+    empty = pd.DataFrame(columns=cols)
+    if not target_by_sp:
+        return {"scores": empty, "bonus_amount": bonus_amount, "qualified_count": 0, "total_payout": 0.0}
+
+    mo_start = pd.Timestamp(month_start)
+    mo_end_full = pd.Timestamp(month_end)
+    today_ts = pd.Timestamp(today)
+    is_current = mo_start.year == today_ts.year and mo_start.month == today_ts.month
+    mo_end = min(mo_end_full, today_ts) if is_current else mo_end_full
+
+    sales_by_sp: dict = {}
+    if sales_df is not None and not sales_df.empty and "date" in sales_df.columns and "final_sales" in sales_df.columns:
+        s = sales_df.copy()
+        s["_dt"] = pd.to_datetime(s["date"], errors="coerce")
+        s_mo = s[(s["_dt"] >= mo_start) & (s["_dt"] <= mo_end)]
+        if "spid" in s_mo.columns:
+            sales_by_sp = s_mo.groupby(s_mo["spid"].astype(str))["final_sales"].sum().astype(float).to_dict()
+
+    ret_by_sp: dict = {}
+    if returns_df is not None and not returns_df.empty and "date" in returns_df.columns and "treturnamt" in returns_df.columns:
+        r = returns_df.copy()
+        r["_dt"] = pd.to_datetime(r["date"], errors="coerce")
+        r_mo = r[(r["_dt"] >= mo_start) & (r["_dt"] <= mo_end)]
+        if "spid" in r_mo.columns:
+            ret_by_sp = r_mo.groupby(r_mo["spid"].astype(str))["treturnamt"].sum().astype(float).to_dict()
+
+    rows = []
+    for spid, target in target_by_sp.items():
+        target = float(target or 0)
+        if target <= 0:
+            continue
+        sales = float(sales_by_sp.get(spid, 0.0))
+        ret = float(ret_by_sp.get(spid, 0.0))
+        net_sales = sales - ret
+        achievement_pct = (net_sales / target) * 100.0
+        qualified = achievement_pct >= 100.0
+        rows.append({
+            "spid": spid, "spname": spname_map.get(spid, ""),
+            "target": target, "net_sales": net_sales,
+            "achievement_pct": round(achievement_pct, 1),
+            "qualified": bool(qualified),
+            "payout": bonus_amount if qualified else 0.0,
+        })
+
+    if not rows:
+        return {"scores": empty, "bonus_amount": bonus_amount, "qualified_count": 0, "total_payout": 0.0}
+
+    d = pd.DataFrame(rows).sort_values("achievement_pct", ascending=False).reset_index(drop=True)
+    qualified_count = int(d["qualified"].sum())
+    total_payout = float(d["payout"].sum())
+    return {
+        "scores": d[cols], "bonus_amount": bonus_amount,
+        "qualified_count": qualified_count, "total_payout": total_payout,
+    }

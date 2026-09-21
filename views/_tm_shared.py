@@ -37,6 +37,25 @@ def _save_target(zid, spid: str, year: int, month: int, value: float):
     _save_json(_TARGETS_FILE, data)
 
 
+def _targets_for_month(zid, year: int, month: int) -> dict:
+    """{spid: target} for every salesman with a target set for this
+    zid/year/month -- unlike _get_target's single-spid point lookup, this
+    enumerates the whole targets.json for one (zid, year, month), for
+    Commissions B.2's population ("who even has a target this month").
+    Key format is {zid}_{spid}_{YYYY}-{MM}, same as _target_key above."""
+    data = _load_json(_TARGETS_FILE)
+    prefix, suffix = f"{zid}_", f"_{year}-{month:02d}"
+    result = {}
+    for key, val in data.items():
+        if key.startswith(prefix) and key.endswith(suffix):
+            spid = key[len(prefix):-len(suffix)]
+            try:
+                result[spid] = float(val or 0)
+            except (TypeError, ValueError):
+                continue
+    return result
+
+
 def _prune_targets():
     """
     Silently remove target entries older than 24 rolling months.
