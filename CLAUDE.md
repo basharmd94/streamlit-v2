@@ -1060,15 +1060,19 @@ straightforward."
 - Same setup/results split as every other section — admin page: Create/Edit/Delete only. Target
   Management results: Total Payout / Qualified / Salesmen With a Target metrics + one results table
   (Salesman Code / Salesman / Target / Net Sales / Achievement % / Qualified / Payout).
-- **Verified via pure-function tests only, NOT live against real Postgres** — explicit ask to conserve
-  tokens this session ("no need to test live... just want to finish writing this out now"):
-  `_targets_for_month` parses the real local `data/targets.json`'s actual key format correctly;
-  `compute_individual_target_bonus` correctly qualifies a salesman landing exactly on the 100%
-  boundary, correctly excludes one well below target, correctly excludes a spid with sales but no
-  target on file from the population, and correctly caps a still-open reporting month's sales to
-  `today`. **Before treating this as fully shipped**: run a live create/list/delete `campaign_type`
-  isolation round trip and a real browser check against live Postgres, same discipline every other
-  section in this doc followed.
+- **Verified in two passes.** First, pure-function tests (per an explicit ask to conserve tokens that
+  session): `_targets_for_month` parses the real local `data/targets.json`'s actual key format
+  correctly; `compute_individual_target_bonus` correctly qualifies a salesman landing exactly on the
+  100% boundary, excludes one well below target, excludes a spid with sales but no target on file, and
+  correctly caps a still-open reporting month's sales to `today`. Second, live verification (same day,
+  next ask — "let's do a live verification"): independently pre-computed expected net_sales/target for
+  two real salesmen against real September 2026 Postgres data BEFORE looking at any engine/UI output —
+  `SA--000198` at ৳168,326.80 net sales vs. a temporary ৳150,000 test target (112.2%, should qualify)
+  and `SA--000187` at ৳132,525.66 vs. a temporary ৳200,000 test target (66.3%, should not) — the engine
+  reproduced both exactly. Live in the browser as a real admin: created a real September 2026 campaign,
+  confirmed the admin page runs no computation, and confirmed Commission Results computed the identical
+  numbers (Total Payout ৳2,000, Qualified 1 of 2). `campaign_type` isolation confirmed against every
+  other section's own filter. Test target entries and campaign removed after verification.
 
 ### A.2 — Highest Product Sales (ranked)
 

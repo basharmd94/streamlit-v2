@@ -27,7 +27,7 @@ anything new.
 | A.4 App Usage Commission | ✅ **built 2026-09-21** | none — see §A.4 for what shipped (renamed from "Best App User" — threshold bonus, not a ranking) |
 | B.1/3/4 core (rate/cap/FIFO/gate payout math) | ✅ **built 2026-09-19** | none — verified against real Postgres (see §B.1/3/4) |
 | B.1/3/4 sales-uptick companion metric | ✅ **built 2026-09-19** | baseline window is a user-adjustable parameter (3mo/6mo), as resolved 2026-09-17 |
-| B.2 Individual Target Achievement | ✅ **built 2026-09-21** | none — see §B.2 for what shipped. Not live-verified against real Postgres yet (only pure-function tests, per explicit ask to conserve tokens) — do that before treating it as fully done |
+| B.2 Individual Target Achievement | ✅ **built and live-verified 2026-09-21** | none — see §B.2 for what shipped. One real open item remains: whether the 100001/100000 gate should apply (deliberately not applied, see §The 100001/100000 gate) |
 | B.5 New Customer Creation | ✅ **built 2026-09-21** | none — see §Customer Acquisition (Unique Customers & New Customer Creation) for what shipped. Merged into one admin section with the "Number of Unique Customers" idea per explicit ask |
 | Product Tracking | ✅ **built 2026-09-19** (redesigned version) | none — see §Product Tracking for what shipped |
 | The 100001/100000 gate itself | ✅ buildable | none |
@@ -874,19 +874,28 @@ be rewarded one fixed amount for all. Fairly easy and straightforward."
   Delete only, no computation ever runs there. Target Management "💰 Commission Results":
   gate-free metrics (Total Payout / Qualified / Salesmen With a Target) + one results table
   (Salesman Code / Salesman / Target / Net Sales / Achievement % / Qualified / Payout).
-- **Verified via pure-function tests** (not live-tested against real Postgres, per explicit
-  ask to conserve tokens this session — "no need to test live... just want to finish writing
-  this out now"): `views/_tm_shared.py::_targets_for_month` parses the real local
-  `data/targets.json`'s actual key format correctly; `compute_individual_target_bonus`
-  correctly qualifies a salesman landing exactly on the 100% boundary (net sales after a
-  return exactly equal to target), correctly excludes a salesman well below their target,
-  correctly excludes a spid with sales but no target on file from the population entirely,
-  and correctly caps a still-open reporting month's sales to `today` (a sale dated after
-  `today` within the reporting month is excluded, confirmed by a synthetic future-dated
-  row). **Not yet verified**: a live create/list/delete round trip for `campaign_type`
-  isolation, and a real end-to-end browser check against live Postgres data — do this before
-  treating the feature as fully shipped, same discipline every other section in this doc
-  followed.
+- **Verified in two passes.** First pass (same session, right after building, per an explicit
+  ask to conserve tokens — "no need to test live... just want to finish writing this out
+  now"): pure-function tests only — `views/_tm_shared.py::_targets_for_month` parses the real
+  local `data/targets.json`'s actual key format correctly; `compute_individual_target_bonus`
+  correctly qualifies a salesman landing exactly on the 100% boundary, correctly excludes one
+  well below target, correctly excludes a spid with sales but no target on file, and
+  correctly caps a still-open reporting month's sales to `today`.
+  Second pass, immediately after ("let's do a live verification"): independently
+  pre-computed expected net_sales/target for two real salesmen against real September 2026
+  Postgres data (via the exact same `Analytics("sales"/"return")` pipeline the engine itself
+  uses) BEFORE looking at any engine or UI output, to avoid confirming a shared bug — found
+  `SA--000198` (Md. Shahin alom) at ৳168,326.80 net sales against a temporary ৳150,000 test
+  target (112.2%, should qualify) and `SA--000187` (Md. Sobahan Ali) at ৳132,525.66 against a
+  temporary ৳200,000 test target (66.3%, should not). `compute_individual_target_bonus`
+  reproduced both figures exactly. Live in the browser as a real admin: created a real
+  September 2026 (current, live-tracking) campaign, confirmed the admin page shows no
+  computation at all, and confirmed Target Management's Commission Results computed the
+  identical numbers — Total Payout ৳2,000, Qualified 1, Salesmen With a Target 2, both rows
+  matching to the decimal. `campaign_type` isolation confirmed via a live list check against
+  every other section's own filter (zero leakage in either direction). Both the temporary
+  test targets and the test campaign were removed after verification — `data/targets.json`
+  is back to its pre-test state.
 
 ### Customer Acquisition — Unique Customers & New Customer Creation (B.5, built 2026-09-21)
 
@@ -1041,17 +1050,13 @@ ever committed — no migration/cleanup needed.
 
 ## Open items before/while building
 
-Every section in this doc is now built. One real follow-up remains, not a blocker to
-anything:
+Every section in this doc is now built and live-verified. One real follow-up remains, not a
+blocker to anything:
 
 1. **B.2 / gate interaction** — shipped 2026-09-21 WITHOUT the 100001/100000 gate, a
    deliberate simplification per the user's own instruction at the time, not a resolution of
    the original open question. Confirm with the user whether the gate should actually apply
    here, same as B.1/B.3/B.4.
-2. **B.2 / live verification** — only pure-function tests were run when B.2 shipped (explicit
-   ask to conserve tokens that session); do a live create/list/delete `campaign_type`
-   isolation check and a real browser round trip against live Postgres before treating it as
-   fully verified, same as every other section in this doc.
 
 A.4's, B.5's, Product Tracking's, A.1's, and A.2's own open items are all resolved — see
 their own sections, now marked built.
