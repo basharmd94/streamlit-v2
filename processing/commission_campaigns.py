@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from collections import deque
 
+import numpy as np
 import pandas as pd
 
 from core.db import execute_write, execute_write_returning, get_data
@@ -959,3 +960,247 @@ def compute_customer_best_performer_ranking(campaign: dict, customer_score_df: p
         ["rank", "recipient", "recipient_name", "composite_score", "payout", "gift"]
     ]
     return {"ranking": ranking, "num_winners": num_winners, "total_payout": total_payout}
+
+
+# ── A.4 — App Usage Commission ──────────────────────────────────────────────
+# New 2026-09-21 — resolves A.4's original "deferred by design" status
+# (see commission_tracking_design.md §A.4): the user supplied the real
+# mobile ERP API data map (mobile_order_api_data_map.md/.json) and, after
+# discussion, specified 5 components with confirmed weights (4% + 24%×4 =
+# 100%) and a THRESHOLD payout (not ranked, not tiered) — a genuinely
+# different mechanism from A.1/A.1b/A.2's rank-based payouts, closer to
+# B.2's "clear your own bar, get a fixed amount" shape:
+#
+#   4%  Orders           — order count this month, peer-relative (higher
+#                           better). "Actively used the app" at its most
+#                           basic — placed real orders via the mobile API.
+#   24% Location          — 50% GPS fill rate (opmob.xlat/xlong present)
+#                            + 50% GPS distinctness rate (distinct
+#                            coordinates ÷ GPS-tagged orders) — the second
+#                            half is what actually catches "same fake spot
+#                            every time," confirmed as a real, detectable
+#                            pattern against live data before building
+#                            (one real salesman: 133 distinct coordinates
+#                            out of 3,632 GPS-tagged orders, ~3.7%, vs a
+#                            healthy peer at ~31%).
+#   24% Return hygiene    — % of the salesman's OWN returns (opcrn.xemp)
+#                            NOT still stuck "1-Open" more than a 14-day
+#                            grace period (measured against real TODAY, not
+#                            the reporting month's own end — so a return
+#                            opened near month-end still gets a fair grace
+#                            period even after the month has technically
+#                            closed). Confirmed against live data this is a
+#                            weak/near-universal signal on its own (~99.9%
+#                            of ALL returns eventually reach "3-Issued"
+#                            regardless of salesman) — kept anyway per the
+#                            user's own weighting, since it still penalizes
+#                            genuinely-stuck outliers even if most score
+#                            near the top.
+#   24% Promised payment   — % of the salesman's delivery orders
+#                            (opdor.xsp) this month with xdatepay filled
+#                            in. Confirmed near-zero adoption in real data
+#                            (334 of 594,723 opdor rows ever, ~0% for top
+#                            2026 salesmen) — the user confirmed this
+#                            reflects real (not a local-mirror gap) low
+#                            usage, so this component is explicitly meant
+#                            to reward genuine early adopters from a near-0
+#                            baseline, not to penalize everyone equally.
+#   24% Collections        — count of glpmt entries (xemp) this month,
+#                            peer-relative. Same near-zero-adoption
+#                            confirmation as promised payment (9 total
+#                            glpmt rows locally, ever).
+#
+# Salesman population = every spid appearing in `opmob` (i.e. genuinely
+# placed at least one order via the app) within the reporting month — a
+# salesman with zero orders that month isn't scored at all, matching the
+# feature's own premise ("an incentive to all who actively used the app").
+# A salesman with zero ELIGIBLE returns/delivery-orders that specific
+# month (nothing to evaluate for just that one component) gets a NEUTRAL
+# 50 on that one component rather than being punished with a 0 or
+# rewarded with a 100 — same "no signal -> neutral" principle
+# _peer_relative-style helpers elsewhere in this app already use for a
+# zero-variance population, just applied per-salesman instead of
+# per-population here.
+
+def _peer_scale_app_usage(series: pd.Series, lower_is_better: bool = False) -> pd.Series:
+    """Peer-relative min-max scaling to [0, 100] — same pattern
+    processing/marketing.py::_compute_composite_score already uses for
+    Customer Score, applied here too (uniformly, even for inputs that are
+    already 0-100 percentages) so a component still differentiates
+    performers clustered in a narrow high band, not just compress them.
+    NaN entries (nothing to evaluate for that salesman) pass through as
+    NaN — the caller fills those with a neutral 50 afterward, not 0."""
+    s = pd.to_numeric(series, errors="coerce")
+    valid = s.dropna()
+    if valid.empty:
+        return pd.Series(np.nan, index=s.index)
+    mn, mx = valid.min(), valid.max()
+    if mx <= mn:
+        scaled = pd.Series(50.0, index=s.index)
+        scaled[s.isna()] = np.nan
+        return scaled
+    scaled = (s - mn) / (mx - mn) * 100.0
+    return (100.0 - scaled) if lower_is_better else scaled
+
+
+def compute_app_usage_scores(
+    orders_df: pd.DataFrame, returns_df: pd.DataFrame, delivery_df: pd.DataFrame,
+    glpmt_df: pd.DataFrame, month_start, month_end, today,
+) -> pd.DataFrame:
+    """Per-salesman App Usage composite score (0-100) for one reporting
+    month. Pure function — all four input DataFrames are the caller's own
+    already-pooled (100001+100000), already-month-scoped raw pulls (see
+    module note above for exact table/column sourcing); this function only
+    aggregates and scores.
+
+    `month_start`/`month_end`/`today` — `today` caps an ongoing reporting
+    month's evaluation window (same "live while ongoing" principle as
+    A.1), and separately drives the return-hygiene 14-day grace period
+    regardless of the reporting month's own boundary.
+
+    Returns one row per real app-using salesman: `spid`, the 5 raw metrics
+    (`orders_count`, `gps_fill_rate`, `gps_distinct_rate`,
+    `return_stuck_rate`, `promised_pay_rate`, `collection_count`), the 5
+    weighted component scores, and the final `score` (0-100).
+    """
+    eval_end = min(pd.Timestamp(month_end), pd.Timestamp(today))
+    eval_start = pd.Timestamp(month_start)
+
+    if orders_df is None or orders_df.empty:
+        return pd.DataFrame()
+
+    o = orders_df.copy()
+    o["date"] = pd.to_datetime(o["date"], errors="coerce")
+    o = o[(o["date"] >= eval_start) & (o["date"] <= eval_end)]
+    if o.empty:
+        return pd.DataFrame()
+    o["spid"] = o["spid"].astype(str)
+
+    # One row per ORDER (not per line item) — first line item by xroword,
+    # matching the API's own "first valid coordinate" convention for
+    # location_records (see module note in the data-map doc).
+    order_first = (
+        o.sort_values(["spid", "invoiceno", "invoicesl", "xroword"])
+         .drop_duplicates(subset=["spid", "invoiceno", "invoicesl"])
+         .copy()
+    )
+
+    sp_list = order_first[["spid"]].drop_duplicates().reset_index(drop=True)
+    if sp_list.empty:
+        return pd.DataFrame()
+
+    orders_count = order_first.groupby("spid").size()
+
+    order_first["has_gps"] = order_first["xlat"].notna() & (order_first["xlat"] != 0)
+    gps_fill_rate = order_first.groupby("spid")["has_gps"].mean() * 100.0
+
+    gps_rows = order_first[order_first["has_gps"]].copy()
+    gps_distinct_rate = pd.Series(dtype=float)
+    if not gps_rows.empty:
+        gps_rows["latlong"] = list(zip(gps_rows["xlat"], gps_rows["xlong"]))
+        distinct_ct = gps_rows.groupby("spid")["latlong"].nunique()
+        gps_orders_ct = gps_rows.groupby("spid").size()
+        gps_distinct_rate = (distinct_ct / gps_orders_ct * 100.0)
+
+    # Returns: stuck-rate among returns old enough (>= 14 days as of real
+    # today) to have had a fair chance to close, scoped to this salesman's
+    # own returns dated within the reporting month.
+    return_stuck_rate = pd.Series(dtype=float)
+    if returns_df is not None and not returns_df.empty:
+        r = returns_df.copy()
+        r["spid"] = r["spid"].astype(str)
+        r["date"] = pd.to_datetime(r["date"], errors="coerce")
+        r = r[(r["date"] >= eval_start) & (r["date"] <= eval_end) & (r["spid"].isin(sp_list["spid"]))]
+        cutoff = pd.Timestamp(today) - pd.Timedelta(days=14)
+        eligible = r[r["date"] <= cutoff]
+        if not eligible.empty:
+            is_stuck = (eligible["status"].astype(str) == "1-Open")
+            return_stuck_rate = is_stuck.groupby(eligible["spid"]).mean() * 100.0
+
+    # Promised payment: % of this month's delivery orders with xdatepay set
+    # (excluding the 2999-12-31 "unset" sentinel — see CLAUDE.md Common
+    # Pitfall #11).
+    promised_pay_rate = pd.Series(dtype=float)
+    if delivery_df is not None and not delivery_df.empty:
+        d = delivery_df.copy()
+        d["spid"] = d["spid"].astype(str)
+        d["date"] = pd.to_datetime(d["date"], errors="coerce")
+        d = d[(d["date"] >= eval_start) & (d["date"] <= eval_end) & (d["spid"].isin(sp_list["spid"]))]
+        if not d.empty:
+            d["paydate"] = pd.to_datetime(d["paydate"], errors="coerce")
+            has_pay = d["paydate"].notna() & (d["paydate"] != pd.Timestamp("2999-12-31"))
+            promised_pay_rate = has_pay.groupby(d["spid"]).mean() * 100.0
+
+    # Collections: raw glpmt entry count this month, keyed off the entry's
+    # own promised-payment date (paydate) — matches how every other
+    # commission section date-scopes glpmt.
+    collection_count = pd.Series(dtype=float)
+    if glpmt_df is not None and not glpmt_df.empty:
+        g = glpmt_df.copy()
+        g["spid"] = g["spid"].astype(str)
+        g["paydate"] = pd.to_datetime(g["paydate"], errors="coerce")
+        g = g[(g["paydate"] >= eval_start) & (g["paydate"] <= eval_end) & (g["spid"].isin(sp_list["spid"]))]
+        if not g.empty:
+            collection_count = g.groupby("spid").size()
+
+    rows = sp_list.copy()
+    rows["orders_count"] = rows["spid"].map(orders_count).fillna(0.0)
+    rows["gps_fill_rate"] = rows["spid"].map(gps_fill_rate).fillna(0.0)
+    rows["gps_distinct_rate"] = rows["spid"].map(gps_distinct_rate)  # NaN if 0 GPS orders -> neutral, not 0
+    rows["return_stuck_rate"] = rows["spid"].map(return_stuck_rate)  # NaN if 0 eligible returns -> neutral
+    rows["promised_pay_rate"] = rows["spid"].map(promised_pay_rate)  # NaN if 0 delivery orders -> neutral
+    rows["collection_count"] = rows["spid"].map(collection_count).fillna(0.0)
+
+    rows["score_orders"] = _peer_scale_app_usage(rows["orders_count"]).fillna(50.0) * 0.04
+    loc = (
+        _peer_scale_app_usage(rows["gps_fill_rate"]).fillna(50.0) * 0.5
+        + _peer_scale_app_usage(rows["gps_distinct_rate"]).fillna(50.0) * 0.5
+    )
+    rows["score_location"] = loc * 0.24
+    rows["score_returns"] = _peer_scale_app_usage(rows["return_stuck_rate"], lower_is_better=True).fillna(50.0) * 0.24
+    rows["score_promised_pay"] = _peer_scale_app_usage(rows["promised_pay_rate"]).fillna(50.0) * 0.24
+    rows["score_collections"] = _peer_scale_app_usage(rows["collection_count"]).fillna(50.0) * 0.24
+
+    rows["score"] = (
+        rows["score_orders"] + rows["score_location"] + rows["score_returns"]
+        + rows["score_promised_pay"] + rows["score_collections"]
+    ).clip(lower=0.0, upper=100.0).round(1)
+
+    return rows.sort_values("score", ascending=False).reset_index(drop=True)
+
+
+def compute_app_usage_bonus(campaign: dict, usage_scores_df: pd.DataFrame) -> dict:
+    """Threshold payout, NOT a ranking — confirmed 2026-09-21, explicit
+    ask: "create a score from 1 to 100, whoever scores more than 90 gets a
+    fixed commission." Every salesman whose `score` clears
+    `product_rates["threshold"]` gets the SAME flat
+    `product_rates["bonus_amount"]` (BDT) — same "clear your own bar" shape
+    as B.2's own (not-yet-built) individual-target mechanism, distinct
+    from A.1/A.1b/A.2's rank-based per-position payouts.
+
+    Returns `{"scores": DataFrame[spid, spname, score, ...raw metrics...,
+    qualified, payout], "threshold", "bonus_amount", "qualified_count",
+    "total_payout"}` — `total_payout` = `qualified_count × bonus_amount`,
+    always the raw figure (no gate on this mechanism)."""
+    config = campaign.get("product_rates") or {}
+    threshold = float(config.get("threshold", 90))
+    bonus_amount = float(config.get("bonus_amount", 0) or 0)
+
+    empty = pd.DataFrame(columns=["spid", "score", "qualified", "payout"])
+    if usage_scores_df is None or usage_scores_df.empty:
+        return {
+            "scores": empty, "threshold": threshold, "bonus_amount": bonus_amount,
+            "qualified_count": 0, "total_payout": 0.0,
+        }
+
+    d = usage_scores_df.copy()
+    d["qualified"] = d["score"] > threshold
+    d["payout"] = np.where(d["qualified"], bonus_amount, 0.0)
+    d = d.sort_values("score", ascending=False).reset_index(drop=True)
+
+    qualified_count = int(d["qualified"].sum())
+    total_payout = float(d["payout"].sum())
+    return {
+        "scores": d, "threshold": threshold, "bonus_amount": bonus_amount,
+        "qualified_count": qualified_count, "total_payout": total_payout,
+    }

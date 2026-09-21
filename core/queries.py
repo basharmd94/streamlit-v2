@@ -3436,3 +3436,82 @@ def get_bulk_collection_lines(filters=None) -> Tuple[str, tuple]:
         sql += " AND cusid = ANY(%s)"
         params.append(list(filters["cusids"]))
     return sql, tuple(params)
+
+
+# ── App Usage Commission (A.4) — raw mobile-app data-hit pulls ──────────────
+# New 2026-09-21, traced against mobile_order_api_data_map.md/.json (the
+# real mobile ERP API's own DB impact map, provided by the user and
+# verified column-for-column against live Postgres). None of the existing
+# opmob/opcrn/opdor Analytics entries expose what this needs:
+# get_opmob_all_data/get_opmob_pending have no xlat/xlong and group by
+# xordernum (NULL on fresh mobile orders per the data map -- unsafe to
+# group by); get_returns_registry filters to xstatuscrn='1-Open' only, but
+# the App Usage "return hygiene" component needs ALL statuses to compute a
+# stuck-rate. Filters follow the same year/month convention as
+# sales/return/collection (Analytics -> core/db.get_data), scoped by the
+# row's own xdate -- the caller Python-filters to an exact reporting-month
+# range (capped to today if ongoing), same pattern as every other
+# commission section's monthly loaders.
+
+def get_app_usage_orders(filters=None) -> Tuple[str, tuple]:
+    """opmob, one row per LINE ITEM (matches the table's own grain; the
+    caller dedupes to one row per order via invoiceno+invoicesl+xroword for
+    the Orders/Location components) -- xlat/xlong per
+    mobile_order_api_data_map.md's own confirmed column mapping."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT zid, xemp AS spid, xdate AS date, invoiceno, invoicesl,
+               xroword, xlat, xlong
+        FROM opmob
+        WHERE zid = %s
+    """
+    params = [zid]
+    if filters.get("year"):
+        ph = ",".join(["%s"] * len(filters["year"]))
+        sql += f" AND EXTRACT(YEAR FROM xdate)::int IN ({ph})"
+        params.extend(filters["year"])
+    if filters.get("month"):
+        ph = ",".join(["%s"] * len(filters["month"]))
+        sql += f" AND EXTRACT(MONTH FROM xdate)::int IN ({ph})"
+        params.extend(filters["month"])
+    return sql, tuple(params)
+
+
+def get_app_usage_returns(filters=None) -> Tuple[str, tuple]:
+    """opcrn, ALL statuses (unlike get_returns_registry's open-only scope)
+    -- the App Usage "return hygiene" component needs the full population
+    to compute what fraction is still stuck open."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = "SELECT zid, xemp AS spid, xdate AS date, xstatuscrn AS status FROM opcrn WHERE zid = %s"
+    params = [zid]
+    if filters.get("year"):
+        ph = ",".join(["%s"] * len(filters["year"]))
+        sql += f" AND EXTRACT(YEAR FROM xdate)::int IN ({ph})"
+        params.extend(filters["year"])
+    if filters.get("month"):
+        ph = ",".join(["%s"] * len(filters["month"]))
+        sql += f" AND EXTRACT(MONTH FROM xdate)::int IN ({ph})"
+        params.extend(filters["month"])
+    return sql, tuple(params)
+
+
+def get_app_usage_delivery_orders(filters=None) -> Tuple[str, tuple]:
+    """opdor, scoped to just xsp/xdate/xdatepay -- the App Usage "promised
+    payment entry" component. xdatepay = the promised payment date, set via
+    PUT /order/delivery-date-update per mobile_order_api_data_map.md; not
+    to be confused with glpmt.xpaydate (the actual collection date)."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = "SELECT zid, xsp AS spid, xdate AS date, xdatepay AS paydate FROM opdor WHERE zid = %s"
+    params = [zid]
+    if filters.get("year"):
+        ph = ",".join(["%s"] * len(filters["year"]))
+        sql += f" AND EXTRACT(YEAR FROM xdate)::int IN ({ph})"
+        params.extend(filters["year"])
+    if filters.get("month"):
+        ph = ",".join(["%s"] * len(filters["month"]))
+        sql += f" AND EXTRACT(MONTH FROM xdate)::int IN ({ph})"
+        params.extend(filters["month"])
+    return sql, tuple(params)

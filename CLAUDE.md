@@ -1237,6 +1237,69 @@ marketing analysis." Full spec: `commission_tracking_design.md` §A.1b.
   only) — the setup summary correctly rendered "Rank 1: ৳5,000 · Rank 2-5: Mug", and the results table
   correctly split payout vs. gift across the new Gift column, with Total Payout counting only the cash tier.
 
+### A.4 — App Usage Commission
+
+`processing/commission_campaigns.py::compute_app_usage_scores` + `compute_app_usage_bonus` (engine) +
+`views/commission_app_usage_view.py` (UI). Built 2026-09-21, resolving A.4's earlier "deferred by design"
+status — the user supplied the real mobile ERP API's own DB impact map
+(`mobile_order_api_data_map.md`/`.json`, repo root, traced from source and verified column-for-column
+against live Postgres) rather than the doc's earlier guessed list. Full spec:
+`commission_tracking_design.md` §A.4.
+
+- **Traced where a salesman's mobile-app actions actually land**, per the data map: order placement →
+  `opmob` (one row per LINE ITEM — group by `invoiceno`+`invoicesl`, NEVER `xordernum`, which is NULL on
+  fresh mobile orders); GPS → `opmob.xlat`/`xlong` per line (the API's own `location_records` side-table
+  turned out noisier — ~3.7x more rows per rep-day than real orders, some other periodic-ping source not
+  covered by the data map — so the engine reads `opmob.xlat`/`xlong` directly instead); returns → `opcrn`
+  (`xemp` = credited salesman, `xstatuscrn` starts `"1-Open"`); promised payment → `opdor.xdatepay` (NOT
+  `glpmt` — two different tables, don't conflate); collections → `glpmt` (`xemp`, `xpaydate`).
+- **5 weighted components, composite 0-100 score, confirmed weights (4% + 24%×4 = 100%, the user's own
+  numbers)** — real-data findings that shaped the weighting, checked BEFORE building:
+  - **4% Orders** — order count this month, peer-relative, higher better.
+  - **24% Location** — 50% GPS fill rate + 50% GPS **distinctness** rate (distinct coordinates ÷
+    GPS-tagged orders) — the distinctness half is what actually catches "always logs the same fake spot":
+    confirmed live, one real salesman had only 133 distinct coordinates out of 3,632 GPS-tagged orders
+    (~3.7%) vs. a healthy peer at ~31%.
+  - **24% Return hygiene** — % of the salesman's own returns NOT still `"1-Open"` past a 14-day grace
+    period (measured against real `today`, not month-end). Confirmed weak/near-universal on its own
+    (~99.9% of ALL returns eventually reach `"3-Issued"` regardless of salesman) — kept per the user's own
+    weighting anyway, since it still catches genuinely-stuck outliers.
+  - **24% Promised payment entry** — % of this month's delivery orders with `xdatepay` set. Confirmed
+    near-zero adoption in real data (334 of 594,723 `opdor` rows ever; ~0% for 2026's top-volume
+    salesmen) — user confirmed this is real usage, not a local-mirror gap, so the component is meant to
+    reward genuine early adopters from a near-0 baseline.
+  - **24% Collections** — `glpmt` entry count this month, peer-relative. Same near-zero-adoption
+    confirmation (9 total `glpmt` rows locally, ever).
+  - **A salesman with zero eligible returns/delivery-orders that month gets a neutral 50** on that one
+    component (nothing to evaluate), not punished with 0 or rewarded with 100 —
+    `processing/commission_campaigns.py::_peer_scale_app_usage` passes NaN through, caller fills with 50.
+- **Payout is a THRESHOLD BONUS, not a ranking** — a different mechanism from A.1/A.1b/A.2's rank-based
+  tiers, closer to B.2's own (not yet built) "clear your own bar" shape. Explicit ask: "create a score
+  from 1 to 100, whoever scores more than 90 gets a fixed commission." Admin sets `threshold` (default 90)
+  and one flat `bonus_amount` (BDT); every salesman scoring ABOVE it gets that same amount.
+  `total_payout = qualified_count × bonus_amount`, no gate.
+- **Population = every spid appearing in `opmob` that reporting month** — zero app orders that month
+  means not scored at all, matching "an incentive to all who actively used the app."
+- **Reporting month, current-or-future only, pinned at setup — reuses A.1's exact rule**, single month
+  only (no averaging — a monthly compliance bonus, not a smoothed ranking).
+- **Pooled 100001+100000 only, NOT per-ZID-group like A.1b** — a salesman behavior metric like A.1, not a
+  customer metric. Confirmed via real `opmob` data before choosing scope: 346,606 orders/67 salesmen on
+  100001, 31,994/38 on 100000, vs. only 63 orders/14 users on 100005 (Zepto, excluded, same as A.1).
+- **3 new raw queries** — `core/queries.py::get_app_usage_orders`/`get_app_usage_returns`/
+  `get_app_usage_delivery_orders` (registered in `core/analytics.py`) — none of the existing
+  `opmob_all`/`opmob_pending`/`get_returns_registry` entries exposed what this needed (no `xlat`/`xlong`,
+  an unsafe `xordernum` GROUP BY, or an open-only `xstatuscrn` filter that structurally excludes the rows
+  needed to compute a stuck-rate).
+- Verified end-to-end against real Postgres: engine tested against real August 2026 data (31 scored
+  salesmen, real score spread 33.5–72.5, zero qualifying at a 90 threshold — realistic given real adoption
+  levels, not a bug); campaign_type isolation confirmed via a live create/list/delete round trip. Live in
+  the browser as a real admin — created a real September 2026 (current month) campaign at threshold 20,
+  confirmed the setup page shows no results, confirmed Target Management computed 26 real scored salesmen
+  with the correct ৳39,000 total payout (26 × ৳1,500) and the full per-component breakdown rendering
+  correctly.
+- **Noted for later, not built**: a "Number of Unique Customers" ranking — same shape as A.2 but ranking
+  by distinct CUSTOMER count instead of distinct product count.
+
 ---
 
 ## Git / Deployment

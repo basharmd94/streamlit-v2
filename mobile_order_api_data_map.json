@@ -1,0 +1,187 @@
+{
+  "_description": "Machine-readable map of DB tables/columns affected by the mobile 'send order' API. See mobile_order_api_data_map.md for narrative notes.",
+  "source": {
+    "database": "da",
+    "host": "localhost:5432 (per app/database.py default; overridable via DATABASE_URL)",
+    "api_prefix": "/api/v1/order",
+    "route_file": "routers/orders_route.py",
+    "controller_file": "controllers/db_controllers/orders_db_controller.py"
+  },
+  "endpoints": [
+    {"method": "POST", "path": "/api/v1/order/create-order", "writes": true, "permission": "order.create", "table": "opmob"},
+    {"method": "POST", "path": "/api/v1/order/create-bulk-order", "writes": true, "permission": null, "table": "opmob"},
+    {"method": "GET", "path": "/api/v1/order/get-pending-orders", "writes": false, "filters": {"xstatusord": "New"}, "table": "opmob", "note": "all three get-*-orders endpoints read opmob, NOT opord/opodt"},
+    {"method": "GET", "path": "/api/v1/order/get-confirmed-orders", "writes": false, "filters": {"xstatusord": "Order Created"}, "table": "opmob"},
+    {"method": "GET", "path": "/api/v1/order/get-cancelled-orders", "writes": false, "filters": {"xstatusord": "Not enough stock to create Order"}, "table": "opmob"},
+    {"method": "GET", "path": "/api/v1/order/health", "writes": false},
+    {"method": "GET", "path": "/api/v1/order/get-delivery-orders", "writes": false, "table": "opdor+opddt"},
+    {"method": "GET", "path": "/api/v1/order/get-delivery-order/{...}", "writes": false, "table": "opdor+opddt"},
+    {"method": "PUT", "path": "/api/v1/order/delivery-date-update/{zid}/{xdornum}", "writes": true, "permission": null, "table": "opdor", "columns_written": ["xdatedel", "xdatepay"], "note": "xdatepay is the 'promised payment date'; xdatedel is write-only from this API (never read back by any GET here)"},
+    {"method": "GET", "path": "/api/v1/return/get-sales-returns", "writes": false, "table": "opcrn+opcdt"},
+    {"method": "POST", "path": "/api/v1/return/create-return", "writes": true, "permission": null, "table": "opcrn+opcdt", "note": "return registration; tax/discount/commission/cost columns on opcdt are always zeroed"},
+    {"method": "POST", "path": "/api/v1/customers/customer-payment/{zid}/", "writes": true, "permission": null, "table": "glpmt", "note": "mobile 'register a collection' flow"},
+    {"method": "GET", "path": "/api/v1/customers/customer-payment/get-all-payments/", "writes": false, "table": "glpmt"},
+    {"method": "PUT", "path": "/api/v1/customers/customer-payment/{xpmtnum}/update-status/", "writes": true, "table": "glpmt", "columns_written": ["xpaystatus", "zutime"]},
+    {"method": "POST", "path": "/api/v1/customers/customer-rct/", "writes": false, "table": "glheader+gldetail", "note": "POST verb but pure report; filters glheader.xvoucher LIKE 'RCT-%'; this is the accounting-confirmed receipt ledger, distinct from glpmt"},
+    {"method": "POST", "path": "/api/v1/customers/customer-balance/", "writes": false, "table": "glheader+gldetail", "note": "reconstructs running customer ledger from GL vouchers (RCT-/JV--/CRCT/STJV/BRCT = payments, INOP = orders)"}
+  ],
+  "tables": {
+    "opmob": {
+      "role": "primary write target; one row per order line item",
+      "primary_key": "xsl",
+      "write_endpoints": ["/create-order", "/create-bulk-order"],
+      "columns": [
+        {"name": "zid", "db_type": "integer", "written": true, "source": "request.zid"},
+        {"name": "ztime", "db_type": "timestamp", "written": true, "source": "server now()"},
+        {"name": "zutime", "db_type": "timestamp", "written": true, "source": "server now()"},
+        {"name": "invoiceno", "db_type": "varchar(100)", "written": true, "source": "f'{terminal}-{invoiceno}'"},
+        {"name": "invoicesl", "db_type": "bigint", "written": true, "source": "random 12-digit number, shared across items in one order"},
+        {"name": "username", "db_type": "varchar(100)", "written": true, "source": "authenticated user"},
+        {"name": "xemp", "db_type": "varchar(100)", "written": true, "source": "current_user.employeeCode"},
+        {"name": "xcus", "db_type": "varchar(100)", "written": true, "source": "request.xcus", "note": "not validated against a customer master"},
+        {"name": "xcusname", "db_type": "varchar(100)", "written": true, "source": "request.xcusname"},
+        {"name": "xcusadd", "db_type": "varchar(100)", "written": true, "source": "request.xcusadd"},
+        {"name": "xitem", "db_type": "varchar(100)", "written": true, "source": "item.xitem", "note": "not validated against an item master"},
+        {"name": "xdesc", "db_type": "varchar(250)", "written": true, "source": "item.xdesc"},
+        {"name": "xqty", "db_type": "integer", "written": true, "source": "item.xqty"},
+        {"name": "xprice", "db_type": "double precision", "written": true, "source": "item.xprice"},
+        {"name": "xstatusord", "db_type": "varchar(100)", "written": true, "source": "hardcoded 'New'", "note": "other statuses set by an out-of-band process"},
+        {"name": "xordernum", "db_type": "varchar(100)", "written": false, "note": "left NULL; populated later by a downstream/legacy process"},
+        {"name": "xroword", "db_type": "integer", "written": true, "source": "item.xroword"},
+        {"name": "xterminal", "db_type": "varchar(10)", "written": true, "source": "current_user.terminal"},
+        {"name": "xdate", "db_type": "date", "written": true, "source": "server now()"},
+        {"name": "xsl", "db_type": "varchar(100)", "written": true, "source": "uuid4()", "primary_key": true},
+        {"name": "xlat", "db_type": "double precision", "written": true, "source": "item.xlat", "nullable": true},
+        {"name": "xlong", "db_type": "double precision", "written": true, "source": "item.xlong", "nullable": true},
+        {"name": "xlinetotal", "db_type": "integer", "written": true, "source": "item.xlinetotal", "note": "DB column is integer; API/schema treat it as float -> decimals truncated on insert"},
+        {"name": "xtra1", "db_type": "integer", "written": false},
+        {"name": "xtra2", "db_type": "double precision", "written": false},
+        {"name": "xtra3", "db_type": "varchar", "written": false},
+        {"name": "xtra4", "db_type": "varchar", "written": false},
+        {"name": "xtra5", "db_type": "varchar", "written": false},
+        {"name": "xappver", "db_type": "numeric(10,2)", "written": false, "note": "exists in DB, absent from the SQLAlchemy model entirely"}
+      ]
+    },
+    "location_records": {
+      "role": "optional GPS side-effect of an order; at most one row per order (first valid coordinate found among items)",
+      "primary_key": "id",
+      "write_endpoints": ["/create-order", "/create-bulk-order"],
+      "write_condition": "at least one item has a valid, non-(0,0) xlat/xlong",
+      "columns": [
+        {"name": "username", "written": true, "source": "authenticated user"},
+        {"name": "latitude", "written": true, "source": "first valid item.xlat"},
+        {"name": "longitude", "written": true, "source": "first valid item.xlong"},
+        {"name": "timestamp", "written": true, "source": "server now()"},
+        {"name": "xdate", "written": true, "source": "timestamp formatted YYYY-MM-DD"},
+        {"name": "business_id", "written": true, "source": "request.zid"},
+        {"name": "formatted_address", "written": "conditional", "source": "reverse geocoding call, external service"},
+        {"name": "altitude", "written": false},
+        {"name": "accuracy", "written": false},
+        {"name": "name", "written": false},
+        {"name": "street", "written": false},
+        {"name": "district", "written": false},
+        {"name": "city", "written": false},
+        {"name": "region", "written": false},
+        {"name": "postal_code", "written": false},
+        {"name": "country", "written": false},
+        {"name": "maps_url", "written": false},
+        {"name": "notes", "written": false},
+        {"name": "device_info", "written": false},
+        {"name": "is_check_in", "written": false, "default": false},
+        {"name": "shared_via", "written": false},
+        {"name": "is_mock_location", "written": false, "default": false},
+        {"name": "dev_options_enabled", "written": false, "default": false},
+        {"name": "created_at", "written": false, "note": "DB default now()"}
+      ]
+    },
+    "apiUsers": {
+      "role": "auth lookup for the requesting user and permission check",
+      "access": "read",
+      "columns_read": ["username", "employeeCode", "terminal", "status", "is_admin", "businessId"]
+    },
+    "logged": {
+      "role": "session validation; also updated on every request via global middleware",
+      "access": "read+write",
+      "columns_read": ["username", "access_token"],
+      "columns_written": ["zutime"]
+    },
+    "token_blacklist": {
+      "role": "revoked-token check, plus opportunistic cleanup",
+      "access": "read+write",
+      "note": "cleanup_expired_tokens() runs a DELETE on every check call"
+    },
+    "roles": {"role": "permission resolution for order.create", "access": "read"},
+    "permissions": {"role": "permission resolution for order.create", "access": "read"},
+    "role_permission": {"role": "join table, permission resolution", "access": "read"},
+    "user_role": {"role": "join table, permission resolution", "access": "read"},
+    "opdor": {
+      "role": "delivery order header; source of the 'promised payment date'",
+      "primary_key": ["zid", "xdornum"],
+      "access": "read (list/detail) + partial write (date-update)",
+      "columns_written": [
+        {"name": "xdatedel", "note": "promised/rescheduled delivery date; write-only from this API, never selected back by any GET"},
+        {"name": "xdatepay", "note": "promised payment date; also not returned by list/detail GETs, only settable"}
+      ],
+      "columns_read": ["xordernum", "xcus", "xtotamt", "xdiscamt", "xdtdisc", "xstatusdor", "xwh", "xproj", "xdate", "xdatepay"],
+      "columns_unused_by_api": ["xdatedue", "and the rest of ~55 total columns on the live table"]
+    },
+    "opddt": {
+      "role": "delivery order line items",
+      "primary_key": ["zid", "xdornum", "xrow"],
+      "access": "read only",
+      "columns_read": ["xitem", "xqty", "xrate", "xlineamt"]
+    },
+    "opcrn": {
+      "role": "sales return header ('return registration')",
+      "primary_key": ["zid", "xcrnnum"],
+      "access": "read (get-sales-returns) + write (create-return)",
+      "write_endpoint": "POST /api/v1/return/create-return",
+      "columns_written": ["ztime", "zid", "xcrnnum", "xdate", "xcus", "xdatecuspo", "xsec", "xproj", "xstatuscrn", "xappamt", "xappcode", "xcur", "xexch", "xdisc", "xdiscf", "xwh", "xordernum", "xdornum", "xtrncrn", "xmember", "xemp", "xreason", "xstr01"],
+      "columns_not_written": ["xglref", "xinvnum", "xteam", "xmanager", "xtotamt", "xcounterno", "xyear", "xper", "xdept", "xrem", "xpayccnum", "xtype", "xpflag", "xref", "xvoucher", "xnote", "xtyperet", "xretvstat", "xdttax", "xdtcomm", "xdtwotax", "zutime"],
+      "note": "xtotamt is never persisted on the header despite being computed in the response"
+    },
+    "opcdt": {
+      "role": "sales return line items",
+      "primary_key": ["zid", "xcrnnum", "xrow"],
+      "access": "read (get-sales-returns) + write (create-return)",
+      "columns_written_with_real_values": ["ztime", "zid", "xcrnnum", "xrow", "xitem", "xdesc", "xqty", "xrate", "xprice", "xlineamt", "xdornum", "xwh", "xunitsel"],
+      "columns_written_as_hardcoded_placeholders": ["xcode (=xitem)", "xcodebasis", "xstype", "xpricebasis", "xtaxcat", "xstatusddt", "xstatuscdt", "xcur", "xwtunit=0.0", "xunitwt='0.0'", "xcfsel=1", "xexch=1", "xqtydel=0", "xqtyinv=0", "xratesys=0", "xmargin=0", "xmarginsys=0", "xdisc=0", "xdiscsys=0", "xdiscf=0", "xcomm=0", "xcommsys=0", "xexchsell=0", "xtaxcode1..5=''", "xtaxrate1..5=0", "xcurprice='0'", "xlineamtsys=0", "xfreight=0", "xlong=''", "xlinks=''"],
+      "columns_not_written": ["xbatch", "xserialnum", "xbin", "xaltqty", "xtypeserial", "xstdcost", "xcost", "xsup", "ximtrnnum", "xdept", "xdtwotax", "xdttax", "xdtdisc", "xdtcomm", "xtypecon", "zutime", "xordernum"],
+      "note": "tax/discount/commission/cost are always zero on API-created rows; do not use for return-economics analysis"
+    },
+    "glpmt": {
+      "role": "mobile-submitted customer payment / collection registration",
+      "primary_key": "xpmtnum",
+      "access": "read + write",
+      "endpoints": ["POST /api/v1/customers/customer-payment/{zid}/", "GET .../get-all-payments/", "PUT .../{xpmtnum}/update-status/"],
+      "columns_written_on_create": ["xpmtnum", "zid", "xcus", "xshort", "xemp", "xname", "xpaydate", "xpayamt", "xpaytype", "xbankdetail", "xpaystatus", "xremarks", "ztime", "zutime"],
+      "columns_written_on_status_update": ["xpaystatus", "zutime"],
+      "columns_unused_by_api": ["xdornum", "xtotamt"],
+      "note": "xpaydate here is the actual collection date logged by the rep, NOT the promised date (that's opdor.xdatepay). Locally only 9 rows exist, all still xpaystatus='Send' (none confirmed 'Received')."
+    },
+    "glheader": {
+      "role": "GL voucher header; read-only source for customer receipts report and customer balance ledger",
+      "primary_key": ["zid", "xvoucher"],
+      "access": "read only",
+      "note": "RCT-prefixed vouchers (118,402 rows locally) are the accounting-confirmed receipt ledger -- ~13,000x more rows than glpmt, confirming these are posted by a separate back-office process, not this API"
+    },
+    "gldetail": {
+      "role": "GL voucher line items; joined to glheader for the same read-only reports",
+      "primary_key": ["zid", "xvoucher", "xrow"],
+      "access": "read only",
+      "columns_read": ["xsp", "xsub", "xprime", "xproj"]
+    }
+  },
+  "not_written_by_this_api": {
+    "opord": "read-only via GET /api/v1/customers/customer-by-id/{zid}/{customer_id} (sales_return_db_controller.py, for yearly/monthly gross-sales totals); a THIRD distinct order table from opmob and opdor/opddt; populated by an out-of-band/legacy process",
+    "opodt": "same as opord",
+    "imtemptrn": "damage return header; CORRECTED from an earlier version of this doc which wrongly called this dead code -- it IS read, by the same customer-by-id endpoint, to sum damage-return amounts (voucher patterns %RECA%/%SRE-%/%RECT-%/%DSR-%)",
+    "imtemptdt": "damage return detail; same as imtemptrn"
+  },
+  "clarifications": {
+    "confirmed_orders_source": "get-confirmed/pending/cancelled-orders all read opmob filtered by xstatusord, NOT opord/opodt. An earlier version of this doc incorrectly pointed to opord/opodt.",
+    "promised_payment_date": "opdor.xdatepay, set via PUT /api/v1/order/delivery-date-update/{zid}/{xdornum}. Distinct from glpmt.xpaydate (actual collection date).",
+    "return_registration": "POST /api/v1/return/create-return, writing opcrn (header) + opcdt (one row per item).",
+    "collection_registry": "Two different things: glpmt (mobile submission log, writable) vs glheader/gldetail RCT- vouchers (accounting-confirmed ledger, read-only in this API)."
+  }
+}

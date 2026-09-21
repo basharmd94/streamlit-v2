@@ -14,6 +14,7 @@ import streamlit as st
 from core.analytics import Analytics
 from processing import commissions as comm, usage_log
 from views import (
+    commission_app_usage_view,
     commission_best_performer_view,
     commission_campaigns_view,
     commission_customer_best_performer_view,
@@ -276,12 +277,8 @@ def _render_highest_product_sales(zid: str, read_only: bool = False, key_suffix:
     commission_rankings_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
-def _render_best_app_user(zid: str) -> None:
-    _render_placeholder(
-        "📱 A.4 — Best App User",
-        "Deferred by design — waiting on the user to supply the real list of app "
-        "data-hit locations to count. Do not build against the guess in the doc.",
-    )
+def _render_app_usage(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    commission_app_usage_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
 def _render_campaign_payout(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
@@ -322,7 +319,8 @@ def _sections(read_only: bool, key_suffix: str) -> dict:
             lambda zid: _render_customer_best_performer(zid, read_only=read_only, key_suffix=key_suffix),
         "📦 Highest Product Sales":
             lambda zid: _render_highest_product_sales(zid, read_only=read_only, key_suffix=key_suffix),
-        "📱 Best App User": _render_best_app_user,
+        "📱 App Usage":
+            lambda zid: _render_app_usage(zid, read_only=read_only, key_suffix=key_suffix),
         "🎯 Product / Stock Clearance / Slow-Moving Campaign":
             lambda zid: _render_campaign_payout(zid, read_only=read_only, key_suffix=key_suffix),
         "🎯 Individual Target Achievement": _render_individual_target,

@@ -24,7 +24,7 @@ anything new.
 | A.1b Best Performer (Customers) | ✅ **built 2026-09-20** | none — see §A.1b for what shipped. **Not in the original design scope** — added same day, a customer-side sibling to A.1 requested directly |
 | A.2 Highest Product Sales | ✅ **built 2026-09-20** | none — see §A.2 for what shipped |
 | A.3 Best Disciplined | ✅ n/a | excluded by design |
-| A.4 Best App User | 🚫 **deferred by design** | user will supply the actual list of app data-hit locations when this specific section gets built — not something to chase before then, don't build against the guess in §A.4 |
+| A.4 App Usage Commission | ✅ **built 2026-09-21** | none — see §A.4 for what shipped (renamed from "Best App User" — threshold bonus, not a ranking) |
 | B.1/3/4 core (rate/cap/FIFO/gate payout math) | ✅ **built 2026-09-19** | none — verified against real Postgres (see §B.1/3/4) |
 | B.1/3/4 sales-uptick companion metric | ✅ **built 2026-09-19** | baseline window is a user-adjustable parameter (3mo/6mo), as resolved 2026-09-17 |
 | B.2 Individual Target Achievement | ✅ buildable | one unconfirmed assumption (gate applies here too, §The 100001/100000 gate) — doesn't block starting |
@@ -33,9 +33,9 @@ anything new.
 | The 100001/100000 gate itself | ✅ buildable | none |
 
 **If asked "where do you want to start building," don't re-ask this as an open question —
-the table above already answers it.** Product Tracking, A.1, A.1b, A.2, and B.1/3/4 are all
-built now (2026-09-19/20) — B.2 is the best remaining self-contained starting point with
-zero open items.
+the table above already answers it.** Product Tracking, A.1, A.1b, A.2, A.4, and B.1/3/4
+are all built now (2026-09-19/21) — B.2 is the best remaining self-contained starting point
+with zero open items.
 
 ---
 
@@ -304,13 +304,77 @@ Status: **built 2026-09-20** (`processing/commission_campaigns.py::compute_highe
 - **Excluded** — not trackable from any DB this app touches (selfie/location/dress
   code/response-time compliance has no data source). User's own call, from the source doc.
 
-### A.4 Best App User
-- Tracks per-salesman, per-month usage of the mobile app's various functions.
-- **STILL OPEN — waiting on the user for the exact list of data-hit locations to count.**
-  A reasonable starting guess (NOT confirmed) based on what this app already reads as
-  "app-staged, not app-owned" data: `glpmt` entries (App Collections), `opcrn` entries
-  (Returns Registry), `feedback` entries, `opdor.xdatedel`/`xdatepay` promise-date entries.
-  Do not build against this guess without the user's actual list.
+### A.4 App Usage Commission
+
+Status: **built 2026-09-21** (`processing/commission_campaigns.py::compute_app_usage_scores` +
+`compute_app_usage_bonus` + `views/commission_app_usage_view.py`) — verified against real Postgres.
+Renamed from "Best App User" to "App Usage Commission" to match the shipped mechanism (a threshold
+bonus, not a ranking/"best" contest).
+
+Resolves the "STILL OPEN" status above: the user supplied the real mobile ERP API's own DB impact
+map (`mobile_order_api_data_map.md`/`.json`, traced from source and verified column-for-column
+against live Postgres) and, after a discussion grounded in real data, specified exactly what to
+score. **Not the earlier guessed list** (`glpmt`/`opcrn`/`feedback`/`opdor` promise entries) — the
+real design uses `opmob` (orders + GPS), `opcrn` (returns), `opdor.xdatepay` (promised payment), and
+`glpmt` (collections); `feedback` was not part of the final ask.
+
+- **5 weighted components, a composite 0-100 score per salesman** (confirmed weights: 4% + 24%×4 =
+  100%, the user's own numbers):
+  - **4% Orders** — order count this month (`opmob`, grouped by `invoiceno`+`invoicesl`, NOT
+    `xordernum` which is NULL on fresh mobile orders per the data map), peer-relative, higher better.
+  - **24% Location** — 50% GPS fill rate (`opmob.xlat`/`xlong` present) + 50% GPS **distinctness**
+    rate (distinct coordinates ÷ GPS-tagged orders) — the distinctness half is what actually catches
+    "always logging the same fake spot," confirmed as a real, detectable pattern against live data
+    before building (one real salesman: 133 distinct coordinates out of 3,632 GPS-tagged orders,
+    ~3.7%, vs. a healthy peer at ~31%).
+  - **24% Return hygiene** — % of the salesman's own returns (`opcrn.xemp`) NOT still stuck
+    `"1-Open"` more than a 14-day grace period, measured against real *today* (not the reporting
+    month's own end, so a return opened near month-end still gets a fair grace period). Confirmed
+    against live data this is a weak/near-universal signal on its own (~99.9% of ALL returns
+    eventually reach `"3-Issued"` regardless of salesman) — kept anyway per the user's own
+    weighting, since it still penalizes genuinely-stuck outliers.
+  - **24% Promised payment entry** — % of the salesman's delivery orders (`opdor.xsp`) this month
+    with `xdatepay` filled in. Confirmed near-zero adoption in real data (334 of 594,723 `opdor` rows
+    ever have it set; ~0% for the top-volume 2026 salesmen) — the user confirmed this reflects real
+    (not a local-mirror rollout gap) low usage, so this component rewards genuine early adopters
+    from a near-0 baseline rather than penalizing everyone equally.
+  - **24% Collections** — count of `glpmt` entries (`xemp`) this month, peer-relative. Same
+    near-zero-adoption confirmation (9 total `glpmt` rows locally, ever).
+  - A salesman with zero *eligible* returns/delivery-orders that specific month (nothing to
+    evaluate for just that one component) gets a **neutral 50** on that component, not punished
+    with a 0 or rewarded with a 100.
+- **Payout is a THRESHOLD BONUS, not a ranking — a genuinely different mechanism from A.1/A.1b/A.2's
+  rank-based payouts, closer to B.2's own (not yet built) "clear your own bar" shape.** Explicit ask:
+  "create a score from 1 to 100, whoever scores more than 90 gets a fixed commission." Admin sets a
+  `threshold` (defaults to 90) and one flat `bonus_amount` (BDT) — every salesman scoring ABOVE the
+  threshold gets that same amount; no gate, `total_payout = qualified_count × bonus_amount`.
+- **Salesman population = every spid appearing in `opmob` that reporting month** (placed at least
+  one real order via the app) — a salesman with zero app orders that month isn't scored at all,
+  matching the feature's own premise ("an incentive to all who actively used the app").
+- **Reporting month, current-or-future only, pinned at setup — reuses A.1's exact rule and
+  reasoning**, not re-litigated: single month only (no multi-month averaging — this is a monthly
+  compliance bonus, not a ranking that benefits from smoothing). Live while the reporting month is
+  ongoing, frozen once it closes.
+- **Pooled 100001+100000, NOT per-ZID-group like A.1b** — this is a salesman behavior metric (like
+  A.1), not a per-business customer metric. Confirmed against real `opmob` data before choosing
+  scope: 346,606 orders/67 salesmen on 100001, 31,994/38 on 100000, vs. only 63 orders/14 users on
+  100005 (Zepto) — negligible, excluded, same as A.1's own scope.
+- Three new raw queries (`core/queries.py::get_app_usage_orders`/`get_app_usage_returns`/
+  `get_app_usage_delivery_orders`, registered in `core/analytics.py`) — none of the existing
+  `opmob`/`opcrn`/`opdor` Analytics entries exposed what this needed (no `xlat`/`xlong`, unsafe
+  `xordernum` grouping, or an open-only `xstatuscrn` filter that excludes the very rows needed to
+  compute a stuck-rate).
+- **Verified** against real Postgres: engine tested against real August 2026 data (31 scored
+  salesmen, real score spread 33.5–72.5, zero qualifying at a 90 threshold — a realistic outcome
+  given real adoption levels, not a bug); campaign_type isolation confirmed via a live create/list/
+  delete round trip (invisible to A.1/A.1b/A.2/B.1/3/4's own pickers). Live in the browser as a real
+  admin — created a real September 2026 (current month) campaign at threshold 20, confirmed the
+  setup page shows no results, and confirmed Target Management's Commission Results computed 26
+  real scored salesmen with the correct ৳39,000 total payout (26 × ৳1,500), full per-component
+  breakdown rendering correctly (GPS Fill %, GPS Distinct %, Return Stuck %, Promised Pay %,
+  Collections Logged, Qualified, Payout).
+- **Noted for later, not built**: a "Number of Unique Customers" ranking, the same shape as A.2 but
+  ranking recipients by distinct CUSTOMER count instead of distinct product count.
 
 ---
 
@@ -747,7 +811,7 @@ all 3 metrics including real ৳ figures for Net Revenue.
 
 #### For future note (2026-09-19/20) — recipient type across the rest of A/B
 
-Not yet relevant to everything below, but worth knowing before scoping A.4/B.2/B.5: the
+Not yet relevant to everything below, but worth knowing before scoping B.2/B.5: the
 commission for a given section can go to a **salesman**, a **customer**, or either,
 depending on the section — confirmed by the user while starting B.1/3/4, as general
 guidance for the whole feature, not specific to this one campaign type:
@@ -756,7 +820,7 @@ guidance for the whole feature, not specific to this one campaign type:
 |---|---|
 | A.1 Best Performer | **Salesman only — built 2026-09-20**, a deliberate deviation from this table's original "Salesman or Customer" guess: the score engine's own inputs (target achievement, collection %, AR balance) don't have a customer-equivalent meaning |
 | A.2 Highest Product Sales | Salesman **or** Customer — built |
-| A.4 Best App User | Salesman **only** |
+| A.4 App Usage Commission | **Salesman only — built 2026-09-21**, confirmed by construction: every component (orders, GPS, returns, promised payment, collections) is inherently a salesman behavior, no customer-equivalent meaning |
 | B.1/3/4 (this section) | Salesman **or** Customer — built |
 | B.2 Individual Target Achievement | Salesman **or** Customer |
 | B.5 New Customer Creation | Salesman **only** (it's about who landed the customer) |
@@ -866,13 +930,12 @@ ever committed — no migration/cleanup needed.
 See the status table near the top for which of these actually block starting vs. which are
 just unresolved details on an otherwise-buildable piece.
 
-1. **A.4** — deferred by the user's own choice, not a blocker to chase — they'll supply the
-   actual list of app data-hit locations when this specific section gets built. Do not build
-   against the guess in §A.4 in the meantime, and don't ask for this again before then.
-2. **B.2 / gate interaction** — assumed the 100001/100000 gate also applies to B.2, not
+1. **B.2 / gate interaction** — assumed the 100001/100000 gate also applies to B.2, not
    explicitly confirmed. Doesn't block starting B.2.
-3. **B.5** — no design work done yet beyond "existing logic doesn't fit, needs something
+2. **B.5** — no design work done yet beyond "existing logic doesn't fit, needs something
    new" — scope this properly with the user when it's picked up, don't guess at a shape.
+
+A.4's own open item is resolved — see §A.4, now marked built.
 
 Product Tracking's, A.1's, and A.2's own open items are all resolved — see their own
 sections, now marked built.
