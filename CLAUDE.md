@@ -863,9 +863,10 @@ never both on the same page.** The user's own framing: "the admin will setup the
 management you can see the results... maximum one or two tables... consolidated in a very direct kind of way."
 
 - **Page structure**: one shared picker, `views/commissions.py::render_section_picker(zid, read_only,
-  key_suffix)`, drives both surfaces. `_sections(read_only, key_suffix)` returns the same 7-entry map every
-  time (A.1 Best Performer, A.2 Highest Product Sales, A.4 Best App User, B.1/3/4 Campaign, B.2 Individual
-  Target, B.5 New Customer) — a not-yet-built section shows the same `st.info` placeholder either place.
+  key_suffix)`, drives both surfaces. `_sections(read_only, key_suffix)` returns the same map every time
+  (Product Tracking, A.1 Best Performer, A.1b Best Performer (Customers), A.2 Highest Product Sales, A.4 App
+  Usage, B.1/3/4 Campaign, B.2 Individual Target, Customer Acquisition [B.5 + Unique Customers]) — B.2 (the
+  only remaining unbuilt piece) shows the same `st.info` placeholder either place.
   `display_commissions_page` (the admin page) calls it with `read_only=False`;
   `views/target_management.py`'s `"💰 Commission Results"` radio mode calls it with `read_only=True,
   key_suffix="_tm"`.
@@ -1297,8 +1298,61 @@ against live Postgres) rather than the doc's earlier guessed list. Full spec:
   confirmed the setup page shows no results, confirmed Target Management computed 26 real scored salesmen
   with the correct ৳39,000 total payout (26 × ৳1,500) and the full per-component breakdown rendering
   correctly.
-- **Noted for later, not built**: a "Number of Unique Customers" ranking — same shape as A.2 but ranking
-  by distinct CUSTOMER count instead of distinct product count.
+- The "Number of Unique Customers" ranking noted for later here was picked up and built
+  2026-09-21 — see the next section.
+
+### Customer Acquisition — Unique Customers & New Customer Creation (B.5, built 2026-09-21)
+
+`processing/commission_campaigns.py::compute_unique_customers_ranking` +
+`compute_new_customer_creation` (engine) + `views/commission_customer_acquisition_view.py`
+(UI, one file, two modes). Full spec: `commission_tracking_design.md` §Customer Acquisition.
+Merges two ideas into one admin section per explicit ask: A.4's own noted-for-later "Number
+of Unique Customers" ranking, and B.5 (New Customer Creation) from the design doc, previously
+unscoped. Reuses the same `commission_campaigns` table, two more `campaign_type` values
+(`"Unique Customers"` / `"New Customer Creation"`). Both modes use a plain admin-picked
+`window_start`/`window_end` date range (like A.2/B.1/3/4), not a pinned "reporting month"
+like A.1/A.4 — neither mode re-derives its window from wall-clock `today`, so there's no
+live-recompute risk to pin against.
+
+- **Mode 1 — Unique Customers (ranked)**: same shape as A.2 but ranks SALESMEN (only — no
+  `recipient_type` toggle, same reasoning as A.1/A.4) by DISTINCT CUSTOMER count sold to in
+  the window instead of distinct product count. Same 2-5 winners / per-rank BDT payout.
+- **Mode 2 — New Customer Creation**: per-customer basis, salesman only. Pays a flat
+  admin-set BDT bonus per genuinely NEW customer a salesman creates in the window — one
+  unified results table (status column, payout 0 for excluded rows), same pattern as B.1/3/4's
+  own `line_items`.
+  - **"New" = the customer's `cacus` row's own `ztime`** (real row-creation timestamp,
+    confirmed well-distributed and current on live data) falls in the window — **NOT
+    `xdatecre`/`xdatefst`**, which read like the obvious fit but are almost always the
+    `2999-12-31` sentinel (Common Pitfall #11) in practice. `core/queries.py::
+    get_cacus_creation_detail` is the new query.
+  - **Anti-gaming phone check** — excluded if ANY phone number (both `cusmobile`/`xmobile`
+    and `whatsapp`/`xtaxnum`, each comma-split, every number checked, normalized via the
+    existing `processing.common.to_whatsapp_number`) already belongs to a DIFFERENT existing
+    customer anywhere in the pooled population — catches a re-entered/duplicate customer
+    code gaming the bonus. Verified against a real caught case: a customer created 2026-08-02
+    shared its phone number with a real pre-existing customer from 2014, correctly excluded.
+  - **Pooled 100001+100000** (same as A.1/A.4/A.1b) — confirmed live every real customer
+    created in one ZID was created in the other within minutes (same customer, entered into
+    both systems near-simultaneously). `_pool_cacus_creation` dedupes by `cusid`, earliest
+    `ztime` wins, prefers whichever ZID row has non-blank `cusname`/`xsp`, unions phone sets.
+  - **Attribution via `cacus.xsp`** (assigned salesman on the customer record), not
+    first-sale detection — confirmed these are real, currently-active spids. No `xsp` on
+    file → shown with status "Excluded: no salesman on file," not silently dropped.
+  - No phone on file at all → benefit of the doubt, counted as "Counted (no phone on file —
+    unverified)" since uniqueness can't be disproven.
+  - **Real bug fixed during verification**: the window filter originally compared the real
+    `created_at` timestamp against `window_end` at midnight, silently excluding anyone
+    created later that same day — fixed with an exclusive next-day-midnight upper bound.
+- Verified end-to-end against real Postgres: Unique Customers ranking cross-checked
+  byte-for-byte against a manual re-derive of the top salesman's distinct-customer count
+  (157); New Customer Creation against a real August 2026 window found the correct 36 pooled
+  candidates (matching a direct-SQL count), 4 correctly excluded for a real phone match, 32
+  correctly counted; `campaign_type` isolation confirmed via a live create/list/delete round
+  trip. Live in the browser as a real admin — created a real campaign in each mode, confirmed
+  Target Management's Commission Results matched the standalone verification exactly (Unique
+  Customers: ৳6,000 total payout; New Customer Creation: ৳16,000 total payout, 32 paid / 4
+  excluded) — both test campaigns deleted after verification.
 
 ---
 

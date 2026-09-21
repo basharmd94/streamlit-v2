@@ -98,6 +98,7 @@ class Analytics:
             "app_usage_orders":          queries.get_app_usage_orders,
             "app_usage_returns":         queries.get_app_usage_returns,
             "app_usage_delivery_orders": queries.get_app_usage_delivery_orders,
+            "cacus_creation_detail":     queries.get_cacus_creation_detail,
             "final_items_view":    queries.get_final_items_view,
             "inventory_overview":  queries.get_inventory_overview,
             "inventory_zid_stock_split": queries.get_inventory_zid_stock_split,

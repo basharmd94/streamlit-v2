@@ -3515,3 +3515,30 @@ def get_app_usage_delivery_orders(filters=None) -> Tuple[str, tuple]:
         sql += f" AND EXTRACT(MONTH FROM xdate)::int IN ({ph})"
         params.extend(filters["month"])
     return sql, tuple(params)
+
+
+def get_cacus_creation_detail(filters=None) -> Tuple[str, tuple]:
+    """One row per customer master record, for B.5 New Customer Creation.
+
+    ztime (row creation timestamp) is used as the "customer created" date --
+    NOT xdatecre/xdatefst, which read like the natural fit but are almost
+    always the 2999-12-31 sentinel garbage (Common Pitfall #11) on real
+    data; ztime is real and well-distributed, confirmed against live
+    Postgres. xsp is the customer's assigned salesman -- confirmed against
+    real data these are genuine, currently-active spids (appear in opdor).
+    cusmobile/whatsapp can each hold multiple comma-separated numbers, used
+    by the caller for the phone-number duplicate check."""
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT
+            xcus::text              AS cusid,
+            COALESCE(xshort, '')    AS cusname,
+            ztime                   AS created_at,
+            COALESCE(xsp, '')       AS spid,
+            COALESCE(xmobile, '')   AS cusmobile,
+            COALESCE(xtaxnum, '')   AS whatsapp
+        FROM cacus
+        WHERE zid = %s
+    """
+    return sql, (zid,)

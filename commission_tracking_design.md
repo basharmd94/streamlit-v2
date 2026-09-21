@@ -28,7 +28,7 @@ anything new.
 | B.1/3/4 core (rate/cap/FIFO/gate payout math) | ✅ **built 2026-09-19** | none — verified against real Postgres (see §B.1/3/4) |
 | B.1/3/4 sales-uptick companion metric | ✅ **built 2026-09-19** | baseline window is a user-adjustable parameter (3mo/6mo), as resolved 2026-09-17 |
 | B.2 Individual Target Achievement | ✅ buildable | one unconfirmed assumption (gate applies here too, §The 100001/100000 gate) — doesn't block starting |
-| B.5 New Customer Creation | ⚠️ not scoped | needs real design work (not a blocker exactly — nobody's promised an answer, it just hasn't been designed yet) |
+| B.5 New Customer Creation | ✅ **built 2026-09-21** | none — see §Customer Acquisition (Unique Customers & New Customer Creation) for what shipped. Merged into one admin section with the "Number of Unique Customers" idea per explicit ask |
 | Product Tracking | ✅ **built 2026-09-19** (redesigned version) | none — see §Product Tracking for what shipped |
 | The 100001/100000 gate itself | ✅ buildable | none |
 
@@ -373,8 +373,9 @@ real design uses `opmob` (orders + GPS), `opcrn` (returns), `opdor.xdatepay` (pr
   real scored salesmen with the correct ৳39,000 total payout (26 × ৳1,500), full per-component
   breakdown rendering correctly (GPS Fill %, GPS Distinct %, Return Stuck %, Promised Pay %,
   Collections Logged, Qualified, Payout).
-- **Noted for later, not built**: a "Number of Unique Customers" ranking, the same shape as A.2 but
-  ranking recipients by distinct CUSTOMER count instead of distinct product count.
+- The "Number of Unique Customers" ranking noted for later here was picked up and built
+  2026-09-21 — merged with B.5 into one admin section, see §Customer Acquisition (Unique
+  Customers & New Customer Creation) below.
 
 ---
 
@@ -561,8 +562,8 @@ form, campaign list/detail) — wired into the Commissions page's dropdown. The
   `st.dataframe` doesn't reliably respect Styler `na_rep` here (same class of issue as
   CLAUDE.md's documented TOTAL-row/Styler pitfall) — fixed by pre-formatting the Cap
   column to a display string before it reaches `.style.format()`.
-- **Not yet built**: B.2 and B.5 still don't exist (B.2 is fully specified and a natural
-  next pick; B.5 needs design work first, see below).
+- **Not yet built**: B.2 is the only remaining unbuilt piece in this doc (fully specified,
+  a natural next pick — B.5 was built 2026-09-21, see §Customer Acquisition below).
 
 #### Payout-group derivation replaced the manual roster (2026-09-20, same-day follow-up)
 
@@ -842,15 +843,81 @@ else in this doc.
 - Whether the 100001/100000 gate applies here: **assumed yes** (also target-based), but not
   explicitly confirmed — flag with the user before building; may need to be exempt.
 
-### B.5 — New Customer Creation
-- Source doc claims this is "already done in Overall Sales Analysis" — **checked, it is
-  NOT the right shape.** `processing/overall_sales.py::compute_customer_flow` exists but is
-  **area-scoped**, not salesman-scoped, and "new" there means *new to that area this month*
-  (a 10-year customer who just started buying in a different area counts as "new"), not
-  "first sale ever to the business, attributed to the salesman who landed them."
-- **Needs genuinely new logic** — first-ever-sale detection per customer, attributed to the
-  salesman on that first sale, not a reuse of the existing customer-flow cohort logic.
-- Not scoped/built yet — lowest-detail item in this doc, pick up last.
+### Customer Acquisition — Unique Customers & New Customer Creation (B.5, built 2026-09-21)
+
+`processing/commission_campaigns.py::compute_unique_customers_ranking` +
+`compute_new_customer_creation` (engine) + `views/commission_customer_acquisition_view.py`
+(UI, one file, two independent modes). Merges two ideas into one admin section per explicit
+ask 2026-09-21: the "Number of Unique Customers" ranking noted for later in A.4's own
+closing bullet, and B.5 itself (previously "needs design work" — source doc's claim that
+this was "already done in Overall Sales Analysis" was checked and confirmed wrong:
+`processing/overall_sales.py::compute_customer_flow` is area-scoped, not salesman-scoped,
+and "new" there means "new to that area this month," not "genuinely new to the business").
+Reuses the SAME `commission_campaigns` table, two more `campaign_type` values (`"Unique
+Customers"` / `"New Customer Creation"`), same "no separate table per mechanism" pattern as
+every other section. Both modes use a plain admin-picked `window_start`/`window_end` date
+range (like A.2/B.1/3/4), not a pinned "reporting month" like A.1/A.4 — neither mode
+re-derives its window from wall-clock `today` at view time, so there's no live-recompute
+risk to pin against.
+
+**Mode 1 — Unique Customers (ranked)**: same shape as A.2 (`compute_highest_product_sales_
+ranking`) but ranks SALESMEN (only — no `recipient_type` toggle, same reasoning A.1/A.4 used:
+a "distinct customer count" has no customer-equivalent meaning) by DISTINCT CUSTOMER count
+sold to in the window instead of distinct product count. Same 2-5 winners / per-rank BDT
+payout mechanism as A.2.
+
+**Mode 2 — New Customer Creation (per-customer basis, salesman only per the design doc's own
+"For future note" table)**: pays a flat admin-set BDT bonus per genuinely NEW customer a
+salesman creates in the window. A candidate is one unified table (same "one table, status
+column, payout 0 for excluded rows" pattern as B.1/3/4's own `line_items`), never split into
+separate roster/excluded tables:
+- **"New" = the customer's own `cacus` row was created within the window** — `ztime` (the
+  row's real creation timestamp), confirmed via live Postgres to be well-distributed and
+  current (real creations through September 2026) — **NOT `xdatecre`/`xdatefst`**, which
+  read like the obvious fit but are almost always the `2999-12-31` sentinel (Common Pitfall
+  #11) on real data. `core/queries.py::get_cacus_creation_detail` is the new query.
+- **Anti-gaming phone-number check, explicit ask**: "New customer means a customer code is
+  created and does not exist within cacus... check with CUS and phone number. If phone
+  number matches this will not be counted as a new customer... some customers have multiple
+  phone numbers with a comma... need to check all the phone numbers." A candidate is
+  excluded if ANY of its phone numbers (both `cusmobile`/`xmobile` and `whatsapp`/`xtaxnum`,
+  each comma-split, every number checked — not just the first) already belongs to a
+  DIFFERENT existing customer code anywhere in the pooled population — normalized via the
+  existing `processing.common.to_whatsapp_number` so a bare-local-format number in one
+  field matches an 880-format number in another. **Verified against a real caught case**:
+  `CUS-010031` "Mosarof Hardware & Tools" (created 2026-08-02) shares its phone number with
+  a real pre-existing customer, `CUS-005445` "New Modina" (created 2014-09-17) — correctly
+  excluded, not paid.
+- **Pooled 100001+100000, same as A.1/A.4/A.1b** — confirmed live: every real customer
+  created in one ZID in a given month was created in the other ZID within minutes (same
+  real-world customer entered into both systems near-simultaneously), matching A.1b's own
+  99.9%-shared-code audit. `processing/commission_campaigns.py::_pool_cacus_creation`
+  dedupes by `cusid`, taking the earliest `ztime`, preferring whichever ZID row has a
+  non-blank `cusname`/`xsp`, and unioning both rows' phone numbers.
+- **Attribution via `cacus.xsp`** (the customer's assigned salesman), not first-sale
+  detection (the source doc's original guess) — confirmed against real data these are
+  genuine, currently-active spids (appear in `opdor`), and a much more direct signal than
+  reconstructing "who landed this customer" from sales history. A candidate with no `xsp`
+  on file is shown with status "Excluded: no salesman on file" (still visible, just unpaid)
+  rather than silently dropped.
+- A candidate with no phone number on file at all gets the benefit of the doubt — status
+  "Counted (no phone on file — unverified)", still paid, since uniqueness can't be
+  disproven.
+- **Real bug found and fixed during verification**: the initial window filter compared
+  `created_at` (a real timestamp, from `ztime`) against `window_end` at midnight — silently
+  excluding every customer created later that same day. Fixed with an exclusive
+  next-day-midnight upper bound instead of an inclusive same-day one.
+- **Verified** against real Postgres: `compute_unique_customers_ranking`'s top-ranked
+  salesman (157 distinct customers) cross-checked byte-for-byte against a manual re-derive;
+  `compute_new_customer_creation` against a real August 2026 window found the correct 36
+  pooled candidate customers (matching a direct-SQL count), with 4 correctly excluded for a
+  real phone-number match and 32 correctly counted; `campaign_type` isolation confirmed via
+  a live create/list/delete round trip (invisible to every other section's own picker).
+  Live in the browser as a real admin — created a real August 2026 campaign in each mode,
+  confirmed the setup page shows no results, and confirmed Target Management's Commission
+  Results computed the identical figures the standalone verification found (Unique
+  Customers: ৳6,000 total payout across 3 configured ranks; New Customer Creation: ৳16,000
+  total payout, 32 paid / 4 excluded) — both test campaigns deleted after verification.
 
 ### The 100001 / 100000 gate
 - **Confirmed**: if 100001 or 100000 individually fails to hit its own target, the
@@ -932,10 +999,6 @@ just unresolved details on an otherwise-buildable piece.
 
 1. **B.2 / gate interaction** — assumed the 100001/100000 gate also applies to B.2, not
    explicitly confirmed. Doesn't block starting B.2.
-2. **B.5** — no design work done yet beyond "existing logic doesn't fit, needs something
-   new" — scope this properly with the user when it's picked up, don't guess at a shape.
 
-A.4's own open item is resolved — see §A.4, now marked built.
-
-Product Tracking's, A.1's, and A.2's own open items are all resolved — see their own
-sections, now marked built.
+A.4's, B.5's, Product Tracking's, A.1's, and A.2's own open items are all resolved — see
+their own sections, now marked built.

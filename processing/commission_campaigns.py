@@ -23,6 +23,7 @@ import pandas as pd
 
 from core.db import execute_write, execute_write_returning, get_data
 from processing.commissions import _prorate_before, _window_metrics
+from processing.common import to_whatsapp_number
 
 
 # ── Payout-group derivation (Cacus xstate + PRMST xdisease) ─────────────────
@@ -1203,4 +1204,229 @@ def compute_app_usage_bonus(campaign: dict, usage_scores_df: pd.DataFrame) -> di
     return {
         "scores": d, "threshold": threshold, "bonus_amount": bonus_amount,
         "qualified_count": qualified_count, "total_payout": total_payout,
+    }
+
+
+# ── Customer Acquisition — Unique Customers (ranked) ────────────────────────
+# Built 2026-09-21, resolving the "Number of Unique Customers" idea noted
+# for later in A.4's own closing bullet. Same shape as A.2's
+# compute_highest_product_sales_ranking (same commission_campaigns table,
+# campaign_type "Unique Customers", same rank-tier payout mechanism) but
+# ranks by DISTINCT CUSTOMER count sold to instead of distinct product
+# count. Salesman-only, no recipient_type toggle -- a "distinct customer
+# count" has no customer-equivalent meaning, same reasoning A.1/A.4 used.
+
+def compute_unique_customers_ranking(campaign: dict, sales_df: pd.DataFrame) -> dict:
+    """Ranks salesmen by DISTINCT CUSTOMER count sold to within the
+    campaign's window (breadth, not volume) and pays a fixed BDT amount per
+    rank position to the top `num_winners` (2-5, admin-set), read from
+    `product_rates` exactly like A.2's own config shape: {"num_winners": N,
+    "payouts_by_rank": [amt1, amt2, ...]}.
+
+    Ties (identical distinct-customer-count) are broken by total quantity
+    sold, then spid -- same not-explicitly-confirmed assumption as A.2's
+    own tie-break, flagged for visibility only.
+
+    Returns `{"ranking": DataFrame[rank, recipient, recipient_name,
+    distinct_customers, total_qty, payout], "num_winners", "total_payout"}`.
+    """
+    window_start, window_end = campaign["window_start"], campaign["window_end"]
+    config = campaign.get("product_rates") or {}
+    payouts_by_rank = [float(v) for v in config.get("payouts_by_rank", [])]
+    num_winners = int(config.get("num_winners") or len(payouts_by_rank))
+
+    empty = pd.DataFrame(columns=["rank", "recipient", "recipient_name", "distinct_customers", "total_qty", "payout"])
+    if sales_df is None or sales_df.empty or "spid" not in sales_df.columns:
+        return {"ranking": empty, "num_winners": num_winners, "total_payout": 0.0}
+
+    d = sales_df.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    start, end = pd.Timestamp(window_start), pd.Timestamp(window_end)
+    d = d[(d["date"] >= start) & (d["date"] <= end)]
+    if d.empty:
+        return {"ranking": empty, "num_winners": num_winners, "total_payout": 0.0}
+
+    d["cusid"] = d["cusid"].astype(str)
+    d["quantity"] = pd.to_numeric(d["quantity"], errors="coerce")
+
+    grouped = (
+        d.groupby("spid")
+         .agg(
+             recipient_name=("spname", "first"),
+             distinct_customers=("cusid", "nunique"),
+             total_qty=("quantity", "sum"),
+         )
+         .reset_index()
+         .rename(columns={"spid": "recipient"})
+    )
+    grouped = grouped.sort_values(
+        ["distinct_customers", "total_qty", "recipient"], ascending=[False, False, True]
+    ).reset_index(drop=True)
+    grouped["rank"] = grouped.index + 1
+    grouped["payout"] = 0.0
+    for i in range(min(num_winners, len(payouts_by_rank), len(grouped))):
+        grouped.loc[i, "payout"] = payouts_by_rank[i]
+
+    total_payout = float(grouped["payout"].sum())
+    return {
+        "ranking": grouped[["rank", "recipient", "recipient_name", "distinct_customers", "total_qty", "payout"]],
+        "num_winners": num_winners,
+        "total_payout": total_payout,
+    }
+
+
+# ── Customer Acquisition — New Customer Creation (B.5, per-customer) ───────
+# Resolves B.5 from commission_tracking_design.md (previously "needs design
+# work"). Per-customer flat bonus, salesman-only (design doc's own "For
+# future note" table already confirmed this), built into the same UI
+# section as Unique Customers above per explicit ask 2026-09-21 ("merge
+# with the New customer creation option"). Reuses the same
+# commission_campaigns table, campaign_type "New Customer Creation".
+#
+# "New" = the customer's own cacus row was created within the campaign
+# window (ztime, see core/queries.py::get_cacus_creation_detail for why NOT
+# xdatecre/xdatefst) AND none of its phone numbers already belong to a
+# DIFFERENT existing customer -- explicit anti-gaming ask: "New customer
+# means a customer code is created and does not exist within cacus...
+# check with CUS and phone number. If phone number matches this will not
+# be counted as a new customer... some customers have multiple phone
+# numbers with a comma... need to check all the phone numbers." Pooled
+# 100001+100000 (same field team/shared customer codes as A.1/A.1b/A.4;
+# confirmed live: every real customer created in one ZID in a given month
+# was created in the other ZID within minutes, same real-world customer
+# entered into both systems near-simultaneously).
+
+def _split_phone_numbers(raw) -> list:
+    if not raw:
+        return []
+    return [p.strip() for p in str(raw).split(",") if p.strip()]
+
+
+def _all_phone_numbers(cusmobile, whatsapp) -> set:
+    """Every distinct phone number on one customer row, normalized to one
+    canonical form via processing.common.to_whatsapp_number so a bare
+    local-format number in one field matches an 880-format number in
+    another -- both cusmobile (xmobile) and whatsapp (xtaxnum) can each
+    hold multiple comma-separated numbers, and ALL of them (not just the
+    first) are checked, per explicit ask."""
+    raw_numbers = _split_phone_numbers(cusmobile) + _split_phone_numbers(whatsapp)
+    normalized = {to_whatsapp_number(n) for n in raw_numbers}
+    normalized.discard(None)
+    return normalized
+
+
+def _pool_cacus_creation(cacus_100001: pd.DataFrame, cacus_100000: pd.DataFrame) -> pd.DataFrame:
+    """One row per real customer, pooled across 100001+100000 (same
+    99.9%-shared-code pooling A.1b's audit confirmed) -- created_at is the
+    EARLIEST ztime seen for that cusid across either ZID, cusname/spid
+    prefer whichever ZID row has a non-blank value (100001 checked first),
+    and phone_numbers is the UNION of both rows' own numbers (whichever
+    ZID has the more complete data still counts toward the duplicate
+    check)."""
+    cols = ["cusid", "cusname", "spid", "created_at", "phone_numbers"]
+    frames = []
+    for df in (cacus_100001, cacus_100000):
+        if df is None or df.empty:
+            continue
+        d = df.copy()
+        d["cusid"] = d["cusid"].astype(str)
+        d["created_at"] = pd.to_datetime(d["created_at"], errors="coerce")
+        d["phone_numbers"] = d.apply(
+            lambda r: _all_phone_numbers(r.get("cusmobile"), r.get("whatsapp")), axis=1
+        )
+        frames.append(d[cols])
+    if not frames:
+        return pd.DataFrame(columns=cols)
+
+    allrows = pd.concat(frames, ignore_index=True)
+    pooled = allrows.groupby("cusid", as_index=False).agg(
+        cusname=("cusname", lambda s: next((v for v in s if v), "")),
+        spid=("spid", lambda s: next((v for v in s if v), "")),
+        created_at=("created_at", "min"),
+        phone_numbers=("phone_numbers", lambda s: set().union(*s)),
+    )
+    return pooled
+
+
+def compute_new_customer_creation(
+    campaign: dict, cacus_100001: pd.DataFrame, cacus_100000: pd.DataFrame, spname_map: dict,
+) -> dict:
+    """B.5: one row per candidate new customer (created within the
+    campaign's window), never collapsed to a per-salesman summary -- same
+    "one unified table, status column, payout 0 for excluded rows" pattern
+    as B.1/3/4's own `line_items` table, so an admin can see exactly which
+    candidates were paid and which were excluded (and why) in one place.
+
+    `status` is one of "Counted", "Counted (no phone on file --
+    unverified)" (benefit of the doubt when uniqueness can't be checked),
+    "Excluded: phone matches an existing customer", or "Excluded: no
+    salesman on file" (nobody to attribute the bonus to). `payout` is
+    `product_rates["bonus_amount"]` for every counted row, else 0.
+
+    Returns `{"rows": DataFrame[cusid, cusname, spid, spname, created_at,
+    phone_numbers_display, status, payout], "bonus_amount", "new_count",
+    "excluded_count", "total_payout"}`.
+    """
+    window_start, window_end = campaign["window_start"], campaign["window_end"]
+    config = campaign.get("product_rates") or {}
+    bonus_amount = float(config.get("bonus_amount", 0) or 0)
+
+    cols = ["cusid", "cusname", "spid", "spname", "created_at", "phone_numbers_display", "status", "payout"]
+    empty = pd.DataFrame(columns=cols)
+
+    pooled = _pool_cacus_creation(cacus_100001, cacus_100000)
+    if pooled.empty:
+        return {"rows": empty, "bonus_amount": bonus_amount, "new_count": 0, "excluded_count": 0, "total_payout": 0.0}
+
+    # Phone index across the ENTIRE pooled population (every customer, any
+    # creation date) -- a candidate is a duplicate if any of its own
+    # numbers appears under a DIFFERENT cusid anywhere in this index.
+    phone_index: dict = {}
+    for row in pooled.itertuples():
+        for num in row.phone_numbers:
+            phone_index.setdefault(num, set()).add(row.cusid)
+
+    # created_at carries a real time-of-day (ztime), unlike window_end (a
+    # plain date) -- comparing against window_end at midnight would silently
+    # drop every customer created later that same day, so the end bound is
+    # exclusive at the START of the NEXT day instead.
+    start = pd.Timestamp(window_start)
+    end_exclusive = pd.Timestamp(window_end) + pd.Timedelta(days=1)
+    candidates = pooled[
+        pooled["created_at"].notna() & (pooled["created_at"] >= start) & (pooled["created_at"] < end_exclusive)
+    ].copy()
+    if candidates.empty:
+        return {"rows": empty, "bonus_amount": bonus_amount, "new_count": 0, "excluded_count": 0, "total_payout": 0.0}
+
+    def _status(row) -> str:
+        if not row["spid"]:
+            return "Excluded: no salesman on file"
+        if not row["phone_numbers"]:
+            return "Counted (no phone on file — unverified)"
+        other_cusids: set = set()
+        for num in row["phone_numbers"]:
+            other_cusids |= phone_index.get(num, set())
+        other_cusids.discard(row["cusid"])
+        if other_cusids:
+            return "Excluded: phone matches an existing customer"
+        return "Counted"
+
+    candidates["status"] = candidates.apply(_status, axis=1)
+    candidates["payout"] = np.where(candidates["status"].str.startswith("Counted"), bonus_amount, 0.0)
+    candidates["spname"] = candidates["spid"].map(spname_map).fillna("")
+    candidates["phone_numbers_display"] = candidates["phone_numbers"].apply(
+        lambda s: ", ".join(sorted(s)) if s else ""
+    )
+    candidates = candidates.sort_values(["created_at", "cusid"]).reset_index(drop=True)
+
+    new_count = int((candidates["payout"] > 0).sum())
+    excluded_count = int(len(candidates) - new_count)
+    total_payout = float(candidates["payout"].sum())
+
+    return {
+        "rows": candidates[cols],
+        "bonus_amount": bonus_amount,
+        "new_count": new_count,
+        "excluded_count": excluded_count,
+        "total_payout": total_payout,
     }

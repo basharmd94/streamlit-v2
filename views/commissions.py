@@ -17,6 +17,7 @@ from views import (
     commission_app_usage_view,
     commission_best_performer_view,
     commission_campaigns_view,
+    commission_customer_acquisition_view,
     commission_customer_best_performer_view,
     commission_rankings_view,
     commission_shared,
@@ -293,13 +294,8 @@ def _render_individual_target(zid: str, read_only: bool = False) -> None:
     )
 
 
-def _render_new_customer(zid: str, read_only: bool = False) -> None:
-    _render_placeholder(
-        "🆕 B.5 — New Customer Creation",
-        "Not scoped yet — needs real design work with the user before building "
-        "(existing customer-flow logic doesn't fit; first-ever-sale detection "
-        "per customer is genuinely new logic).",
-    )
+def _render_customer_acquisition(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    commission_customer_acquisition_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
 def _sections(read_only: bool, key_suffix: str) -> dict:
@@ -324,7 +320,8 @@ def _sections(read_only: bool, key_suffix: str) -> dict:
         "🎯 Product / Stock Clearance / Slow-Moving Campaign":
             lambda zid: _render_campaign_payout(zid, read_only=read_only, key_suffix=key_suffix),
         "🎯 Individual Target Achievement": _render_individual_target,
-        "🆕 New Customer Creation": _render_new_customer,
+        "🆕 Customer Acquisition":
+            lambda zid: _render_customer_acquisition(zid, read_only=read_only, key_suffix=key_suffix),
     }
 
 
