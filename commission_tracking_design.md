@@ -27,15 +27,13 @@ anything new.
 | A.4 App Usage Commission | ✅ **built 2026-09-21** | none — see §A.4 for what shipped (renamed from "Best App User" — threshold bonus, not a ranking) |
 | B.1/3/4 core (rate/cap/FIFO/gate payout math) | ✅ **built 2026-09-19** | none — verified against real Postgres (see §B.1/3/4) |
 | B.1/3/4 sales-uptick companion metric | ✅ **built 2026-09-19** | baseline window is a user-adjustable parameter (3mo/6mo), as resolved 2026-09-17 |
-| B.2 Individual Target Achievement | ✅ **built and live-verified 2026-09-21** | none — see §B.2 for what shipped. One real open item remains: whether the 100001/100000 gate should apply (deliberately not applied, see §The 100001/100000 gate) |
+| B.2 Individual Target Achievement | ✅ **built and live-verified 2026-09-21/22** | none — see §B.2 for what shipped. Gated on 100001/100000, confirmed 2026-09-22 |
 | B.5 New Customer Creation | ✅ **built 2026-09-21** | none — see §Customer Acquisition (Unique Customers & New Customer Creation) for what shipped. Merged into one admin section with the "Number of Unique Customers" idea per explicit ask |
 | Product Tracking | ✅ **built 2026-09-19** (redesigned version) | none — see §Product Tracking for what shipped |
 | The 100001/100000 gate itself | ✅ buildable | none |
 
-**Every section in this doc is now built** (2026-09-19/21) — nothing left to pick up as a
-starting point. B.2 was the last one, shipped 2026-09-21 but not yet live-verified against
-real Postgres (see its own status row above) — that's the one remaining follow-up, not a
-fresh design question.
+**Every section in this doc is now built and live-verified** (2026-09-19/22), including the
+100001/100000 gate on B.2, confirmed 2026-09-22. Nothing left open in this doc.
 
 ---
 
@@ -830,7 +828,7 @@ Don't assume every future section needs a `recipient_type` toggle just because B
 has one — confirm scope with the user when each is actually picked up, same as everything
 else in this doc.
 
-### B.2 — Individual Target Achievement (built 2026-09-21)
+### B.2 — Individual Target Achievement (built 2026-09-21, gate added 2026-09-22)
 
 `processing/commission_campaigns.py::compute_individual_target_bonus` (engine) +
 `views/commission_individual_target_view.py` (UI). **Simplified vs. the original source-doc
@@ -861,18 +859,22 @@ be rewarded one fixed amount for all. Fairly easy and straightforward."
 - **Reporting month, current-or-future only, pinned at setup** — same rule and mechanism as
   A.1/A.4, reused rather than re-litigated. Live while the reporting month is still ongoing
   (sales capped to today), frozen at final numbers once it closes.
-- **100001/100000 company gate: NOT applied**, deliberately — this was a real open item in
-  the design doc ("assumed yes, not explicitly confirmed"). Given the user's new framing
-  ("fairly easy and straightforward") and the explicit ask to just ship this and review
-  later, it was left unapplied rather than guessed at — **flag with the user before adding
-  it** if that's actually wanted.
+- **100001/100000 company gate: applied, confirmed 2026-09-22.** Shipped without it
+  initially (a real open item in the design doc, "assumed yes, not explicitly confirmed") —
+  the user explicitly confirmed it should apply, "yes gate will apply to B2 as well," and it
+  was added the next day via the same `check_gate` function A.1/B.1/3/4 already use. If
+  either ZID misses its own sales target for the reporting month, `total_payout` zeroes out
+  (`total_payout_if_gate_passed` keeps the raw figure); each salesman's own computed
+  `payout` still shows in the results table, for visibility — same convention as
+  `compute_best_performer_ranking`.
 - **No overlap/conflict logic with A.1** — confirmed earlier in this doc: these are run as
   alternating monthly choices by the user (e.g. Best Performer this month, this
   individual-target commission next month), an operational scheduling choice, not something
   the system needs to arbitrate.
 - Same setup/results split as every other section — admin Commissions page: Create/Edit/
   Delete only, no computation ever runs there. Target Management "💰 Commission Results":
-  gate-free metrics (Total Payout / Qualified / Salesmen With a Target) + one results table
+  a gate banner (✅/⚠️ + each ZID's actual-vs-target, same `_render_gate_banner` shape A.1's
+  view uses) + Total Payout / Qualified / Salesmen With a Target metrics + one results table
   (Salesman Code / Salesman / Target / Net Sales / Achievement % / Qualified / Payout).
 - **Verified in two passes.** First pass (same session, right after building, per an explicit
   ask to conserve tokens — "no need to test live... just want to finish writing this out
@@ -896,6 +898,17 @@ be rewarded one fixed amount for all. Fairly easy and straightforward."
   every other section's own filter (zero leakage in either direction). Both the temporary
   test targets and the test campaign were removed after verification — `data/targets.json`
   is back to its pre-test state.
+- **Gate wiring, verified via pure-function tests 2026-09-22** (added the day after the
+  above, once the user confirmed the gate should apply): a synthetic gate-fails case (100001
+  sales below its summed target, 100000 with no target on file so it trivially passes) and a
+  gate-passes case (sales comfortably above both), both against real `data/targets.json`
+  contents for a real past month (May 2026). Confirmed `total_payout` zeroes correctly on
+  gate failure while `total_payout_if_gate_passed` keeps the raw figure, and each
+  salesman's own row-level `payout` still shows regardless of the gate (same "computed
+  figures stay visible" convention as `compute_best_performer_ranking`). Not re-verified
+  live in the browser for this specific change — low risk, since it reuses `check_gate`
+  unchanged (the same function A.1/B.1/3/4 already ship with) rather than introducing new
+  logic.
 
 ### Customer Acquisition — Unique Customers & New Customer Creation (B.5, built 2026-09-21)
 
@@ -980,10 +993,10 @@ separate roster/excluded tables:
 - **Confirmed source of "did the ZID hit its target"**: the **sum of existing individual
   salesman targets** already in `data/targets.json` for that ZID — explicitly NOT a new
   standalone company-level target value. No new config table/field needed for this.
-- Applies to B.1/B.3/B.4 for certain. **B.2 shipped 2026-09-21 without this gate** — a
-  deliberate choice per the user's own "fairly easy and straightforward" framing when B.2
-  was picked up, not a resolution of the open question — flag with the user if the gate
-  should actually apply there too.
+- Applies to B.1/B.3/B.4, A.1, and (confirmed 2026-09-22) **B.2** — every gated section now
+  uses the same `check_gate` function. B.2 shipped 2026-09-21 without it initially (a
+  deliberate simplification, not a resolution of the open question at the time); the user
+  confirmed the next day it should apply here too, same as everywhere else.
 
 ---
 
@@ -1050,13 +1063,6 @@ ever committed — no migration/cleanup needed.
 
 ## Open items before/while building
 
-Every section in this doc is now built and live-verified. One real follow-up remains, not a
-blocker to anything:
-
-1. **B.2 / gate interaction** — shipped 2026-09-21 WITHOUT the 100001/100000 gate, a
-   deliberate simplification per the user's own instruction at the time, not a resolution of
-   the original open question. Confirm with the user whether the gate should actually apply
-   here, same as B.1/B.3/B.4.
-
-A.4's, B.5's, Product Tracking's, A.1's, and A.2's own open items are all resolved — see
-their own sections, now marked built.
+Every section in this doc is now built, live-verified, and has no remaining open items — see
+each section's own subsection above for what shipped. B.2's gate question (the last one) was
+resolved 2026-09-22: the 100001/100000 gate applies to it, same as B.1/B.3/B.4 and A.1.

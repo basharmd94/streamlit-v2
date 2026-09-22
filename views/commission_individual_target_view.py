@@ -17,10 +17,10 @@
 # this section evaluates, and A.1 already established the "consolidated
 # target" convention of summing a spid's target across both ZIDs.
 #
-# NOT gated on the 100001/100000 company target — a real open item in
-# commission_tracking_design.md ("assumed yes, not explicitly confirmed")
-# — deliberately left unapplied here per the user's own "fairly easy and
-# straightforward" framing; flag with the user before adding it.
+# Gated on the 100001/100000 company target, confirmed 2026-09-22 — same
+# check_gate A.1/B.1/3/4 already use: if either ZID misses its own sales
+# target for the reporting month, total_payout zeroes out (the computed
+# per-salesman figures still show, for visibility).
 #
 # Population = every salesman who HAS a target entry for the reporting
 # month (views/_tm_shared.py::_targets_for_month), not every salesman with
@@ -222,6 +222,21 @@ def _list_campaigns() -> pd.DataFrame:
     return df[df["campaign_type"] == CAMPAIGN_TYPE].reset_index(drop=True)
 
 
+def _render_gate_banner(gate: dict) -> None:
+    if gate["passed"]:
+        st.success("✅ Gate passed — both 100001 and 100000 hit their sales target for this window.", icon="✅")
+    else:
+        st.warning(
+            "⚠️ Gate NOT passed — payout is ৳0 until both ZIDs hit their sales target "
+            "(the computed figures below still show for visibility).", icon="⚠️",
+        )
+    c1, c2 = st.columns(2)
+    for col, zid in zip((c1, c2), ("100001", "100000")):
+        g = gate[zid]
+        status = "✅" if g["hit"] else "❌"
+        col.caption(f"{status} ZID {zid}: {g['actual']:,.0f} / {g['target']:,.0f} target")
+
+
 # ── Campaign detail / results view ──────────────────────────────────────────
 
 def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
@@ -244,7 +259,7 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
     )
     st.caption(
         f"Bonus: {_fmt_bdt(bonus_amount)} per salesman who reaches 100% of their own target "
-        f"— not gated on the 100001/100000 company target."
+        f"— gated on the 100001/100000 company target, same as B.1/3/4."
     )
 
     if not read_only:
@@ -265,6 +280,8 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
         result = cc.compute_individual_target_bonus(
             campaign, sales_df, returns_df, target_by_sp, names, month_start, month_end, today_ts,
         )
+
+    _render_gate_banner(result["gate"])
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Total Payout", _fmt_bdt(result["total_payout"]))

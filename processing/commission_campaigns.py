@@ -1464,18 +1464,30 @@ def compute_individual_target_bonus(
     (live tracking), full-month once it's closed -- same
     is_real_current_month logic as build_pooled_monthly_scores/A.1/A.4.
 
+    **Gated on the 100001/100000 target, confirmed 2026-09-22** (same
+    `check_gate` A.1/B.1/3/4 already use) -- if either ZID misses its own
+    sales target for the reporting month, `total_payout` zeroes out, but
+    each salesman's own computed `payout` in `scores` still shows (for
+    visibility, same convention as compute_best_performer_ranking).
+
     Returns `{"scores": DataFrame[spid, spname, target, net_sales,
     achievement_pct, qualified, payout], "bonus_amount", "qualified_count",
-    "total_payout"}` -- `total_payout` = `qualified_count × bonus_amount`,
-    no gate applied (see module note above).
+    "gate", "gate_passed", "total_payout_if_gate_passed", "total_payout"}` --
+    `total_payout` = `qualified_count × bonus_amount` if the gate passed,
+    else 0.0.
     """
     config = campaign.get("product_rates") or {}
     bonus_amount = float(config.get("bonus_amount", 0) or 0)
+    gate = check_gate(sales_df, month_start, month_end)
 
     cols = ["spid", "spname", "target", "net_sales", "achievement_pct", "qualified", "payout"]
     empty = pd.DataFrame(columns=cols)
     if not target_by_sp:
-        return {"scores": empty, "bonus_amount": bonus_amount, "qualified_count": 0, "total_payout": 0.0}
+        return {
+            "scores": empty, "bonus_amount": bonus_amount, "qualified_count": 0,
+            "gate": gate, "gate_passed": gate["passed"],
+            "total_payout_if_gate_passed": 0.0, "total_payout": 0.0,
+        }
 
     mo_start = pd.Timestamp(month_start)
     mo_end_full = pd.Timestamp(month_end)
@@ -1518,12 +1530,18 @@ def compute_individual_target_bonus(
         })
 
     if not rows:
-        return {"scores": empty, "bonus_amount": bonus_amount, "qualified_count": 0, "total_payout": 0.0}
+        return {
+            "scores": empty, "bonus_amount": bonus_amount, "qualified_count": 0,
+            "gate": gate, "gate_passed": gate["passed"],
+            "total_payout_if_gate_passed": 0.0, "total_payout": 0.0,
+        }
 
     d = pd.DataFrame(rows).sort_values("achievement_pct", ascending=False).reset_index(drop=True)
     qualified_count = int(d["qualified"].sum())
-    total_payout = float(d["payout"].sum())
+    raw_total = float(d["payout"].sum())
     return {
-        "scores": d[cols], "bonus_amount": bonus_amount,
-        "qualified_count": qualified_count, "total_payout": total_payout,
+        "scores": d[cols], "bonus_amount": bonus_amount, "qualified_count": qualified_count,
+        "gate": gate, "gate_passed": gate["passed"],
+        "total_payout_if_gate_passed": raw_total,
+        "total_payout": raw_total if gate["passed"] else 0.0,
     }

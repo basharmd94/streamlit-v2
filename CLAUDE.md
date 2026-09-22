@@ -1030,7 +1030,7 @@ by a deadline, pooled across 100001+100000, gated on both ZIDs hitting their own
 - B.2 (Individual Target Achievement) and B.5 (New Customer Creation) were the last two sections in
   `commission_tracking_design.md` — both built 2026-09-21, see their own subsections below.
 
-### B.2 — Individual Target Achievement (built 2026-09-21)
+### B.2 — Individual Target Achievement (built 2026-09-21, gate added 2026-09-22)
 
 `processing/commission_campaigns.py::compute_individual_target_bonus` (engine) +
 `views/commission_individual_target_view.py` (UI). Full spec: `commission_tracking_design.md` §B.2.
@@ -1054,12 +1054,17 @@ straightforward."
 - **Pooled 100001+100000**, same scope as A.1/A.4. **Reporting month, current-or-future only, pinned at
   setup** — same mechanism as A.1/A.4, reused rather than re-litigated; live while ongoing (sales capped
   to today), frozen once closed.
-- **100001/100000 company gate NOT applied**, deliberately — a real open item in the design doc
-  ("assumed yes, not explicitly confirmed"); left unapplied per the user's "fairly easy and
-  straightforward" framing rather than guessed at. Flag with the user before adding it.
+- **100001/100000 company gate applied, confirmed 2026-09-22** — shipped without it initially (a real
+  open item in the design doc, "assumed yes, not explicitly confirmed"); the user confirmed the next
+  day ("yes gate will apply to B2 as well") and it was wired in via the same `check_gate` function
+  A.1/B.1/3/4 already use. `total_payout` zeroes if either ZID misses its own target
+  (`total_payout_if_gate_passed` keeps the raw figure); each salesman's own row-level `payout` still
+  shows in the results table regardless, same "stays visible" convention as
+  `compute_best_performer_ranking`.
 - Same setup/results split as every other section — admin page: Create/Edit/Delete only. Target
-  Management results: Total Payout / Qualified / Salesmen With a Target metrics + one results table
-  (Salesman Code / Salesman / Target / Net Sales / Achievement % / Qualified / Payout).
+  Management results: a gate banner (✅/⚠️ + each ZID's actual-vs-target) + Total Payout / Qualified /
+  Salesmen With a Target metrics + one results table (Salesman Code / Salesman / Target / Net Sales /
+  Achievement % / Qualified / Payout).
 - **Verified in two passes.** First, pure-function tests (per an explicit ask to conserve tokens that
   session): `_targets_for_month` parses the real local `data/targets.json`'s actual key format
   correctly; `compute_individual_target_bonus` correctly qualifies a salesman landing exactly on the
@@ -1072,7 +1077,11 @@ straightforward."
   reproduced both exactly. Live in the browser as a real admin: created a real September 2026 campaign,
   confirmed the admin page runs no computation, and confirmed Commission Results computed the identical
   numbers (Total Payout ৳2,000, Qualified 1 of 2). `campaign_type` isolation confirmed against every
-  other section's own filter. Test target entries and campaign removed after verification.
+  other section's own filter. Test target entries and campaign removed after verification. Gate wiring
+  (added the next day) verified via pure-function tests: a synthetic gate-fails case (against real
+  `data/targets.json` May 2026 targets) confirmed `total_payout` zeroes to 0 while individual rows keep
+  showing their own qualifying `payout`, and a gate-passes case confirmed `total_payout` matches the raw
+  total exactly — not re-verified live, since it reuses `check_gate` unchanged.
 
 ### A.2 — Highest Product Sales (ranked)
 
