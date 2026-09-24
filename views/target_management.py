@@ -1200,9 +1200,10 @@ def display_target_management_page(current_page, zid, data_dict):
             )
 
             # Search filter
-            _search = st.text_input("🔍 Search by Item Name or Group", key="tm_stock_search")
+            _search = st.text_input("🔍 Search by Item Code, Name, or Group", key="tm_stock_search")
             if _search:
                 _mask = (
+                    disp["Item ID"].astype(str).str.contains(_search, case=False, na=False) |
                     disp["Item Name"].str.contains(_search, case=False, na=False) |
                     disp["Item Group"].str.contains(_search, case=False, na=False)
                 )
