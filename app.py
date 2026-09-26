@@ -488,7 +488,7 @@ class BaseApp:
             st.error("You don't have access to any pages. Please contact your administrator.")
             return
 
-        _ALLOWED_ZIDS = {'100000', '100001', '100005', '100009'}
+        _ALLOWED_ZIDS = {'100000', '100001', '100005', '100007', '100009'}
         zid_dict = {k: v for k, v in _load_zid_dict().items() if k in _ALLOWED_ZIDS}
 
         project_dict = {

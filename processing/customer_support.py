@@ -17,6 +17,7 @@ _ZID_PROJECT: dict[str, str] = {
     "100001": "GULSHAN TRADING",
     "100000": "GI Corporation",
     "100005": "Zepto Chemicals",
+    "100007": "HMBR Online Shop",
 }
 
 # Voucher-prefix → human transaction type (first match wins)
