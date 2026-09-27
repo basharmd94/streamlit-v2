@@ -531,6 +531,16 @@ def plot_yoy_monthly_comparison(filtered_data,filtered_data_r,code_col,selected_
         df = df_sales.groupby(["year", "month"])["proddiscount"].sum().reset_index(name="value")
     elif metric == "Number of Product Discounts":
         df = df_sales[df_sales["proddiscount"] > 0].groupby(["year", "month"])["proddiscount"].count().reset_index(name="value")
+    elif metric == "Net Units Sold":
+        sales_grouped = df_sales.groupby(["year", "month"])["quantity"].sum().reset_index()
+        returns_grouped = df_returns.groupby(["year", "month"])["returnqty"].sum().reset_index()
+        df = pd.merge(sales_grouped, returns_grouped, on=["year", "month"], how="left")
+        df["returnqty"].fillna(0, inplace=True)
+        df["value"] = df["quantity"] - df["returnqty"]
+    elif metric == "Units Returned":
+        df = df_returns.groupby(["year", "month"])["returnqty"].sum().reset_index(name="value")
+    elif metric == "Units Sold":
+        df = df_sales.groupby(["year", "month"])["quantity"].sum().reset_index(name="value")
     else:
         st.error("Unsupported metric.")
         return
@@ -620,6 +630,16 @@ def plot_yoy_daily_comparison(filtered_data, filtered_data_r, code_col, selected
         df = df_sales.groupby(["year", "day_month"])["proddiscount"].sum().reset_index(name="value")
     elif metric == "Number of Product Discounts":
         df = df_sales[df_sales["proddiscount"] > 0].groupby(["year", "day_month"])["proddiscount"].count().reset_index(name="value")
+    elif metric == "Net Units Sold":
+        sales_grouped = df_sales.groupby(["year", "day_month"])["quantity"].sum().reset_index()
+        returns_grouped = df_returns.groupby(["year", "day_month"])["returnqty"].sum().reset_index()
+        df = pd.merge(sales_grouped, returns_grouped, on=["year", "day_month"], how="left")
+        df["returnqty"].fillna(0, inplace=True)
+        df["value"] = df["quantity"] - df["returnqty"]
+    elif metric == "Units Returned":
+        df = df_returns.groupby(["year", "day_month"])["returnqty"].sum().reset_index(name="value")
+    elif metric == "Units Sold":
+        df = df_sales.groupby(["year", "day_month"])["quantity"].sum().reset_index(name="value")
     else:
         st.error("Unsupported metric.")
         return
@@ -701,6 +721,16 @@ def plot_yoy_dow_comparison(filtered_data, filtered_data_r, code_col, selected_c
         df = df_sales.groupby(["year", "weekday"])["proddiscount"].sum().reset_index(name="value")
     elif metric == "Number of Product Discounts":
         df = df_sales[df_sales["proddiscount"] > 0].groupby(["year", "weekday"])["proddiscount"].count().reset_index(name="value")
+    elif metric == "Net Units Sold":
+        sales_grouped = df_sales.groupby(["year", "weekday"])["quantity"].sum().reset_index()
+        returns_grouped = df_returns.groupby(["year", "weekday"])["returnqty"].sum().reset_index()
+        df = pd.merge(sales_grouped, returns_grouped, on=["year", "weekday"], how="left")
+        df["returnqty"].fillna(0, inplace=True)
+        df["value"] = df["quantity"] - df["returnqty"]
+    elif metric == "Units Returned":
+        df = df_returns.groupby(["year", "weekday"])["returnqty"].sum().reset_index(name="value")
+    elif metric == "Units Sold":
+        df = df_sales.groupby(["year", "weekday"])["quantity"].sum().reset_index(name="value")
     else:
         st.error("Unsupported metric.")
         return
@@ -786,6 +816,16 @@ def plot_yoy_dom_comparison(filtered_data, filtered_data_r, code_col, selected_c
         df = df_sales.groupby(["year", "day"])["proddiscount"].sum().reset_index(name="value")
     elif metric == "Number of Product Discounts":
         df = df_sales[df_sales["proddiscount"] > 0].groupby(["year", "day"])["proddiscount"].count().reset_index(name="value")
+    elif metric == "Net Units Sold":
+        sales_grouped = df_sales.groupby(["year", "day"])["quantity"].sum().reset_index()
+        returns_grouped = df_returns.groupby(["year", "day"])["returnqty"].sum().reset_index()
+        df = pd.merge(sales_grouped, returns_grouped, on=["year", "day"], how="left")
+        df["returnqty"].fillna(0, inplace=True)
+        df["value"] = df["quantity"] - df["returnqty"]
+    elif metric == "Units Returned":
+        df = df_returns.groupby(["year", "day"])["returnqty"].sum().reset_index(name="value")
+    elif metric == "Units Sold":
+        df = df_sales.groupby(["year", "day"])["quantity"].sum().reset_index(name="value")
     else:
         st.error("Unsupported metric.")
         return
@@ -856,6 +896,16 @@ def plot_month_vs_month_comparison(filtered_data,filtered_data_r,code_col,name_c
         df = df_sales.groupby(["month_label", code_col])["proddiscount"].sum().reset_index(name="value")
     elif metric == "Number of Product Discounts":
         df = df_sales[df_sales["proddiscount"] > 0].groupby(["month_label", code_col])["proddiscount"].count().reset_index(name="value")
+    elif metric == "Net Units Sold":
+        sales_grouped = df_sales.groupby(["month_label", code_col])["quantity"].sum().reset_index()
+        returns_grouped = df_returns.groupby(["month_label", code_col])["returnqty"].sum().reset_index()
+        df = pd.merge(sales_grouped, returns_grouped, on=["month_label", code_col], how="left")
+        df["returnqty"].fillna(0, inplace=True)
+        df["value"] = df["quantity"] - df["returnqty"]
+    elif metric == "Units Returned":
+        df = df_returns.groupby(["month_label", code_col])["returnqty"].sum().reset_index(name="value")
+    elif metric == "Units Sold":
+        df = df_sales.groupby(["month_label", code_col])["quantity"].sum().reset_index(name="value")
     else:
         st.error("Unsupported metric.")
         return
@@ -954,6 +1004,16 @@ def plot_month_vs_month_dow_comparison(filtered_data,filtered_data_r,code_col,na
         df = df_sales.groupby(["month_label", "DOW", code_col])["proddiscount"].sum().reset_index(name="value")
     elif metric == "Number of Product Discounts":
         df = df_sales[df_sales["proddiscount"] > 0].groupby(["month_label", "DOW", code_col])["proddiscount"].count().reset_index(name="value")
+    elif metric == "Net Units Sold":
+        sales_grouped = df_sales.groupby(["month_label", "DOW", code_col])["quantity"].sum().reset_index()
+        returns_grouped = df_returns.groupby(["month_label", "DOW", code_col])["returnqty"].sum().reset_index()
+        df = pd.merge(sales_grouped, returns_grouped, on=["month_label", "DOW", code_col], how="left")
+        df["returnqty"].fillna(0, inplace=True)
+        df["value"] = df["quantity"] - df["returnqty"]
+    elif metric == "Units Returned":
+        df = df_returns.groupby(["month_label", "DOW", code_col])["returnqty"].sum().reset_index(name="value")
+    elif metric == "Units Sold":
+        df = df_sales.groupby(["month_label", "DOW", code_col])["quantity"].sum().reset_index(name="value")
     else:
         st.error("Unsupported metric.")
         return
@@ -1055,6 +1115,16 @@ def plot_month_vs_month_dom_comparison(filtered_data,filtered_data_r,code_col,na
         df = df_sales.groupby(group_cols)["proddiscount"].sum().reset_index(name="value")
     elif metric == "Number of Product Discounts":
         df = df_sales[df_sales["proddiscount"] > 0].groupby(group_cols)["proddiscount"].count().reset_index(name="value")
+    elif metric == "Net Units Sold":
+        sales_grouped = df_sales.groupby(group_cols)["quantity"].sum().reset_index()
+        returns_grouped = df_returns.groupby(group_cols)["returnqty"].sum().reset_index()
+        df = pd.merge(sales_grouped, returns_grouped, on=group_cols, how="left")
+        df["returnqty"].fillna(0, inplace=True)
+        df["value"] = df["quantity"] - df["returnqty"]
+    elif metric == "Units Returned":
+        df = df_returns.groupby(group_cols)["returnqty"].sum().reset_index(name="value")
+    elif metric == "Units Sold":
+        df = df_sales.groupby(group_cols)["quantity"].sum().reset_index(name="value")
     else:
         st.error("Unsupported metric.")
         return
