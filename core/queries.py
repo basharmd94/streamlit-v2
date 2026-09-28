@@ -3542,3 +3542,98 @@ def get_cacus_creation_detail(filters=None) -> Tuple[str, tuple]:
         WHERE zid = %s
     """
     return sql, (zid,)
+
+
+def get_item_master_report(filters: Dict[str, Any] = None) -> Tuple[str, tuple]:
+    """Admin-only Item Master Report (Usage Stats -> "📦 Item Master Report").
+
+    Every caitem row for 100001/100009/100000 -- deliberately NOT filtered
+    to final_items_view's own xgitem whitelist (that view only covers a
+    curated subset of item groups per ZID, not the full catalog), since
+    this report is explicitly meant to show ALL products. Stock is instead
+    computed directly from imtrn using the same warehouse names final_items_view
+    itself uses, bypassing its group restriction.
+
+    One row per (zid, xitem, opspprc tier) -- an item with 3 price tiers
+    produces 3 rows, with stock/purchase-count repeated across them; an
+    item with no opspprc entry still appears once with tier_qty/tier_disc
+    both NULL. Purchase frequency is IP-- (import) purchase orders only,
+    any status, last 5 years -- domestic PO-- deliberately excluded per
+    explicit ask, across all three ZIDs.
+    """
+    sql = """
+    WITH
+    stk_100001 AS (
+        SELECT im.xitem, SUM(im.xqty * im.xsign) AS stock
+        FROM imtrn im
+        WHERE im.zid = 100001
+          AND im.xwh = 'HMBR -Main Store (4th Floor)'
+        GROUP BY im.xitem
+    ),
+    stk_100009_linked AS (
+        SELECT ca9.xdrawing AS xitem_100001, SUM(im.xqty * im.xsign) AS stock
+        FROM imtrn im
+        JOIN caitem ca9 ON ca9.zid = 100009 AND ca9.xitem = im.xitem
+        WHERE im.zid = 100009
+          AND im.xwh IN ('Finished Goods Store Packaging', 'Raw Material Store Packaging')
+          AND ca9.xdrawing IS NOT NULL AND ca9.xdrawing <> ''
+        GROUP BY ca9.xdrawing
+    ),
+    stk_100009_own AS (
+        SELECT im.xitem, SUM(im.xqty * im.xsign) AS stock
+        FROM imtrn im
+        WHERE im.zid = 100009
+          AND im.xwh IN ('Finished Goods Store Packaging', 'Raw Material Store Packaging')
+        GROUP BY im.xitem
+    ),
+    stk_100000 AS (
+        SELECT im.xitem, SUM(im.xqty * im.xsign) AS stock
+        FROM imtrn im
+        WHERE im.zid = 100000
+          AND im.xwh IN ('Finished Goods Store', 'Sales Warehouse GI')
+        GROUP BY im.xitem
+    ),
+    purchase_freq AS (
+        SELECT
+            poord.zid,
+            poodt.xitem,
+            COUNT(DISTINCT poord.xpornum) AS purchase_count_5yr
+        FROM poord
+        JOIN poodt ON poord.xpornum = poodt.xpornum AND poord.zid = poodt.zid
+        WHERE poord.zid IN (100001, 100009, 100000)
+          AND poord.xpornum LIKE 'IP--%%'
+          AND poord.xdate >= (CURRENT_DATE - INTERVAL '5 years')
+        GROUP BY poord.zid, poodt.xitem
+    )
+    SELECT
+        ci.zid,
+        ci.xitem,
+        ci.xdesc,
+        ci.xlong,
+        ci.xgitem,
+        ci.xabc,
+        ci.xdrawing,
+        ci.xstdprice                                  AS std_price,
+        op.xqty                                        AS tier_qty,
+        op.xdisc                                       AS tier_disc,
+        CASE ci.zid
+            WHEN 100001 THEN COALESCE(s1.stock, 0)
+            WHEN 100009 THEN COALESCE(s9o.stock, 0)
+            WHEN 100000 THEN COALESCE(s0.stock, 0)
+        END                                             AS own_zid_stock,
+        CASE ci.zid
+            WHEN 100001 THEN COALESCE(s1.stock, 0) + COALESCE(s9l.stock, 0)
+            ELSE NULL
+        END                                             AS combined_100001_plus_100009_stock,
+        COALESCE(pf.purchase_count_5yr, 0)             AS purchase_count_last_5yr_ip_only
+    FROM caitem ci
+    LEFT JOIN stk_100001        s1  ON ci.zid = 100001 AND s1.xitem = ci.xitem
+    LEFT JOIN stk_100009_linked s9l ON ci.zid = 100001 AND s9l.xitem_100001 = ci.xitem
+    LEFT JOIN stk_100009_own    s9o ON ci.zid = 100009 AND s9o.xitem = ci.xitem
+    LEFT JOIN stk_100000        s0  ON ci.zid = 100000 AND s0.xitem = ci.xitem
+    LEFT JOIN opspprc           op  ON op.zid = ci.zid AND op.xpricecat = ci.xitem
+    LEFT JOIN purchase_freq     pf  ON pf.zid = ci.zid AND pf.xitem = ci.xitem
+    WHERE ci.zid IN (100001, 100009, 100000)
+    ORDER BY ci.zid, ci.xitem, op.xqty
+    """
+    return sql, ()

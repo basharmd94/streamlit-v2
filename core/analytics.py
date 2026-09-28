@@ -124,6 +124,7 @@ class Analytics:
             "do_audit_pending_do":      queries.get_do_audit_pending_do,
             "do_audit_partial_fulfillment": queries.get_do_audit_partial_fulfillment,
             "do_audit_unpersisted":     queries.get_do_audit_unpersisted,
+            "item_master_report":       queries.get_item_master_report,
         }
 
         query_func = query_map.get(table_name)

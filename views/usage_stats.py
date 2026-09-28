@@ -13,13 +13,97 @@ import pandas as pd
 import streamlit as st
 
 from processing import usage_log as ul
+from processing import item_master_report as imr
 from visualization.common_v import plot_bar_chart
 
 
 def display_usage_stats_page() -> None:
-    ul.log_view("Usage Stats")
-
     st.title("📊 Usage Stats")
+
+    _view_mode = st.radio(
+        "View", ["📊 Usage Log", "📦 Item Master Report"],
+        horizontal=True, key="us_view_mode",
+    )
+    ul.log_view("Usage Stats", _view_mode)
+    st.markdown("---")
+
+    if _view_mode == "📦 Item Master Report":
+        _render_item_master_report()
+        return
+
+    _render_usage_log()
+
+
+def _render_item_master_report() -> None:
+    st.caption(
+        "Every product in caitem for 100001/100009/100000, related to current stock "
+        "(100001+100009 combined via xdrawing) and 5-year import (IP--) purchase frequency. "
+        "One row per price tier — an item with 3 opspprc tiers shows 3 rows."
+    )
+
+    with st.spinner("Loading item master…"):
+        df = imr.load_item_master_report()
+
+    if df.empty:
+        st.info("No data available.")
+        return
+
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        zid_opts = sorted(df["zid"].astype(str).unique().tolist())
+        sel_zid = st.multiselect(
+            "ZID", zid_opts,
+            format_func=lambda z: {"100001": "100001 — HMBR/Gulshan Trading",
+                                    "100009": "100009 — Gulshan Packaging",
+                                    "100000": "100000 — GI Corporation"}.get(z, z),
+            key="imr_zid",
+        )
+    with f2:
+        gitem_opts = sorted(df["xgitem"].dropna().unique().tolist())
+        sel_gitem = st.multiselect("Item Group (xgitem)", gitem_opts, key="imr_gitem")
+    with f3:
+        abc_opts = sorted(df["xabc"].dropna().unique().tolist())
+        sel_abc = st.multiselect("ABC Class (xabc)", abc_opts, key="imr_abc")
+    with f4:
+        drawing_opts = sorted(df["xdrawing"].dropna().unique().tolist())
+        sel_drawing = st.multiselect("Cross-ZID Link (xdrawing)", drawing_opts, key="imr_drawing")
+
+    filtered = imr.apply_filters(
+        df, zids=sel_zid, xgitems=sel_gitem, xabcs=sel_abc, xdrawings=sel_drawing,
+    )
+
+    if filtered.empty:
+        st.warning("No items match these filters.")
+        return
+
+    show = filtered.rename(columns={
+        "zid": "ZID", "xitem": "Item Code", "xdesc": "Description", "xlong": "Long Description",
+        "xgitem": "Item Group", "xabc": "ABC Class", "xdrawing": "Cross-ZID Link (xdrawing)",
+        "std_price": "Std Price", "tier_qty": "Tier Qty", "tier_disc": "Tier Disc",
+        "own_zid_stock": "Own ZID Stock", "combined_100001_plus_100009_stock": "Combined 100001+100009 Stock",
+        "purchase_count_last_5yr_ip_only": "Purchase Count (5yr, IP-- only)",
+    })
+    st.caption(f"{len(show):,} row(s) — {show['Item Code'].nunique():,} distinct item(s).")
+    st.dataframe(
+        show,
+        column_config={
+            "Std Price": st.column_config.NumberColumn(format="%.2f"),
+            "Tier Qty": st.column_config.NumberColumn(format="%.2f"),
+            "Tier Disc": st.column_config.NumberColumn(format="%.2f"),
+            "Own ZID Stock": st.column_config.NumberColumn(format="%.2f"),
+            "Combined 100001+100009 Stock": st.column_config.NumberColumn(format="%.2f"),
+        },
+        width="stretch", hide_index=True,
+    )
+    st.download_button(
+        "⬇ Download CSV",
+        show.to_csv(index=False).encode("utf-8"),
+        file_name="item_master_report.csv", mime="text/csv",
+        key="imr_dl",
+    )
+
+
+def _render_usage_log() -> None:
     st.caption(
         "Which pages/modes actually get used, by whom, and for how long. Data is retained on a "
         "rolling 1-year basis — anything older than that is cleaned up automatically."
