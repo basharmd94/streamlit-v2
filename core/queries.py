@@ -1694,21 +1694,35 @@ def get_cacus_directory(filters: Dict[str, Any]) -> Tuple[str, tuple]:
 def get_opspprc_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """Wholesale price tier from opspprc (lowest xqty row per item).
 
-    Returns item_id (= xpricecat), wh_qty (min qty to qualify), and
+    Returns item_id (= caitem.xitem), wh_qty (min qty to qualify), and
     wh_price (caitem.xstdprice - opspprc.xdisc). One row per item.
+
+    The real ERP price-tier lookup (op/opspprc.page, op/opodt.page:553-628)
+    resolves an item's tier via caitem.xpricecat -- a separate category code
+    an item is assigned to, which is NOT always equal to the item's own
+    xitem (confirmed on real data: for zid 100001, 1,053 of ~3,900 items
+    share a category like "BDT"/"Retail" rather than being self-named).
+    Joining opspprc.xpricecat directly against caitem.xitem (the old version
+    of this query) only works for self-named items -- it silently misses
+    every item on a shared category, and can even pick up a coincidental,
+    unrelated tier if some other opspprc row's category happens to equal
+    this item's own xitem. Joining through caitem.xpricecat instead is
+    correct for both cases (self-named items have xpricecat == xitem, so
+    this is backward compatible with the one case the old join did get
+    right).
     """
     zid = filters["zid"][0]
     sql = """
-        SELECT DISTINCT ON (o.xpricecat)
-            o.zid,
-            o.xpricecat                         AS item_id,
+        SELECT DISTINCT ON (ci.xitem)
+            ci.zid,
+            ci.xitem                            AS item_id,
             o.xqty                              AS wh_qty,
             GREATEST(ci.xstdprice - o.xdisc, 0) AS wh_price,
             ci.xstdprice
-        FROM opspprc o
-        JOIN caitem ci ON o.zid = ci.zid AND o.xpricecat = ci.xitem
-        WHERE o.zid = %s
-        ORDER BY o.xpricecat, o.xqty
+        FROM caitem ci
+        JOIN opspprc o ON o.zid = ci.zid AND o.xpricecat = ci.xpricecat
+        WHERE ci.zid = %s
+        ORDER BY ci.xitem, o.xqty
     """
     return sql, (zid,)
 
@@ -1753,7 +1767,7 @@ def get_rate_mismatch_audit(filters: Dict[str, Any]) -> Tuple[str, tuple]:
         LEFT JOIN cacus cc ON cc.zid = o.zid AND cc.xcus = o.xcus
         LEFT JOIN LATERAL (
             SELECT xdisc FROM opspprc
-            WHERE zid = o.zid AND xpricecat = d.xitem
+            WHERE zid = o.zid AND xpricecat = ci.xpricecat
             ORDER BY xqty LIMIT 1
         ) wp ON true
         WHERE o.zid = %s AND o.xdate = %s
@@ -1784,7 +1798,10 @@ def get_inventory_overview(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """
     Stock + pricing for the Total Inventory view in Purchase Analysis.
     Joins final_items_view with caitem (std price, packcode) and the
-    lowest opspprc tier per item (min disc amt, min qty).
+    lowest opspprc tier per item (min disc amt, min qty) -- via
+    caitem.xpricecat, not the item's own xitem (see get_opspprc_data's own
+    note for why: an item's real price category can be a shared code like
+    "BDT"/"Retail", not always equal to its own item code).
     """
     zid = filters["zid"][0]
     sql = """
@@ -1809,7 +1826,7 @@ def get_inventory_overview(filters: Dict[str, Any]) -> Tuple[str, tuple]:
                 xdisc
             FROM opspprc
             ORDER BY zid, xpricecat, xqty
-        ) op ON f.item_id = op.xpricecat AND f.zid = op.zid
+        ) op ON ci.xpricecat = op.xpricecat AND f.zid = op.zid
         WHERE f.zid = %s
         ORDER BY f.item_name
     """
@@ -3631,7 +3648,7 @@ def get_item_master_report(filters: Dict[str, Any] = None) -> Tuple[str, tuple]:
     LEFT JOIN stk_100009_linked s9l ON ci.zid = 100001 AND s9l.xitem_100001 = ci.xitem
     LEFT JOIN stk_100009_own    s9o ON ci.zid = 100009 AND s9o.xitem = ci.xitem
     LEFT JOIN stk_100000        s0  ON ci.zid = 100000 AND s0.xitem = ci.xitem
-    LEFT JOIN opspprc           op  ON op.zid = ci.zid AND op.xpricecat = ci.xitem
+    LEFT JOIN opspprc           op  ON op.zid = ci.zid AND op.xpricecat = ci.xpricecat
     LEFT JOIN purchase_freq     pf  ON pf.zid = ci.zid AND pf.xitem = ci.xitem
     WHERE ci.zid IN (100001, 100009, 100000)
     ORDER BY ci.zid, ci.xitem, op.xqty
