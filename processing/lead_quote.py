@@ -7,9 +7,10 @@ hand-picked lead and a hand-picked list of items + quantities.
 Pricing is ALWAYS sourced from zid=100007's own caitem.xstdprice and
 opspprc tiers, regardless of which letterhead (brand) is chosen for the
 quote's look -- confirmed explicitly: the letterhead choice only changes
-which logo/branding prints and which subset of the 100007 catalog is
-offered in the item picker (barcode prefix 03- = Zepto-sourced, 01-/02- =
-HMBR/GI-sourced), never which ZID the price comes from.
+which logo/branding prints, the letter wording (per-brand, see
+_BRAND_LETTER_CONTENT below), and which subset of the 100007 catalog is
+offered in the item picker (via caitem.xitemnew, the item's source ZID),
+never which ZID the price comes from.
 
 opspprc.xqty/xqtypur define a closed, non-overlapping qty range per tier
 (e.g. 1-1, 2-3, 4-99999) -- see scripts/upload_opspprc_100007.py for how
@@ -32,9 +33,27 @@ _LETTERHEAD_PATHS = {
     "HMBR": "data/letterhead_hmbr.pdf",
 }
 
-# Barcode-prefix convention confirmed against real 100007 caitem data:
-# 01- = HMBR(100001)-sourced, 02- = GI(100000)-sourced, 03- = Zepto(100005)-sourced.
-# "HMBR" letterhead covers both 01- and 02- (100001 + 100000, per explicit ask).
+# reportlab's base-14 fonts (Helvetica etc.) are Latin-only -- a Bengali lead
+# name rendered in them comes out as solid boxes (missing-glyph placeholders).
+# Noto Sans Bengali (SIL Open Font License, freely redistributable) covers
+# both Bengali and Latin/digits in one face, confirmed by direct test, so
+# it's used for ALL regular body text rather than switching fonts per field.
+# Bold slots (table header, "Grand Total") stay on Helvetica-Bold since that
+# text is always a fixed English label, never user-supplied.
+_FONT_NAME = "NotoBengali"
+_FONT_PATH = "data/fonts/NotoSansBengali-Regular.ttf"
+_fonts_registered = False
+
+
+def _ensure_fonts_registered() -> None:
+    global _fonts_registered
+    if _fonts_registered:
+        return
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    pdfmetrics.registerFont(TTFont(_FONT_NAME, _FONT_PATH))
+    _fonts_registered = True
+
 # Source-ZID column (caitem.xitemnew, confirmed real) -- the authoritative
 # way to tell which ZID a 100007 item was originally sourced from. "HMBR"
 # letterhead covers both 100001 and 100000, per explicit ask.
@@ -92,16 +111,43 @@ def resolve_tier_price(tiers_df: pd.DataFrame, xitem: str, qty: float) -> dict:
     return {"xstdprice": std_price, "xdisc": disc, "unit_price": unit_price}
 
 
-_LETTER_INTRO = (
-    "Thank you for your interest in our products. As requested, please find "
-    "below our price quotation for the items specified:"
-)
-_LETTER_CLOSING = (
-    "This quotation is valid for 7 days from the date of issue. Prices are "
-    "subject to change without prior notice thereafter. Please feel free to "
-    "contact us for any clarification or to confirm your order."
-)
-_LETTER_SIGNOFF = "We look forward to serving you.\n\nSincerely,\n{company} Sales Team"
+# Per-brand letter body -- only Zepto is filled in. A brand with no entry
+# here means its letter wording hasn't been provided yet; build_quote_pdf
+# raises ValueError for it (distinct from FileNotFoundError, used for a
+# missing letterhead file) so the view can show its own "not configured yet"
+# message rather than generating a blank/wrong letter.
+_BRAND_LETTER_CONTENT = {
+    "Zepto": {
+        "intro_paragraphs": [
+            "Thank you for reaching out to us. ZEPTO Chemicals, a sister concern of HMBR "
+            "Tools & Chemicals Ltd. (EST. 1980), manufactures premium hygiene solutions "
+            "including disinfectants, degreasers, and surface cleaners. Trusted for 8+ "
+            "years by leading restaurants, hospitals, garment industries, and government "
+            "projects across Bangladesh. Our products are US-formulated by trained "
+            "chemists using high-grade raw materials sourced from Germany, Korea, "
+            "Singapore, and Taiwan. We would be pleased to provide complimentary samples "
+            "or arrange a convenient office visit.",
+            "We are very pleased to provide you with our best price offer.",
+        ],
+        "vat_note": "*The above price does not include government VAT/AIT.",
+        "terms": [
+            "Payment is required upon delivery by cash or credit/debit card.",
+            "Cheque payments must be provided in advance and cleared before dispatch.",
+            "No credit or unpaid consignments will be accepted.",
+            "This quotation is valid for 15 days.",
+            "Products will be delivered to your doorstep within 72 hours.",
+        ],
+        "nb": (
+            "N.B. Please do not hesitate to let us know if you have any further "
+            "questions or if you are interested in purchasing from us."
+        ),
+        "signoff": "Sincerely,\nZEPTO Consumer Chemicals",
+    },
+}
+
+
+def has_letter_content(brand: str) -> bool:
+    return brand in _BRAND_LETTER_CONTENT
 
 
 def build_quote_pdf(brand: str, lead_name: str, items: list[dict], quote_date: date | None = None) -> bytes:
@@ -120,6 +166,11 @@ def build_quote_pdf(brand: str, lead_name: str, items: list[dict], quote_date: d
         raise FileNotFoundError(
             f"{letterhead_path} not found -- upload the {brand} letterhead PDF to data/ first."
         )
+    content = _BRAND_LETTER_CONTENT.get(brand)
+    if content is None:
+        raise ValueError(f"No letter wording configured yet for {brand} -- ask for it before generating.")
+
+    _ensure_fonts_registered()
 
     quote_date = quote_date or date.today()
     page_w, page_h = A4
@@ -130,21 +181,24 @@ def build_quote_pdf(brand: str, lead_name: str, items: list[dict], quote_date: d
     margin_x = 50
     y = page_h - 160  # below the letterhead's header banner
 
-    c.setFont("Helvetica", 10)
+    c.setFont(_FONT_NAME, 10)
     c.drawRightString(page_w - margin_x, y, f"Date: {quote_date.strftime('%d %B %Y')}")
     y -= 30
 
-    c.setFont("Helvetica", 11)
+    c.setFont(_FONT_NAME, 11)
     c.drawString(margin_x, y, "Dear Sir/Madam,")
     y -= 14
     c.drawString(margin_x, y, f"(RE: {lead_name})" if lead_name else "")
     y -= 22
 
-    c.setFont("Helvetica", 10)
-    for line in _wrap(_LETTER_INTRO, 95):
-        c.drawString(margin_x, y, line)
-        y -= 14
-    y -= 10
+    c.setFont(_FONT_NAME, 10)
+    for i, para in enumerate(content["intro_paragraphs"]):
+        if i > 0:
+            y -= 6
+        for line in _wrap(para, 98):
+            c.drawString(margin_x, y, line)
+            y -= 13
+    y -= 8
 
     table_data = [["Item", "Qty", "Unit Price (BDT)", "Line Total (BDT)"]]
     grand_total = 0.0
@@ -161,8 +215,9 @@ def build_quote_pdf(brand: str, lead_name: str, items: list[dict], quote_date: d
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, -2), _FONT_NAME),  # item rows -- may contain Bengali
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),  # header row -- fixed English labels
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),  # Grand Total row -- fixed English label
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("GRID", (0, 0), (-1, -2), 0.5, colors.HexColor("#BDC3C7")),
         ("LINEABOVE", (0, -1), (-1, -1), 1, colors.HexColor("#2C3E50")),
@@ -174,15 +229,32 @@ def build_quote_pdf(brand: str, lead_name: str, items: list[dict], quote_date: d
     table_w, table_h = table.wrapOn(c, page_w - 2 * margin_x, y)
     y -= table_h
     table.drawOn(c, margin_x, y)
-    y -= 24
-
-    c.setFont("Helvetica", 10)
-    for line in _wrap(_LETTER_CLOSING, 95):
-        c.drawString(margin_x, y, line)
-        y -= 14
     y -= 16
 
-    for line in _LETTER_SIGNOFF.format(company=brand).split("\n"):
+    c.setFont(_FONT_NAME, 9)
+    c.drawString(margin_x, y, content["vat_note"])
+    y -= 20
+
+    c.setFont("Helvetica-Bold", 10.5)
+    c.drawString(margin_x, y, "Terms & Conditions")
+    y -= 15
+
+    c.setFont(_FONT_NAME, 9.5)
+    for i, term in enumerate(content["terms"], start=1):
+        wrapped = _wrap(f"{i}. {term}", 104)
+        for j, line in enumerate(wrapped):
+            c.drawString(margin_x + (10 if j > 0 else 0), y, line)
+            y -= 13
+    y -= 10
+
+    c.setFont(_FONT_NAME, 9.5)
+    for line in _wrap(content["nb"], 104):
+        c.drawString(margin_x, y, line)
+        y -= 13
+    y -= 14
+
+    c.setFont(_FONT_NAME, 10)
+    for line in content["signoff"].split("\n"):
         c.drawString(margin_x, y, line)
         y -= 14
 

@@ -1785,6 +1785,14 @@ def _show_generate_quote(zid: str, leads_df: pd.DataFrame) -> None:
         )
         return
 
+    if not _lq.has_letter_content(brand):
+        st.info(
+            f"The {brand} letterhead is uploaded, but the letter wording for {brand} quotes "
+            f"hasn't been provided yet — Zepto quotes are ready now. Send the {brand} letter "
+            f"text and this will be enabled the same way."
+        )
+        return
+
     lead_labels = {
         f"{r.full_name} — {r.company_name or '—'} ({r.work_phone_number or '—'})": r.id
         for r in leads_df.itertuples()
