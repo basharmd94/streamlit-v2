@@ -31,9 +31,11 @@ LEAD_OUTCOMES = [
     "Follow-up Requested",
     "Promised to Order",
     "Deal Completed",
+    "Quote Sent",
 ]
 
 _LEAD_OUTCOME_BADGE = {
+    "Quote Sent":                               ("background:#D6EAF8;color:#1A5276;", "Quote Sent"),
     "Deal Completed":                          ("background:#D5F5E3;color:#1E8449;", "Deal Completed"),
     "Sample Submitted":                        ("background:#D5F5E3;color:#1E8449;", "Sample Submitted"),
     "Promised to Order":                       ("background:#FDEBD0;color:#A04000;", "Promised to Order"),

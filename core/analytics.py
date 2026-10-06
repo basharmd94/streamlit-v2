@@ -103,6 +103,7 @@ class Analytics:
             "inventory_overview":  queries.get_inventory_overview,
             "inventory_zid_stock_split": queries.get_inventory_zid_stock_split,
             "opspprc":          queries.get_opspprc_data,
+            "item_price_tiers_100007": queries.get_item_price_tiers_100007,
             "ar_due_ledger":    queries.get_ar_due_ledger,
             "cacus_master":     queries.get_cacus_master,
             "prmst_simple":     queries.get_prmst_simple,

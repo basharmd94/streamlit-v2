@@ -30,6 +30,8 @@ plotly==6.3.0
 protobuf==6.32.0
 psycopg2-binary==2.9.10
 pyarrow==21.0.0
+pypdf==6.19.0
+reportlab==5.0.1
 pydeck==0.9.1
 pyparsing==3.2.3
 python-dateutil==2.9.0.post0

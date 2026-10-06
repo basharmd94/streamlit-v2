@@ -19,7 +19,9 @@ from views.lead_call_log_shared import (
     render_lead_call_log_panel as _render_lead_call_log_panel,
     load_all_lead_call_logs as _load_all_lead_call_logs,
     bust_lead_call_log_cache as _bust_lead_call_log_cache,
+    save_lead_call_log as _save_lead_call_log,
 )
+from processing import lead_quote as _lq
 from processing.marketing import (
     build_customer_marketing_table,
     build_area_campaign_top_customers,
@@ -1718,7 +1720,7 @@ def _show_leads(zid: str) -> None:
 
     sub_mode = st.radio(
         "Leads",
-        ["➕ Add Leads", "📞 Call Log"],
+        ["➕ Add Leads", "📞 Call Log", "📄 Generate Quote"],
         horizontal=True,
         key="leads_top_mode",
     )
@@ -1736,6 +1738,10 @@ def _show_leads(zid: str) -> None:
             _show_edit_lead(zid)
         return
 
+    if sub_mode == "📄 Generate Quote":
+        _show_generate_quote(zid, leads_df)
+        return
+
     # ── 📞 Call Log: leads table first, then log-a-call, then all call logs ───
     _render_leads_table(zid, leads_df, links_df, call_logs_df, is_crm=True)
 
@@ -1747,6 +1753,122 @@ def _show_leads(zid: str) -> None:
 
     st.markdown("---")
     _render_all_lead_call_logs(zid, call_logs_df)
+
+
+# ---------------------------------------------------------------------------
+# 📄 Generate Quote — pricing always sourced from zid=100007's own
+# caitem.xstdprice + opspprc tiers, regardless of which letterhead/brand is
+# picked (that only changes branding + which items are offered). See
+# processing/lead_quote.py for the pricing + PDF-building logic.
+# ---------------------------------------------------------------------------
+
+def _show_generate_quote(zid: str, leads_df: pd.DataFrame) -> None:
+    st.markdown("#### 📄 Generate Quote")
+    st.caption(
+        "Pricing always comes from 100007's own standard price and quantity-tier discounts "
+        "(opspprc), regardless of which letterhead is chosen below — the letterhead only "
+        "changes the branding and which items are offered."
+    )
+
+    if leads_df.empty:
+        st.info("No leads yet — add one under \"➕ Add Leads\" first.")
+        return
+
+    brand = st.radio("Letterhead / Company", ["Zepto", "HMBR"], horizontal=True, key="quote_brand")
+
+    from pathlib import Path
+    letterhead_path = Path(_lq._LETTERHEAD_PATHS[brand])
+    if not letterhead_path.exists():
+        st.warning(
+            f"`{letterhead_path}` hasn't been uploaded yet — add it to `data/` to enable "
+            f"{brand} quotes."
+        )
+        return
+
+    lead_labels = {
+        f"{r.full_name} — {r.company_name or '—'} ({r.work_phone_number or '—'})": r.id
+        for r in leads_df.itertuples()
+    }
+    sel_lead_label = st.selectbox("Lead", list(lead_labels.keys()), key="quote_lead_sel")
+    sel_lead_id = lead_labels[sel_lead_label]
+    sel_lead_row = leads_df[leads_df["id"] == sel_lead_id].iloc[0]
+    lead_display_name = sel_lead_row["full_name"] or sel_lead_row["company_name"] or ""
+
+    with st.spinner("Loading quotable items…"):
+        tiers_df = _lq.load_quotable_items()
+    brand_items = _lq.items_for_brand(tiers_df, brand)
+
+    if brand_items.empty:
+        st.info(f"No {brand}-sourced items in 100007 have a price tier set up yet.")
+        return
+
+    # xalias (the item's code in its source ZID, e.g. "FZ000037") is folded
+    # into the label text itself so Streamlit's built-in multiselect search
+    # matches it too -- same search box already matches xdesc and xitem
+    # since those are also in the label.
+    item_labels = {
+        f"{r.xdesc} ({r.xitem} / {r.xalias})": r.xitem for r in brand_items.itertuples()
+    }
+    sel_item_labels = st.multiselect(
+        "Products to quote", list(item_labels.keys()), key="quote_items_sel",
+        help="Search by item name, 100007 code, or source code (e.g. FZ000037).",
+    )
+
+    if not sel_item_labels:
+        st.caption("Select at least one product above to enter quantities.")
+        return
+
+    quote_lines = []
+    cols = st.columns(len(sel_item_labels)) if len(sel_item_labels) <= 4 else None
+    for i, label in enumerate(sel_item_labels):
+        xitem = item_labels[label]
+        container = cols[i] if cols else st
+        qty = container.number_input(
+            f"Qty — {label}", min_value=1, value=1, step=1, key=f"quote_qty_{xitem}",
+        )
+        priced = _lq.resolve_tier_price(tiers_df, xitem, qty)
+        xdesc = brand_items.loc[brand_items["xitem"] == xitem, "xdesc"].iloc[0]
+        quote_lines.append({
+            "xitem": xitem, "xdesc": xdesc, "qty": qty,
+            "unit_price": priced["unit_price"],
+        })
+
+    preview = pd.DataFrame(quote_lines)[["xdesc", "qty", "unit_price"]].rename(
+        columns={"xdesc": "Item", "qty": "Qty", "unit_price": "Unit Price"}
+    )
+    preview["Line Total"] = preview["Qty"] * preview["Unit Price"]
+    st.dataframe(
+        preview,
+        column_config={
+            "Unit Price": st.column_config.NumberColumn(format="৳%.2f"),
+            "Line Total": st.column_config.NumberColumn(format="৳%.2f"),
+        },
+        width="stretch", hide_index=True,
+    )
+    st.markdown(f"**Grand Total: ৳{preview['Line Total'].sum():,.2f}**")
+
+    if st.button("📄 Generate Quote PDF", key="quote_generate_btn"):
+        try:
+            pdf_bytes = _lq.build_quote_pdf(brand, lead_display_name, quote_lines)
+        except FileNotFoundError as e:
+            st.error(str(e))
+            return
+
+        item_summary = "; ".join(f"{l['xdesc']} x{l['qty']}" for l in quote_lines)
+        grand_total = preview["Line Total"].sum()
+        _save_lead_call_log(
+            zid=zid, lead_id=int(sel_lead_id), outcome="Quote Sent",
+            next_visit_date=None,
+            notes=f"{brand} quote generated — {item_summary} — Grand Total ৳{grand_total:,.2f}",
+        )
+        _bust_lead_call_log_cache()
+
+        st.success("Quote generated and logged to this lead's call log.")
+        st.download_button(
+            "⬇ Download Quote PDF", pdf_bytes,
+            file_name=f"quote_{brand.lower()}_{sel_lead_row['full_name'] or sel_lead_id}.pdf",
+            mime="application/pdf", key="quote_dl",
+        )
 
 
 # ---------------------------------------------------------------------------

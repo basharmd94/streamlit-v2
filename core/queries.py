@@ -1727,6 +1727,39 @@ def get_opspprc_data(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_item_price_tiers_100007(filters: Dict[str, Any] = None) -> Tuple[str, tuple]:
+    """Every opspprc qty-tier row for zid=100007, joined to caitem for name/
+    std price -- one row per (item, tier), used by the Lead Quote generator
+    (views/marketing.py's "Generate Quote" mode) to resolve a unit price for
+    whatever qty is entered. Only items that actually have at least one tier
+    are returned (INNER JOIN) -- an item with no opspprc row can't be quoted
+    with a discount, so it's not offered in the quote item picker at all.
+
+    Joins opspprc.xpricecat directly against caitem.xitem (NOT
+    caitem.xpricecat) -- deliberately different from get_opspprc_data's own
+    join. All opspprc rows entered for 100007 use the item's own xitem as
+    its price category (self-named, per explicit correction -- see
+    scripts/upload_opspprc_100007.py), so this is both correct and simpler,
+    and doesn't depend on caitem.xpricecat being accurate at all (confirmed
+    stale/wrong for several 100007 items, and explicitly out of scope to fix
+    here).
+
+    Also returns xalias (the item's code in whichever ZID it was originally
+    sourced from, e.g. 'FZ000037') and xitemnew (that source ZID itself,
+    e.g. '100005') -- confirmed real columns, used by the quote item picker
+    for brand filtering (xitemnew) and search-by-source-code (xalias).
+    """
+    sql = """
+        SELECT ci.xitem, ci.xdesc, ci.xstdprice, ci.xalias, ci.xitemnew,
+               o.xqty, o.xqtypur, o.xdisc
+        FROM caitem ci
+        JOIN opspprc o ON o.zid = ci.zid AND o.xpricecat = ci.xitem
+        WHERE ci.zid = 100007
+        ORDER BY ci.xitem, o.xqty
+    """
+    return sql, ()
+
+
 def get_rate_mismatch_audit(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """Mobile-order line items for ONE specific day whose invoiced rate
     (opodt.xrate -- confirmed the real rate column, printed on invoices)
