@@ -636,6 +636,26 @@ Verified end-to-end against real Postgres (100001+100000, 30-day window from the
 
 ---
 
+## Manufacturing Analysis — FG Costing "Avg Sales Price" (`views/manufacturing.py::_render_fg_costing`)
+
+**"Avg Sales Price (last 30d, net of discounts)"** (in the "Cost breakdown for one finished
+good" sub-section) — fixed 2026-10-12, per explicit ask to confirm this wasn't showing a
+list/MRP-based price for 100005 (Zepto) products. It was never MRP (`caitem.xstdprice`/`xprice`)
+— it's computed from real sale lines (`Analytics("sales", ...)`, i.e. `mv_sales_line_items`) —
+but it **was** `altsales.sum() / qty`, which is net of the implicit MRP-vs-wholesale-rate gap
+(`altsales` = `opddt.xdtwotax`, already priced at the wholesale rate `xrate`, not MRP `xprice`)
+but **not** net of `proddiscount` (`opddt.xdtdisc`, the further negotiated "Honour Discount").
+Fixed to `(altsales - proddiscount).sum() / qty` — i.e. `final_sales`, this app's own established
+"true realized revenue" convention (same fix as Sales Analysis → Order Analytics → Product
+Orders' 100005 revenue bug — see that section above) — applied universally across all 3
+manufacturing ZIDs rather than 100005-only, since it's mathematically identical to the old
+formula for a ZID with no such discount. Verified against real Postgres: a real 100005 item
+(`FZ000028`, Furniture Cleaner) dropped from ৳135.00/unit to ৳113.98/unit over its trailing
+30-day window (৳65,981 of discount netted out across 3,139 units) — confirmed live in the
+browser matching an independent script's computation exactly.
+
+---
+
 ## Manufacturing Analysis — "🔄 Warehouse Flow" (`views/manufacturing.py::_render_warehouse_flow`)
 
 An 8th `mfg_view_mode` radio option alongside FG Costing / FG Cost History / RM Rate Trend / RM Requirement / RM Stock Coverage / BOM Variance / MO Detail — for the same 3 entities (`_MANUFACTURING_ZIDS` = 100000/100005/100009). **Per-product** flow: `Raw Material → (MO) → Finished Goods warehouse → (transfer) → Sales Store → (DO) → market`. Independent of MO header/detail data, so it runs *before* the page's MO-empty early-return, not after. Branches into an inner `mfg_flow_mode` radio, both sharing the one cached `flow_raw` load and the `same_wh` (100009) detection at the top of `_render_warehouse_flow`:

@@ -160,13 +160,24 @@ def _render_fg_costing(zid: str, mo_cost: pd.DataFrame, mo_lines: pd.DataFrame, 
         if not _item_sales.empty:
             _total_qty = float(_item_sales["quantity"].sum())
             if _total_qty > 0:
-                avg_price_30d = float(_item_sales["altsales"].sum()) / _total_qty
+                # Realized price after discounts, not list/wholesale rate —
+                # altsales (opddt.xdtwotax) is already net of the MRP gap via
+                # the wholesale rate, but NOT net of proddiscount (xdtdisc,
+                # the further negotiated "Honour Discount"). final_sales
+                # (= altsales - proddiscount) is this app's own established
+                # "true realized revenue" convention (see CLAUDE.md's Sales
+                # Analysis -> Order Analytics -> Product Orders revenue fix
+                # for 100005) — mathematically identical to altsales alone
+                # for a ZID with no such discount, so safe to apply here
+                # uniformly rather than branching per ZID.
+                _final_sales = _item_sales["altsales"] - _item_sales.get("proddiscount", 0)
+                avg_price_30d = float(_final_sales.sum()) / _total_qty
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Material Cost/Unit (window avg)", f"{fg_row['avg_cost_per_unit']:,.2f}")
     m2.metric("Admin (06) Cost/Unit (allocated)", f"{alloc_avg_admin:,.2f}")
     m3.metric("Total Cost/Unit", f"{total_cost_per_unit:,.2f}")
-    m4.metric("Avg Sales Price (last 30d)", f"{avg_price_30d:,.2f}" if avg_price_30d is not None else "—")
+    m4.metric("Avg Sales Price (last 30d, net of discounts)", f"{avg_price_30d:,.2f}" if avg_price_30d is not None else "—")
 
     if opspprc_df is not None and not opspprc_df.empty and "item_id" in opspprc_df.columns:
         price_row = opspprc_df[opspprc_df["item_id"].astype(str) == str(sel_fg)]
