@@ -98,3 +98,19 @@ def working_hours_elapsed(start_dt, end_dt, holidays: set) -> float:
             non_working_days += 1
         cur += timedelta(days=1)
     return max(0.0, total_hours - non_working_days * 24.0)
+
+
+def next_working_day(d, holidays: set):
+    """The next working day strictly after d — skips Friday and any
+    configured holiday. Thursday's next working day is Saturday (2 calendar
+    days later), skipping Friday entirely; every other weekday's next
+    working day is just the following calendar day (1 day later), unless a
+    holiday is configured on it too. Used by Target Management's Customer
+    Tracking -> Returns Watchlist to detect a return posted on the very
+    next working day after its delivery order (confirmed against real data:
+    DOs on Thursday overwhelmingly return on Saturday, 2 days later; every
+    other weekday returns 1 day later)."""
+    nxt = d + timedelta(days=1)
+    while not _is_working_day(nxt, holidays):
+        nxt += timedelta(days=1)
+    return nxt

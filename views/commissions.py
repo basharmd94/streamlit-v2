@@ -330,14 +330,22 @@ def _sections(read_only: bool, key_suffix: str) -> dict:
     }
 
 
-def render_section_picker(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+def render_section_picker(zid: str, read_only: bool = False, key_suffix: str = "", exclude: set = None) -> None:
     """The shared "pick a commission type, see that section" picker — mounted
     on the admin Commissions page (read_only=False) and, per explicit ask
     2026-09-20, on Target Management's "🎯 Commission Results" mode
     (read_only=True) so managers can check results without admin setup
     access. Covers every section in commission_tracking_design.md, built or
-    not — a not-yet-built one shows the same placeholder either place."""
+    not — a not-yet-built one shows the same placeholder either place.
+
+    `exclude` drops section labels from the picker without touching
+    `_sections` itself — used so "👀 Customer Tracking" stays reachable here
+    (admin setup) while being excluded from Target Management's own
+    Commission Results call site, since its RESULTS moved to a direct
+    Target Management radio (2026-10-12) instead of living nested here."""
     sections = _sections(read_only, key_suffix)
+    if exclude:
+        sections = {k: v for k, v in sections.items() if k not in exclude}
     section = st.selectbox("Commission Campaign", list(sections.keys()), key=f"comm_section{key_suffix}")
     usage_log.log_view("Commissions", section)
 

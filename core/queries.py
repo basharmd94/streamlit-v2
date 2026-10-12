@@ -824,6 +824,55 @@ def get_returns_registry_items(filters=None) -> Tuple[str, tuple]:
     return sql, (zid,)
 
 
+def get_do_next_day_returns(filters=None) -> Tuple[str, tuple]:
+    """DOs (opdor) with a return (opcrn) posted against them, for the
+    "customers who refuse delivery" watchlist (Target Management -> Customer
+    Tracking -> Returns Watchlist). opcrn.xdornum is a real, direct FK back
+    to opdor.xdornum — confirmed against live data (2026-10-12): a real
+    cluster of SR rows posted exactly 1 calendar day after their own DO's
+    xdate, alongside some clearly-bogus matches (a currently-open SR row
+    pointing at a years-old DO, and the 2999-12-31 sentinel date — Common
+    Pitfall #11) that the date-window and sentinel-exclusion filters below
+    rule out.
+
+    Caller is expected to do the actual "posted on the next WORKING day"
+    check in Python (processing/customer_tracking.py), since that needs
+    the holiday calendar (data/public_holidays.json) this SQL layer has no
+    access to — this query just returns every (DO, SR) pair in the window,
+    one row per return header, with COALESCE(SUM(opcdt.xlineamt)) for the
+    return amount (opcrn.xtotamt is blank the same way it is for open
+    Returns Registry rows).
+
+    filters: zid (list, e.g. ["100001","100000"]), start_date, end_date
+    (DO date window, both inclusive, 'YYYY-MM-DD' strings).
+    """
+    filters = filters or {}
+    zid_ph, zid_params = _build_in_clause(filters["zid"])
+    sql = f"""
+        SELECT
+            r.zid,
+            o.xdornum,
+            o.xdate                 AS do_date,
+            r.xcrnnum,
+            r.xdate                 AS sr_date,
+            r.xcus                  AS cusid,
+            COALESCE(c.xshort, '')  AS cusname,
+            COALESCE(SUM(d.xlineamt), 0) AS return_amount
+        FROM opcrn r
+        JOIN opdor o   ON o.zid = r.zid AND o.xdornum = r.xdornum
+        LEFT JOIN cacus c  ON c.zid = r.zid AND c.xcus = r.xcus
+        LEFT JOIN opcdt d  ON d.zid = r.zid AND d.xcrnnum = r.xcrnnum
+        WHERE r.zid IN ({zid_ph})
+          AND r.xdornum IS NOT NULL AND r.xdornum <> ''
+          AND o.xdate <> '2999-12-31' AND r.xdate <> '2999-12-31'
+          AND o.xdate >= %s AND o.xdate <= %s
+        GROUP BY r.zid, o.xdornum, o.xdate, r.xcrnnum, r.xdate, r.xcus, c.xshort
+        ORDER BY o.xdate DESC
+    """
+    params = zid_params + (filters["start_date"], filters["end_date"])
+    return sql, params
+
+
 def get_feedback_data(filters=None) -> Tuple[str, tuple]:
     """Market-level feedback salesmen log via the mobile Ordering app.
 

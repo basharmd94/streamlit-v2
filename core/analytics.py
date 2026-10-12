@@ -118,6 +118,7 @@ class Analytics:
             "cacus_lead_links":         queries.get_cacus_lead_links,
             "returns_registry":         queries.get_returns_registry,
             "returns_registry_items":   queries.get_returns_registry_items,
+            "do_next_day_returns":      queries.get_do_next_day_returns,
             "cus_delivery_payment_promise": queries.get_cus_delivery_payment_promise,
             "cus_return_entry_date":        queries.get_cus_return_entry_date,
             "feedback":                     queries.get_feedback_data,

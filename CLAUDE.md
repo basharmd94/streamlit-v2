@@ -1425,59 +1425,115 @@ live-recompute risk to pin against.
   Customers: ৳6,000 total payout; New Customer Creation: ৳16,000 total payout, 32 paid / 4
   excluded) — both test campaigns deleted after verification.
 
-### Customer Tracking (built 2026-10-10)
+### Customer Tracking (built 2026-10-10, redesigned 2026-10-12)
 
-`processing/customer_tracking.py` (JSON watchlist persistence) +
+`processing/customer_tracking.py` (JSON watchlist persistence + pure-pandas matching/styling) +
 `views/commission_customer_tracking_view.py` (UI). **Not a payout mechanism** — the only
-commission section that doesn't use the `commission_campaigns` table at all, since there's
-nothing to compute or pay out. Built per explicit ask: two independent, manager-curated
-customer watchlists (Collection / Returns), each just a comma-separated code list the admin
-pastes in, scoped per ZID in `data/customer_tracking_watchlist.json` (gitignored, same
-convention as `commission_product_watchlist.json`) as `{zid: {"collection": [...], "returns":
-[...]}}`. `processing/customer_tracking.py::parse_codes` uppercases and de-dupes on save (every
-real `cacus.xcus` code in this ERP is uppercase, e.g. `CUS-005596` — guards a manual-paste typo).
+customer-tracking-style feature that doesn't use the `commission_campaigns` table at all, since
+there's nothing to compute or pay out.
 
-Same setup/results split as every other section (`views/commissions.py::_sections`, `"👀
-Customer Tracking"`) — admin Commissions page: two `st.text_area` inputs (one per watchlist)
-with their own Save button, admin-only. Target Management → Commission Results: a `Tracking
-Type` radio (Collection Watchlist / Returns Watchlist) picks which group's results to show.
+**Results moved OUT of Commission Results 2026-10-12**, per explicit ask — it's now its own
+direct Target Management radio option (`"👀 Customer Tracking"`, alongside `"👤 Individual
+Salesman"` etc.), not nested under a "pick a commission type" picker. `views/commissions.py::
+render_section_picker` gained an `exclude: set` param so Target Management's own `"💰 Commission
+Results"` call site can drop `"👀 Customer Tracking"` from that dropdown
+(`exclude={"👀 Customer Tracking"}`) while the admin **setup** panel stays reachable as before —
+still mounted in `views/commissions.py::_sections` under the Commissions page's own picker
+(`read_only=False`), unaffected by the exclude.
 
-- **Collection Watchlist** results — three stacked sections, all filtered to the watchlist
-  codes only:
-  1. **Customer Score** — the exact same `processing/marketing.py::build_customer_marketing_table`
-     engine Marketing → Customer Scoring uses, current year only (no admin-configurable
-     window — this is a status readout, not a payout).
-  2. **Latest Sale & Collection** — reproduces `views/collection.py::_load_salesman_due_reports`'s
-     own `build_salesman_due_reports` pipeline (can't import a private `_`-prefixed function
-     cross-module), so this is genuinely "the same table as Collection Analysis → Salesman Due",
-     just pre-filtered to the watchlist. Inherits that report's own near-zero-balance exclusion —
-     captioned when a watchlist customer doesn't show up for that reason.
-  3. **Customer Ledger** — a customer picker + the exact same `Analytics("ar", ...)`
-     (`mv_ar_vouchers`) source and `cusid`/`date`/`value`→cumsum pattern Collection Analysis's own
-     "Customer Ledger" → AR Customer Ledger section uses
-     (`views/collection.py::_render_cust_ledger_body`). **Deliberately not `ar_due_ledger`** — that
-     query's raw columns are `xsub`/`xdate`/`xprime` and need `salesman_due.prep_ar_ledger` just to
-     get a running balance; a real `KeyError: 'cusid'` bug from conflating the two was caught and
-     fixed during browser verification before shipping. The two sources' own balance totals don't
-     necessarily agree with each other (confirmed on real data) — a pre-existing characteristic of
-     the app's two separate AR plumbing paths, not something this feature introduced.
-- **Returns Watchlist** results — "has this customer returned anything THIS MONTH," sourced
-  from the full `"return"` Analytics table (`get_return_data`, year+month filtered), not
-  Returns Registry (which is status-filtered to `1-Open` only — the wrong population here,
-  since the point is checking whether an already-returned order was handled properly, not
-  catching pending approvals). A summary row per watchlist customer (Yes/No + count + amount)
-  shows even customers with zero returns this month, so a quiet customer is visibly confirmed
-  quiet rather than just absent from the table — followed by the real return line detail
-  (voucher/item/qty/amount/reason) for whoever did return.
+**Always pooled 100001+100000** on the results side, per explicit ask ("All these need to be
+100001 and 100000 combined marking") — the two ZIDs sharing one field sales team/customer base
+(same pooling rationale as A.1/A.1b/B.1/3/4). The `zid` the Target Management radio branch
+passes to `commission_customer_tracking_view.render()` is unused by the results path; a fixed
+`_ZIDS = ["100001", "100000"]` constant drives every pooled loader instead. **Setup stays
+per-ZID** (unchanged) — `processing/customer_tracking.py::load_watchlist_pooled(zids)` unions
+both ZIDs' own saved lists at *read* time rather than migrating the storage format, so an admin
+can add a code while either ZID is active in the Commissions-page sidebar and it still counts.
 
-Verified end-to-end: live in the browser as a real admin (temp test user + temp watchlist
-data, both deleted after) — both watchlist setup panels save/reload correctly; Collection
-Watchlist showed Customer Score, Latest Sale & Collection ("3 of 3 watchlist customers with AR
-activity"), and a full multi-year ledger for 3 real HMBR customers; Returns Watchlist correctly
-showed "No" for all watchlist customers against real (but locally-stale, per Common Pitfall)
-October 2026 data, with the zero-case message rendering correctly. The "has a return" branch
-(no real October 2026 local return data to exercise it against) was verified separately via a
-synthetic-data script — aggregation math (count, summed amount) confirmed correct.
+`parse_codes` uppercases and de-dupes on save (every real `cacus.xcus` code in this ERP is
+uppercase, e.g. `CUS-005596` — guards a manual-paste typo). "Light red with visible writing" row
+highlighting (`_FLAG_STYLE = "background-color: #ffd6d6; color: #7a0000; font-weight: 600;"`,
+deliberately lighter than `processing/common.py::highlight_overdue_date`'s high-contrast
+`#ff4b4b`/white single-cell flag, since these mark a whole wide row) is a tiny shared
+`_style_rows(df, mask)` helper behind three purpose-built functions, one per section below.
+
+Target Management → 👀 Customer Tracking → a `Tracking Type` radio: **📲 Collection Watchlist**
+/ **↩️ Returns Watchlist** / **💳 Promised Payment** (a 3rd, standalone section added
+2026-10-12 — not gated by any watchlist, see below).
+
+- **📲 Collection Watchlist** — filtered to the watchlist codes only, three stacked sections:
+  1. **Customer Score** — `processing/marketing.py::build_customer_marketing_table`, pooled
+     sales/collection/AR/cacus across both ZIDs (same pattern as A.1b's own pooled scoring),
+     current year only.
+  2. **Latest Sale & Collection** — `views/collection.py::_load_salesman_due_reports`'s own
+     `build_salesman_due_reports` pipeline, loaded per-ZID then **concatenated with an explicit
+     `"ZID"` tag column, NOT balance-merged** — a customer shared by both ZIDs shows one row per
+     ZID, each with that business's own AR balance, same non-merging convention Collection
+     Analysis's own combined-scope views already use (two separately-tagged results, not one
+     reconciled number). **New 2026-10-12: light-red row highlight** where Current Balance is
+     non-zero AND more than 3 days have passed since the customer's own Sales Date
+     (`processing/customer_tracking.py::style_overdue_balance`) — "pending balance greater than
+     3 days[,] [d]ays from sale," per explicit ask.
+  3. **Customer Ledger** — a customer picker + `Analytics("ar", ...)` (`mv_ar_vouchers`) pooled
+     across both ZIDs, interleaved chronologically. **Ending balance computed PER ZID
+     (`groupby("ZID")["value"].cumsum()`), not one blind cumsum across the pooled rows** — the
+     two businesses are separate GL books, so a single sequential cumsum would silently mix two
+     unrelated running balances into one meaningless number. **Real bug caught during
+     verification**: `mv_ar_vouchers.value` arrives as `Decimal`/object dtype (same class of bug
+     as WhatsFly Bulk Messaging's own Decimal-dtype fix elsewhere in this app) — pandas' cython
+     `groupby().cumsum()` (unlike a plain ungrouped `.cumsum()`, which tolerates object dtype)
+     raises `NotImplementedError` on it; fixed with an explicit `pd.to_numeric` cast before the
+     groupby. (The original single-ZID build's own `KeyError: 'cusid'` bug — conflating
+     `ar_due_ledger`'s raw `xsub`/`xdate`/`xprime` shape with `mv_ar_vouchers`'s plain
+     `cusid`/`date`/`value` shape — was already fixed 2026-10-10 and carries over correctly.)
+- **↩️ Returns Watchlist** — **completely redefined 2026-10-12**, replacing the original
+  "returned this month Y/N" summary. Real concept, per explicit ask: customers who refuse
+  delivery on the spot — the DO is attempted on Day 1, the goods come straight back, but the
+  return (SR) only gets posted into the ERP the next WORKING day. Confirmed via direct schema
+  inspection that `opcrn.xdornum` is a real, direct FK back to `opdor.xdornum` (not inferred —
+  queried and sample-verified against live Postgres, 2026-10-12). New query
+  `core/queries.py::get_do_next_day_returns` (registered as `"do_next_day_returns"`) joins
+  `opcrn`→`opdor` via `xdornum`, scoped to a ZID list + a DO-date window, excluding the
+  `2999-12-31` sentinel (Common Pitfall #11) on both sides. The actual "posted on the next
+  WORKING day" check happens in Python
+  (`processing/customer_tracking.py::compute_next_day_return_matches`), via a new
+  `processing/holidays.py::next_working_day(d, holidays)` helper — Thursday's next working day
+  is Saturday (skipping Friday entirely), every other weekday is just the following calendar
+  day. **Confirmed against real data, not assumed**: of 507 real 1-or-2-day-gap (DO, SR) pairs
+  in a 45-day sample, 422 have a 1-day gap spanning every weekday except Thursday, and 85 of 87
+  2-day-gap pairs are Thursday-dated DOs — exactly the expected pattern (the 2 non-Thursday
+  2-day-gap rows are presumably a configured public holiday). A much longer tail of 3-to-23-day
+  gaps also exists in the raw (DO, SR) join and is correctly excluded — those are ordinary later
+  returns sharing an `xdornum` reference, not same-trip refusals. Window: trailing 14 days
+  (`_RETURNS_WINDOW_DAYS`), per explicit ask. **Shows the FULL candidate list, not filtered to
+  the watchlist** — `processing/customer_tracking.py::style_watchlist_rows` light-red-highlights
+  whichever rows' customer code is on the manager's watchlist, within that full list, per
+  explicit ask ("if we enter any customer code... that is within this criteria and in the total
+  list shown we will color it").
+- **💳 Promised Payment** — new section, 2026-10-12, **standalone, not gated by any watchlist**
+  ("I will need a list of all promised payment dates," read as the full population). Reuses the
+  pooled Latest Sale & Collection report's own already-merged "Promised Payment" column
+  (`salesman_due.merge_delivery_payment_promise`, sourced from `opdor.xdatepay` via
+  `get_cus_delivery_payment_promise`) — **no new query needed**: that column is already gated to
+  `NaT` whenever a newer sale has happened since the promise, which is exactly what "no sales
+  after the last sales date" (per explicit ask) means — already built into the existing
+  pipeline. `processing/customer_tracking.py::filter_promised_payment_window` narrows to promises
+  set in the trailing 3 months; `style_promised_payment_overdue` light-red-highlights rows where
+  that date has passed AND a balance is still outstanding.
+
+Verified end-to-end against real Postgres: `opcrn.xdornum`→`opdor.xdornum` join and the
+Thursday/Saturday pattern confirmed via direct SQL before writing any processing code; all three
+Styler functions smoke-tested against synthetic data for correct row-level flagging; live in the
+browser as a real admin (temp test user + temp watchlist data, both deleted after) — Collection
+Watchlist showed pooled Customer Score + a correctly-red-highlighted 6-row (3 customers × 2
+ZIDs) Latest Sale & Collection table + a 213-row pooled ledger with independently-correct
+per-ZID running balances; Returns Watchlist correctly showed the trailing-14-day empty state
+against real but locally-stale (Common Pitfall) data, with the underlying matcher separately
+confirmed to find 507 real matches over a wider 45-day window; Promised Payment showed 6 real
+pooled customers, all correctly red-highlighted (every sampled promise date had already passed
+with a live balance); confirmed the admin Commissions-page setup panel still works unchanged and
+that `"👀 Customer Tracking"` no longer appears in Target Management's own Commission Results
+dropdown.
 
 ---
 

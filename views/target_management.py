@@ -1079,7 +1079,7 @@ def display_target_management_page(current_page, zid, data_dict):
          "📊 3 Month Averages", "🧾 SR Trn",
          "📦 Current Stock", "🔮 Next Month Target", "🗺️ Field Tracking",
          "📲 App Collections", "↩️ Returns Registry", "💬 Feedback", "🚦 DO Creation Audit",
-         "💰 Commission Results"],
+         "💰 Commission Results", "👀 Customer Tracking"],
         horizontal=True,
         key="tm_view_mode",
     )
@@ -1246,10 +1246,25 @@ def display_target_management_page(current_page, zid, data_dict):
         # create/edit/delete control regardless of the viewer's own role.
         # Explicit ask 2026-09-20: covers every commission type (Product
         # Tracking through New Customer Creation), same picker either place.
+        # "👀 Customer Tracking" excluded here since 2026-10-12 — its results
+        # moved to this page's own direct radio below, not a payout anyway.
         from views import commissions as _commissions_view
         st.subheader("💰 Commission Results")
         st.caption("Pick a commission type below to see its current result — setup happens on the Commissions page (admin only).")
-        _commissions_view.render_section_picker(str(zid), read_only=True, key_suffix="_tm")
+        _commissions_view.render_section_picker(
+            str(zid), read_only=True, key_suffix="_tm", exclude={"👀 Customer Tracking"}
+        )
+        return
+
+    if _view_mode == "👀 Customer Tracking":
+        # Moved out of Commission Results 2026-10-12, per explicit ask — not
+        # a payout mechanism, so it doesn't belong nested under a "pick a
+        # commission type" picker. Always pooled 100001+100000 internally
+        # (see views/commission_customer_tracking_view.py), independent of
+        # whichever ZID is active in the sidebar — the `zid` passed here is
+        # unused by the results path, only kept for signature consistency.
+        from views import commission_customer_tracking_view as _ct_view
+        _ct_view.render(str(zid), read_only=True, key_suffix="_tm_ct")
         return
 
     # ── Filters: salesman (single), customer, area (cascading) ────────────────
