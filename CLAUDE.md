@@ -1405,6 +1405,60 @@ live-recompute risk to pin against.
   Customers: ৳6,000 total payout; New Customer Creation: ৳16,000 total payout, 32 paid / 4
   excluded) — both test campaigns deleted after verification.
 
+### Customer Tracking (built 2026-10-10)
+
+`processing/customer_tracking.py` (JSON watchlist persistence) +
+`views/commission_customer_tracking_view.py` (UI). **Not a payout mechanism** — the only
+commission section that doesn't use the `commission_campaigns` table at all, since there's
+nothing to compute or pay out. Built per explicit ask: two independent, manager-curated
+customer watchlists (Collection / Returns), each just a comma-separated code list the admin
+pastes in, scoped per ZID in `data/customer_tracking_watchlist.json` (gitignored, same
+convention as `commission_product_watchlist.json`) as `{zid: {"collection": [...], "returns":
+[...]}}`. `processing/customer_tracking.py::parse_codes` uppercases and de-dupes on save (every
+real `cacus.xcus` code in this ERP is uppercase, e.g. `CUS-005596` — guards a manual-paste typo).
+
+Same setup/results split as every other section (`views/commissions.py::_sections`, `"👀
+Customer Tracking"`) — admin Commissions page: two `st.text_area` inputs (one per watchlist)
+with their own Save button, admin-only. Target Management → Commission Results: a `Tracking
+Type` radio (Collection Watchlist / Returns Watchlist) picks which group's results to show.
+
+- **Collection Watchlist** results — three stacked sections, all filtered to the watchlist
+  codes only:
+  1. **Customer Score** — the exact same `processing/marketing.py::build_customer_marketing_table`
+     engine Marketing → Customer Scoring uses, current year only (no admin-configurable
+     window — this is a status readout, not a payout).
+  2. **Latest Sale & Collection** — reproduces `views/collection.py::_load_salesman_due_reports`'s
+     own `build_salesman_due_reports` pipeline (can't import a private `_`-prefixed function
+     cross-module), so this is genuinely "the same table as Collection Analysis → Salesman Due",
+     just pre-filtered to the watchlist. Inherits that report's own near-zero-balance exclusion —
+     captioned when a watchlist customer doesn't show up for that reason.
+  3. **Customer Ledger** — a customer picker + the exact same `Analytics("ar", ...)`
+     (`mv_ar_vouchers`) source and `cusid`/`date`/`value`→cumsum pattern Collection Analysis's own
+     "Customer Ledger" → AR Customer Ledger section uses
+     (`views/collection.py::_render_cust_ledger_body`). **Deliberately not `ar_due_ledger`** — that
+     query's raw columns are `xsub`/`xdate`/`xprime` and need `salesman_due.prep_ar_ledger` just to
+     get a running balance; a real `KeyError: 'cusid'` bug from conflating the two was caught and
+     fixed during browser verification before shipping. The two sources' own balance totals don't
+     necessarily agree with each other (confirmed on real data) — a pre-existing characteristic of
+     the app's two separate AR plumbing paths, not something this feature introduced.
+- **Returns Watchlist** results — "has this customer returned anything THIS MONTH," sourced
+  from the full `"return"` Analytics table (`get_return_data`, year+month filtered), not
+  Returns Registry (which is status-filtered to `1-Open` only — the wrong population here,
+  since the point is checking whether an already-returned order was handled properly, not
+  catching pending approvals). A summary row per watchlist customer (Yes/No + count + amount)
+  shows even customers with zero returns this month, so a quiet customer is visibly confirmed
+  quiet rather than just absent from the table — followed by the real return line detail
+  (voucher/item/qty/amount/reason) for whoever did return.
+
+Verified end-to-end: live in the browser as a real admin (temp test user + temp watchlist
+data, both deleted after) — both watchlist setup panels save/reload correctly; Collection
+Watchlist showed Customer Score, Latest Sale & Collection ("3 of 3 watchlist customers with AR
+activity"), and a full multi-year ledger for 3 real HMBR customers; Returns Watchlist correctly
+showed "No" for all watchlist customers against real (but locally-stale, per Common Pitfall)
+October 2026 data, with the zero-case message rendering correctly. The "has a return" branch
+(no real October 2026 local return data to exercise it against) was verified separately via a
+synthetic-data script — aggregation math (count, summed amount) confirmed correct.
+
 ---
 
 ## Git / Deployment

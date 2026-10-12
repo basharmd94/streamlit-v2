@@ -19,6 +19,7 @@ from views import (
     commission_campaigns_view,
     commission_customer_acquisition_view,
     commission_customer_best_performer_view,
+    commission_customer_tracking_view,
     commission_individual_target_view,
     commission_rankings_view,
     commission_shared,
@@ -295,6 +296,10 @@ def _render_customer_acquisition(zid: str, read_only: bool = False, key_suffix: 
     commission_customer_acquisition_view.render(zid, read_only=read_only, key_suffix=key_suffix)
 
 
+def _render_customer_tracking(zid: str, read_only: bool = False, key_suffix: str = "") -> None:
+    commission_customer_tracking_view.render(zid, read_only=read_only, key_suffix=key_suffix)
+
+
 def _sections(read_only: bool, key_suffix: str) -> dict:
     """One entry per commission_tracking_design.md item — every section
     renderer takes `read_only` (Product Tracking's watchlist editor / B.1/3/4's
@@ -320,6 +325,8 @@ def _sections(read_only: bool, key_suffix: str) -> dict:
             lambda zid: _render_individual_target(zid, read_only=read_only, key_suffix=key_suffix),
         "🆕 Customer Acquisition":
             lambda zid: _render_customer_acquisition(zid, read_only=read_only, key_suffix=key_suffix),
+        "👀 Customer Tracking":
+            lambda zid: _render_customer_tracking(zid, read_only=read_only, key_suffix=key_suffix),
     }
 
 
