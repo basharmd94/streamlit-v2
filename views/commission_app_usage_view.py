@@ -295,6 +295,111 @@ def _render_detail(campaign: dict, read_only: bool, key_suffix: str) -> None:
     disp["Payout (BDT)"] = disp["Payout (BDT)"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) and v > 0 else "—")
     st.dataframe(disp, width="stretch", hide_index=True)
 
+    _render_usage_details(
+        orders_df, returns_df, delivery_df, glpmt_df, scores, names,
+        month_start, month_end, today_ts, key_suffix,
+    )
+
+
+# ── Detail drill-down ("See Details") ───────────────────────────────────────
+# Explicit ask: don't load this automatically (the row-level pulls underneath
+# are heavier than the summary score table) — a button, then a salesman
+# picker, then the breakdown tables for just that one salesman.
+
+def _render_usage_details(orders_df, returns_df, delivery_df, glpmt_df, scores, names,
+                           month_start, month_end, today_ts, key_suffix: str) -> None:
+    st.divider()
+    show_key = f"a4_show_details{key_suffix}"
+    if st.button("👁 See Details", key=f"a4_see_details_btn{key_suffix}"):
+        st.session_state[show_key] = True
+    if not st.session_state.get(show_key):
+        return
+
+    spid_options = {}
+    for r in scores.itertuples():
+        spid = str(r.spid)
+        label = f"{spid} - {names.get(spid, '')}".rstrip(" -")
+        spid_options[label] = spid
+    sel_label = st.selectbox("Select a salesman", list(spid_options.keys()), key=f"a4_detail_sp{key_suffix}")
+    sel_spid = spid_options[sel_label]
+
+    with st.spinner("Loading detail…"):
+        detail = cc.build_app_usage_detail(
+            sel_spid, orders_df, returns_df, delivery_df, glpmt_df, month_start, month_end, today_ts
+        )
+
+    st.markdown(f"#### Detail — {sel_label}")
+
+    st.markdown("**Orders & Location** (4% orders + 24% location)")
+    od = detail["orders"]
+    if od.empty:
+        st.caption("No orders this reporting month.")
+    else:
+        disp = od.rename(columns={
+            "date": "Date", "invoiceno": "Invoice No", "invoicesl": "Invoice SL",
+            "xlat": "Latitude", "xlong": "Longitude",
+        })
+        disp["Has GPS"] = disp["has_gps"].map({True: "✅", False: ""})
+        disp["Duplicate Coordinate"] = disp["is_duplicate_coord"].map({True: "⚠️", False: ""})
+        cols = ["Date", "Invoice No", "Invoice SL", "Latitude", "Longitude", "Has GPS", "Duplicate Coordinate"]
+        st.dataframe(disp[[c for c in cols if c in disp.columns]], width="stretch", hide_index=True)
+        n_gps = int(od["has_gps"].sum())
+        n_distinct = od.loc[od["has_gps"], ["xlat", "xlong"]].drop_duplicates().shape[0]
+        st.caption(
+            f"{len(od)} order(s) · {n_gps} with GPS ({n_gps / len(od) * 100:.0f}%) · "
+            f"{n_distinct} distinct coordinate(s) among those ({(n_distinct / n_gps * 100) if n_gps else 0:.0f}%)"
+        )
+
+    st.markdown("**Returns — hygiene** (24% of score)")
+    rd = detail["returns"]
+    if rd.empty:
+        st.caption("No returns dated this reporting month.")
+    else:
+        disp = rd.rename(columns={
+            "date": "Date", "xcrnnum": "Return No", "status": "Status", "xreason": "Reason",
+            "xdornum": "DO No", "cusname": "Customer",
+        })
+        disp["Eligible (≥14 days)"] = disp["eligible"].map({True: "✅", False: ""})
+        disp["Stuck Open"] = disp["stuck"].map({True: "⚠️", False: ""})
+        cols = ["Date", "Return No", "DO No", "Customer", "Status", "Reason", "Eligible (≥14 days)", "Stuck Open"]
+        st.dataframe(disp[[c for c in cols if c in disp.columns]], width="stretch", hide_index=True)
+        n_eligible = int(rd["eligible"].sum())
+        n_stuck = int(rd["stuck"].sum())
+        if n_eligible:
+            st.caption(
+                f"{len(rd)} return(s) this month · {n_eligible} eligible (≥14 days old) · "
+                f"{n_stuck} still stuck open — stuck rate {n_stuck / n_eligible * 100:.0f}%"
+            )
+        else:
+            st.caption(f"{len(rd)} return(s) this month, none old enough yet to count toward hygiene.")
+
+    st.markdown("**Promised Payment Entry** (24% of score)")
+    dd = detail["promised_pay"]
+    if dd.empty:
+        st.caption("No delivery orders this reporting month.")
+    else:
+        disp = dd.rename(columns={
+            "date": "DO Date", "paydate": "Promised Payment Date", "xdornum": "DO No", "xcus": "Customer Code",
+        })
+        disp["Has Promise"] = disp["has_promise"].map({True: "✅", False: ""})
+        cols = ["DO Date", "DO No", "Customer Code", "Promised Payment Date", "Has Promise"]
+        st.dataframe(disp[[c for c in cols if c in disp.columns]], width="stretch", hide_index=True)
+        n_has = int(dd["has_promise"].sum())
+        st.caption(f"{len(dd)} delivery order(s) · {n_has} with a promised payment date entered ({n_has / len(dd) * 100:.0f}%)")
+
+    st.markdown("**Collections Logged** (24% of score)")
+    cd = detail["collections"]
+    if cd.empty:
+        st.caption("No glpmt entries this reporting month.")
+    else:
+        disp = cd.rename(columns={
+            "paydate": "Payment Date", "payamt": "Amount", "paytype": "Type",
+            "cusname": "Customer", "paystatus": "Status",
+        })
+        cols = ["Payment Date", "Customer", "Amount", "Type", "Status"]
+        st.dataframe(disp[[c for c in cols if c in disp.columns]], width="stretch", hide_index=True)
+        st.caption(f"{len(cd)} entr{'y' if len(cd) == 1 else 'ies'} logged")
+
 
 # ── Top-level section entry point ───────────────────────────────────────────
 

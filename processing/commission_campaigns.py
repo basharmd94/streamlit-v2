@@ -1023,6 +1023,19 @@ def compute_customer_best_performer_ranking(campaign: dict, customer_score_df: p
 # zero-variance population, just applied per-salesman instead of
 # per-population here.
 
+def _app_usage_eval_window(month_start, month_end, today) -> tuple:
+    """Shared by compute_app_usage_scores and build_app_usage_detail so the
+    two can never silently disagree on the window a score was computed
+    over -- `today` caps an ongoing reporting month's evaluation (same
+    "live while ongoing" principle as A.1)."""
+    eval_end = min(pd.Timestamp(month_end), pd.Timestamp(today))
+    eval_start = pd.Timestamp(month_start)
+    return eval_start, eval_end
+
+
+_APP_USAGE_RETURN_GRACE_DAYS = 14
+
+
 def _peer_scale_app_usage(series: pd.Series, lower_is_better: bool = False) -> pd.Series:
     """Peer-relative min-max scaling to [0, 100] — same pattern
     processing/marketing.py::_compute_composite_score already uses for
@@ -1064,8 +1077,7 @@ def compute_app_usage_scores(
     `return_stuck_rate`, `promised_pay_rate`, `collection_count`), the 5
     weighted component scores, and the final `score` (0-100).
     """
-    eval_end = min(pd.Timestamp(month_end), pd.Timestamp(today))
-    eval_start = pd.Timestamp(month_start)
+    eval_start, eval_end = _app_usage_eval_window(month_start, month_end, today)
 
     if orders_df is None or orders_df.empty:
         return pd.DataFrame()
@@ -1112,7 +1124,7 @@ def compute_app_usage_scores(
         r["spid"] = r["spid"].astype(str)
         r["date"] = pd.to_datetime(r["date"], errors="coerce")
         r = r[(r["date"] >= eval_start) & (r["date"] <= eval_end) & (r["spid"].isin(sp_list["spid"]))]
-        cutoff = pd.Timestamp(today) - pd.Timedelta(days=14)
+        cutoff = pd.Timestamp(today) - pd.Timedelta(days=_APP_USAGE_RETURN_GRACE_DAYS)
         eligible = r[r["date"] <= cutoff]
         if not eligible.empty:
             is_stuck = (eligible["status"].astype(str) == "1-Open")
@@ -1205,6 +1217,88 @@ def compute_app_usage_bonus(campaign: dict, usage_scores_df: pd.DataFrame) -> di
         "scores": d, "threshold": threshold, "bonus_amount": bonus_amount,
         "qualified_count": qualified_count, "total_payout": total_payout,
     }
+
+
+def build_app_usage_detail(
+    spid: str, orders_df: pd.DataFrame, returns_df: pd.DataFrame, delivery_df: pd.DataFrame,
+    glpmt_df: pd.DataFrame, month_start, month_end, today,
+) -> dict:
+    """Per-salesman row-level detail backing compute_app_usage_scores' own
+    5 components, for the view's "See Details" drill-down — explicit ask,
+    so a manager (or the salesman) can see exactly WHICH orders/returns/
+    deliveries/collections produced a given score rather than trusting the
+    composite number blind. Same window/eligibility logic as the scoring
+    function (_app_usage_eval_window, _APP_USAGE_RETURN_GRACE_DAYS) so the
+    two can never silently disagree — this is meant to explain the score,
+    not approximate it.
+
+    Lazy by design — the caller only invokes this after an explicit
+    "See Details" click + salesman pick (see views/commission_app_usage_
+    view.py), not for every scored salesman up front.
+
+    Returns {"orders": df, "returns": df, "promised_pay": df,
+    "collections": df} — "orders" is already deduped to one row per order
+    (matching the Orders/Location components' own grain) with "has_gps"/
+    "is_duplicate_coord" flags; "returns" has "eligible"/"stuck" flags;
+    "promised_pay" has "has_promise"; "collections" is the raw glpmt slice
+    (nothing to flag, the component is just a count)."""
+    eval_start, eval_end = _app_usage_eval_window(month_start, month_end, today)
+    spid = str(spid)
+
+    orders = pd.DataFrame()
+    if orders_df is not None and not orders_df.empty:
+        o = orders_df.copy()
+        o["spid"] = o["spid"].astype(str)
+        o["date"] = pd.to_datetime(o["date"], errors="coerce")
+        o = o[(o["spid"] == spid) & (o["date"] >= eval_start) & (o["date"] <= eval_end)]
+        if not o.empty:
+            o = (
+                o.sort_values(["invoiceno", "invoicesl", "xroword"])
+                 .drop_duplicates(subset=["invoiceno", "invoicesl"])
+                 .copy()
+            )
+            o["has_gps"] = o["xlat"].notna() & (o["xlat"] != 0)
+            dup_counts = o[o["has_gps"]].groupby(["xlat", "xlong"]).size()
+            o["is_duplicate_coord"] = o.apply(
+                lambda r: bool(r["has_gps"]) and dup_counts.get((r["xlat"], r["xlong"]), 0) > 1, axis=1
+            )
+            orders = o.sort_values("date", ascending=False).reset_index(drop=True)
+
+    returns = pd.DataFrame()
+    if returns_df is not None and not returns_df.empty:
+        r = returns_df.copy()
+        r["spid"] = r["spid"].astype(str)
+        r["date"] = pd.to_datetime(r["date"], errors="coerce")
+        r = r[(r["spid"] == spid) & (r["date"] >= eval_start) & (r["date"] <= eval_end)]
+        if not r.empty:
+            cutoff = pd.Timestamp(today) - pd.Timedelta(days=_APP_USAGE_RETURN_GRACE_DAYS)
+            r = r.copy()
+            r["eligible"] = r["date"] <= cutoff
+            r["stuck"] = r["eligible"] & (r["status"].astype(str) == "1-Open")
+            returns = r.sort_values("date", ascending=False).reset_index(drop=True)
+
+    delivery = pd.DataFrame()
+    if delivery_df is not None and not delivery_df.empty:
+        d = delivery_df.copy()
+        d["spid"] = d["spid"].astype(str)
+        d["date"] = pd.to_datetime(d["date"], errors="coerce")
+        d = d[(d["spid"] == spid) & (d["date"] >= eval_start) & (d["date"] <= eval_end)]
+        if not d.empty:
+            d = d.copy()
+            d["paydate"] = pd.to_datetime(d["paydate"], errors="coerce")
+            d["has_promise"] = d["paydate"].notna() & (d["paydate"] != pd.Timestamp("2999-12-31"))
+            delivery = d.sort_values("date", ascending=False).reset_index(drop=True)
+
+    collections = pd.DataFrame()
+    if glpmt_df is not None and not glpmt_df.empty:
+        g = glpmt_df.copy()
+        g["spid"] = g["spid"].astype(str)
+        g["paydate"] = pd.to_datetime(g["paydate"], errors="coerce")
+        g = g[(g["spid"] == spid) & (g["paydate"] >= eval_start) & (g["paydate"] <= eval_end)]
+        if not g.empty:
+            collections = g.sort_values("paydate", ascending=False).reset_index(drop=True)
+
+    return {"orders": orders, "returns": returns, "promised_pay": delivery, "collections": collections}
 
 
 # ── Customer Acquisition — Unique Customers (ranked) ────────────────────────

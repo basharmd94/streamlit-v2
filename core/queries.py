@@ -3582,32 +3582,70 @@ def get_app_usage_orders(filters=None) -> Tuple[str, tuple]:
 
 
 def get_app_usage_returns(filters=None) -> Tuple[str, tuple]:
-    """opcrn, ALL statuses (unlike get_returns_registry's open-only scope)
-    -- the App Usage "return hygiene" component needs the full population
-    to compute what fraction is still stuck open."""
+    """opcrn UNION opcrntemp, ALL statuses (unlike get_returns_registry's
+    open-only scope) -- the App Usage "return hygiene" component needs the
+    full population to compute what fraction is still stuck open.
+
+    opcrntemp: confirmed 2026-10-13 from a real exported sample (user-
+    provided -- this table isn't on the local Postgres mirror at all, same
+    "live server ahead of local" situation as prmst.xstatusemp/xdisease
+    elsewhere in this app) -- the mobile app's return-entry endpoint moved
+    here in early October 2026 (xcrnnum uses a distinct "SRTMP--" prefix,
+    xtrncrn is the literal 'TEMP'). opcrn's own "SR--" rows stop getting
+    new mobile-logged entries once a salesman's return lands in opcrntemp
+    instead, so scoring off opcrn alone would silently show zero current
+    return activity post-cutover. Both tables share identical column names
+    for everything used here (xemp, xdate, xstatuscrn, xcrnnum, xreason,
+    xdornum, xcus), confirmed from the real export -- UNIONed rather than
+    swapped outright, same precedent as get_return_data's own opcrn/opcdt
+    + imtemptrn/imtemptdt union for the other mobile-staged return path.
+
+    Columns beyond spid/date/status (xcrnnum/xreason/xdornum/cusname) ride
+    along for the App Usage detail drill-down only -- compute_app_usage_
+    scores itself only reads spid/date/status and ignores the rest.
+    """
     filters = filters or {}
     zid = filters["zid"][0]
-    sql = "SELECT zid, xemp AS spid, xdate AS date, xstatuscrn AS status FROM opcrn WHERE zid = %s"
-    params = [zid]
+    sql = """
+        WITH ret AS (
+            SELECT r.zid, r.xemp AS spid, r.xdate AS date, r.xstatuscrn AS status,
+                   r.xcrnnum, r.xreason, r.xdornum, c.xshort AS cusname
+            FROM opcrn r
+            LEFT JOIN cacus c ON c.zid = r.zid AND c.xcus = r.xcus
+            WHERE r.zid = %s
+
+            UNION ALL
+
+            SELECT r.zid, r.xemp AS spid, r.xdate AS date, r.xstatuscrn AS status,
+                   r.xcrnnum, r.xreason, r.xdornum, c.xshort AS cusname
+            FROM opcrntemp r
+            LEFT JOIN cacus c ON c.zid = r.zid AND c.xcus = r.xcus
+            WHERE r.zid = %s
+        )
+        SELECT * FROM ret WHERE 1=1
+    """
+    params = [zid, zid]
     if filters.get("year"):
         ph = ",".join(["%s"] * len(filters["year"]))
-        sql += f" AND EXTRACT(YEAR FROM xdate)::int IN ({ph})"
+        sql += f" AND EXTRACT(YEAR FROM date)::int IN ({ph})"
         params.extend(filters["year"])
     if filters.get("month"):
         ph = ",".join(["%s"] * len(filters["month"]))
-        sql += f" AND EXTRACT(MONTH FROM xdate)::int IN ({ph})"
+        sql += f" AND EXTRACT(MONTH FROM date)::int IN ({ph})"
         params.extend(filters["month"])
     return sql, tuple(params)
 
 
 def get_app_usage_delivery_orders(filters=None) -> Tuple[str, tuple]:
-    """opdor, scoped to just xsp/xdate/xdatepay -- the App Usage "promised
-    payment entry" component. xdatepay = the promised payment date, set via
-    PUT /order/delivery-date-update per mobile_order_api_data_map.md; not
-    to be confused with glpmt.xpaydate (the actual collection date)."""
+    """opdor, scoped to xsp/xdate/xdatepay plus xdornum/xcus -- the App
+    Usage "promised payment entry" component. xdatepay = the promised
+    payment date, set via PUT /order/delivery-date-update per
+    mobile_order_api_data_map.md; not to be confused with glpmt.xpaydate
+    (the actual collection date). xdornum/xcus ride along for the detail
+    drill-down only -- not used by the scoring engine itself."""
     filters = filters or {}
     zid = filters["zid"][0]
-    sql = "SELECT zid, xsp AS spid, xdate AS date, xdatepay AS paydate FROM opdor WHERE zid = %s"
+    sql = "SELECT zid, xsp AS spid, xdate AS date, xdatepay AS paydate, xdornum, xcus FROM opdor WHERE zid = %s"
     params = [zid]
     if filters.get("year"):
         ph = ",".join(["%s"] * len(filters["year"]))

@@ -1371,6 +1371,52 @@ against live Postgres) rather than the doc's earlier guessed list. Full spec:
   correctly.
 - The "Number of Unique Customers" ranking noted for later here was picked up and built
   2026-09-21 — see the next section.
+- **Return-hygiene source moved to `opcrntemp`, confirmed 2026-10-13.** The mobile app's
+  return-entry endpoint switched to writing into `opcrntemp` (header) / `opcdttemp` (lines)
+  in early October 2026 — a brand-new staging table pair this app's local Postgres mirror
+  doesn't have at all (same "live server ahead of local" situation as `prmst.xstatusemp`/
+  `xdisease` elsewhere in this doc); confirmed from a real CSV export the user pulled off the
+  live server, not guessed. `xcrnnum` uses a distinct `"SRTMP--"` prefix (vs. real `opcrn`'s
+  `"SR--"`), `xtrncrn` is the literal `'TEMP'`, but every column this feature needs is named
+  identically to `opcrn` (`xemp`, `xdate`, `xstatuscrn`, `xcrnnum`, `xreason`, `xdornum`,
+  `xcus`). `core/queries.py::get_app_usage_returns` now `UNION ALL`s `opcrn` with `opcrntemp`
+  — same precedent as `get_return_data`'s own `opcrn`/`opcdt` + `imtemptrn`/`imtemptdt` union
+  for the *other* mobile-staged return path — rather than swapping the table outright, since
+  `opcrn`'s historical "SR--" rows are still real data, just no longer where NEW mobile
+  entries land. Without this, the return-hygiene component would have silently scored every
+  salesman's returns at a neutral 50 going forward (zero eligible rows post-cutover), not
+  obviously broken — exactly the kind of bug that's dangerous because it fails quiet. Verified
+  by actually recreating `opcrntemp` locally from the real CSV export (type-matched `zid` to
+  `integer` to join `cacus` correctly, a real snag hit and fixed during setup) and running the
+  query, the scoring engine, and the new detail builder below against it directly.
+- **"See Details" drill-down added 2026-10-13** — explicit ask, so a manager can see exactly
+  which rows produced a given salesman's score instead of trusting the composite number blind.
+  A button (`_render_usage_details` in the view) gates the load — the row-level pulls underneath
+  are heavier than the summary table, so nothing fires until clicked — then a salesman picker,
+  then 4 tables (Orders & Location combined, Returns, Promised Payment, Collections), one
+  salesman at a time. `processing/commission_campaigns.py::build_app_usage_detail` is the new
+  engine function — same window/14-day-grace logic as `compute_app_usage_scores`, factored into
+  a shared `_app_usage_eval_window` helper (plus an `_APP_USAGE_RETURN_GRACE_DAYS` constant) so
+  the detail tables can never silently drift from what the score itself actually used. Orders
+  table flags `has_gps`/`is_duplicate_coord` per row (so a low GPS-distinctness score is
+  visibly explained by repeated identical coordinates, not just asserted); Returns flags
+  `eligible`/`stuck`; Promised Payment flags `has_promise`; Collections is a plain glpmt slice
+  (nothing to flag — that component is just a count). `get_app_usage_returns` and
+  `get_app_usage_delivery_orders` both got extra columns (`xcrnnum`/`xreason`/`xdornum`/
+  `cusname` on the former, `xdornum`/`xcus` on the latter) purely for this drill-down's own
+  display — the scoring engine itself still only reads the handful of columns it always did,
+  the rest ride along unused there.
+- **Verified live, 2026-10-13**: real `opcrntemp` CSV re-imported into a throwaway local table
+  (dropped after), a handful of synthetic `opmob` rows inserted for the same salesmen so the
+  reporting month wasn't empty (deleted after) — created a real test campaign (Oct 2026,
+  threshold 0) as a real admin: the summary table correctly showed 4 scored salesmen with real
+  GPS fill/distinct percentages matching the synthetic coordinates exactly (one salesman's 3
+  orders, 2 sharing one coordinate → 67% distinct, confirmed by hand); clicked "See Details",
+  picked that salesman, and the Orders table correctly showed the ⚠️ duplicate-coordinate flag
+  on exactly the 2 repeated rows, while the Returns table showed his real `opcrntemp`-sourced
+  returns (real customer names, real DO numbers, real reasons) correctly captioned "none old
+  enough yet to count toward hygiene" (all dated within the 14-day grace window from "today").
+  Test campaign, local `opcrntemp` table, and synthetic `opmob` rows all removed after.
 
 ### Customer Acquisition — Unique Customers & New Customer Creation (B.5, built 2026-09-21)
 
