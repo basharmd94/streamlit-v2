@@ -1464,7 +1464,18 @@ Target Management → 👀 Customer Tracking → a `Tracking Type` radio: **📲
 - **📲 Collection Watchlist** — filtered to the watchlist codes only, three stacked sections:
   1. **Customer Score** — `processing/marketing.py::build_customer_marketing_table`, pooled
      sales/collection/AR/cacus across both ZIDs (same pattern as A.1b's own pooled scoring),
-     current year only.
+     current year only. **"Avg Days to Pay (12mo)" column added 2026-10-13** — explicitly NOT
+     `build_customer_marketing_table`'s own internal `avg_days_to_collection` (a documented
+     "lightweight reimplementation... no returns data needed"), but the exact same engine
+     Collection Analysis → CP uses (`processing/collection.py::average_days_to_collection`,
+     unchanged), called separately with a trailing-12-month pooled window (not calendar year) and
+     merged onto the score table by `cusid`. `views/commission_customer_tracking_view.py::
+     _avg_days_to_pay_12mo` restricts sales/returns/collection to the watchlist's own codes
+     **before** calling it — that function's own per-row Python loop is the expensive part, cheap
+     for a short watchlist, not something to run across the whole pooled customer base. Window
+     loader (`_pooled_window`) spans whichever 1-2 calendar years the trailing window touches,
+     reusing the existing per-(zid, year) cached loaders (`_load_sales_year`/`_load_collection_year`/
+     new `_load_returns_year`) rather than a fresh full-history pull.
   2. **Latest Sale & Collection** — `views/collection.py::_load_salesman_due_reports`'s own
      `build_salesman_due_reports` pipeline, loaded per-ZID then **concatenated with an explicit
      `"ZID"` tag column, NOT balance-merged** — a customer shared by both ZIDs shows one row per
@@ -1509,7 +1520,13 @@ Target Management → 👀 Customer Tracking → a `Tracking Type` radio: **📲
   the watchlist** — `processing/customer_tracking.py::style_watchlist_rows` light-red-highlights
   whichever rows' customer code is on the manager's watchlist, within that full list, per
   explicit ask ("if we enter any customer code... that is within this criteria and in the total
-  list shown we will color it").
+  list shown we will color it"). **"Reason" column added 2026-10-13** — `opcrn.xreason` (the
+  salesman-entered reason for the return, same field `get_return_data`/Returns Registry already
+  surface), added to `get_do_next_day_returns`'s SELECT/GROUP BY and passed straight through
+  `compute_next_day_return_matches`'s `cols` list. Verified directly against Postgres over a wide
+  (2025-01-01 to 2026-10-13) window since the live trailing-14-day window was empty at
+  verification time: real values came back correctly (`"Shop/Outlet Off"`, `"Money Problem"`,
+  `"Owner Absent"`, `"Normal Return For Good Product"`, `"Time Short"`, `"Product Quality Bad"`).
 - **💳 Promised Payment** — new section, 2026-10-12, **standalone, not gated by any watchlist**
   ("I will need a list of all promised payment dates," read as the full population). Reuses the
   pooled Latest Sale & Collection report's own already-merged "Promised Payment" column
@@ -1534,6 +1551,13 @@ pooled customers, all correctly red-highlighted (every sampled promise date had 
 with a live balance); confirmed the admin Commissions-page setup panel still works unchanged and
 that `"👀 Customer Tracking"` no longer appears in Target Management's own Commission Results
 dropdown.
+
+**2026-10-13 additions verified live** (temp test watchlist — `CUS-005596`, `CUS-008441` under
+100000 — added via the admin Commissions page, checked, then cleared back to `[]` after):
+Collection Watchlist's Customer Score table correctly rendered a real "Avg Days to Pay (12mo)"
+value (1.5) alongside Customer Score/Current Balance for `CUS-005596`; Returns Watchlist's new
+Reason column verified via direct SQL (see above) since no live rows fell in the trailing-14-day
+window at the time.
 
 ---
 

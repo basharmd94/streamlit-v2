@@ -841,7 +841,10 @@ def get_do_next_day_returns(filters=None) -> Tuple[str, tuple]:
     access to — this query just returns every (DO, SR) pair in the window,
     one row per return header, with COALESCE(SUM(opcdt.xlineamt)) for the
     return amount (opcrn.xtotamt is blank the same way it is for open
-    Returns Registry rows).
+    Returns Registry rows). opcrn.xreason (the salesman-entered reason for
+    the return, same field Returns Registry/get_return_data already
+    surface) rides along as `reason` — explicit ask, so the manager can see
+    *why* a flagged customer refused delivery, not just that they did.
 
     filters: zid (list, e.g. ["100001","100000"]), start_date, end_date
     (DO date window, both inclusive, 'YYYY-MM-DD' strings).
@@ -857,6 +860,7 @@ def get_do_next_day_returns(filters=None) -> Tuple[str, tuple]:
             r.xdate                 AS sr_date,
             r.xcus                  AS cusid,
             COALESCE(c.xshort, '')  AS cusname,
+            COALESCE(r.xreason, '') AS reason,
             COALESCE(SUM(d.xlineamt), 0) AS return_amount
         FROM opcrn r
         JOIN opdor o   ON o.zid = r.zid AND o.xdornum = r.xdornum
@@ -866,7 +870,7 @@ def get_do_next_day_returns(filters=None) -> Tuple[str, tuple]:
           AND r.xdornum IS NOT NULL AND r.xdornum <> ''
           AND o.xdate <> '2999-12-31' AND r.xdate <> '2999-12-31'
           AND o.xdate >= %s AND o.xdate <= %s
-        GROUP BY r.zid, o.xdornum, o.xdate, r.xcrnnum, r.xdate, r.xcus, c.xshort
+        GROUP BY r.zid, o.xdornum, o.xdate, r.xcrnnum, r.xdate, r.xcus, c.xshort, r.xreason
         ORDER BY o.xdate DESC
     """
     params = zid_params + (filters["start_date"], filters["end_date"])

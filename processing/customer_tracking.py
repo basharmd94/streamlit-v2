@@ -139,7 +139,7 @@ def compute_next_day_return_matches(
     Thursday-dated DOs — exactly this pattern, not noise.
     """
     cols = ["zid", "xdornum", "do_date", "xcrnnum", "sr_date", "cusid", "cusname",
-            "return_amount", "day_gap"]
+            "reason", "return_amount", "day_gap"]
     if raw_df is None or raw_df.empty:
         return pd.DataFrame(columns=cols)
 

@@ -45,6 +45,7 @@ import streamlit as st
 from processing import common, customer_tracking as ctk
 from processing import marketing as mkt
 from processing import salesman_due as sd
+from processing.collection import average_days_to_collection
 from processing.holidays import _get_holidays
 from views.marketing import _load_ar_balance, _load_cacus
 
@@ -75,6 +76,13 @@ def _load_sales_year(zid: str, year: int) -> pd.DataFrame:
 def _load_collection_year(zid: str, year: int) -> pd.DataFrame:
     from core.analytics import Analytics
     df = Analytics("collection", zid=zid, filters={"year": [year]}).data
+    return df if df is not None else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_returns_year(zid: str, year: int) -> pd.DataFrame:
+    from core.analytics import Analytics
+    df = Analytics("return", zid=zid, filters={"year": [year]}).data
     return df if df is not None else pd.DataFrame()
 
 
@@ -140,6 +148,64 @@ def _pooled_sales_year(year: int) -> pd.DataFrame:
 def _pooled_collection_year(year: int) -> pd.DataFrame:
     frames = [df for z in _ZIDS if not (df := _load_collection_year(z, year)).empty]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _pooled_window(loader, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Pools `loader(zid, year)` across both ZIDs for every calendar year a
+    trailing window can touch (at most 2 — the window never spans more than
+    one year boundary), then slices to [start, end] in pandas. Reuses the
+    existing per-(zid, year) cached loaders, so this shares cache entries
+    with whatever else on the page already pulled that year's data."""
+    years = sorted({start.year, end.year})
+    frames = [df for y in years for z in _ZIDS if not (df := loader(z, y)).empty]
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    return df[(df["date"] >= start) & (df["date"] <= end)]
+
+
+def _avg_days_to_pay_12mo(codes: list) -> pd.DataFrame:
+    """Avg days from a customer's last sale to each of their collection
+    events, trailing 12 months — the exact same engine Collection Analysis
+    -> CP uses (processing/collection.py::average_days_to_collection), not
+    Customer Scoring's own lighter-weight approximation (which skips
+    returns and the "adjusted sales amount" check CP's version does).
+    Restricted to the given watchlist codes before calling it — that
+    function's own per-row Python loop is the expensive part, cheap for a
+    short watchlist but not something to run across the whole pooled
+    customer base just for this."""
+    empty = pd.DataFrame(columns=["cusid", "average_days_to_collection"])
+    if not codes:
+        return empty
+
+    today = pd.Timestamp.today().normalize()
+    start = today - pd.DateOffset(years=1)
+    code_set = {str(c) for c in codes}
+
+    sales_df = _pooled_window(_load_sales_year, start, today)
+    if sales_df.empty:
+        return empty
+    sales_df = sales_df[sales_df["cusid"].astype(str).isin(code_set)]
+    if sales_df.empty:
+        return empty
+
+    collection_df = _pooled_window(_load_collection_year, start, today)
+    if collection_df.empty:
+        return empty
+    collection_df = collection_df[collection_df["cusid"].astype(str).isin(code_set)]
+    if collection_df.empty:
+        return empty
+
+    returns_df = _pooled_window(_load_returns_year, start, today)
+    if not returns_df.empty:
+        returns_df = returns_df[returns_df["cusid"].astype(str).isin(code_set)]
+
+    avg_days_df, _, _, _ = average_days_to_collection(sales_df, returns_df, collection_df)
+    if avg_days_df.empty:
+        return empty
+    avg_days_df["cusid"] = avg_days_df["cusid"].astype(str)
+    return avg_days_df[["cusid", "average_days_to_collection"]]
 
 
 def _pooled_ar_balance() -> pd.DataFrame:
@@ -298,10 +364,18 @@ def _render_collection_results(codes: list) -> None:
     if score_wl.empty:
         st.caption(f"No {today.year} scoring data found for these customers.")
     else:
-        show_cols = [c for c in ["cusid", "cusname", "composite_score", "current_balance"] if c in score_wl.columns]
+        with st.spinner("Loading avg days to pay (trailing 12 months)…"):
+            avg_pay_df = _avg_days_to_pay_12mo(codes)
+        score_wl["cusid"] = score_wl["cusid"].astype(str)
+        if not avg_pay_df.empty:
+            score_wl = score_wl.merge(avg_pay_df, on="cusid", how="left")
+            score_wl["average_days_to_collection"] = score_wl["average_days_to_collection"].round(1)
+
+        show_cols = [c for c in ["cusid", "cusname", "composite_score", "current_balance", "average_days_to_collection"] if c in score_wl.columns]
         disp = score_wl[show_cols].rename(columns={
             "cusid": "Customer Code", "cusname": "Customer Name",
             "composite_score": "Customer Score", "current_balance": "Current Balance",
+            "average_days_to_collection": "Avg Days to Pay (12mo)",
         })
         if "Customer Score" in disp.columns:
             disp = disp.sort_values("Customer Score", ascending=False)
@@ -364,7 +438,7 @@ def _render_returns_results(codes: list) -> None:
     disp = matches.rename(columns={
         "zid": "ZID", "xdornum": "DO Voucher", "do_date": "DO Date",
         "xcrnnum": "Return Voucher", "sr_date": "Return Date",
-        "cusid": "Customer Code", "cusname": "Customer Name",
+        "cusid": "Customer Code", "cusname": "Customer Name", "reason": "Reason",
         "return_amount": "Return Amount", "day_gap": "Day Gap",
     })
     st.caption(f"{disp['Customer Code'].nunique()} distinct customer(s), {len(disp)} matching DO/return pair(s).")
