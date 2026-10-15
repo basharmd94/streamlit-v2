@@ -2,7 +2,7 @@
 """
 HMAC-SHA256 signature verification for Meta's webhook POSTs — see
 "Signature verification" in
-../WhatsApp_Integration_docs/whatsapp-webhook-build.md.
+../docs/WhatsApp_Integration_docs/whatsapp-webhook-build.md.
 
 Verifies against the RAW request body, before any JSON parsing — parsing
 can change the byte representation and break the match. Uses a

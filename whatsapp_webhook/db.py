@@ -2,7 +2,7 @@
 """
 Database access for the WhatsApp webhook receiver — a separate PostgreSQL
 database, isolated from the main app's `da` database (see
-../WhatsApp_Integration_docs/whatsapp-webhook-build.md, "Database" section
+../docs/WhatsApp_Integration_docs/whatsapp-webhook-build.md, "Database" section
 and schema.sql in this folder).
 
 Plain psycopg2, one short-lived connection per call via get_conn(). Traffic

@@ -1,7 +1,7 @@
 # whatsapp_webhook/main.py
 """
 WhatsApp Cloud API webhook receiver — see
-../WhatsApp_Integration_docs/whatsapp-webhook-build.md for the full build
+../docs/WhatsApp_Integration_docs/whatsapp-webhook-build.md for the full build
 reference this was built against, and README.md in this folder for local
 run instructions (uvicorn + ngrok + Meta App Dashboard registration).
 

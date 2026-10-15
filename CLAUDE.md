@@ -46,6 +46,11 @@ data/                   # targets.json, public_holidays.json, warehouse_filters.
                         # ls_account_notes.json (committed — read-only, no in-app edit path)
 db_sync/                # Standalone DB sync scripts (separate from the app)
 whatsapp_webhook/       # Standalone FastAPI service (separate from the app, see below)
+docs/                   # Standalone reference/design docs (commission_tracking_design.md,
+                        #   mobile_order_api_data_map.md/.json, WhatsApp/WhatsFly integration
+                        #   docs, etc.) — moved out of repo root 2026-10-15 to keep root to just
+                        #   functional folders + the handful of files tooling expects there
+                        #   (README.md, CLAUDE.md, requirements.txt, .env, etc.)
 ```
 
 ### Critical folder rules
@@ -872,8 +877,8 @@ Verified end-to-end against the real local Postgres mirror (not synthetic assump
 
 ## Sales Commissions & Incentive Tracking (`views/commissions.py`, "Commissions" menu item)
 
-Full design (rankings, campaigns, the pooled-FIFO/gate mechanics) lives in **`commission_tracking_design.md`**
-(repo root, status "agreed design") — that file is the source of truth, not this section. Built one piece at a
+Full design (rankings, campaigns, the pooled-FIFO/gate mechanics) lives in **`docs/commission_tracking_design.md`**
+(status "agreed design") — that file is the source of truth, not this section. Built one piece at a
 time, discussed with the user before each piece, per that doc's own "discuss before building" rule.
 
 ### Architecture: setup vs. results are two separate surfaces (confirmed 2026-09-20)
@@ -1314,9 +1319,9 @@ marketing analysis." Full spec: `commission_tracking_design.md` §A.1b.
 `processing/commission_campaigns.py::compute_app_usage_scores` + `compute_app_usage_bonus` (engine) +
 `views/commission_app_usage_view.py` (UI). Built 2026-09-21, resolving A.4's earlier "deferred by design"
 status — the user supplied the real mobile ERP API's own DB impact map
-(`mobile_order_api_data_map.md`/`.json`, repo root, traced from source and verified column-for-column
+(`docs/mobile_order_api_data_map.md`/`.json`, traced from source and verified column-for-column
 against live Postgres) rather than the doc's earlier guessed list. Full spec:
-`commission_tracking_design.md` §A.4.
+`docs/commission_tracking_design.md` §A.4.
 
 - **Traced where a salesman's mobile-app actions actually land**, per the data map: order placement →
   `opmob` (one row per LINE ITEM — group by `invoiceno`+`invoicesl`, NEVER `xordernum`, which is NULL on

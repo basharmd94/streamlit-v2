@@ -1,6 +1,6 @@
 # views/commissions.py
 # "Commissions" top-level page — Sales Reward, Commission & Incentive
-# Tracking. Design: commission_tracking_design.md (repo root), status
+# Tracking. Design: docs/commission_tracking_design.md, status
 # "agreed design." Product Tracking and the B.1/3/4 campaign mechanism are
 # built so far; every other entry in the dropdown below is a placeholder
 # until it's picked up and scoped with the user, per the doc's own

@@ -1,7 +1,7 @@
 # whatsapp_webhook/handlers.py
 """
 Per-field routing for a verified webhook payload — see "Webhook fields
-reference" in ../WhatsApp_Integration_docs/whatsapp-webhook-build.md.
+reference" in ../docs/WhatsApp_Integration_docs/whatsapp-webhook-build.md.
 
 Runs as a FastAPI BackgroundTask (see main.py) so the webhook POST can ack
 Meta with 200 immediately per the doc's "respond fast, process later" rule.
