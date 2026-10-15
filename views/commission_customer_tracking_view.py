@@ -76,14 +76,20 @@ def _load_sales_year(zid: str, year: int) -> pd.DataFrame:
 def _load_collection_year(zid: str, year: int) -> pd.DataFrame:
     from core.analytics import Analytics
     df = Analytics("collection", zid=zid, filters={"year": [year]}).data
-    return df if df is not None else pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    (df,) = common.data_copy_add_columns(df.copy())
+    return df
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def _load_returns_year(zid: str, year: int) -> pd.DataFrame:
     from core.analytics import Analytics
     df = Analytics("return", zid=zid, filters={"year": [year]}).data
-    return df if df is not None else pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    (df,) = common.data_copy_add_columns(df.copy())
+    return df
 
 
 @st.cache_data(ttl=3600, show_spinner="Building Latest Sale & Collection report…")
