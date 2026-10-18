@@ -73,6 +73,7 @@ class Analytics:
             "gl_overhead_daily":      queries.get_gl_overhead_daily,
             "gl_income_overhead":     queries.get_gl_income_overhead,
             "sales_daily_item":       queries.get_sales_daily_item,
+            "item_price_window":      queries.get_item_price_window,
             "returns_daily_item":     queries.get_returns_daily_item,
             "issues_daily_item":      queries.get_issues_daily_item,
             "ar":               queries.get_ar_data,

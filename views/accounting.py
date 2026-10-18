@@ -5,6 +5,7 @@ from typing import Tuple
 from core.analytics import Analytics
 from processing import common, usage_log
 from utils.utils import timed
+from views import price_analysis_view
 
 
 # ---------- Cached loaders (simple table pulls) ----------
@@ -236,12 +237,23 @@ def _compute_ledger(zid: str, ac_type: str, ac_codes: list[str], year: int, mont
 
 @timed
 def display_accounting_analysis_main(current_page, zid: str):
-    usage_log.log_view("Accounting Analysis")
-    # Page-level only — st.tabs() has no server-readable "which tab is
-    # active" state (all three tab bodies execute every rerun regardless
-    # of which one the user's actually looking at), so radio-level detail
-    # isn't tracked for this page.
     st.title("Accounting Analysis")
+
+    mode = st.radio(
+        "Analysis Mode",
+        ["📒 AR / AP / Ledger", "💲 Price Analysis"],
+        horizontal=True,
+        key="acct_mode",
+    )
+    # Radio-level only — the AR / AP / Ledger sections are st.tabs(), which
+    # has no server-readable "which tab is active" state (all three tab
+    # bodies execute every rerun regardless of which one the user's actually
+    # looking at), so detail below the radio isn't tracked.
+    usage_log.log_view("Accounting Analysis", mode)
+
+    if mode == "💲 Price Analysis":
+        price_analysis_view.render_price_analysis(zid)
+        return
 
     tab_ar, tab_ap, tab_ledger = st.tabs([
         "🧾 AR Analysis",

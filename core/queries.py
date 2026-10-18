@@ -1317,6 +1317,28 @@ def get_sales_daily_item(filters=None):
     return sql, (zid,)
 
 
+def get_item_price_window(filters=None):
+    """Units sold and realized sales amount per item within [start_date, end_date].
+
+    Amount is final_sales (altsales - proddiscount), NOT mv_sales_daily_item's
+    sales_rev / opddt.xlineamt -- xlineamt double-counts the MRP gap for
+    100005 (see CLAUDE.md, Sales Analysis -> Product Orders). Gross of
+    returns: this is "amount per unit sold", not net revenue per unit kept.
+    One row per itemcode; Price Analysis divides amount / units in pandas.
+    """
+    filters = filters or {}
+    zid = filters["zid"][0]
+    sql = """
+        SELECT itemcode,
+               SUM(quantity)                AS units,
+               SUM(altsales - proddiscount) AS amount
+        FROM mv_sales_line_items
+        WHERE zid = %s AND date >= %s AND date <= %s
+        GROUP BY itemcode
+    """
+    return sql, (zid, filters["start_date"], filters["end_date"])
+
+
 def get_ar_data(filters=None):
     """Queries mv_ar_vouchers (materialized view).
 
