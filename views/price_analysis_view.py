@@ -17,9 +17,12 @@ from core.analytics import Analytics
 from processing import common, financial
 from processing import price_analysis as pa
 
-_TIMELINES = ["Monthly", "Quarterly", "Yearly"]
-_MAX_PERIODS = {"Monthly": 12, "Quarterly": 8, "Yearly": 5}
-_YEARLY_SPAN = 5          # years loaded for the Yearly timeline
+# Yearly names mirror Financial Statements' own perspective names.
+_YEARLY_FULL = "Yearly - Full Year vs YTD"
+_YEARLY_CUSTOM = "Yearly - Custom Range"
+_TIMELINES = ["Monthly", "Quarterly", _YEARLY_FULL, _YEARLY_CUSTOM]
+_MAX_PERIODS = {"Monthly": 12, "Quarterly": 8, _YEARLY_FULL: 5, _YEARLY_CUSTOM: 5}
+_YEARLY_SPAN = 5          # years loaded for either Yearly timeline
 
 
 # ── Cached loaders ───────────────────────────────────────────────────────────
@@ -57,13 +60,16 @@ def _last_complete_month(today: pd.Timestamp) -> tuple[int, int]:
     return prev.year, prev.month
 
 
-def _load_expense_frame(zid: str, project, timeline: str, end_year: int, end_month: int):
+def _load_expense_frame(
+    zid: str, project, timeline: str, end_year: int, end_month: int, start_month: int = 1
+):
     """Level 0 income-statement frame (account rows x period columns) for
     the chosen timeline, built with the exact Financial Statements builders
     (process_data_month / collapse_monthly_to_quarterly / process_data), so
     the totals tie to its Level 0 "Expense Changes" table. Returns
     (frame, last_month_included) -- last_month_included is only meaningful
-    for Quarterly (flags a partial final quarter)."""
+    for Quarterly (flags a partial final quarter). `start_month` only
+    matters for Yearly - Custom Range."""
     label_df = _income_label_df()
     excluded = {"Asset", "Liability"}
 
@@ -90,6 +96,13 @@ def _load_expense_frame(zid: str, project, timeline: str, end_year: int, end_mon
 
     today = pd.Timestamp.today()
     years = [end_year - i for i in range(_YEARLY_SPAN - 1, -1, -1)]
+    if timeline == _YEARLY_CUSTOM:
+        # Same call Financial Statements' "Yearly - Custom Range" makes: every
+        # year summed over the SAME start..end month window (YTD vs YTD).
+        pl = financial.process_data(
+            zid, years, start_month, end_month, "Income Statement", label_df, project, excluded
+        )
+        return pl, 0
     full_years = [y for y in years if y < today.year]
     pl = None
     if full_years:
@@ -121,41 +134,63 @@ def _render_expense_change(zid: str) -> None:
     today = pd.Timestamp.today().normalize()
     lc_year, lc_month = _last_complete_month(today)
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
+    tl_col, _ = st.columns(2)
+    with tl_col:
         timeline = st.selectbox("Timeline", _TIMELINES, key="pa_timeline")
-    with c2:
+    custom = timeline == _YEARLY_CUSTOM
+    yearly = timeline in (_YEARLY_FULL, _YEARLY_CUSTOM)
+
+    cols = st.columns(4 if custom else 3)
+    with cols[0]:
         end_year = st.number_input(
             "End Year", min_value=2018, max_value=today.year,
             value=lc_year, step=1, key="pa_end_year",
         )
-    with c3:
+    start_month = 1
+    if custom:
+        with cols[1]:
+            start_month = st.number_input(
+                "Start Month", min_value=1, max_value=12, value=1, step=1,
+                key="pa_start_month",
+            )
+    with cols[-2]:
         end_month = st.number_input(
             "End Month", min_value=1, max_value=12, value=lc_month, step=1,
-            key="pa_end_month", disabled=(timeline == "Yearly"),
+            key="pa_end_month", disabled=(timeline == _YEARLY_FULL),
         )
-    with c4:
-        max_p = _MAX_PERIODS[timeline]
+    with cols[-1]:
         n_periods = st.number_input(
-            "Periods to compare", min_value=2, max_value=max_p,
+            "Periods to compare", min_value=2, max_value=_MAX_PERIODS[timeline],
             value=2, step=1, key=f"pa_n_periods_{timeline}",
         )
 
-    end_year, end_month = int(end_year), int(end_month)
-    if timeline != "Yearly" and (end_year, end_month) > (lc_year, lc_month):
+    end_year, end_month, start_month = int(end_year), int(end_month), int(start_month)
+    if not yearly and (end_year, end_month) > (lc_year, lc_month):
         end_year, end_month = lc_year, lc_month
         st.caption(
             f"Latest completed month is {calendar.month_abbr[lc_month]} {lc_year} "
             f"— using that as the end period."
         )
-    if timeline == "Yearly" and end_year == today.year and today.month == 1:
+    if yearly and end_year == today.year and today.month == 1:
         st.info(f"No completed month in {today.year} yet — pick {today.year - 1} or earlier.")
         return
+    if custom:
+        if end_year == today.year and end_month > lc_month:
+            end_month = lc_month
+            st.caption(
+                f"{today.year} only has data through {calendar.month_abbr[lc_month]} — "
+                "using that as the end month so every year covers the same months."
+            )
+        if start_month > end_month:
+            st.warning("Start Month is after End Month — pick a start on or before the end.")
+            return
 
     project = st.session_state.get("proj")
     try:
         with st.spinner("Loading Level 0 income statement…"):
-            pl, last_month = _load_expense_frame(str(zid), project, timeline, end_year, end_month)
+            pl, last_month = _load_expense_frame(
+                str(zid), project, timeline, end_year, end_month, start_month
+            )
     except ValueError as e:
         st.warning(f"Nothing to load for that period: {e}")
         return
@@ -167,7 +202,10 @@ def _render_expense_change(zid: str) -> None:
         st.info("No income-statement data for this entity and period.")
         return
 
-    totals = pa.build_expense_totals(pl, timeline, int(n_periods))
+    suffix = (
+        f" ({calendar.month_abbr[start_month]}–{calendar.month_abbr[end_month]})" if custom else ""
+    )
+    totals = pa.build_expense_totals(pl, timeline, int(n_periods), suffix)
     summary = pa.summarize_expense_change(totals)
     if summary is None:
         st.info("Not enough periods (or no 06xx / 07xx rows) to compute a change.")
@@ -191,7 +229,12 @@ def _render_expense_change(zid: str) -> None:
             f"⚠️ {summary['last_label']} is a partial quarter (data through "
             f"{calendar.month_abbr[last_month]}); earlier quarters are full."
         )
-    if timeline == "Yearly" and end_year == today.year:
+    if custom:
+        st.caption(
+            f"Each year covers {calendar.month_abbr[start_month]}–{calendar.month_abbr[end_month]}, "
+            "so years are compared like-for-like."
+        )
+    if timeline == _YEARLY_FULL and end_year == today.year:
         st.caption(
             f"⚠️ {end_year} is year-to-date (through {calendar.month_abbr[lc_month]}) "
             "— compared against full prior years, so the change is understated."

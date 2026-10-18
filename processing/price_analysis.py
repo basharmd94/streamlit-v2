@@ -47,16 +47,20 @@ def period_columns(df: pd.DataFrame) -> list:
     return sorted(cols, key=_key)
 
 
-def period_label(col, timeline: str) -> str:
+def period_label(col, timeline: str, suffix: str = "") -> str:
+    """`suffix` is appended to plain-year labels only (e.g. " (Jan–Sep)" for
+    the Yearly - Custom Range timeline, where a year means a month window)."""
     if isinstance(col, tuple):
         year, part = int(col[0]), int(col[1])
         if timeline == "Quarterly":
             return f"Q{part} {year}"
         return f"{calendar.month_abbr[part]} {year}"
-    return str(int(col))
+    return f"{int(col)}{suffix}"
 
 
-def build_expense_totals(pl_df: pd.DataFrame, timeline: str, n_periods: int) -> pd.DataFrame:
+def build_expense_totals(
+    pl_df: pd.DataFrame, timeline: str, n_periods: int, label_suffix: str = ""
+) -> pd.DataFrame:
     """Total 06xx+07xx expense for the last `n_periods` periods in `pl_df`,
     with the change vs the previous row. Level 0 sign: expense is positive,
     so a positive Change means costs went up. Empty frame if fewer than two
@@ -73,7 +77,7 @@ def build_expense_totals(pl_df: pd.DataFrame, timeline: str, n_periods: int) -> 
         return pd.DataFrame(columns=out_cols)
 
     out = pd.DataFrame({
-        "Period": [period_label(c, timeline) for c in cols],
+        "Period": [period_label(c, timeline, label_suffix) for c in cols],
         "Total Expenses": exp.sum(axis=0).to_numpy(dtype=float),
     })
     out["Change"] = out["Total Expenses"].diff()
