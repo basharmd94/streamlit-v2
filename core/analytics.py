@@ -128,6 +128,17 @@ class Analytics:
             "do_audit_partial_fulfillment": queries.get_do_audit_partial_fulfillment,
             "do_audit_unpersisted":     queries.get_do_audit_unpersisted,
             "item_master_report":       queries.get_item_master_report,
+            "cash_model_flows":              queries.get_cash_model_flows,
+            "cash_model_cc_payments":        queries.get_cash_model_cc_payments,
+            "cash_model_import_shipments":   queries.get_cash_model_import_shipments,
+            "cash_model_import_settlements": queries.get_cash_model_import_settlements,
+            "cash_model_purchases_monthly":  queries.get_cash_model_purchases_monthly,
+            "cash_model_stock_movement":     queries.get_cash_model_stock_movement,
+            "cash_model_sales_monthly":      queries.get_cash_model_sales_monthly,
+            "cash_model_returns_monthly":    queries.get_cash_model_returns_monthly,
+            "cash_model_mfg_monthly":        queries.get_cash_model_mfg_monthly,
+            "cash_model_item_prices":        queries.get_cash_model_item_prices,
+            "cash_model_account_names":      queries.get_cash_model_account_names,
         }
 
         query_func = query_map.get(table_name)

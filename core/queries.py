@@ -3800,3 +3800,250 @@ def get_item_master_report(filters: Dict[str, Any] = None) -> Tuple[str, tuple]:
     ORDER BY ci.zid, ci.xitem, op.xqty
     """
     return sql, ()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cash Model (Financial Statements → "💵 Cash Model")
+# Every query is aggregated over the whole monthly window in ONE round trip:
+#   window = Jan (year-1) .. end_month of `year`  (same span as the Monthly statements)
+# filters: zid, project, year, end_month, cash_codes (the app's Cash & CE accounts),
+#          cc_codes (bank overdraft / CC accounts)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cm_window(filters: Dict[str, Any]) -> Tuple[str, str]:
+    """(start_date, end_date) of the cash-model window as ISO strings."""
+    import calendar
+    year, end_month = int(filters["year"]), int(filters["end_month"])
+    last_day = calendar.monthrange(year, end_month)[1]
+    return f"{year - 1}-01-01", f"{year}-{end_month:02d}-{last_day:02d}"
+
+
+def _cm_period_clause(alias_year: str, alias_per: str) -> str:
+    """Prior year Jan-Dec plus current year Jan..end_month (xyear/xper based, like the app)."""
+    return (
+        f"(({alias_year} = %s AND {alias_per} BETWEEN 1 AND 12) "
+        f"OR ({alias_year} = %s AND {alias_per} BETWEEN 1 AND %s))"
+    )
+
+
+def get_cash_model_flows(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Real cash movements per month by counter-account.
+
+    A voucher 'touches cash' when it has a line on any account in cash_codes
+    (restricted to `project` exactly like get_gl_details, so totals tie to the
+    app). The cash effect of each non-cash line is -xprime (vouchers balance).
+    xsub is kept only for 01050001 (Advance For International Purchase) so the
+    import pipeline can be split by sub-ledger.
+    """
+    zid = filters["zid"][0]
+    year, end_month = int(filters["year"]), int(filters["end_month"])
+    cash_codes = list(filters["cash_codes"])
+    project = filters.get("project")
+    proj_sql = "AND c.xproj = %s" if project else ""
+    sql = f"""
+        SELECT h.xyear AS year, h.xper AS month, d.xacc AS ac_code,
+               CASE WHEN d.xacc = '01050001' THEN d.xsub END AS xsub,
+               substring(d.xvoucher, 1, 4) AS vtype,
+               SUM(CASE WHEN -d.xprime > 0 THEN -d.xprime ELSE 0 END) AS inflow,
+               SUM(CASE WHEN -d.xprime < 0 THEN -d.xprime ELSE 0 END) AS outflow,
+               COUNT(*) AS lines
+        FROM gldetail d
+        JOIN glheader h ON h.xvoucher = d.xvoucher AND h.zid = d.zid
+        WHERE d.zid = %s
+          AND {_cm_period_clause('h.xyear', 'h.xper')}
+          AND NOT (d.xacc = ANY(%s))
+          AND EXISTS (SELECT 1 FROM gldetail c
+                      WHERE c.zid = d.zid AND c.xvoucher = d.xvoucher
+                        AND c.xacc = ANY(%s) {proj_sql})
+        GROUP BY 1, 2, 3, 4, 5
+    """
+    params = [zid, year - 1, year, end_month, cash_codes, cash_codes]
+    if project:
+        params.append(project)
+    return sql, tuple(params)
+
+
+def get_cash_model_cc_payments(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Payments funded directly from a CC/overdraft account (no cash moved).
+
+    CPAY/BPAY vouchers that credit a cc_codes account and have NO cash line.
+    Returned per month/account (xsub kept for 01050001) as the debit amount.
+    """
+    zid = filters["zid"][0]
+    year, end_month = int(filters["year"]), int(filters["end_month"])
+    cash_codes, cc_codes = list(filters["cash_codes"]), list(filters["cc_codes"])
+    sql = f"""
+        SELECT h.xyear AS year, h.xper AS month, d.xacc AS ac_code,
+               CASE WHEN d.xacc = '01050001' THEN d.xsub END AS xsub,
+               SUM(d.xprime) AS amount
+        FROM gldetail d
+        JOIN glheader h ON h.xvoucher = d.xvoucher AND h.zid = d.zid
+        WHERE d.zid = %s
+          AND {_cm_period_clause('h.xyear', 'h.xper')}
+          AND d.xprime > 0
+          AND NOT (d.xacc = ANY(%s))
+          AND substring(d.xvoucher, 1, 4) IN ('CPAY', 'BPAY')
+          AND EXISTS (SELECT 1 FROM gldetail k
+                      WHERE k.zid = d.zid AND k.xvoucher = d.xvoucher
+                        AND k.xacc = ANY(%s) AND k.xprime < 0)
+          AND NOT EXISTS (SELECT 1 FROM gldetail c
+                          WHERE c.zid = d.zid AND c.xvoucher = d.xvoucher
+                            AND c.xacc = ANY(%s))
+        GROUP BY 1, 2, 3, 4
+    """
+    return sql, (zid, year - 1, year, end_month, cc_codes, cc_codes, cash_codes)
+
+
+def get_cash_model_import_shipments(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Import (IP--) shipments received in the window: one row per GRN."""
+    start, end = _cm_window(filters)
+    sql = """
+        SELECT o.xpornum AS po, o.xcounterno AS shipment, g.xgrnnum AS grn,
+               g.xdate AS grn_date, g.xtotamt AS vendor_value, o.xcur AS currency
+        FROM poord o
+        JOIN pogrn g ON g.xpornum = o.xpornum AND g.zid = o.zid
+        WHERE o.zid = %s AND o.xpornum LIKE 'IP--%%'
+          AND g.xdate >= %s AND g.xdate <= %s
+        ORDER BY g.xdate, g.xgrnnum
+    """
+    return sql, (filters["zid"][0], start, end)
+
+
+def get_cash_model_import_settlements(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Credits to 01050001 (advance cleared into inventory) with their remarks.
+
+    The remark carries the shipment/L-C number ("... L/C KF 008/2025"), which
+    the processing layer parses to attach landed-cost components to a GRN.
+    """
+    zid = filters["zid"][0]
+    year, end_month = int(filters["year"]), int(filters["end_month"])
+    sql = f"""
+        SELECT h.xyear AS year, h.xper AS month, d.xvoucher AS voucher,
+               d.xsub AS xsub, -d.xprime AS amount, COALESCE(d.xrem, '') AS remark
+        FROM gldetail d
+        JOIN glheader h ON h.xvoucher = d.xvoucher AND h.zid = d.zid
+        WHERE d.zid = %s AND d.xacc = '01050001' AND d.xprime < 0
+          AND {_cm_period_clause('h.xyear', 'h.xper')}
+    """
+    return sql, (zid, year - 1, year, end_month)
+
+
+def get_cash_model_purchases_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Goods received per GRN month, split Import vs Local and resale vs operational.
+
+    A local line is 'resale' when its item has ever been sold (appears in
+    mv_sales_line_items for this ZID) — the rule that separates trading goods
+    (hasbolt, pliers, locks ...) from raw materials / packaging / consumables.
+    Value = received qty x rate.
+    """
+    start, end = _cm_window(filters)
+    zid = filters["zid"][0]
+    sql = """
+        WITH sold AS (
+            SELECT DISTINCT itemcode FROM mv_sales_line_items WHERE zid = %s
+        )
+        SELECT EXTRACT(YEAR  FROM g.xdate)::int AS year,
+               EXTRACT(MONTH FROM g.xdate)::int AS month,
+               CASE WHEN g.xgrnnum LIKE 'IGRN%%' THEN 'Import' ELSE 'Local' END AS kind,
+               (s.itemcode IS NOT NULL)          AS sold_item,
+               SUM(p.xqty * p.xrate)              AS value,
+               COUNT(DISTINCT g.xgrnnum)          AS grns,
+               COUNT(DISTINCT p.xitem)            AS items
+        FROM pogdt p
+        JOIN pogrn g ON g.xgrnnum = p.xgrnnum AND g.zid = p.zid
+        LEFT JOIN sold s ON s.itemcode = p.xitem
+        WHERE p.zid = %s AND g.xdate >= %s AND g.xdate <= %s
+        GROUP BY 1, 2, 3, 4
+    """
+    return sql, (zid, zid, start, end)
+
+
+def get_cash_model_stock_movement(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Item-level stock movement by month and doctype (qty), plus opening qty.
+
+    ym = 0 carries each item's cumulative quantity BEFORE the window starts;
+    otherwise ym = year*100+month. Values are applied later at the average
+    sales price, so only quantities are returned.
+    """
+    start, end = _cm_window(filters)
+    sql = """
+        SELECT i.xitem AS itemcode, i.xdoctype AS doctype,
+               CASE WHEN i.xdate < %s THEN 0
+                    ELSE EXTRACT(YEAR FROM i.xdate)::int * 100 + EXTRACT(MONTH FROM i.xdate)::int
+               END AS ym,
+               SUM(i.xqty * i.xsign) AS qty
+        FROM imtrn i
+        WHERE i.zid = %s AND i.xdate <= %s AND i.xdate < '2999-01-01'
+        GROUP BY 1, 2, 3
+    """
+    return sql, (start, filters["zid"][0], end)
+
+
+def get_cash_model_sales_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Item x month sales (units, gross altsales, discount) from the sales MV.
+
+    Starts 11 months before the window so a trailing-12-month price fallback
+    exists for the first columns.
+    """
+    import calendar
+    year, end_month = int(filters["year"]), int(filters["end_month"])
+    _, end = _cm_window(filters)
+    first = f"{year - 2}-02-01"
+    sql = """
+        SELECT itemcode,
+               EXTRACT(YEAR FROM date)::int * 100 + EXTRACT(MONTH FROM date)::int AS ym,
+               SUM(quantity)                AS units,
+               SUM(altsales)                AS gross,
+               SUM(proddiscount)            AS discount
+        FROM mv_sales_line_items
+        WHERE zid = %s AND date >= %s AND date <= %s
+        GROUP BY 1, 2
+    """
+    return sql, (filters["zid"][0], first, end)
+
+
+def get_cash_model_returns_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Customer returns from accounts: AR (01030001) credits on SRJV/SRT- vouchers."""
+    zid = filters["zid"][0]
+    year, end_month = int(filters["year"]), int(filters["end_month"])
+    sql = f"""
+        SELECT h.xyear AS year, h.xper AS month, -SUM(d.xprime) AS amount
+        FROM gldetail d
+        JOIN glheader h ON h.xvoucher = d.xvoucher AND h.zid = d.zid
+        WHERE d.zid = %s AND d.xacc = '01030001'
+          AND substring(d.xvoucher, 1, 4) IN ('SRJV', 'SRT-')
+          AND {_cm_period_clause('h.xyear', 'h.xper')}
+        GROUP BY 1, 2
+    """
+    return sql, (zid, year - 1, year, end_month)
+
+
+def get_cash_model_mfg_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Finished goods manufactured (imtrn RE-- receipts) per month: qty and cost."""
+    start, end = _cm_window(filters)
+    sql = """
+        SELECT EXTRACT(YEAR FROM xdate)::int AS year, EXTRACT(MONTH FROM xdate)::int AS month,
+               SUM(xqty * xsign) AS qty, SUM(xval * xsign) AS cost
+        FROM imtrn
+        WHERE zid = %s AND xdoctype = 'RE--' AND xdate >= %s AND xdate <= %s
+        GROUP BY 1, 2
+    """
+    return sql, (filters["zid"][0], start, end)
+
+
+def get_cash_model_item_prices(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Standard price per item — last-resort valuation when an item never sold."""
+    sql = "SELECT xitem AS itemcode, xstdprice AS std_price FROM caitem WHERE zid = %s"
+    return sql, (filters["zid"][0],)
+
+
+def get_cash_model_account_names(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Account and 01050001 sub-ledger names for labelling (one frame, kind-tagged)."""
+    zid = filters["zid"][0]
+    sql = """
+        SELECT 'acc' AS kind, xacc AS code, xdesc AS name FROM glmst WHERE zid = %s
+        UNION ALL
+        SELECT 'sub' AS kind, xsub AS code, xdesc AS name FROM glsub
+        WHERE zid = %s AND xacc = '01050001'
+    """
+    return sql, (zid, zid)

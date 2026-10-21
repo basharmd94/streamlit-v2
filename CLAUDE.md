@@ -34,7 +34,7 @@ processing/             # Pure pandas transforms, no st.* calls (except @st.cach
   financial.py          # Level 0->S IS/BS/CFS builders, compute_mtd_is, _MTD_CODES
   overall_margin.py, target_management.py, consolidation.py, collection.py, ...
 views/                  # One public display_*()/render_*() per file, UI only
-  financial.py, financial_dashboard.py, target_management.py, inventory.py,
+  financial.py, cash_model.py, financial_dashboard.py, target_management.py, inventory.py,
   margin.py, collection.py, sales.py, purchase.py, basket.py, ar_analysis.py,
   daily_sales.py, accounting.py, home.py
 visualization/common_v.py  # plot_histogram, plot_bar_chart (Plotly wrappers)
@@ -214,6 +214,43 @@ Revenue -> Others Revenue -> MRP Discount -> **Adjusted Revenue (Pending)** -> C
 - 3M average from last 3 completed period columns of `pl_s`
 - Toggle "Use 3M Averages for SG&A, Interest & Tax in Net Income": when ON, EBITDA/Net Income recalc using 3M avg for Total SG&A, Total Interest, VAT/Tax. Discount Paid and S&D always remain MTD actuals.
 - `_MTD_CODES` dict in `processing/financial.py` mirrors the ac_code sets in `build_pl_level_s` — keep both in sync when adding codes.
+
+### 💵 Cash Model (`views/cash_model.py` + `processing/cash_model.py`, built 2026-10-21)
+
+A new **Timeframe** option in Financial Statements (`'💵 Cash Model'`, early-return like Config Editor). One business at a time,
+**monthly columns over the same window as the Monthly statements** — Jan of `year-1` up to the chosen month (a 2026 end date spans
+Jan-2025 → that month; 2027 spans Jan-2026 →). Only completed months are selectable (same `now.month` rule as `process_data_month`).
+
+**The app is the source of truth, not the old CashAnalysis2023 sheet** (manual entries, hybrid CC basis — don't try to reproduce it).
+Opening/closing cash per column come straight from `financial.process_data_month` → `financial.cash_open_close` ("Cash & CE" =
+the 11 `0101`/`0102` accounts in `data/hierarchy.json`, **including** `01010005` Advance for Staff Salary etc. — whatever the app
+holds as cash is cash here). A second call for `year-1` supplies the opening of the first column. The cash statement explains the
+movement from the GL and shows a **"Difference (model − app)" row plus a green/amber banner** — verified ≤ 0.09 (the app rounds each
+account balance to 0.1) for HMBR, GI, Zepto and Gulshan Packaging, windows 2024/2025/2026.
+
+Sections (tabs): **📦 Purchases** (import records `IP--`/`IGRN` with landed cost from the L/C settlement vouchers; local purchases split
+into *trading* = the item is ever sold vs *excluded* operational/raw-material/packaging; manufacturing memo for GI/Zepto; 01050001
+advance balance memo), **🏬 Inventory & Sales** (real `imtrn` stock × each item's trailing-3-month average sales price, falling back
+to 12 months then standard price; ledger closes exactly via a "revaluation" line; sales = gross − discount − returns, returns from AR
+credits on `SRJV`/`SRT-` vouchers; "% of opening inventory sold"), **💵 Cash**, **🔎 Detail by account**; Excel download.
+
+Cash mechanics worth knowing:
+- Flows = every non-cash line of a voucher that touches a cash account (restricted to the business `project`, like `get_gl_details`);
+  cash effect of a counter line is `-xprime`. Internal moves between the 11 cash accounts disappear by construction.
+- **Bank overdraft (CC) treatment:** drawing = cash inflow, repaying = cash outflow (when the cash moves, GL voucher date);
+  payments funded straight from the CC move no cash and appear only in the **MEMO — paid from bank overdraft** block.
+- `01050001` (Advance For International Purchase) is split by **sub-ledger NAME** (`processing/cash_model.sub_kind`), never by code —
+  numbering differs per entity (HMBR `…104` = L/C charge, GI `…104` = pay order). Pay-order credits whose remark says "rebate" are
+  reclaimable VAT/AT transfers and are excluded from landed cost; L/C *margin* is financing, L/C *charges* are landed cost.
+- Rent (`08030002`, `02030002`) is flagged 🔁 recurring; hospital loan repayments (`02050001`) are shown as a separate capital inflow
+  (all cash in and out is counted — nothing is left out).
+- GI's money held at HMBR is `09060001` on HMBR's books and `01020003` on GI's (both inside the app's cash); shown as memo lines.
+- Shipment ↔ settlement matching parses the KF number (`MDKF008/25` ↔ `L/C KF 008/2025`, `parse_kf`).
+
+Queries: `core/queries.py::get_cash_model_*` (registered as `cash_model_*` in `Analytics`) — each aggregated in ONE round trip over
+the whole window (≤ ~2 s for HMBR). Tests: `tests/test_cash_model.py`. **No projections yet by design** — locking down actuals first.
+Known display pitfall: Streamlit shows NaN in a styled frame as "None" (na_rep ignored) → `_style` holds empty cells as `""`.
+Design notes and the sheet-vs-ledger reverse-engineering live in `financial_projections_phase1_mapping.md` (Steps 1–1i).
 
 ---
 

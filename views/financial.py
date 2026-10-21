@@ -1552,11 +1552,18 @@ def display_financial_statements(current_page, zid):
             'Quarterly',
             'Daily',
             'Lifetime',
+            '💵 Cash Model',
             '⚙️ Config Editor',
         ],
         index=0,
     )
     usage_log.log_view("Financial Statements", selected_perspective)
+
+    # ── Cash Model: own selectors + data, early return ───────────────────────
+    if selected_perspective == '💵 Cash Model':
+        from views import cash_model
+        cash_model.display_cash_model(zid)
+        return
 
     # ── Config Editor: early return, no data loading needed ──────────────────
     if selected_perspective == '⚙️ Config Editor':
