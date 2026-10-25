@@ -139,6 +139,7 @@ class Analytics:
             "cash_model_mfg_monthly":        queries.get_cash_model_mfg_monthly,
             "cash_model_item_prices":        queries.get_cash_model_item_prices,
             "cash_model_account_names":      queries.get_cash_model_account_names,
+            "cash_model_internal_transfer_cost": queries.get_cash_model_internal_transfer_cost,
         }
 
         query_func = query_map.get(table_name)

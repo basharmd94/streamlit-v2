@@ -21,6 +21,25 @@ CC_CODES = ["10010002", "10010003", "10010006", "10010007"]   # bank overdraft /
 PRICE_WINDOW_MONTHS = 3        # trailing months used for the average sales price
 PRICE_FALLBACK_MONTHS = 12     # used when an item has no sales in the short window
 
+# Businesses that are analysed together. Imports are split between HMBR (finished goods)
+# and Gulshan Packaging (goods to be packaged) on the same MDKF shipment; Gulshan
+# Packaging has no cash, advance or sales of its own, so selecting 100001 covers both.
+# 100000 (GI, assembled goods) and 100005 (Zepto) stay on their own.
+GROUPS: Dict[str, List[str]] = {"100001": ["100001", "100009"]}
+SALES_ZID = {"100001": "100001"}          # whose sales are external (the sister's DOs go to HMBR)
+INTERNAL_SUPPLIER = {"100001": "SUP-000004"}   # HMBR's supplier code for Gulshan Packaging
+# Cash lines that are transfers between the combined businesses -> eliminated, shown as memo:
+#   (zid, counter ac_code, sub-ledger)
+INTERNAL_FLOWS = {("100001", "09030003", "SUP-000004"): "HMBR → Gulshan Packaging",
+                  ("100009", "01030001", "CUS-000001"): "Gulshan Packaging ← HMBR"}
+# xsub is carried on these counter-accounts so the internal lines can be recognised
+KEEP_SUB_ACCS = {"100001": ["01050001", "09030003"], "100009": ["01050001", "09030003", "01030001"]}
+
+
+def group_zids(zid: str) -> List[str]:
+    """Businesses analysed together when `zid` is selected (itself when it has no group)."""
+    return list(GROUPS.get(str(zid), [str(zid)]))
+
 
 # ── window / labels ──────────────────────────────────────────────────────────
 def window_months(year: int, end_month: int) -> List[Tuple[int, int]]:
@@ -133,22 +152,32 @@ def categorize_flow(code: str, sub: Optional[str], direction: str,
 
 # ── cash statement ───────────────────────────────────────────────────────────
 def _flow_long(flows: pd.DataFrame, sub_names: Dict[str, str]) -> pd.DataFrame:
-    """Flows → one row per (year, month, ac_code, xsub, direction) with a signed amount."""
+    """Flows → one row per (year, month, ac_code, xsub, direction) with a signed amount.
+
+    `flows` may carry a `zid` column (combined groups); lines that are transfers
+    between the combined businesses (INTERNAL_FLOWS) get group 'Internal'.
+    """
+    empty = pd.DataFrame(columns=["year", "month", "zid", "ac_code", "xsub", "group", "label", "amount"])
     if flows is None or flows.empty:
-        return pd.DataFrame(columns=["year", "month", "ac_code", "xsub", "group", "label", "amount"])
+        return empty
     f = flows.copy()
+    if "zid" not in f:
+        f["zid"] = ""
+    f["zid"] = f["zid"].astype(str)
     for c in ("inflow", "outflow"):
         f[c] = pd.to_numeric(f[c], errors="coerce").fillna(0.0)
     parts = []
     for direction, col in (("in", "inflow"), ("out", "outflow")):
-        d = f[f[col] != 0][["year", "month", "ac_code", "xsub", col]].rename(columns={col: "amount"})
+        d = f[f[col] != 0][["year", "month", "zid", "ac_code", "xsub", col]].rename(columns={col: "amount"})
         d["direction"] = direction
         parts.append(d)
     long = pd.concat(parts, ignore_index=True)
     if long.empty:
-        return pd.DataFrame(columns=["year", "month", "ac_code", "xsub", "group", "label", "amount"])
-    cats = [categorize_flow(c, s, dr, sub_names)
-            for c, s, dr in zip(long["ac_code"], long["xsub"], long["direction"])]
+        return empty
+    cats = []
+    for z, c, s, dr in zip(long["zid"], long["ac_code"], long["xsub"], long["direction"]):
+        internal = INTERNAL_FLOWS.get((z, str(c), s if isinstance(s, str) else None))
+        cats.append(("Internal", internal) if internal else categorize_flow(c, s, dr, sub_names))
     long["group"] = [c[0] for c in cats]
     long["label"] = [c[1] for c in cats]
     return long
@@ -227,7 +256,15 @@ def build_cash_statement(flows: pd.DataFrame, cc_payments: pd.DataFrame,
             add("TOTAL CASH IN", "total",
                 {m: totals["Collections"][m] + totals["Additional inflows"][m] for m in months})
 
-    net = {m: totals["Collections"][m] + totals["Additional inflows"][m] + totals["Payments"][m] for m in months}
+    internal = long[long["group"] == "Internal"]
+    internal_net = series(internal)
+    if not internal.empty:
+        add("TRANSFERS BETWEEN THE COMBINED BUSINESSES (eliminated — should net to zero)", "header")
+        for label in sorted(internal["label"].unique()):
+            add("   " + label, "memo", series(internal[internal["label"] == label]))
+        add("Net internal transfers", "subtotal", internal_net)
+    net = {m: totals["Collections"][m] + totals["Additional inflows"][m] + totals["Payments"][m]
+           + internal_net[m] for m in months}
     add("NET CHANGE IN CASH", "total", net)
     closing_model = {m: opening[m] + net[m] for m in months}
     add("Closing cash — model (opening + net change)", "total", closing_model)
@@ -258,12 +295,16 @@ def build_account_detail(flows: pd.DataFrame, names: Dict[str, str],
     long = _flow_long(flows, sub_names)
     long["key"] = long["ac_code"].astype(str) + np.where(long["xsub"].notna(), " / " + long["xsub"].astype(str), "")
     long["ym"] = list(zip(long["year"], long["month"]))
-    pv = long.pivot_table(index=["group", "label", "ac_code", "key"], columns="ym",
+    combined = long["zid"].nunique() > 1
+    idx = ["group", "label", "ac_code", "key"] + (["zid"] if combined else [])
+    pv = long.pivot_table(index=idx, columns="ym",
                           values="amount", aggfunc="sum", fill_value=0.0)
     pv.columns = [month_label(c) for c in pv.columns]
     pv = pv.reset_index()
     pv.insert(3, "Account name", [names.get(str(c), "") for c in pv["ac_code"]])
-    pv["Total"] = pv[[c for c in pv.columns if "-" in str(c) and c not in ("Account name",)]].sum(axis=1)
+    if combined:
+        pv = pv.rename(columns={"zid": "Business"})
+    pv["Total"] = pv[[c for c in pv.columns if "-" in str(c) and c not in ("Account name", "Business")]].sum(axis=1)
     return pv.drop(columns=["key"]).sort_values(["group", "label", "Total"])
 
 
@@ -279,16 +320,22 @@ def parse_kf(text: str) -> Optional[Tuple[int, int]]:
 
 def build_shipments(shipments: pd.DataFrame, settlements: pd.DataFrame,
                     sub_names: Dict[str, str]) -> pd.DataFrame:
-    """One row per import GRN with landed-cost components found in the L/C settlement vouchers.
+    """One row per import SHIPMENT (the MDKF number) with landed-cost components from the L/C settlements.
+
+    A shipment is split across businesses (HMBR finished goods + Gulshan Packaging
+    goods to be packaged): every business's IP-- PO / IGRN on the same MDKF number
+    is added into the one row, while the L/C margin, pay order and charges are
+    booked once (on HMBR's 01050001) for the whole shipment. When `shipments`
+    carries a `zid` column the vendor value is also shown per business.
 
     Pay order credits whose remark says "rebate" are transfers of the reclaimable
     VAT/AT to the rebate claim (not cost) and are shown separately; landed cost =
     vendor value + capitalised pay order + other import costs (incl. L/C charges).
     """
-    cols = ["Shipment", "PO", "GRN", "GRN date", "Vendor value", "Pay order (capitalised)",
-            "VAT/AT rebate transfer", "Other import costs", "Landed cost", "Settlement matched"]
+    base_cols = ["Shipment", "PO", "GRN", "GRN date", "Vendor value", "Pay order (capitalised)",
+                 "VAT/AT rebate transfer", "Other import costs", "Landed cost", "Settlement matched"]
     if shipments is None or shipments.empty:
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=base_cols)
     comp: Dict[Tuple[int, int], Dict[str, float]] = {}
     if settlements is not None and not settlements.empty:
         s = settlements.copy()
@@ -301,24 +348,37 @@ def build_shipments(shipments: pd.DataFrame, settlements: pd.DataFrame,
                        np.where(kind.isin(["lcchg", "other"]), "other", "financing")))
         for (k, b), v in s.dropna(subset=["key"]).groupby(["key", "bucket"])["amount"].sum().items():
             comp.setdefault(k, {})[b] = float(v)
+    sh = shipments.copy()
+    sh["vendor_value"] = pd.to_numeric(sh["vendor_value"], errors="coerce").fillna(0.0)
+    sh["zid"] = sh["zid"].astype(str) if "zid" in sh else ""
+    sh["ship_key"] = [parse_kf(x) or str(x).split(",")[0] for x in sh["shipment"]]
+    zids = sorted(z for z in sh["zid"].unique() if z)
+    split = len(zids) > 1
     out = []
-    for r in shipments.itertuples(index=False):
-        c = comp.get(parse_kf(r.shipment))
-        vendor = float(r.vendor_value or 0)
+    for key, g in sh.groupby("ship_key", sort=False):
+        c = comp.get(key) if isinstance(key, tuple) else None
+        vendor = float(g["vendor_value"].sum())
         po = c.get("payorder", 0.0) if c else np.nan
         rb = c.get("rebate", 0.0) if c else np.nan
         other = c.get("other", 0.0) if c else np.nan
         landed = vendor + (po if c else 0.0) + (other if c else 0.0)
-        out.append({"Shipment": str(r.shipment).split(",")[0], "PO": r.po, "GRN": r.grn,
-                    "GRN date": pd.to_datetime(r.grn_date), "Vendor value": vendor,
-                    "Pay order (capitalised)": po, "VAT/AT rebate transfer": rb,
+        row = {"Shipment": str(g["shipment"].iloc[0]).split(",")[0],
+               "PO": " + ".join(g["po"].astype(str)), "GRN": " + ".join(g["grn"].astype(str)),
+               "GRN date": pd.to_datetime(g["grn_date"]).min(), "Vendor value": vendor}
+        if split:
+            for z in zids:
+                row[f"Vendor value ({z})"] = float(g.loc[g["zid"] == z, "vendor_value"].sum())
+        row.update({"Pay order (capitalised)": po, "VAT/AT rebate transfer": rb,
                     "Other import costs": other, "Landed cost": landed, "Settlement matched": bool(c)})
-    return pd.DataFrame(out, columns=cols)
+        out.append(row)
+    cols = base_cols[:5] + [f"Vendor value ({z})" for z in zids if split] + base_cols[5:]
+    return pd.DataFrame(out, columns=cols).sort_values("GRN date").reset_index(drop=True)
 
 
 def build_purchases(purch: pd.DataFrame, shipments_df: pd.DataFrame, mfg: pd.DataFrame,
                     advance_bal: Dict[Tuple[int, int], float],
-                    months: List[Tuple[int, int]]) -> pd.DataFrame:
+                    months: List[Tuple[int, int]],
+                    internal_cost: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Purchases block (month columns): imports landed, local trading purchases, memo lines."""
     cols = [month_label(m) for m in months]
     rows: List[dict] = []
@@ -343,6 +403,7 @@ def build_purchases(purch: pd.DataFrame, shipments_df: pd.DataFrame, mfg: pd.Dat
     imp = p[p["kind"] == "Import"] if not p.empty else p
     loc_sold = p[(p["kind"] == "Local") & (p["sold_item"].astype(bool))] if not p.empty else p
     loc_ops = p[(p["kind"] == "Local") & (~p["sold_item"].astype(bool))] if not p.empty else p
+    internal = p[p["kind"] == "Internal"] if not p.empty else p
 
     add("INTERNATIONAL PURCHASES (import records, IP-- / IGRN)", "header", None)
     add("   Vendor value of shipments received", "line", agg(imp))
@@ -366,6 +427,17 @@ def build_purchases(purch: pd.DataFrame, shipments_df: pd.DataFrame, mfg: pd.Dat
     add("   Trading purchases received (items that are sold)", "line", agg(loc_sold))
     add("   Excluded — operational / raw material / packaging (items never sold)", "memo", agg(loc_ops))
     add("   Trading items purchased (distinct)", "memo", agg(loc_sold, "items"))
+    if not internal.empty:
+        add("   Excluded — packaged goods received from Gulshan Packaging (internal transfer, not a purchase)",
+            "memo", agg(internal))
+        if internal_cost is not None and not internal_cost.empty:
+            ic = internal_cost.copy()
+            ic["cost"] = pd.to_numeric(ic["cost"], errors="coerce").fillna(0.0)
+            cost = agg(ic, "cost")
+            recv = agg(internal)
+            add("   Gulshan Packaging's cost of those goods (non-cash memo)", "memo", cost)
+            add("   Packaging margin on internal transfers (non-cash memo = HMBR receipt value − Packaging cost)",
+                "memo", {m: recv.get(m, 0.0) - cost.get(m, 0.0) for m in months})
 
     if mfg is not None and not mfg.empty:
         m2 = mfg.copy()
@@ -409,7 +481,8 @@ def build_inventory_sales(stock: pd.DataFrame, sales: pd.DataFrame, returns: pd.
     mv_total = np.zeros((len(items), len(yms)))
     grp_qty: Dict[str, np.ndarray] = {g: np.zeros((len(items), len(yms))) for g in
                                       ("Deliveries (DO--)", "Customer returns (SR--)", "Manufactured (RE--)",
-                                       "Goods received & other receipts", "Other issues, adjustments & returns to suppliers")}
+                                       "Goods received & other receipts", "Other issues, adjustments & returns to suppliers",
+                                       "Internal transfers between the combined businesses (net)")}
     pos = {ym: i for i, ym in enumerate(yms)}
     for r in st[st["ym"] != 0].itertuples(index=False):
         j = pos.get(int(r.ym))
@@ -423,6 +496,8 @@ def build_inventory_sales(stock: pd.DataFrame, sales: pd.DataFrame, returns: pd.
             g = "Customer returns (SR--)"
         elif r.doctype == "RE--":
             g = "Manufactured (RE--)"
+        elif r.doctype == "INTERNAL":
+            g = "Internal transfers between the combined businesses (net)"
         else:
             g = "Goods received & other receipts" if r.qty > 0 else "Other issues, adjustments & returns to suppliers"
         grp_qty[g][i, j] += r.qty
@@ -481,6 +556,8 @@ def build_inventory_sales(stock: pd.DataFrame, sales: pd.DataFrame, returns: pd.
     add("Opening inventory (prior month closing)", "total", list(opening_prev))
     add("   Revaluation at this month's average prices", "line", list(reval))
     for g, arr in grp_qty.items():
+        if g.startswith("Internal") and not arr.any():
+            continue                      # only a combined business has internal transfers
         add("   " + g, "line", list((arr * price).sum(axis=0)))
     add("Closing inventory", "total", list(closing))
     chk = opening_prev + reval + sum((a * price).sum(axis=0) for a in grp_qty.values()) - closing

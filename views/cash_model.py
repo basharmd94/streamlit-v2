@@ -7,6 +7,9 @@
 # Opening/closing cash come from the app's own Cash & CE (financial.cash_open_close)
 # and the cash statement ties back to it row by row. Pure display; the pandas
 # lives in processing/cash_model.py.
+# Selecting 100001 also analyses 100009 (Gulshan Packaging) with it: imports are split
+# between the two on the same MDKF shipment, 100009 has no cash/advance/sales of its
+# own, and transfers between the two are eliminated (processing.cash_model.GROUPS).
 
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ _HIER = ["ac_type", "ac_lv1", "ac_lv2", "ac_lv3", "ac_lv4", "ac_lv5"]
 # ── data loading ─────────────────────────────────────────────────────────────
 
 @st.cache_data(show_spinner=False, ttl=1800)
-def _app_cash(zid: str, project, year: int, end_month: int):
+def _app_cash_one(zid: str, project, year: int, end_month: int):
     """The app's own Cash & CE per month (source of truth) + 01050001 / 09060001 balances.
 
     Runs the identical pipeline the Monthly statements use (process_data_month ->
@@ -58,36 +61,96 @@ def _app_cash(zid: str, project, year: int, end_month: int):
             "advance": bal("01050001"), "gi_custody": bal("09060001"), "gi_at_gtc": bal("01020003")}
 
 
+def _sum_maps(maps):
+    out: dict = {}
+    for mp in maps:
+        for k, v in mp.items():
+            out[k] = out.get(k, 0.0) + v
+    return out
+
+
+def _app_cash(members, year: int, end_month: int):
+    """Cash & CE of the selected business = sum over the businesses analysed together.
+
+    members = ((zid, project), ...). Gulshan Packaging holds no cash of its own, but
+    whatever the app holds counts, so it is summed in.
+    """
+    parts = [_app_cash_one(z, p, year, end_month) for z, p in members]
+    prev = [x["prev_closing"] for x in parts if x["prev_closing"] is not None]
+    return {"closing": _sum_maps(x["closing"] for x in parts),
+            "prev_closing": sum(prev) if prev else None,
+            "advance": _sum_maps(x["advance"] for x in parts),
+            "gi_custody": _sum_maps(x["gi_custody"] for x in parts),
+            "gi_at_gtc": _sum_maps(x["gi_at_gtc"] for x in parts)}
+
+
 @st.cache_data(show_spinner=False, ttl=1800)
-def _load(zid: str, project, year: int, end_month: int):
+def _load(members, year: int, end_month: int):
+    """members = ((zid, project), ...); the FIRST is the selected business (its sales, advance
+    and supplier code define the group; the others are folded in)."""
+    primary = members[0][0]
+    grouped = len(members) > 1
     codes = financial._cash_codes_from_json()
-    f = {"year": year, "end_month": end_month, "cash_codes": codes, "cc_codes": cm.CC_CODES}
+    out = {k: [] for k in ("flows", "cc", "ship", "settle", "purch", "stock", "mfg", "names", "xcost")}
+    for z, project in members:
+        is_primary = z == primary
+        f = {"year": year, "end_month": end_month, "cash_codes": codes, "cc_codes": cm.CC_CODES,
+             "keep_sub": cm.KEEP_SUB_ACCS.get(z) if grouped else ["01050001"],
+             "sales_zid": primary, "map_codes": not is_primary,
+             "internal_supplier": cm.INTERNAL_SUPPLIER.get(primary) if is_primary and grouped else None}
 
-    def get(name):
-        d = Analytics(name, zid=zid, project=project, filters=f).data
-        return d if d is not None else pd.DataFrame()
+        def get(name, _f=f, _z=z, _p=project):
+            d = Analytics(name, zid=_z, project=_p, filters=_f).data
+            return d if d is not None else pd.DataFrame()
 
-    names_df = get("cash_model_account_names")
-    names = {r.code: r.name for r in names_df[names_df["kind"] == "acc"].itertuples()} if not names_df.empty else {}
-    subs = {r.code: r.name for r in names_df[names_df["kind"] == "sub"].itertuples()} if not names_df.empty else {}
+        for key, name in (("flows", "cash_model_flows"), ("cc", "cash_model_cc_payments"),
+                          ("ship", "cash_model_import_shipments"), ("settle", "cash_model_import_settlements"),
+                          ("purch", "cash_model_purchases_monthly"), ("stock", "cash_model_stock_movement"),
+                          ("mfg", "cash_model_mfg_monthly"), ("names", "cash_model_account_names"),
+                          *((("xcost", "cash_model_internal_transfer_cost"),) if grouped and not is_primary else ())):
+            d = get(name)
+            if not d.empty and key in ("flows", "cc", "ship", "mfg"):
+                d = d.assign(zid=z)
+            out[key].append(d)
+        if is_primary:
+            out["sales"], out["returns"], out["std"] = (get("cash_model_sales_monthly"),
+                                                        get("cash_model_returns_monthly"),
+                                                        get("cash_model_item_prices"))
+
+    def cat(key, group_cols=None):
+        frames = [d for d in out[key] if not d.empty]
+        if not frames:
+            return pd.DataFrame()
+        df = pd.concat(frames, ignore_index=True)
+        if group_cols:   # the same item/doctype/month can arrive from two businesses -> add up
+            val = [c for c in df.columns if c not in group_cols]
+            df = df.groupby(group_cols, as_index=False)[val].sum()
+        return df
+
+    names, subs = {}, {}
+    for nd in reversed(out["names"]):          # primary last so its names win
+        if not nd.empty:
+            names.update({r.code: r.name for r in nd[nd["kind"] == "acc"].itertuples()})
+            subs.update({r.code: r.name for r in nd[nd["kind"] == "sub"].itertuples()})
     return {
-        "flows": get("cash_model_flows"), "cc": get("cash_model_cc_payments"),
-        "ship": get("cash_model_import_shipments"), "settle": get("cash_model_import_settlements"),
-        "purch": get("cash_model_purchases_monthly"), "stock": get("cash_model_stock_movement"),
-        "sales": get("cash_model_sales_monthly"), "returns": get("cash_model_returns_monthly"),
-        "mfg": get("cash_model_mfg_monthly"), "std": get("cash_model_item_prices"),
+        "flows": cat("flows"), "cc": cat("cc"), "ship": cat("ship"), "settle": cat("settle"),
+        "purch": cat("purch"), "xcost": cat("xcost"), "stock": cat("stock", ["itemcode", "doctype", "ym"]),
+        "sales": out["sales"], "returns": out["returns"], "mfg": cat("mfg"), "std": out["std"],
         "names": names, "subs": subs, "codes": codes,
     }
 
 
-def build_cash_model(zid: str, project, year: int, end_month: int) -> dict:
-    """Load + transform; returns the section DataFrames (used by the UI and by tests/scripts)."""
+def build_cash_model(zids, projects, year: int, end_month: int) -> dict:
+    """Load + transform; returns the section DataFrames (used by the UI and by tests/scripts).
+
+    zids[0] is the selected business; any further ones are analysed together with it."""
+    members = tuple(zip(zids, projects))
     months = cm.window_months(year, end_month)
-    app = _app_cash(zid, project, year, end_month)
-    d = _load(zid, project, year, end_month)
+    app = _app_cash(members, year, end_month)
+    d = _load(members, year, end_month)
     cash = cm.build_cash_statement(d["flows"], d["cc"], app["closing"], app["prev_closing"], months, d["subs"])
     ships = cm.build_shipments(d["ship"], d["settle"], d["subs"])
-    purchases = cm.build_purchases(d["purch"], ships, d["mfg"], app["advance"], months)
+    purchases = cm.build_purchases(d["purch"], ships, d["mfg"], app["advance"], months, d["xcost"])
     inv, info = cm.build_inventory_sales(d["stock"], d["sales"], d["returns"], d["std"], months)
     detail = cm.build_account_detail(d["flows"], d["names"], d["subs"])
     cols = [cm.month_label(m) for m in months]
@@ -163,7 +226,8 @@ def display_cash_model(zid):
                "The window is the same as the Monthly statements: January of the previous year up to the chosen month.")
 
     businesses = common.load_json("data/businesses.json").get("businesses", {})
-    keys = [k for k in businesses.keys()]
+    folded = {z for members in cm.GROUPS.values() for z in members[1:]}   # e.g. 100009 -> analysed with 100001
+    keys = [k for k in businesses.keys() if k not in folded]
     default = keys.index(str(zid)) if str(zid) in keys else 0
     now = datetime.now()
     c1, c2, c3 = st.columns([2, 1, 1])
@@ -178,11 +242,17 @@ def display_cash_model(zid):
         return
     with c3:
         end_month = st.selectbox("Up to month", list(range(1, max_month + 1)), index=max_month - 1, key="cm_month")
-    project = (businesses[ent].get("projects") or [None])[0]
+    zids = [z for z in cm.group_zids(str(ent)) if z in businesses] or [str(ent)]
+    projects = [(businesses[z].get("projects") or [None])[0] for z in zids]
+    if len(zids) > 1:
+        st.info("📦 **Combined view:** " + " + ".join(f"{z} {businesses[z].get('zorg', '').rstrip('.')}" for z in zids)
+                + ". Imports are split between these businesses on the same MDKF shipment, so they are analysed "
+                  "together: cash, shipments, purchases and stock cover both, and transfers between them are "
+                  "eliminated. Sales are the external sales of " + f"{zids[0]}.")
 
     try:
         with st.spinner("Building the cash model…"):
-            m = build_cash_model(str(ent), project, int(year), int(end_month))
+            m = build_cash_model(zids, projects, int(year), int(end_month))
     except Exception as e:  # keep the page usable if one query fails
         st.warning(f"Could not build the cash model for {ent}: {e}")
         return
@@ -198,11 +268,13 @@ def display_cash_model(zid):
         _show(m["purchases"], cols)
         sh = m["shipments"]
         if not sh.empty:
-            st.subheader("Import shipments received in the window")
+            st.subheader("Import shipments received in the window (one row per MDKF shipment)")
             disp = sh.copy()
             disp["GRN date"] = disp["GRN date"].dt.strftime("%d-%b-%Y")
-            st.dataframe(disp.style.format({c: "{:,.0f}" for c in ["Vendor value", "Pay order (capitalised)", "VAT/AT rebate transfer", "Other import costs", "Landed cost"]},
-                                           na_rep="—"), use_container_width=True, hide_index=True)
+            money = [c for c in disp.columns if c.startswith("Vendor value")] + [
+                "Pay order (capitalised)", "VAT/AT rebate transfer", "Other import costs", "Landed cost"]
+            st.dataframe(disp.style.format({c: "{:,.0f}" for c in money}, na_rep="—"),
+                         use_container_width=True, hide_index=True)
         else:
             st.info("No import shipments (IP-- receipts) recorded for this business in the window.")
     with tab2:
@@ -223,7 +295,7 @@ def display_cash_model(zid):
         else:
             grp = st.selectbox("Group", ["All"] + sorted(det["group"].unique()), key="cm_det_group")
             view = det if grp == "All" else det[det["group"] == grp]
-            num = [c for c in view.columns if c not in ("group", "label", "ac_code", "Account name")]
+            num = [c for c in view.columns if c not in ("group", "label", "ac_code", "Account name", "Business")]
             st.dataframe(view.style.format({c: "{:,.0f}" for c in num}), use_container_width=True, hide_index=True)
 
     sections = {"Purchases": m["purchases"], "Inventory & Sales": m["inventory"], "Cash": pd.concat([m["cash"], m["gi"]]),

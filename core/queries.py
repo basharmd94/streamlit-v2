@@ -3832,17 +3832,19 @@ def get_cash_model_flows(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     A voucher 'touches cash' when it has a line on any account in cash_codes
     (restricted to `project` exactly like get_gl_details, so totals tie to the
     app). The cash effect of each non-cash line is -xprime (vouchers balance).
-    xsub is kept only for 01050001 (Advance For International Purchase) so the
-    import pipeline can be split by sub-ledger.
+    xsub is kept only for the accounts in `keep_sub` (default 01050001, Advance For
+    International Purchase, so the import pipeline can be split by sub-ledger; the
+    combined 100001+100009 view also keeps it for the inter-business accounts).
     """
     zid = filters["zid"][0]
     year, end_month = int(filters["year"]), int(filters["end_month"])
     cash_codes = list(filters["cash_codes"])
     project = filters.get("project")
+    keep_sub = list(filters.get("keep_sub") or ["01050001"])
     proj_sql = "AND c.xproj = %s" if project else ""
     sql = f"""
         SELECT h.xyear AS year, h.xper AS month, d.xacc AS ac_code,
-               CASE WHEN d.xacc = '01050001' THEN d.xsub END AS xsub,
+               CASE WHEN d.xacc = ANY(%s) THEN d.xsub END AS xsub,
                substring(d.xvoucher, 1, 4) AS vtype,
                SUM(CASE WHEN -d.xprime > 0 THEN -d.xprime ELSE 0 END) AS inflow,
                SUM(CASE WHEN -d.xprime < 0 THEN -d.xprime ELSE 0 END) AS outflow,
@@ -3857,7 +3859,7 @@ def get_cash_model_flows(filters: Dict[str, Any]) -> Tuple[str, tuple]:
                         AND c.xacc = ANY(%s) {proj_sql})
         GROUP BY 1, 2, 3, 4, 5
     """
-    params = [zid, year - 1, year, end_month, cash_codes, cash_codes]
+    params = [keep_sub, zid, year - 1, year, end_month, cash_codes, cash_codes]
     if project:
         params.append(project)
     return sql, tuple(params)
@@ -3929,33 +3931,46 @@ def get_cash_model_import_settlements(filters: Dict[str, Any]) -> Tuple[str, tup
 
 
 def get_cash_model_purchases_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
-    """Goods received per GRN month, split Import vs Local and resale vs operational.
+    """Goods received per GRN month: Import / Local / Internal, resale vs operational.
 
     A local line is 'resale' when its item has ever been sold (appears in
-    mv_sales_line_items for this ZID) — the rule that separates trading goods
+    mv_sales_line_items for `sales_zid`) — the rule that separates trading goods
     (hasbolt, pliers, locks ...) from raw materials / packaging / consumables.
+    For a business whose items map to the selling business through caitem.xdrawing
+    (Gulshan Packaging -> HMBR), pass map_codes=True so the mapped code is looked up.
+    'Internal' = received from `internal_supplier` (a business of the same combined
+    group, e.g. HMBR's GRNs from Gulshan Packaging): a transfer, not a purchase.
     Value = received qty x rate.
     """
     start, end = _cm_window(filters)
     zid = filters["zid"][0]
+    sales_zid = str(filters.get("sales_zid") or zid)
+    internal_supplier = filters.get("internal_supplier") or "__none__"
+    map_codes = bool(filters.get("map_codes"))
     sql = """
         WITH sold AS (
             SELECT DISTINCT itemcode FROM mv_sales_line_items WHERE zid = %s
         )
         SELECT EXTRACT(YEAR  FROM g.xdate)::int AS year,
                EXTRACT(MONTH FROM g.xdate)::int AS month,
-               CASE WHEN g.xgrnnum LIKE 'IGRN%%' THEN 'Import' ELSE 'Local' END AS kind,
+               CASE WHEN g.xgrnnum LIKE 'IGRN%%' THEN 'Import'
+                    WHEN g.xsup = %s THEN 'Internal'
+                    ELSE 'Local' END AS kind,
                (s.itemcode IS NOT NULL)          AS sold_item,
                SUM(p.xqty * p.xrate)              AS value,
                COUNT(DISTINCT g.xgrnnum)          AS grns,
                COUNT(DISTINCT p.xitem)            AS items
         FROM pogdt p
         JOIN pogrn g ON g.xgrnnum = p.xgrnnum AND g.zid = p.zid
-        LEFT JOIN sold s ON s.itemcode = p.xitem
+        LEFT JOIN caitem ci ON ci.zid = p.zid AND ci.xitem = p.xitem
+        LEFT JOIN sold s ON s.itemcode = CASE
+                 WHEN %s AND ci.xdrawing IS NOT NULL AND ci.xdrawing <> ''
+                  AND ci.xdrawing <> 'NO' AND LEFT(ci.xdrawing, 2) <> 'KH'
+                 THEN ci.xdrawing ELSE p.xitem END
         WHERE p.zid = %s AND g.xdate >= %s AND g.xdate <= %s
         GROUP BY 1, 2, 3, 4
     """
-    return sql, (zid, zid, start, end)
+    return sql, (sales_zid, internal_supplier, map_codes, zid, start, end)
 
 
 def get_cash_model_stock_movement(filters: Dict[str, Any]) -> Tuple[str, tuple]:
@@ -3964,19 +3979,67 @@ def get_cash_model_stock_movement(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     ym = 0 carries each item's cumulative quantity BEFORE the window starts;
     otherwise ym = year*100+month. Values are applied later at the average
     sales price, so only quantities are returned.
+
+    Combined-group options (HMBR 100001 + Gulshan Packaging 100009):
+      map_codes=True  -> a business whose items map to the selling business via
+                         caitem.xdrawing: stock is restricted to the app's shared
+                         inventory (its FG / RM packaging stores, mapped items) and
+                         keyed by the mapped code, exactly like final_items_view.
+      internal_supplier -> goods received from that supplier (and, when map_codes,
+                         the DO-- deliveries to the sister business) are tagged
+                         doctype 'INTERNAL' so they net out of the group's ledger.
     """
     start, end = _cm_window(filters)
-    sql = """
-        SELECT i.xitem AS itemcode, i.xdoctype AS doctype,
+    zid = filters["zid"][0]
+    map_codes = bool(filters.get("map_codes"))
+    internal_supplier = filters.get("internal_supplier") or "__none__"
+    valid = ("ci.xdrawing IS NOT NULL AND ci.xdrawing <> '' AND ci.xdrawing <> 'NO' "
+             "AND LEFT(ci.xdrawing, 2) <> 'KH'")
+    if map_codes:
+        item_sql = "ci.xdrawing"
+        where_extra = f"AND {valid} AND i.xwh IN ('Finished Goods Store Packaging', 'Raw Material Store Packaging')"
+        doc_sql = "CASE WHEN i.xdoctype = 'DO--' THEN 'INTERNAL' ELSE i.xdoctype END"
+        params_tail = ()
+    else:
+        item_sql = "i.xitem"
+        where_extra = ""
+        doc_sql = "CASE WHEN ig.xgrnnum IS NOT NULL THEN 'INTERNAL' ELSE i.xdoctype END"
+        params_tail = (zid, internal_supplier)
+    ig_join = ("" if map_codes else
+               "LEFT JOIN ig ON ig.xgrnnum = i.xdocnum")
+    ig_cte = ("" if map_codes else
+              "WITH ig AS (SELECT xgrnnum FROM pogrn WHERE zid = %s AND xsup = %s)")
+    sql = f"""
+        {ig_cte}
+        SELECT {item_sql} AS itemcode, {doc_sql} AS doctype,
                CASE WHEN i.xdate < %s THEN 0
                     ELSE EXTRACT(YEAR FROM i.xdate)::int * 100 + EXTRACT(MONTH FROM i.xdate)::int
                END AS ym,
                SUM(i.xqty * i.xsign) AS qty
         FROM imtrn i
-        WHERE i.zid = %s AND i.xdate <= %s AND i.xdate < '2999-01-01'
+        LEFT JOIN caitem ci ON ci.zid = i.zid AND ci.xitem = i.xitem
+        {ig_join}
+        WHERE i.zid = %s AND i.xdate <= %s AND i.xdate < '2999-01-01' {where_extra}
         GROUP BY 1, 2, 3
     """
-    return sql, (start, filters["zid"][0], end)
+    return sql, params_tail + (start, zid, end)
+
+
+def get_cash_model_internal_transfer_cost(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Cost (imtrn.xval) of the DO-- deliveries a sister business makes to the selected one.
+
+    Used only for the non-cash "Packaging margin on internal transfers" memo:
+    margin = value the receiving business booked - this cost, per month.
+    """
+    start, end = _cm_window(filters)
+    sql = """
+        SELECT EXTRACT(YEAR FROM xdate)::int AS year, EXTRACT(MONTH FROM xdate)::int AS month,
+               -SUM(xval * xsign) AS cost, -SUM(xqty * xsign) AS qty
+        FROM imtrn
+        WHERE zid = %s AND xdoctype = 'DO--' AND xdate >= %s AND xdate <= %s
+        GROUP BY 1, 2
+    """
+    return sql, (filters["zid"][0], start, end)
 
 
 def get_cash_model_sales_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:

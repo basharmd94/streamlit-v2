@@ -131,3 +131,58 @@ def test_inventory_ledger_closes_exactly_and_prices_use_trailing_sales():
     assert abs(float(chk["Jan-25"])) < 1e-6 and abs(float(chk["Feb-25"])) < 1e-6
     assert row("Net sales (after returns)", "Jan-25") == 400.0 - 50.0
     assert np.isclose(row("% of opening inventory sold", "Jan-25"), 350.0 / 1000.0)
+
+
+def test_group_config_pairs_hmbr_with_gulshan_packaging_only():
+    assert cm.group_zids("100001") == ["100001", "100009"]
+    assert cm.group_zids("100000") == ["100000"]          # GI (assembled goods) stays separate
+    assert cm.group_zids("100005") == ["100005"]
+
+
+def test_internal_transfers_between_combined_businesses_are_eliminated_and_net_to_zero():
+    months = [(2025, 1)]
+    flows = _flows([
+        (2025, 1, "01030001", None, "RCT-", 1000.0, 0.0, 5),            # external customers (HMBR)
+        (2025, 1, "09030003", "SUP-000004", "CPAY", 0.0, -300.0, 2),    # HMBR pays Gulshan Packaging
+        (2025, 1, "01030001", "CUS-000001", "RCT-", 300.0, 0.0, 2),     # Gulshan Packaging receives it
+        (2025, 1, "09010002", None, "CPAY", 0.0, -100.0, 1),            # a real payment (100009 salaries)
+    ])
+    flows["zid"] = ["100001", "100001", "100009", "100009"]
+    cash = cm.build_cash_statement(flows, pd.DataFrame(), {(2025, 1): 900.0}, 0.0, months, SUBS)
+    get = lambda line: float(cash[cash["Line"] == line]["Jan-25"].iloc[0])
+    assert get("Net internal transfers") == 0.0
+    assert get("Total collections") == 1000.0                  # the 300 received from HMBR is not a collection
+    assert get("TOTAL CASH OUT") == -100.0                     # the 300 paid to Gulshan is not an outflow
+    assert get("Difference (model − app)") == 0.0
+
+
+def test_shipment_is_one_row_with_both_businesses_vendor_values_and_costs_counted_once():
+    ships = pd.DataFrame([
+        {"zid": "100001", "po": "IP--1", "shipment": "MDKF008/25,2025-12-17", "grn": "IGRN1", "grn_date": "2025-12-17",
+         "vendor_value": 1000.0, "currency": "BDT"},
+        {"zid": "100009", "po": "IP--2", "shipment": "MDKF008/25,2025-12-17", "grn": "IGRN2", "grn_date": "2025-12-17",
+         "vendor_value": 400.0, "currency": "BDT"},
+    ])
+    settle = pd.DataFrame([{"year": 2025, "month": 12, "voucher": "J1", "xsub": "0105000107", "amount": 140.0,
+                            "remark": "Payment Against L/C KF 008/2025"}])
+    out = cm.build_shipments(ships, settle, SUBS)
+    assert len(out) == 1
+    r = out.iloc[0]
+    assert r["Vendor value"] == 1400.0 and r["Vendor value (100001)"] == 1000.0 and r["Vendor value (100009)"] == 400.0
+    assert r["Pay order (capitalised)"] == 140.0               # booked once for the whole shipment
+    assert r["Landed cost"] == 1400.0 + 140.0
+
+
+def test_packaging_margin_memo_is_receipt_value_minus_packaging_cost_and_outside_cash():
+    months = [(2025, 1), (2025, 2)]
+    purch = pd.DataFrame([
+        {"year": 2025, "month": 1, "kind": "Internal", "sold_item": True, "value": 1100.0, "grns": 1, "items": 2},
+        {"year": 2025, "month": 2, "kind": "Internal", "sold_item": True, "value": 500.0, "grns": 1, "items": 1},
+    ])
+    cost = pd.DataFrame([{"year": 2025, "month": 1, "cost": 1000.0, "qty": 10.0},
+                         {"year": 2025, "month": 2, "cost": 450.0, "qty": 5.0}])
+    out = cm.build_purchases(purch, pd.DataFrame(), pd.DataFrame(), {}, months, cost)
+    row = out[out["Line"].str.contains("Packaging margin")].iloc[0]
+    assert row["kind"] == "memo" and row["Jan-25"] == 100.0 and row["Feb-25"] == 50.0
+    # without a sister-business cost the memo is simply not shown
+    assert not cm.build_purchases(purch, pd.DataFrame(), pd.DataFrame(), {}, months)["Line"].str.contains("Packaging margin").any()

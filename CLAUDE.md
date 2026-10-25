@@ -234,6 +234,24 @@ advance balance memo), **🏬 Inventory & Sales** (real `imtrn` stock × each it
 to 12 months then standard price; ledger closes exactly via a "revaluation" line; sales = gross − discount − returns, returns from AR
 credits on `SRJV`/`SRT-` vouchers; "% of opening inventory sold"), **💵 Cash**, **🔎 Detail by account**; Excel download.
 
+**Combined group — selecting 100001 also analyses 100009 (Gulshan Packaging)** (`processing/cash_model.GROUPS`, added 2026-10-24).
+Imports are split between the two on the same MDKF shipment (HMBR = finished goods, Gulshan Packaging = goods to be packaged);
+100009 has **no cash, no 01050001 advance and no external sales of its own** (HMBR pays its imports/expenses; its cash is always 0).
+So for 100001 everything is summed over both: app Cash & CE, GL cash flows, import shipments (**one row per MDKF shipment** with
+`Vendor value (100001)` / `(100009)` columns; L/C margin, pay order and charges are booked once, on HMBR's 01050001, for the whole
+shipment), local purchases, stock and the manufacturing memo. 100000 (GI, assembled goods) and 100005 stay separate; 100009 is
+hidden from the Business selector because it is folded into 100001. Eliminations (transfers inside the group, not real purchases/cash):
+- Cash: HMBR's payments to supplier `SUP-000004` (acct `09030003`) = 100009's receipts from customer `CUS-000001` (acct `01030001`)
+  match to the taka (`INTERNAL_FLOWS`); shown in a "TRANSFERS BETWEEN THE COMBINED BUSINESSES" block that nets to zero (Jan–Sep 2023 has
+  small timing residuals; they stay inside NET CHANGE so the tie to the app still holds).
+- Purchases: HMBR local GRNs from `SUP-000004` (`pogrn.xsup`) are packaged goods from 100009 (202,511 units in 2025 = 100009's `DO--`
+  quantity exactly) → "Internal" memo line, not a trading purchase. (Before the group was added ~32.7M of HMBR's 37.2M of 2025 "trading" local purchases was this.)
+- Stock: 100009 is taken like `final_items_view` does (FG + RM packaging stores, items with a valid `caitem.xdrawing`, keyed by the mapped
+  100001 code); its `DO--` to HMBR and HMBR's receipts against `SUP-000004` GRNs are both tagged `INTERNAL` and net to zero in the ledger.
+- **Packaging margin (memo, non-cash):** Purchases tab shows 100009's cost of the transferred goods (`imtrn` `DO--` cost) and the margin = HMBR's receipt value − that cost
+  (2025: 32.72M − 30.28M = 2.44M). It is in no total — the profit has no cash of its own; the matching cash is already in the combined (app) cash.
+- Sales/returns are 100001's only (100009's DOs go to HMBR). Verified: closing cash ties (max diff 0.08) for the 2024/2025/2026 windows.
+
 Cash mechanics worth knowing:
 - Flows = every non-cash line of a voucher that touches a cash account (restricted to the business `project`, like `get_gl_details`);
   cash effect of a counter line is `-xprime`. Internal moves between the 11 cash accounts disappear by construction.
