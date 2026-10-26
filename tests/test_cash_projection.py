@@ -386,3 +386,22 @@ def test_transition_month_engine_rows_never_show_less_than_what_was_really_paid(
     v = float(t[t["Line"].str.strip() == paid][pcols[0]].iloc[0])
     assert v <= -3_000_000.0 + 1e-6                                   # engine would pay ~1.2M; the real 3.0M wins
     assert np.allclose(info["closing_cash"], info["debts"]["cash"])
+
+
+# ── Settings-tab worked examples ─────────────────────────────────────────────
+def test_settings_examples_are_computed_from_the_engine_and_respond_to_the_change():
+    s = cp.load_settings("100001", path="/nonexistent.json")
+    drv = {"pay_order_pct": 0.15, "charges_pct": 0.04, "rebate_pct": 0.15, "pct_sold": 0.24, "collections_pct": 0.95,
+           "return_rate": 0.08, "discount_rate": 0.01, "sales_price_per_landed": 1.2}
+    ex = cp.example_import(s["imports"], drv).set_index("Step")
+    assert ex.loc["L/C margin paid", "Now"] == "1,100,000" and ex.loc["TT paid to the supplier", "Now"] == "4,500,000"
+    assert ex.loc["TT paid to the supplier", "If L/C % +10 pts"] == "3,500,000"            # more L/C value -> less TT
+    sh = cp.example_shift(s["imports"], drv, (2026, 10))
+    assert sh.iloc[0, 1] != sh.iloc[0, 2]                                                    # one month later moves every cash month
+    ad = {"10010003": -12_188_013.0, "10010006": -25_751_861.0, "09040007": -27_124_834.0, "09040001": -3_000_000.0}
+    pr = cp.example_priority(s["debts"], ad, cash=1_200_000.0).set_index("Obligation")
+    assert pr.loc["Malek Jobeda Foundation", "Current order"] == "1,000,000" and pr.loc["Sunflower", "First two swapped"] == "500,000"
+    hr = cp.example_headroom(s["debts"], ad)
+    assert hr.iloc[0]["Margin on the CC"] != hr.iloc[1]["Margin on the CC"] and hr.iloc[1]["Margin paid in cash"] == "0"
+    fl = cp.example_floor(s["debts"], ad, 1_000_000.0)
+    assert fl.iloc[0]["Dhaka CC drawn"] == "0"                                               # floor 0 -> nothing to draw

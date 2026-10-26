@@ -794,3 +794,153 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
                                    if e > float((settings.get("debts") or {}).get("lc_limit") or 0) > 0]),
             "shortfall_months": ([cm.month_label(m) for m, x in zip(proj_months, dbg["shortfall"]) if x > 1.0] if dbg else [])}
     return table, pcols, info
+
+
+# ── worked examples for the Settings tab (what a change would do) ────────────
+# Every example is computed with the same engine from the CURRENT settings, so it can never drift from
+# what the projection really does. Pure pandas; the view only formats and displays.
+def _fmt0(v) -> str:
+    return "—" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v:,.0f}"
+
+
+def _one_shipment(imp: Dict, drv: Dict[str, float], value: float, arrival_idx: int, T: int, base=(2026, 9)):
+    months = next_months(base, T)
+    sched = pd.DataFrame([{"ref": "example", "source": "Planned", "value": value, "month": months[arrival_idx],
+                           "note": "", "warning": ""}])
+    return months, import_schedule(sched, months, imp, drv, 0.0)
+
+
+def example_import(imp: Dict, drv: Dict[str, float], value: float = 10_000_000.0) -> pd.DataFrame:
+    """Cash steps of one example shipment now and with the L/C value 10 points higher."""
+    T, ia = 12, 5
+    rows = []
+    variants = [("Now", imp), ("If L/C % +10 pts", {**imp, "lc_pct": min(imp["lc_pct"] + 0.10, 1.0)})]
+    res = {name: _one_shipment(v, drv, value, ia, T)[1] for name, v in variants}
+    steps = [
+        ("L/C margin paid", f"{int(imp['lc_lead'])} month(s) before arrival", "margin", ia - int(imp["lc_lead"])),
+        ("LTR drawn — bank pays the supplier (no cash)", f"{int(imp['ltr_doc_lead'])} month(s) before arrival", "ltr_draw", ia - int(imp["ltr_doc_lead"])),
+        ("TT paid to the supplier", f"{int(imp['ltr_doc_lead']) * -1 + int(imp['tt_after_ltr']):+d} month(s) vs arrival", "tt",
+         ia - int(imp["ltr_doc_lead"]) + int(imp["tt_after_ltr"])),
+        ("Customs: duty + VAT/AT", "arrival month", "customs", ia),
+        ("LTR repaid", f"{int(imp['ltr_months'])} month(s) after the LTR", "ltr_repay", ia - int(imp["ltr_doc_lead"]) + int(imp["ltr_months"])),
+    ]
+    for name, when, key, idx in steps:
+        rows.append({"Step": name, "When": when, **{n: _fmt0(res[n][key][idx]) for n, _ in variants}})
+    return pd.DataFrame(rows)
+
+
+def example_shift(imp: Dict, drv: Dict[str, float], first: Tuple[int, int], value: float = 10_000_000.0) -> pd.DataFrame:
+    """The same shipment arriving in month X and one month later: where its cash falls."""
+    T = 10
+    out = {}
+    labels = []
+    for k, ia in (("a", 3), ("b", 4)):
+        months = next_months((first[0], first[1] - 1) if first[1] > 1 else (first[0] - 1, 12), T)
+        sched = pd.DataFrame([{"ref": "e", "source": "Planned", "value": value, "month": months[ia], "note": "", "warning": ""}])
+        A = import_schedule(sched, months, imp, drv, 0.0)
+        labels.append(cm.month_label(months[ia]))
+        out[k] = {"L/C margin": A["margin"], "TT": A["tt"], "Customs (duty + VAT/AT)": A["customs"], "LTR repaid": A["ltr_repay"]}
+    rows = []
+    for item in out["a"]:
+        def when(arr):
+            idx = [i for i, v in enumerate(arr) if v > 0]
+            return ", ".join(cm.month_label(next_months((first[0], first[1] - 1) if first[1] > 1 else (first[0] - 1, 12), T)[i]) for i in idx) or "—"
+        rows.append({"Cash item": item, f"Arrives {labels[0]}": when(out["a"][item]), f"Arrives {labels[1]} (one month later)": when(out["b"][item])})
+    return pd.DataFrame(rows)
+
+
+def example_drivers(final: pd.DataFrame, done_cols: List[str], drv: Dict[str, float], value: float = 10_000_000.0) -> pd.DataFrame:
+    """What a 10% higher driver does, on the last closing inventory and on a 10M shipment."""
+    opening = float(_row(final, "Closing inventory", done_cols)[-1]) if len(done_cols) else 0.0
+    up = 1.10
+    net_now, net_up = drv["pct_sold"] * opening, drv["pct_sold"] * up * opening
+    rows = [
+        ("% of opening inventory sold", f"{drv['pct_sold']:.1%} → {drv['pct_sold'] * up:.1%}", "Net sales next month (on the last closing inventory)", net_now, net_up),
+        ("Customer receipts / net sales", f"{drv['collections_pct']:.1%} → {drv['collections_pct'] * up:.1%}", "Customer receipts next month", drv["collections_pct"] * net_now, drv["collections_pct"] * up * net_now),
+        ("Pay order / vendor value", f"{drv['pay_order_pct']:.1%} → {drv['pay_order_pct'] * up:.1%}", f"Customs cash on a {value:,.0f} shipment (duty + VAT/AT)",
+         (drv["pay_order_pct"] + drv["rebate_pct"]) * value, (drv["pay_order_pct"] * up + drv["rebate_pct"]) * value),
+        ("Returns / gross sales", f"{drv['return_rate']:.1%} → {drv['return_rate'] * up:.1%}", "Returns on 15,000,000 of gross sales", drv["return_rate"] * 15e6, drv["return_rate"] * up * 15e6),
+    ]
+    return pd.DataFrame([{"Driver": d, "10% higher": ch, "Effect on": e, "Now": _fmt0(a), "After": _fmt0(b), "Change": _fmt0(b - a)}
+                         for d, ch, e, a, b in rows])
+
+
+def example_lines(final: pd.DataFrame, done_cols: List[str], label: str = "   Operating expenses") -> pd.DataFrame:
+    """The same line under each mode, using its real 3-month average."""
+    avg = float(_row(final, label, done_cols)[-AVG_N:].mean()) if len(done_cols) else 0.0
+    return pd.DataFrame([
+        {"Setting": "avg3, adjust 0%", "Monthly amount": _fmt0(avg)},
+        {"Setting": "avg3, adjust −10% (pay a little less)", "Monthly amount": _fmt0(avg * 0.9)},
+        {"Setting": "zero", "Monthly amount": _fmt0(0.0)},
+        {"Setting": "fixed 2,000,000", "Monthly amount": _fmt0(-2_000_000.0 if avg < 0 else 2_000_000.0)},
+    ]).assign(Line=label.strip())[["Line", "Setting", "Monthly amount"]]
+
+
+def example_known(first: Tuple[int, int]) -> pd.DataFrame:
+    m = cm.month_label(next_months(first, 2)[1])
+    return pd.DataFrame([
+        {"Entry": f"Hospital repayment, in, 1,000,000, {m}, into 'Other inflows'", "Line affected": "Other inflows",
+         f"{m} before": "0", f"{m} after": "1,000,000", "Closing cash from then on": "+1,000,000 (before any debt payments it releases)"},
+        {"Entry": f"Eid bonus, out, 2,000,000, {m}, into 'Salaries, bonus & staff advances'", "Line affected": "Salaries, bonus & staff advances",
+         f"{m} before": "average", f"{m} after": "average − 2,000,000", "Closing cash from then on": "−2,000,000"},
+    ])
+
+
+def _demo_debts(debts: Dict, app_debts: Dict[str, float]) -> Tuple[Dict, Dict[str, float]]:
+    d = copy.deepcopy(debts)
+    d["deposits"] = []
+    return d, debt_opening_balances(d, app_debts or {})
+
+
+def example_priority(debts: Dict, app_debts: Dict[str, float], cash: float = 1_200_000.0) -> pd.DataFrame:
+    """Who is paid when only `cash` is available: the current order vs the first two swapped."""
+    d, bal = _demo_debts(debts, app_debts)
+    order = [k for k in d.get("priority", []) if k in d["items"]]
+    swapped = order[:]
+    if len(swapped) >= 2:
+        swapped[0], swapped[1] = swapped[1], swapped[0]
+    months = next_months((2026, 9), 1)
+    res = {}
+    for name, pr in (("Current order", order), ("First two swapped", swapped)):
+        dd = copy.deepcopy(d)
+        dd["priority"] = pr
+        # a month in which no instalment is "due" must not hide the rule: use due_month of any lump in this month
+        r = run_debts(months, np.array([cash]), np.zeros(1), np.zeros(1), 0.0, bal, dd, 0.0, "cc", "cc")
+        res[name] = {k: r["pay"][k][0] for k in dd["items"]}
+    rows = [{"Obligation": DEBT_NAMES.get(k, k), "Current order": _fmt0(res["Current order"][k]),
+             "First two swapped": _fmt0(res["First two swapped"][k])}
+            for k in order if res["Current order"][k] > 0 or res["First two swapped"][k] > 0]
+    pos = {k: i + 1 for i, k in enumerate(order)}
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out.insert(0, "Priority", [pos[next(k for k in order if DEBT_NAMES.get(k, k) == n)] for n in out["Obligation"]])
+    return out
+
+
+def example_headroom(debts: Dict, app_debts: Dict[str, float], request: float = 2_000_000.0) -> pd.DataFrame:
+    """A 2,000,000 L/C margin: how much goes on the Dhaka CC vs cash for the current target and a higher one."""
+    d, bal = _demo_debts(debts, app_debts)
+    months = next_months((2026, 9), 1)
+    rows = []
+    for name, extra in (("Current target", 0.0), ("Target + 2,000,000", 2_000_000.0)):
+        dd = copy.deepcopy(d)
+        dd["items"]["dhaka"]["target"] = float(dd["items"]["dhaka"].get("target") or 0.0) + extra
+        dd["items"]["dhaka"]["use_limit"] = False
+        r = run_debts(months, np.zeros(1), np.array([request]), np.zeros(1), 0.0, bal, dd, 0.0, "cc", "cc")
+        rows.append({"Dhaka CC target": f"{name} ({dd['items']['dhaka']['target']:,.0f})", "Balance now": _fmt0(bal.get("dhaka")),
+                     "Margin on the CC": _fmt0(r["cc_margin"][0]), "Margin paid in cash": _fmt0(r["cash_margin"][0])})
+    return pd.DataFrame(rows)
+
+
+def example_floor(debts: Dict, app_debts: Dict[str, float], floor: float, cash_before: float = 400_000.0) -> pd.DataFrame:
+    """Cash would end the month at `cash_before`: what the CC is drawn for at different floors."""
+    d, bal = _demo_debts(debts, app_debts)
+    for it in d["items"].values():          # isolate the floor rule from payouts
+        it["mode"] = "off"
+    months = next_months((2026, 9), 1)
+    rows = []
+    for f in sorted({0.0, float(floor), float(floor) * 2 or 1_000_000.0}):
+        r = run_debts(months, np.array([cash_before]), np.zeros(1), np.zeros(1), 0.0, bal, d, f, "cc", "cc")
+        rows.append({"Cash floor": _fmt0(f), "Cash before topping up": _fmt0(cash_before), "Dhaka CC drawn": _fmt0(r["draw"][0]),
+                     "Closing cash": _fmt0(r["cash"][0]), "Short of the floor": _fmt0(r["shortfall"][0])})
+    return pd.DataFrame(rows)

@@ -91,7 +91,16 @@ def prepare(ent: str, zids: list, projects: list):
 
 # ── ⚙️ Settings ──────────────────────────────────────────────────────────────
 
-def _shipments_block(ctx) -> None:
+def _explain(note: str, *examples) -> None:
+    """A short note on what a setting group changes, with small worked-example tables computed from the CURRENT settings."""
+    st.info(f"**What this changes:** {note}")
+    for title, df in examples:
+        if df is not None and not df.empty:
+            st.caption(f"Example — {title}")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def _shipments_block(ctx):
     sch, plan = ctx["schedule"], ctx["plan"]
     st.markdown("#### Shipments in the projection")
     st.caption("From the open import purchases and the commercial officer's plan (Purchase Analysis → 🗓 Shipment Plan). "
@@ -108,9 +117,10 @@ def _shipments_block(ctx) -> None:
     if plan.get("holidays"):
         st.caption("Holidays / disruptions noted: " + " · ".join(
             f"{x.get('label')} ({x.get('from')} → {x.get('to')})" for x in plan["holidays"]))
+    return st.container()          # filled with the note + example after the import settings exist
 
 
-def _imports_block(ent, s) -> None:
+def _imports_block(ent, s):
     imp = s["imports"]
     st.markdown("#### Import financing — L/C margin → LTR → TT")
     st.caption("Per shipment of whole vendor value V: L/C value = L/C % × V; the margin is paid when the L/C is opened; the rest of the "
@@ -133,6 +143,7 @@ def _imports_block(ent, s) -> None:
                                        help="'cc' = the Dhaka CC up to its target headroom, the rest in cash.")
     imp["customs_funding"] = c[3].radio("Customs paid from", ["cc", "cash"], index=["cc", "cash"].index(imp["customs_funding"]),
                                         horizontal=True, key=f"cp_cf_{ent}")
+    return imp, st.container()
 
 
 def _drivers_block(ent, s, auto) -> None:
@@ -155,11 +166,14 @@ def _drivers_block(ent, s, auto) -> None:
         s["drivers"][k] = {"mode": mode, "value": float(val)}
 
 
-def _lines_block(ent, s, line_labels) -> None:
+def _lines_block(ent, s, line_labels, h) -> None:
     st.markdown("#### Other cash lines — average of the last 3 months, adjustable")
     st.caption("avg3 = average of the last 3 actual months · zero = nothing expected (one-off lines start here; put known amounts in "
                "the list below) · fixed = a set amount per month. 'Adjust %' trims or raises a line (e.g. −10 = pay a little less). "
                "With the debt model on, the CC / loan repayment lines and the Malek interest are driven by the debt settings instead.")
+    _explain("every payment and inflow line that is not driven by shipments or debts. 'avg3' repeats the last 3-month average, 'zero' expects "
+             "nothing, 'fixed' sets an amount, and 'adjust %' trims or raises it (−10 = pay 10% less).",
+             ("the Operating expenses line under each setting", cp.example_lines(h["final"], h["done_cols"])))
     for direction, labels in line_labels.items():
         st.markdown("**Inflows**" if direction == "in" else "**Payments**")
         for lab in labels:
@@ -175,8 +189,11 @@ def _lines_block(ent, s, line_labels) -> None:
             s["lines"][lab] = {"mode": mode, "adjust_pct": adj, "fixed": fx}
 
 
-def _known_block(ent, s, line_labels) -> None:
+def _known_block(ent, s, line_labels, ctx) -> None:
     st.markdown("#### Known items — amounts owed to us / by us (with month)")
+    _explain("amounts you know about that the averages cannot (money owed to us or by us). Each is added to the chosen line in its month only, "
+             "so it moves that month's cash and every closing cash after it.",
+             ("what two entries would do", cp.example_known(ctx["first"])))
     items = list(s.get("known_items", []))
     for i, it in enumerate(items):
         c = st.columns([3, 1, 2, 2, 3, 1])
@@ -216,6 +233,7 @@ def _debts_block(ent, s, ctx) -> None:
     st.caption("Each month, cash above the floor pays the obligations **in priority order** (1 = first); what cannot be paid is carried as "
                "arrears. If cash would fall below the floor the Dhaka CC is drawn, up to its target (or the sanctioned limit if allowed). "
                "CC interest is added to the CC balance at quarter-end (no cash). Balances come from the app unless overridden.")
+    ph_debts = st.container()          # note + examples are filled in at the end, from the live values below
     items = debts["items"]
     app_bal = cp.debt_opening_balances({"items": {k: {"balance": None} for k in items}}, ctx["h"]["app_debts"])
     order = {k: i + 1 for i, k in enumerate(debts.get("priority", []))}
@@ -287,6 +305,13 @@ def _debts_block(ent, s, ctx) -> None:
             cp.save_settings(ent, s)
             st.rerun()
     debts["deposits"] = deps
+    with ph_debts:
+        _explain("who is paid first when cash is limited (priority — what cannot be paid becomes arrears and is paid when cash allows), "
+                 "and how much of the L/C margin and customs the Dhaka CC can carry before the rest has to be paid in cash (its target).",
+                 ("only 1,200,000 of cash is available — who is paid, and with the first two swapped",
+                  cp.example_priority(debts, ctx["h"]["app_debts"])),
+                 ("a 2,000,000 L/C margin — how much goes on the Dhaka CC, and with a higher target",
+                  cp.example_headroom(debts, ctx["h"]["app_debts"])))
 
 
 def render_settings(ctx) -> dict:
@@ -295,10 +320,23 @@ def render_settings(ctx) -> dict:
     s = cp._merge(cp.default_settings_for(ent), ctx["saved"])
     st.caption("Every input of the projection lives here, so the Projection tab stays a clean table. Changes apply immediately to the "
                "projection; **Save settings** keeps them for next time. Only settings are saved — figures are always recomputed.")
-    _shipments_block(ctx)
-    _imports_block(ent, s)
+    ph_ship = _shipments_block(ctx)
+    imp, ph_imp = _imports_block(ent, s)
     auto = cp.auto_drivers(h["final"], h["done_cols"], h["shipments"])
     _drivers_block(ent, s, auto)
+    drv = cp.resolve_drivers(auto, s)
+    _explain("these ratios turn the shipment plan into landed cost, inventory, sales and collections. 'auto' is measured from the last 3 months "
+             "(the last 3 shipments for the cost ratios); switch a driver to manual to test a case. Higher % sold means more sales and "
+             "collections and less stock left; a higher pay-order % means more customs cash and a higher landed cost.",
+             ("each driver 10% higher than it is now", cp.example_drivers(h["final"], h["done_cols"], drv)))
+    with ph_imp:
+        _explain("splits every shipment into what is paid now (L/C margin, TT, customs) and what is deferred as an LTR, repaid later "
+                 "with interest. A higher L/C % moves cash out of the TT and into the LTR: less cash goes out at arrival, more is repaid later.",
+                 ("a 10,000,000 shipment under your settings, and with the L/C value 10 points higher", cp.example_import(imp, drv)))
+    with ph_ship:
+        _explain("the arrival month decides WHEN a shipment's cash falls — the L/C margin, TT, customs and the LTR repayment all move "
+                 "with it, as does the date the goods enter inventory. The value scales every one of those amounts.",
+                 ("the same 10,000,000 shipment arriving one month later", cp.example_shift(imp, drv, ctx["first"])))
     line_labels = {
         "in": [r[2] for r in cm.FINAL_MODEL_ROWS if r[0] == "cash" and r[1] == "add" and r[2] and r[2].startswith("   ")],
         "out": [r[2] for r in cm.FINAL_MODEL_ROWS if r[0] == "cash" and r[1] == "out" and r[2] and r[2].startswith("   ")
@@ -310,12 +348,17 @@ def render_settings(ctx) -> dict:
                        "   Loans repaid (directors, group, others)", "   Interest & bank charges"}
         line_labels["out"] = [l for l in line_labels["out"] if l not in engine_rows - {"   Interest & bank charges"}]
         line_labels["in"] = [l for l in line_labels["in"] if l != "   Bank overdraft (CC) drawn"]
-    _lines_block(ent, s, line_labels)
-    _known_block(ent, s, line_labels)
+    _lines_block(ent, s, line_labels, h)
+    _known_block(ent, s, line_labels, ctx)
     _debts_block(ent, s, ctx)
     st.markdown("#### Cash floor")
     s["cash_floor"] = st.number_input("Minimum cash to keep — the CC is drawn to hold it; surplus above it pays the debts",
                                       value=float(s.get("cash_floor", 0.0)), step=500000.0, key=f"cp_floor_{ent}")
+    if s["debts"].get("enabled"):
+        _explain("the minimum cash kept AFTER payouts. When cash would end the month below it, the Dhaka CC is drawn (up to its target) to bring "
+                 "it back; if the CC has no room the month is flagged as short. Sweeps (CC paydown) only ever use cash above the floor.",
+                 ("a month that would end with 400,000 of cash, at different floors",
+                  cp.example_floor(s["debts"], h["app_debts"], float(s["cash_floor"]))))
     b1, b2, _ = st.columns([1, 1, 6])
     if b1.button("💾 Save settings", key=f"cp_save_{ent}"):
         cp.save_settings(ent, s)

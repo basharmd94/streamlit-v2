@@ -1325,13 +1325,16 @@ def get_item_price_window(filters=None):
     100005 (see CLAUDE.md, Sales Analysis -> Product Orders). Gross of
     returns: this is "amount per unit sold", not net revenue per unit kept.
     One row per itemcode; Price Analysis divides amount / units in pandas.
+    `cost` is the line COGS (imtrn.xval via the MV) -- the margin base for
+    the price-increase sizing (a lost unit costs margin, not its full price).
     """
     filters = filters or {}
     zid = filters["zid"][0]
     sql = """
         SELECT itemcode,
                SUM(quantity)                AS units,
-               SUM(altsales - proddiscount) AS amount
+               SUM(altsales - proddiscount) AS amount,
+               SUM(cost)                    AS cost
         FROM mv_sales_line_items
         WHERE zid = %s AND date >= %s AND date <= %s
         GROUP BY itemcode

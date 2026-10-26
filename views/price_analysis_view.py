@@ -123,7 +123,7 @@ def _fmt_money(v: float) -> str:
     return f"{v:,.0f}"
 
 
-def _render_expense_change(zid: str) -> None:
+def _render_expense_change(zid: str) -> dict | None:
     st.markdown("### Operating expense change")
     st.caption(
         "Level 0 income statement, 06xx SG&A + 07xx S&D accounts — the same rows as "
@@ -249,29 +249,132 @@ def _render_expense_change(zid: str) -> None:
             width="stretch",
         )
 
+    return {**summary, "period_months": pa.months_in_period(timeline, start_month, end_month)}
 
-# ── Section 2: product price table ───────────────────────────────────────────
 
-def _render_product_table(zid: str) -> None:
+# ── Section 2: price increase needed ─────────────────────────────────────────
+
+def _sales_window(months: int) -> tuple[str, str]:
+    """The last `months` COMPLETE calendar months (so today's partial month
+    never dilutes a monthly average), as (start, end) ISO dates."""
+    today = pd.Timestamp.today().normalize()
+    end = today.replace(day=1) - pd.Timedelta(days=1)
+    start = end.replace(day=1) - pd.DateOffset(months=int(months) - 1)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def _render_price_target(zid: str, expense: dict | None) -> int:
+    """Sizes the uniform price rise needed to recover the expense change
+    above. Returns the sales window (months) so the product table below
+    uses the same basis."""
+    st.markdown("### Price increase needed")
+
+    r1 = st.columns(3)
+    with r1[0]:
+        window_months = int(st.number_input(
+            "Sales window (months)", min_value=1, max_value=12, value=3, step=1,
+            key="pa_price_window",
+            help="Last N complete calendar months. Sets monthly revenue/margin here and Avg Price in the table below.",
+        ))
+
+    if expense is None:
+        st.info("Pick a period with an expense change above to size the price increase.")
+        return window_months
+
+    total = float(expense["change"])
+    if total <= 0:
+        st.success(
+            f"Expenses fell by {abs(total):,.0f} ({expense['first_label']} → "
+            f"{expense['last_label']}) — nothing to recover."
+        )
+        return window_months
+
+    months = int(expense["period_months"])
+    with r1[1]:
+        horizon = int(st.number_input(
+            "Recovery horizon (months)", min_value=1, max_value=60, value=months, step=1,
+            key=f"pa_horizon_{months}",
+            help="Recover the past total over this many months. Defaults to the length of one period.",
+        ))
+    with r1[2]:
+        share = float(st.number_input(
+            "Raise the top items covering (% of revenue)", min_value=5, max_value=100,
+            value=80, step=5, key="pa_cover_share",
+        ))
+    r2 = st.columns(3)
+    with r2[0]:
+        loss_pct = float(st.number_input(
+            "Volume loss (%)", min_value=0.0, max_value=50.0, value=4.0, step=0.5,
+            key="pa_vol_loss",
+        ))
+    with r2[1]:
+        ref_pct = float(st.number_input(
+            "…when prices rise by (%)", min_value=0.5, max_value=50.0, value=3.0, step=0.5,
+            key="pa_vol_ref",
+        ))
+    elasticity = loss_pct / ref_pct
+
+    start, end = _sales_window(window_months)
+    base = pa.build_item_base(_load_price_window(str(zid), start, end), window_months)
+    if base.empty:
+        st.info(f"No sales found between {start} and {end}.")
+        return window_months
+
+    subset = pa.select_top_coverage(base, share / 100)
+    rev, mar = float(subset["rev_m"].sum()), float(subset["mar_m"].sum())
+    gap = total / horizon
+    res = pa.required_price_rise(gap, rev, mar, elasticity)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Past total to recover", _fmt_money(total))
+    m2.metric(f"Per month (over {horizon} mo)", _fmt_money(gap))
+    if res["reachable"]:
+        m3.metric("Price rise needed", f"{res['x'] * 100:.2f}%")
+        m4.metric("Volume loss assumed", f"{res['volume_loss'] * 100:.2f}%")
+    else:
+        m3.metric("Price rise needed", "n/a")
+        m4.metric("Max per month", _fmt_money(res["max_gain"]))
+        st.warning(
+            f"A uniform rise on these {len(subset)} items can recover at most "
+            f"{res['max_gain']:,.0f} a month — the volume loss outruns the price gain beyond that. "
+            "Widen the revenue coverage or lengthen the horizon."
+        )
+
+    st.caption(
+        f"{len(subset):,} items = {share:.0f}% of revenue · monthly revenue {rev:,.0f}, gross margin "
+        f"{mar:,.0f} ({(mar / rev * 100) if rev else 0:.1f}%) over {start} → {end}. "
+        f"Volume loss scales with the rise: {loss_pct:.1f}% at {ref_pct:.1f}% means each 1% of price "
+        f"loses {elasticity:.2f}% of units. Lost units cost their margin, not their full price. "
+        "This is a single uniform rise as a benchmark; per-item eligibility comes with the per-item columns."
+    )
+
+    scen = pa.coverage_scenarios(base, gap, elasticity)
+    st.dataframe(
+        scen.style.format({
+            "Monthly Revenue": "{:,.0f}", "Monthly Margin": "{:,.0f}",
+            "Price Rise Needed": lambda v: "—" if pd.isna(v) else f"{v:.2f}%",
+            "Volume Loss": lambda v: "—" if pd.isna(v) else f"{v:.2f}%",
+        }),
+        hide_index=True,
+        width="stretch",
+    )
+    return window_months
+
+
+# ── Section 3: product price table ───────────────────────────────────────────
+
+def _render_product_table(zid: str, window_months: int) -> None:
     st.markdown("### Product price table")
 
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        window_months = st.number_input(
-            "Avg Price window (months)", min_value=1, max_value=12, value=3, step=1,
-            key="pa_price_window",
-        )
-    with c2:
-        search = st.text_input("Search code / name", key="pa_product_search")
+    search = st.text_input("Search code / name", key="pa_product_search")
 
     items = _load_final_items(str(zid))
     if items.empty:
         st.info("No stock-view data for this entity.")
         return
 
-    end = pd.Timestamp.today().normalize()
-    start = end - pd.DateOffset(months=int(window_months))
-    prices = _load_price_window(str(zid), start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+    start, end = _sales_window(window_months)
+    prices = _load_price_window(str(zid), start, end)
     wh = _load_wh_tiers(str(zid))
 
     table = pa.build_product_price_table(items, wh, prices)
@@ -287,7 +390,7 @@ def _render_product_table(zid: str) -> None:
     st.caption(
         f"{len(table):,} products. **Avg Monthly Sale** = the stock view's own trailing-3-month "
         f"average (units). **Avg Price** = realized sales amount ÷ units sold over the last "
-        f"{int(window_months)} month(s) (amount = sales − discount, before returns). "
+        f"{int(window_months)} complete month(s), {start} → {end} (amount = sales − discount, before returns). "
         "**WH Qty / WH Price** = the item's lowest wholesale tier; None = no tier on file; Avg Price None = nothing sold in the window."
     )
     st.dataframe(
@@ -312,6 +415,8 @@ def _render_product_table(zid: str) -> None:
 
 
 def render_price_analysis(zid) -> None:
-    _render_expense_change(str(zid))
+    expense = _render_expense_change(str(zid))
     st.divider()
-    _render_product_table(str(zid))
+    window_months = _render_price_target(str(zid), expense)
+    st.divider()
+    _render_product_table(str(zid), window_months)
