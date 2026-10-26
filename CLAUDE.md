@@ -281,8 +281,17 @@ limit (15M, counted from L/C opening until its LTR is drawn).
 Funding of the margin/customs from CC vs cash is a setting (2026 actuals: CC). Open IPs: the date = expected arrival; a past date is treated as arriving in the first
 projected month; the commercial officer moves months for holidays (Chinese New Year, two Eids, Pooja) and **must put costs on the open purchase** (new
 items may have none in the ERP — `get_open_import_orders` flags lines without a cost, items not in the catalogue and lines not adding up to the total).
-Entered in Purchase Analysis → "🗓 Shipment Plan" (no Financial Statements access needed). Later radios inside the Projection tab: reverse-solve max
+Entered in Purchase Analysis → "🗓 Shipment Plan" (no Financial Statements access needed). The same page is also the Cash Model's **🗓 Shipment Plan** tab (just before ⚙️ Settings) so finance can edit it there; saving re-runs the page so the Projection picks the plan up at once. **Shipment value:** a checkbox "Use one value for all shipments" applies ONE whole-shipment value to every planned shipment (optionally also replacing the open purchases' ERP values); unchecked, each shipment has its own value (`plan["uniform"]`). Later radios inside the Projection tab: reverse-solve max
 shipment size, sensitivity grid, plain-average comparison.
+
+**Current month = transition month (2026-10-26).** The Cash Model tabs now run up to and including the current month, shown **month to date**
+(column "Oct-26 (MTD)"). The app's statements leave out the incomplete month, so the MTD column's "APP" row is the ledger balance of the cash accounts
+to date (last closed month's app closing + this month's movement on the cash accounts: `get_cash_model_cash_movement`). In the **Projection** the first projected month is
+that month and is **real + projection** (column "…(MTD+P)", `mtd=` argument of `cash_projection.project`): a line already entered shows what was entered, or its
+3-month average when that is larger (outflows: the more negative); **sales are linear** — month-to-date × days in month / days elapsed (if no sales are entered
+yet, the normal %-of-inventory-sold rule is used) — and deliveries, returns back into stock and collections then follow the usual ratios; goods already received are
+real and open IPs expected this month are added on top; on the debt-engine rows what was really paid wins over the engine and the engine is re-run so cash and the
+later months see it. Averages and drivers use COMPLETED months only; from 1 Nov the transition month becomes November automatically.
 
 Cash mechanics worth knowing:
 - Flows = every non-cash line of a voucher that touches a cash account (restricted to the business `project`, like `get_gl_details`);

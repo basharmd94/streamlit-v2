@@ -169,8 +169,9 @@ def save_settings(zid: str, settings: Dict, path: str = SETTINGS_PATH) -> None:
 def load_plan(zid: str, path: str = PLAN_PATH) -> Dict:
     p = _read(path).get(str(zid), {})
     return {"overrides": p.get("overrides", {}), "planned": p.get("planned", []),
-            "holidays": p.get("holidays", []), "updated_by": p.get("updated_by"),
-            "updated_at": p.get("updated_at")}
+            "holidays": p.get("holidays", []),
+            "uniform": {"enabled": False, "value": 0.0, "include_open": False, **(p.get("uniform") or {})},
+            "updated_by": p.get("updated_by"), "updated_at": p.get("updated_at")}
 
 
 def save_plan(zid: str, plan: Dict, user: Optional[str] = None, path: str = PLAN_PATH) -> None:
@@ -213,12 +214,16 @@ def build_shipment_schedule(open_orders: pd.DataFrame, plan: Dict,
       before the first projected month is treated as arriving in the first projected month.
     * The commercial officer's override can move the month (holidays, delays) or restate the value.
     * Planned shipments are extra shipments entered in the plan.
+    * "Uniform" (plan["uniform"]): when enabled, ONE whole-shipment value applies to every planned
+      shipment (and to the open IPs too when `include_open`); when disabled each shipment carries its own.
     A warning is attached when an open IP lacks cost data (zero rate, item not in the catalogue,
     lines not adding up to the total) — new items must carry their cost on the open purchase.
     """
     cols = ["ref", "source", "value", "month", "note", "warning"]
     rows = []
     ov = (plan or {}).get("overrides", {})
+    uni = {"enabled": False, "value": 0.0, "include_open": False, **((plan or {}).get("uniform") or {})}
+    uni_value = float(uni.get("value") or 0.0) if uni.get("enabled") else 0.0
     if open_orders is not None and not open_orders.empty:
         open_orders = open_orders.copy()
         for c in ("total", "lines_value", "lines", "lines_no_rate", "lines_not_in_catalog"):
@@ -230,6 +235,8 @@ def build_shipment_schedule(open_orders: pd.DataFrame, plan: Dict,
                 m = first_month
             value = o.get("value")
             value = float(value) if value not in (None, "") else float(r.total or 0)
+            if uni_value > 0 and uni.get("include_open"):
+                value = uni_value
             warn = []
             if int(r.lines or 0) == 0:
                 warn.append("no item lines")
@@ -245,9 +252,10 @@ def build_shipment_schedule(open_orders: pd.DataFrame, plan: Dict,
                          "month": m, "note": o.get("note", ""), "warning": "; ".join(warn)})
     for p in (plan or {}).get("planned", []):
         m = parse_month(p.get("month"))
-        if m is None or not p.get("value"):
+        value = uni_value if uni_value > 0 else float(p.get("value") or 0.0)
+        if m is None or value <= 0:
             continue
-        rows.append({"ref": p.get("ref") or "Planned shipment", "source": "Planned", "value": float(p["value"]),
+        rows.append({"ref": p.get("ref") or "Planned shipment", "source": "Planned", "value": value,
                      "month": max(m, first_month), "note": p.get("note", ""), "warning": ""})
     return pd.DataFrame(rows, columns=cols).sort_values("month").reset_index(drop=True) if rows else pd.DataFrame(columns=cols)
 
@@ -475,16 +483,30 @@ def debt_opening_balances(debts: Dict, app_debts: Dict[str, float]) -> Dict[str,
 def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int, int],
             app_last_closing: float, schedule: pd.DataFrame, settings: Dict,
             ltr_open: float = 0.0, shipments_hist: Optional[pd.DataFrame] = None,
-            app_debts: Optional[Dict[str, float]] = None
+            app_debts: Optional[Dict[str, float]] = None, mtd: Optional[Dict] = None
             ) -> Tuple[pd.DataFrame, List[str], Dict]:
     """Final Model rows with `horizon` projected columns appended (labelled 'Mon-YY (P)').
 
     Returns (table, projected_column_names, info) where info carries the resolved drivers,
     the lowest projected closing cash and the memo arrays.
+
+    Transition month: when `mtd` = {"col": <column of `final` holding the current month to date>,
+    "elapsed": days passed, "days": days in the month} is given, the first projected month is that
+    month and is REAL + PROJECTION:
+      * a line already entered shows what was entered; a line expected to reach its average
+        shows the average when that is larger (outflows: the more negative of the two);
+      * sales are projected linearly: month-to-date x days in month / days elapsed; deliveries,
+        returns back into stock and collections then follow the usual ratios (with no sales entered
+        yet this month the normal %-of-inventory-sold projection is used instead);
+      * goods already received are real, open IPs expected this month are added on top.
     """
     T = int(settings.get("horizon_months", HORIZON_MONTHS))
     proj_months = next_months(last_actual, T)
     pcols = [cm.month_label(m) + " (P)" for m in proj_months]
+    if mtd:
+        pcols[0] = cm.month_label(proj_months[0]) + " (MTD+P)"
+    f_lin = (float(mtd["days"]) / max(float(mtd["elapsed"]), 1.0)) if mtd else 1.0
+    act = (lambda label, nth=0: float(_row(final, label, [mtd["col"]], nth)[0])) if mtd else (lambda label, nth=0: 0.0)
     imp = settings["imports"]
     auto = auto_drivers(final, actual_cols, shipments_hist)
     drv = resolve_drivers(auto, settings)
@@ -500,11 +522,21 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
     zeros = lambda: np.zeros(T)
     # purchases ---------------------------------------------------------------
     local = np.full(T, avg3("   Trading purchases received (items that are sold)"))
-    put("   Vendor value of shipments received", A["vendor"])
-    put("   + Pay order — capitalised customs duty", A["pay_order"])
-    put("   + L/C charges & other import costs (insurance, C&F, freight, carrying)", A["charges"])
-    put("   VAT/AT on pay order transferred to rebate claim (reclaimable, not cost)", A["rebate"])
-    put("Landed cost of shipments received", A["landed"])
+    local_act = act("   Trading purchases received (items that are sold)")
+    if mtd:
+        local[0] = max(local_act, local[0])
+    def with_mtd(vec, label):                  # goods already received this month (real) + open IPs still to arrive
+        v = np.array(vec, dtype=float)
+        if mtd:
+            v[0] += act(label)
+        return v
+    put("   Vendor value of shipments received", with_mtd(A["vendor"], "   Vendor value of shipments received"))
+    put("   + Pay order — capitalised customs duty", with_mtd(A["pay_order"], "   + Pay order — capitalised customs duty"))
+    put("   + L/C charges & other import costs (insurance, C&F, freight, carrying)",
+        with_mtd(A["charges"], "   + L/C charges & other import costs (insurance, C&F, freight, carrying)"))
+    put("   VAT/AT on pay order transferred to rebate claim (reclaimable, not cost)",
+        with_mtd(A["rebate"], "   VAT/AT on pay order transferred to rebate claim (reclaimable, not cost)"))
+    put("Landed cost of shipments received", with_mtd(A["landed"], "Landed cost of shipments received"))
     put("   Trading purchases received (items that are sold)", local)
 
     # inventory & sales (month by month because opening depends on the previous closing) ----
@@ -514,15 +546,28 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
     manuf = np.full(T, avg3("   Manufactured (RE--)"))
     other_iss = np.full(T, avg3("   Other issues, adjustments & returns to suppliers"))
     prev = float(g("Closing inventory")[-1]) if len(actual_cols) else 0.0
+    if mtd:
+        manuf[0] = max(act("   Manufactured (RE--)"), manuf[0])
+        other_iss[0] = min(act("   Other issues, adjustments & returns to suppliers"), other_iss[0])
     for t in range(T):
         opening[t] = prev
-        net[t] = drv["pct_sold"] * prev
-        denom = 1.0 - drv["return_rate"] - drv["discount_rate"]
-        gross[t] = net[t] / denom if denom > 0.05 else net[t]
-        disc[t], rets[t] = drv["discount_rate"] * gross[t], drv["return_rate"] * gross[t]
+        if mtd and t == 0 and act("   Gross sales (trade value)") > 0:   # linear: month-to-date x days in month / days elapsed
+            gross[t] = act("   Gross sales (trade value)") * f_lin
+            disc[t] = -act("   − Discount") * f_lin
+            rets[t] = -act("   − Customer returns (AR credits, SRJV/SRT-)") * f_lin
+            net[t] = gross[t] - disc[t] - rets[t]
+        else:
+            net[t] = drv["pct_sold"] * prev
+            denom = 1.0 - drv["return_rate"] - drv["discount_rate"]
+            gross[t] = net[t] / denom if denom > 0.05 else net[t]
+            disc[t], rets[t] = drv["discount_rate"] * gross[t], drv["return_rate"] * gross[t]
         delivered[t] = -drv["delivery_per_gross"] * gross[t]
         sr_in[t] = drv["sr_per_return"] * rets[t]
-        recv[t] = drv["sales_price_per_landed"] * (A["landed"][t] + local[t])
+        if mtd and t == 0:                                    # goods already received (real) + open IPs expected this month
+            recv[t] = (act("   Goods received & other receipts") + drv["sales_price_per_landed"] * A["landed"][t]
+                       + drv["sales_price_per_landed"] * max(local[t] - local_act, 0.0))
+        else:
+            recv[t] = drv["sales_price_per_landed"] * (A["landed"][t] + local[t])
         closing[t] = prev + delivered[t] + sr_in[t] + manuf[t] + recv[t] + other_iss[t]
         prev = closing[t]
     put("Opening inventory (prior month closing)", opening)
@@ -552,7 +597,14 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
         lab = k.get("line") or ("   Other inflows" if sign > 0 else "   Other outflows")
         known.setdefault(lab, zeros())[proj_months.index(m)] += sign * abs(float(k.get("amount") or 0))
 
-    def line_vec(label, direction, nth=0):
+    def trans(vec, label, direction, nth=0):
+        """Transition month: what was already entered wins when it exceeds the projection (outflows: the more negative)."""
+        if mtd:
+            a = act(label, nth)
+            vec[0] = max(a, vec[0]) if direction == "in" else min(a, vec[0])
+        return vec
+
+    def line_vec(label, direction, nth=0, use_trans=True):
         cfg = {**default_line_setting(label, direction), **line_cfg.get(label, {})}
         if cfg["mode"] == "zero":
             v = zeros()
@@ -560,9 +612,13 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
             v = np.full(T, float(cfg.get("fixed") or 0.0))
         else:
             v = np.full(T, avg3(label, nth))
-        return v * (1.0 + float(cfg.get("adjust_pct") or 0.0) / 100.0) + known.get(label, zeros())
+        v = v * (1.0 + float(cfg.get("adjust_pct") or 0.0) / 100.0)
+        if use_trans:
+            v = trans(v, label, direction, nth)
+        return v + known.get(label, zeros())
 
-    coll = {"   Customer receipts": drv["collections_pct"] * net,
+    cust = trans(drv["collections_pct"] * net, "   Customer receipts", "in")
+    coll = {"   Customer receipts": cust,
             "   Recognized agents & other receivables": line_vec("   Recognized agents & other receivables", "in")}
     for lab, v in coll.items():
         put(lab, v + known.get(lab, zeros()) if lab == "   Customer receipts" else v)
@@ -586,9 +642,9 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
     cc_draw = zeros()
     dbg = None
     # rows the debt engine owns when enabled
-    engine_rows = {"   Bank overdraft (CC) repaid", "   Other-party loans (0904: Malek Jobeda, Water Lily …)",
-                   "   Loans repaid (directors, group, others)", "   Interest & bank charges",
-                   "   International: L/C margin & charges", "   International: pay order (customs tax & VAT)"}
+    engine_row_labels = {"   Bank overdraft (CC) repaid", "   Other-party loans (0904: Malek Jobeda, Water Lily …)",
+                         "   Loans repaid (directors, group, others)", "   Interest & bank charges",
+                         "   International: L/C margin & charges", "   International: pay order (customs tax & VAT)"}
     driven = {
         "   International: L/C margin & charges": -A["margin"] if imp["margin_funding"] == "cash" else zeros(),
         "   International: TT / advances to vendors": -A["tt"],
@@ -598,9 +654,10 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
     out_vecs = {}
     for lab in out_labels:
         nth = 1 if lab == "   GI cash passing through HMBR (09060001)" else 0
-        if use_debts and lab in engine_rows:
+        if use_debts and lab in engine_row_labels:
             continue
-        v = driven[lab] + known.get(lab, zeros()) if lab in driven else line_vec(lab, "out", nth)
+        v = (trans(np.array(driven[lab], dtype=float), lab, "out") + known.get(lab, zeros())) if lab in driven \
+            else line_vec(lab, "out", nth)
         out_vecs[lab] = v
         put(lab, v, nth)
 
@@ -608,7 +665,7 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
         bal0 = debt_opening_balances(debts, app_debts or {})
         in_nodebt = P[("Total collections", 0)] + tot_add                         # already without the CC draw
         base_net = in_nodebt + sum(out_vecs.values())
-        bank_chg = line_vec("   Interest & bank charges", "out")                    # bank charges (3-month average)
+        bank_chg = line_vec("   Interest & bank charges", "out", use_trans=False)   # bank charges (3-month average)
         ltr_out_open = np.concatenate([[ltr_open], np.maximum(ltr_open + np.cumsum(A["ltr_draw"]) - np.cumsum(A["ltr_repay"]), 0.0)[:-1]])
         accr = ltr_out_open * float(imp.get("ltr_rate") or 0.0) / 12.0
         ltr_int = np.zeros(T)
@@ -618,27 +675,48 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
             if ym[1] in (3, 6, 9, 12):
                 ltr_int[t], run = run, 0.0
         bank_chg = bank_chg - ltr_int
-        dbg = run_debts(proj_months, base_net + bank_chg, A["margin"], A["customs"], app_last_closing, bal0,
-                        debts, floor, imp["margin_funding"], imp["customs_funding"])
-        pay = dbg["pay"]
-        grp = lambda row: sum(pay[k] for k in pay if DEBT_CASH_ROW.get(k) == row)
+
+        def engine(extra0: float):
+            bn = (base_net + bank_chg).copy()
+            bn[0] += extra0
+            return run_debts(proj_months, bn, A["margin"], A["customs"], app_last_closing, bal0,
+                             debts, floor, imp["margin_funding"], imp["customs_funding"])
+
+        def engine_rows(d):
+            pay_ = d["pay"]
+            grp = lambda row: sum(pay_[k] for k in pay_ if DEBT_CASH_ROW.get(k) == row)
+            return {
+                "   Bank overdraft (CC) repaid": -grp("   Bank overdraft (CC) repaid"),
+                "   Other-party loans (0904: Malek Jobeda, Water Lily …)": -(grp("   Other-party loans (0904: Malek Jobeda, Water Lily …)") - d["malek_interest"]),
+                "   Loans repaid (directors, group, others)": -grp("   Loans repaid (directors, group, others)"),
+                "   Interest & bank charges": bank_chg - d["malek_interest"],
+                "   International: L/C margin & charges": -d["cash_margin"],
+                "   International: pay order (customs tax & VAT)": -d["cash_customs"],
+            }, {"   Bank overdraft (CC) drawn": d["draw"], "   Hospital loan repayments (capital inflow)": d["dep_cash"]}
+
+        dbg = engine(0.0)
+        excess_out, excess_in = {}, {}
+        if mtd:
+            # What was already paid / received this month (real) on the engine-owned rows, over and above what
+            # the engine would pay, is added as a real flow and the engine is re-run so cash and the later
+            # months see it (row = engine value + the excess = the larger of the two).
+            rows_out, rows_in = engine_rows(dbg)
+            excess_out = {lab: min(act(lab) - float(v[0]), 0.0) for lab, v in rows_out.items()}
+            excess_in = {lab: max(act(lab) - float(add_vecs[lab][0] + v[0]), 0.0) for lab, v in rows_in.items()}
+            dbg = engine(sum(excess_out.values()) + sum(excess_in.values()))
+        rows_out, rows_in = engine_rows(dbg)
         cc_draw = dbg["draw"]
-        eng = {
-            "   Bank overdraft (CC) repaid": -grp("   Bank overdraft (CC) repaid"),
-            "   Other-party loans (0904: Malek Jobeda, Water Lily …)": -(grp("   Other-party loans (0904: Malek Jobeda, Water Lily …)") - dbg["malek_interest"]),
-            "   Loans repaid (directors, group, others)": -grp("   Loans repaid (directors, group, others)"),
-            "   Interest & bank charges": bank_chg - dbg["malek_interest"],
-            "   International: L/C margin & charges": -dbg["cash_margin"],
-            "   International: pay order (customs tax & VAT)": -dbg["cash_customs"],
-        }
-        for lab, v in eng.items():
+        for lab, v in rows_out.items():
             v = v + known.get(lab, zeros())
+            v[0] += excess_out.get(lab, 0.0)
             out_vecs[lab] = v
             put(lab, v)
         # the CC draw and any deposit left over after the loans are paid are cash inflows
-        put("   Bank overdraft (CC) drawn", add_vecs["   Bank overdraft (CC) drawn"] + cc_draw)
-        put("   Hospital loan repayments (capital inflow)", add_vecs["   Hospital loan repayments (capital inflow)"] + dbg["dep_cash"])
-        tot_add = tot_add + cc_draw + dbg["dep_cash"]
+        for lab, v in rows_in.items():
+            add_vecs[lab] = add_vecs[lab] + v
+            add_vecs[lab][0] += excess_in.get(lab, 0.0)
+            put(lab, add_vecs[lab])
+        tot_add = sum(add_vecs.values())
         put("Total additional inflows", tot_add)
         total_in = P[("Total collections", 0)] + tot_add
         put("TOTAL CASH IN", total_in)
@@ -711,7 +789,7 @@ def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int,
             "min_cash_month": cm.month_label(proj_months[int(close_cash.argmin())]) if T else None,
             "floor_breaches": [cm.month_label(m) for m, c in zip(proj_months, close_cash)
                                if c < float(settings.get("cash_floor") or 0.0)],
-            "imports": A, "debts": dbg,
+            "imports": A, "debts": dbg, "transition": bool(mtd),
             "lc_limit_breaches": ([cm.month_label(m) for m, e in zip(proj_months, A["lc_exposure"])
                                    if e > float((settings.get("debts") or {}).get("lc_limit") or 0) > 0]),
             "shortfall_months": ([cm.month_label(m) for m, x in zip(proj_months, dbg["shortfall"]) if x > 1.0] if dbg else [])}

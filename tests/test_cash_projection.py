@@ -270,3 +270,119 @@ def test_md_loan_is_paid_in_its_due_month_and_projection_cash_chain_holds_with_d
     nov = pcols[1]
     assert g("   Loans repaid (directors, group, others)", nov) <= -600_000.0 + 1e-6
     assert g("   Other-party loans (0904: Malek Jobeda, Water Lily …)", pcols[0]) < 0
+
+
+def test_uniform_value_applies_to_planned_shipments_and_optionally_to_open_ones():
+    first = (2026, 10)
+    plan = {"overrides": {}, "planned": [{"ref": "A", "value": 1.0, "month": "2026-12"}, {"ref": "B", "value": None, "month": "2027-01"}],
+            "uniform": {"enabled": False, "value": 8_000_000.0, "include_open": False}}
+    off = cp.build_shipment_schedule(_orders(), plan, first)
+    assert off[off["ref"] == "A"].iloc[0]["value"] == 1.0 and "B" not in off["ref"].tolist()      # B has no own value -> skipped
+    plan["uniform"]["enabled"] = True
+    on = cp.build_shipment_schedule(_orders(), plan, first)
+    assert on[on["source"] == "Planned"]["value"].tolist() == [8_000_000.0, 8_000_000.0]            # one value for all planned
+    assert on[on["source"] == "Open IP"].iloc[0]["value"] == 1000.0                                  # open IPs keep the ERP value
+    plan["uniform"]["include_open"] = True
+    both = cp.build_shipment_schedule(_orders(), plan, first)
+    assert both["value"].tolist() == [8_000_000.0] * 3                                              # open purchase replaced too
+
+
+def test_plan_roundtrip_keeps_the_uniform_setting(tmp_path):
+    path = str(tmp_path / "p.json")
+    assert cp.load_plan("100001", path=path)["uniform"] == {"enabled": False, "value": 0.0, "include_open": False}
+    cp.save_plan("100001", {"overrides": {}, "planned": [], "holidays": [],
+                            "uniform": {"enabled": True, "value": 9e6, "include_open": False}}, "u", path=path)
+    assert cp.load_plan("100001", path=path)["uniform"]["value"] == 9e6
+
+
+# ── transition month (current month = real so far + projection) ──────────────
+def _final_with_mtd(done_cols, mtd_col, mtd_values):
+    """_final() history plus a month-to-date column; mtd_values: {label stripped: value}."""
+    final = _final(done_cols)
+    final[mtd_col] = [mtd_values.get(str(l).strip(), 0.0) if k not in ("header", "blank") else np.nan
+                      for l, k in zip(final["Line"], final["kind"])]
+    return final
+
+
+def _project_mtd(mtd_values, elapsed=10, days=30, settings=None, known=None):
+    done = ["Jul-26", "Aug-26", "Sep-26"]
+    final = _final_with_mtd(done, "Oct-26 (MTD)", mtd_values)
+    s = settings or cp.load_settings("none", path="/nonexistent.json")
+    s["horizon_months"] = 3
+    sched = pd.DataFrame(columns=["ref", "source", "value", "month", "note", "warning"])
+    return cp.project(final, done, (2026, 9), 1000.0, sched, s, 0.0, pd.DataFrame(),
+                      mtd={"col": "Oct-26 (MTD)", "elapsed": elapsed, "days": days})
+
+
+def test_transition_month_sales_are_linear_in_the_days_elapsed():
+    t, pcols, info = _project_mtd({"Gross sales (trade value)": 100.0, "− Discount": -10.0,
+                                   "− Customer returns (AR credits, SRJV/SRT-)": -5.0, "Net sales (after returns)": 85.0})
+    assert pcols[0] == "Oct-26 (MTD+P)" and pcols[1] == "Nov-26 (P)"
+    g = lambda line, col: float(t[t["Line"].str.strip() == line][col].iloc[0])
+    assert np.isclose(g("Gross sales (trade value)", pcols[0]), 100.0 * 30 / 10)           # 10 of 30 days elapsed
+    assert np.isclose(g("Net sales (after returns)", pcols[0]), 85.0 * 3)
+    # Nov uses the normal %-of-opening-inventory-sold rule on the Oct projected closing inventory
+    assert np.isclose(g("Net sales (after returns)", pcols[1]), info["drivers"]["pct_sold"] * g("Closing inventory", pcols[0]))
+
+
+def test_transition_month_with_no_sales_yet_falls_back_to_the_normal_projection():
+    t, pcols, info = _project_mtd({})
+    g = lambda line, col: float(t[t["Line"].str.strip() == line][col].iloc[0])
+    assert np.isclose(g("Net sales (after returns)", pcols[0]), info["drivers"]["pct_sold"] * 1000.0)
+
+
+def test_transition_month_shows_what_was_entered_when_it_exceeds_the_average_else_the_average():
+    t, pcols, _ = _project_mtd({"Operating expenses": -90.0, "Customer receipts": 0.0})
+    g = lambda line, col: float(t[t["Line"].str.strip() == line][col].iloc[0])
+    assert g("Operating expenses", pcols[0]) == -90.0                 # already above the -60 average -> real
+    t, pcols, _ = _project_mtd({"Operating expenses": -20.0})
+    assert g("Operating expenses", pcols[0]) == -60.0                 # below the average so far -> projected to it
+    assert g("Operating expenses", pcols[1]) == -60.0
+
+
+def test_transition_month_adds_goods_already_received_to_the_open_arrivals():
+    done = ["Jul-26", "Aug-26", "Sep-26"]
+    final = _final_with_mtd(done, "Oct-26 (MTD)", {"Vendor value of shipments received": 400.0,
+                                                   "Landed cost of shipments received": 460.0})
+    s = cp.load_settings("none", path="/nonexistent.json")
+    s["horizon_months"] = 2
+    sched = pd.DataFrame([{"ref": "IP", "source": "Open IP", "value": 1000.0, "month": (2026, 10), "note": "", "warning": ""}])
+    t, pcols, _ = cp.project(final, done, (2026, 9), 1000.0, sched, s, 0.0, pd.DataFrame(),
+                             mtd={"col": "Oct-26 (MTD)", "elapsed": 10, "days": 30})
+    g = lambda line, col: float(t[t["Line"].str.strip() == line][col].iloc[0])
+    assert g("Vendor value of shipments received", pcols[0]) == 400.0 + 1000.0      # received so far + still to arrive
+    assert g("Vendor value of shipments received", pcols[1]) == 0.0
+
+
+def test_transition_month_cash_chain_and_debt_engine_include_the_real_payments():
+    done = ["Jul-26", "Aug-26", "Sep-26"]
+    final = _final_with_mtd(done, "Oct-26 (MTD)", {"Operating expenses": -90.0, "Customer receipts": 50.0})
+    s = cp.load_settings("100001", path="/nonexistent.json")
+    s["horizon_months"] = 3
+    s["debts"]["deposits"] = []
+    sched = pd.DataFrame(columns=["ref", "source", "value", "month", "note", "warning"])
+    app_debts = {"10010003": -1_000_000.0, "09040007": -5_000_000.0, "09040001": -1_000_000.0, "10020001": -100_000.0}
+    t, pcols, info = cp.project(final, done, (2026, 9), 50_000_000.0, sched, s, 0.0, pd.DataFrame(), app_debts=app_debts,
+                                mtd={"col": "Oct-26 (MTD)", "elapsed": 10, "days": 30})
+    g = lambda line, col: float(t[t["Line"].str.strip() == line][col].iloc[0])
+    for c in pcols:
+        assert np.isclose(g("Closing cash — model (opening + net change)", c), g("Opening cash & CE (app)", c) + g("NET CHANGE IN CASH", c))
+        assert np.isclose(g("NET CHANGE IN CASH", c), g("TOTAL CASH IN", c) + g("TOTAL CASH OUT", c))
+    assert np.allclose(info["closing_cash"], info["debts"]["cash"])            # table cash == engine cash, transition month included
+    assert g("Operating expenses", pcols[0]) == -90.0
+
+
+def test_transition_month_engine_rows_never_show_less_than_what_was_really_paid():
+    done = ["Jul-26", "Aug-26", "Sep-26"]
+    paid = "Other-party loans (0904: Malek Jobeda, Water Lily …)"
+    final = _final_with_mtd(done, "Oct-26 (MTD)", {paid: -3_000_000.0})
+    s = cp.load_settings("100001", path="/nonexistent.json")
+    s["horizon_months"] = 2
+    s["debts"]["deposits"] = []
+    sched = pd.DataFrame(columns=["ref", "source", "value", "month", "note", "warning"])
+    app_debts = {"09040007": -27_000_000.0, "09040001": -3_000_000.0}
+    t, pcols, info = cp.project(final, done, (2026, 9), 100_000_000.0, sched, s, 0.0, pd.DataFrame(), app_debts=app_debts,
+                                mtd={"col": "Oct-26 (MTD)", "elapsed": 10, "days": 30})
+    v = float(t[t["Line"].str.strip() == paid][pcols[0]].iloc[0])
+    assert v <= -3_000_000.0 + 1e-6                                   # engine would pay ~1.2M; the real 3.0M wins
+    assert np.allclose(info["closing_cash"], info["debts"]["cash"])

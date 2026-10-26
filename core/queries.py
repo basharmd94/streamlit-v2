@@ -4068,6 +4068,28 @@ def get_open_import_orders(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     return sql, (filters["zid"][0],)
 
 
+def get_cash_model_cash_movement(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Net movement of the cash accounts (Cash & CE) in ONE period, straight from the ledger.
+
+    Used for the current month-to-date column, where the app's statements are not available (they leave
+    out the incomplete month): closing cash to date = last completed month's app closing + this movement.
+    """
+    zid = filters["zid"][0]
+    year, end_month = int(filters["year"]), int(filters["end_month"])
+    project = filters.get("project")
+    proj_sql = "AND d.xproj = %s" if project else ""
+    sql = f"""
+        SELECT COALESCE(SUM(d.xprime), 0) AS net
+        FROM gldetail d
+        JOIN glheader h ON h.xvoucher = d.xvoucher AND h.zid = d.zid
+        WHERE d.zid = %s AND h.xyear = %s AND h.xper = %s AND d.xacc = ANY(%s) {proj_sql}
+    """
+    params = [zid, year, end_month, list(filters["cash_codes"])]
+    if project:
+        params.append(project)
+    return sql, tuple(params)
+
+
 def get_cash_model_sales_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """Item x month sales (units, gross altsales, discount) from the sales MV.
 

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import datetime
 
 import numpy as np
@@ -35,26 +36,35 @@ _DRIVER_LABELS = {
 _MODES = {"instalment": "fixed amount per month", "lump": "one amount in a month", "sweep": "whatever cash is left", "off": "not paid"}
 
 
-def _latest_completed() -> tuple:
+def _current_month() -> tuple:
     now = datetime.now()
-    return (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
+    return (now.year, now.month)
 
 
 @st.cache_data(show_spinner=False, ttl=1800)
 def _history(members, year: int, month: int):
-    """Final Model through the latest completed month + what the projection needs from the app."""
+    """Final Model through the CURRENT month (month to date) + what the projection needs from the app.
+
+    The last column is the current month to date; everything before it is complete. The projection's
+    averages and anchors (closing cash, debt balances, LTR) use the last COMPLETED month.
+    """
     zids = [z for z, _ in members]
     projects = [p for _, p in members]
     m = cmv.build_cash_model(zids, projects, year, month)
-    last = m["months"][-1]
+    months, cols, final = m["months"], m["cols"], m["final"]
+    has_mtd = bool(m.get("mtd_col"))
+    done_idx = -2 if has_mtd else -1
+    last_done = months[done_idx]
     ltr, debts = 0.0, {}
     for z, p in members:
         one = cmv._app_cash_one(z, p, year, month)
-        ltr += abs(one.get("ltr", {}).get(last, 0.0))
+        ltr += abs(one.get("ltr", {}).get(last_done, 0.0))
         for code, mp in (one.get("debts") or {}).items():
-            debts[code] = debts.get(code, 0.0) + abs(mp.get(last, 0.0))
-    return {"final": m["final"], "cols": m["cols"], "months": m["months"], "shipments": m["shipments"],
-            "app_close": float(m["app"]["closing"].get(last, np.nan)), "ltr_open": ltr, "app_debts": debts}
+            debts[code] = debts.get(code, 0.0) + abs(mp.get(last_done, 0.0))
+    app_close = float(cp._row(final, "Closing cash & CE — APP (source of truth)", [cols[done_idx]])[0])
+    return {"final": final, "cols": cols, "months": months, "shipments": m["shipments"], "has_mtd": has_mtd,
+            "done_cols": cols[:done_idx + 1] if has_mtd else cols, "last_done": last_done,
+            "app_close": app_close, "ltr_open": ltr, "app_debts": debts}
 
 
 @st.cache_data(show_spinner=False, ttl=600)
@@ -65,14 +75,14 @@ def _open_orders(zid: str):
 
 def prepare(ent: str, zids: list, projects: list):
     """Everything both tabs need (history, plan, shipment schedule); None when it cannot be built."""
-    year, month = _latest_completed()
+    year, month = _current_month()
     try:
         with st.spinner("Building the history and projection…"):
             h = _history(tuple(zip(zids, projects)), year, month)
     except Exception as e:
         st.warning(f"Could not build the projection base for {ent}: {e}")
         return None
-    first = cp.next_months(h["months"][-1], 1)[0]
+    first = cp.next_months(h["last_done"], 1)[0]            # the first projected month = the current month
     plan = cp.load_plan(str(ent))
     schedule = cp.build_shipment_schedule(_open_orders(str(ent)), plan, first)
     return {"ent": str(ent), "h": h, "plan": plan, "schedule": schedule, "first": first,
@@ -287,7 +297,7 @@ def render_settings(ctx) -> dict:
                "projection; **Save settings** keeps them for next time. Only settings are saved — figures are always recomputed.")
     _shipments_block(ctx)
     _imports_block(ent, s)
-    auto = cp.auto_drivers(h["final"], h["cols"], h["shipments"])
+    auto = cp.auto_drivers(h["final"], h["done_cols"], h["shipments"])
     _drivers_block(ent, s, auto)
     line_labels = {
         "in": [r[2] for r in cm.FINAL_MODEL_ROWS if r[0] == "cash" and r[1] == "add" and r[2] and r[2].startswith("   ")],
@@ -322,11 +332,17 @@ def render_settings(ctx) -> dict:
 
 def render_projection(ctx, settings) -> None:
     h, sch = ctx["h"], ctx["schedule"]
-    cols = h["cols"]
-    table, pcols, info = cp.project(h["final"], cols, h["months"][-1], h["app_close"], sch, settings,
-                                    ltr_open=h["ltr_open"], shipments_hist=h["shipments"], app_debts=h["app_debts"])
-    st.caption(f"Actuals **{cols[0]} → {cols[-1]}** (all {len(cols)} months, as in the Final Model) · **{len(pcols)} projected months (P)** "
-               f"from the app's closing cash of {h['app_close']:,.0f}. Inputs are in the ⚙️ Settings tab.")
+    done = h["done_cols"]
+    now = datetime.now()
+    mtd = ({"col": h["cols"][-1], "elapsed": now.day, "days": calendar.monthrange(now.year, now.month)[1]}
+           if h["has_mtd"] else None)
+    table, pcols, info = cp.project(h["final"], done, h["last_done"], h["app_close"], sch, settings,
+                                    ltr_open=h["ltr_open"], shipments_hist=h["shipments"], app_debts=h["app_debts"], mtd=mtd)
+    trans = (f" · **{pcols[0]}** is the transition month: what has been entered so far is real, the rest is projected "
+             f"(sales linearly from the {mtd['elapsed']} days elapsed of {mtd['days']}; other lines to their average when that is larger)"
+             if mtd else "")
+    st.caption(f"Actuals **{done[0]} → {done[-1]}** ({len(done)} complete months, as in the Final Model){trans} · "
+               f"**{len(pcols)} months projected** from the app's closing cash of {h['app_close']:,.0f}. Inputs are in the ⚙️ Settings tab.")
     bad = sch[sch["warning"] != ""] if not sch.empty else sch
     if len(bad):
         st.warning("⚠️ Open purchases with incomplete cost data — " + "; ".join(f"{r.ref}: {r.warning}" for r in bad.itertuples())
@@ -343,7 +359,7 @@ def render_projection(ctx, settings) -> None:
     if info.get("lc_limit_breaches"):
         st.warning("L/C value open exceeds the L/C limit in: " + ", ".join(info["lc_limit_breaches"]))
 
-    sty = cmv._style(table, cols + pcols).set_properties(subset=pcols, **{"background-color": "rgba(80,140,255,0.10)"})
+    sty = cmv._style(table, done + pcols).set_properties(subset=pcols, **{"background-color": "rgba(80,140,255,0.10)"})
     st.dataframe(sty, use_container_width=True, hide_index=True, height=min(35 * (len(table) + 1) + 3, 3200),
                  column_config={"Line": st.column_config.TextColumn("Line", pinned=True, width=430)})
     st.download_button("⬇️ Download projection (Excel)", data=cm.to_excel_bytes({"Projection": table}),

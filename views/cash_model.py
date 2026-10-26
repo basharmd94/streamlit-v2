@@ -41,15 +41,31 @@ def _app_cash_one(zid: str, project, year: int, end_month: int):
     skip = {"Income", "Expenditure"}
 
     def closing_map(y, em):
+        today = datetime.now()
+        if y != today.year and em == today.month and today.month != 12:
+            em = 12      # process_data_month drops "today's month" even for a past year; pull the full year instead
         bs = financial.process_data_month(zid, y, 1, em, "Balance Sheet", label_df, project, skip)
         bs0 = bs.drop(columns=_HIER, errors="ignore")
         coc = financial.cash_open_close(bs0).set_index("ac_name").T
         out = {k: float(v) for k, v in coc["Closing Cash & CE"].items() if isinstance(k, tuple)}
         return out, bs0
 
-    closing, bs0 = closing_map(year, end_month)
+    now = datetime.now()
+    is_mtd = (year == now.year and end_month == now.month)          # the app's statements leave out the current month
+    done = end_month - 1 if is_mtd else end_month                    # last month the app has closed
+    if done >= 1:
+        closing, bs0 = closing_map(year, done)
+    else:                                                            # January: nothing closed yet this year
+        closing, bs0 = {}, pd.DataFrame(columns=["ac_code"])
     prev, _ = closing_map(year - 1, 12)
     prev_closing = prev.get((year - 2, 12))
+    if is_mtd:
+        # closing cash to date = last closed month's app closing + this month's movement on the cash accounts
+        base = closing.get((year, done)) if done >= 1 else prev.get((year - 1, 12))
+        mv = Analytics("cash_model_cash_movement", zid=zid, project=project,
+                       filters={"year": year, "end_month": end_month, "cash_codes": financial._cash_codes_from_json()}).data
+        if base is not None and mv is not None and not mv.empty:
+            closing[(year, end_month)] = float(base) + float(mv["net"].iloc[0])
 
     def bal(code):
         r = bs0[bs0["ac_code"] == code]
@@ -166,8 +182,14 @@ def build_cash_model(zids, projects, year: int, end_month: int) -> dict:
             memo.append({"Line": label, "kind": "memo", **vals})
     gi = pd.DataFrame(memo, columns=["Line", "kind"] + cols)
     final = cm.build_final_model(purchases, inv, cash, cols)
-    return {"months": months, "cols": cols, "cash": cash, "purchases": purchases, "inventory": inv,
-            "shipments": ships, "detail": detail, "gi": gi, "app": app, "info": info, "final": final}
+    frames = {"cash": cash, "purchases": purchases, "inventory": inv, "detail": detail, "gi": gi, "final": final}
+    now = datetime.now()
+    mtd_col = None
+    if months[-1] == (now.year, now.month):                      # current month = month to date
+        mtd_col = cols[-1] + " (MTD)"
+        frames = {k: v.rename(columns={cols[-1]: mtd_col}) for k, v in frames.items()}
+        cols = cols[:-1] + [mtd_col]
+    return {"months": months, "cols": cols, **frames, "shipments": ships, "app": app, "info": info, "mtd_col": mtd_col}
 
 
 # ── display helpers ──────────────────────────────────────────────────────────
@@ -241,10 +263,7 @@ def display_cash_model(zid):
                            format_func=lambda k: f"{k} — {businesses[k].get('zorg', '')}", key="cm_entity")
     with c2:
         year = st.selectbox("End year", [now.year - i for i in range(5)], index=0, key="cm_year")
-    max_month = now.month - 1 if year == now.year else 12
-    if max_month < 1:
-        st.info("No completed month yet in this year — choose the previous year.")
-        return
+    max_month = now.month if year == now.year else 12          # the current month is shown month-to-date
     with c3:
         end_month = st.selectbox("Up to month", list(range(1, max_month + 1)), index=max_month - 1, key="cm_month")
     zids = [z for z in cm.group_zids(str(ent)) if z in businesses] or [str(ent)]
@@ -264,13 +283,20 @@ def display_cash_model(zid):
 
     cols = m["cols"]
     _tie_banner(m["cash"], cols)
+    if m.get("mtd_col"):
+        st.caption(f"**{m['mtd_col']}** is the current month to date. The app's statements leave out the incomplete month, so its "
+                   "'APP' row is the ledger balance of the cash accounts to date (last closed month's app closing + this month's "
+                   "movement). Everything below is real entries so far; it changes as the month goes on.")
 
-    tab0, tabp, tab1, tab2, tab3, tab4, tabs_ = st.tabs(["📋 Final Model", "📈 Projection", "📦 Purchases",
-                                                         "🏬 Inventory & Sales", "💵 Cash", "🔎 Detail by account",
-                                                         "⚙️ Settings"])
+    tab0, tabp, tab1, tab2, tab3, tab4, tabsp, tabs_ = st.tabs(["📋 Final Model", "📈 Projection", "📦 Purchases",
+                                                                "🏬 Inventory & Sales", "💵 Cash", "🔎 Detail by account",
+                                                                "🗓 Shipment Plan", "⚙️ Settings"])
     # The Settings tab is the last one, but its widgets must run first so the Projection reads their live values.
     from views import cash_projection
     ctx = cash_projection.prepare(str(zids[0]), zids, projects)
+    with tabsp:      # the same page the commercial officer uses in Purchase Analysis -> Shipment Plan
+        from views import shipment_plan
+        shipment_plan.render_shipment_plan(str(zids[0]))
     with tabs_:
         proj_settings = cash_projection.render_settings(ctx) if ctx else None
     with tabp:
