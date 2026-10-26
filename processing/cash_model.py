@@ -590,6 +590,143 @@ def build_inventory_sales(stock: pd.DataFrame, sales: pd.DataFrame, returns: pd.
     return pd.DataFrame(rows), info
 
 
+# ── Final Model: one fixed-layout monthly table ──────────────────────────────
+# Row order and labels come from the user's FinalModel.xlsx (purchases -> inventory & sales
+# -> collections -> additional inflows -> payments -> net cash). Every figure is read from the
+# existing section tables, so it can never disagree with the other tabs. Rows are fixed:
+# a line that does not occur for the business shows 0 (the table is the template for projections).
+# (source table, section inside it, label as it appears there; None label = blank spacer row)
+FINAL_MODEL_ROWS: List[Tuple[str, Optional[str], Optional[str]]] = [
+    ("purchases", None, "INTERNATIONAL PURCHASES (import records, IP-- / IGRN)"),
+    ("purchases", None, "   Vendor value of shipments received"),
+    ("purchases", None, "   + Pay order — capitalised customs duty"),
+    ("purchases", None, "   + L/C charges & other import costs (insurance, C&F, freight, carrying)"),
+    ("purchases", None, "   VAT/AT on pay order transferred to rebate claim (reclaimable, not cost)"),
+    ("purchases", None, "Landed cost of shipments received"),
+    ("purchases", None, "LOCAL PURCHASES (PO-- / GRN-)"),
+    ("purchases", None, "   Trading purchases received (items that are sold)"),
+    ("", None, None),
+    ("inventory", None, "INVENTORY (real stock x average sales price)"),
+    ("inventory", None, "Opening inventory (prior month closing)"),
+    # not in the workbook: without it opening + movements would not add up to closing
+    ("inventory", None, "   Revaluation at this month's average prices"),
+    ("inventory", None, "   Deliveries (DO--)"),
+    ("inventory", None, "   Customer returns (SR--)"),
+    ("inventory", None, "   Manufactured (RE--)"),
+    ("inventory", None, "   Goods received & other receipts"),
+    ("inventory", None, "   Other issues, adjustments & returns to suppliers"),
+    ("inventory", None, "   Internal transfers between the combined businesses (net)"),
+    ("inventory", None, "Closing inventory"),
+    ("inventory", None, "SALES (from accounts, after returns)"),
+    ("inventory", None, "   Gross sales (trade value)"),
+    ("inventory", None, "   − Discount"),
+    ("inventory", None, "   − Customer returns (AR credits, SRJV/SRT-)"),
+    ("inventory", None, "Net sales (after returns)"),
+    ("inventory", None, "% of opening inventory sold"),
+    ("inventory", None, "   Closing stock valued at a sales-based average price (%)"),
+    ("", None, None),
+    ("cash", "coll", "COLLECTIONS (sales operations)"),
+    ("cash", "coll", "   Customer receipts"),
+    ("cash", "coll", "   Recognized agents & other receivables"),
+    ("cash", "coll", "Total collections"),
+    ("cash", "add", "ADDITIONAL INFLOWS (not from sales operations)"),
+    ("cash", "add", "   🔁 Rent & property receipts (recurring)"),
+    ("cash", "add", "   Security deposit receipts"),
+    ("cash", "add", "   Hospital loan repayments (capital inflow)"),
+    ("cash", "add", "   Group, director & other loan repayments received"),
+    ("cash", "add", "   GI cash passing through HMBR (09060001)"),
+    ("cash", "add", "   Bank overdraft (CC) drawn"),
+    ("cash", "add", "   Loans received (directors, group, others)"),
+    ("cash", "add", "   Other-party funds received (0904)"),
+    ("cash", "add", "   Import advances refunded / VAT rebate received"),
+    ("cash", "add", "   Other income & interest"),
+    ("cash", "add", "   Other inflows"),
+    ("cash", "add", "Total additional inflows"),
+    ("cash", "add", "TOTAL CASH IN"),
+    ("cash", "out", "PAYMENTS (cash out)"),
+    ("cash", "out", "   International: L/C margin & charges"),
+    ("cash", "out", "   International: TT / advances to vendors"),
+    ("cash", "out", "   International: pay order (customs tax & VAT)"),
+    ("cash", "out", "   International: other import costs (insurance, C&F, freight, carrying)"),
+    ("cash", "out", "   VAT / AT rebate claims"),
+    ("cash", "out", "   Suppliers (local, internal & international payables)"),
+    ("cash", "out", "   Salaries, bonus & staff advances"),
+    ("cash", "out", "   Director remuneration & funds"),
+    ("cash", "out", "   Other-party loans (0904: Malek Jobeda, Water Lily …)"),
+    ("cash", "out", "   Bank overdraft (CC) repaid"),
+    ("cash", "out", "   Bank loans & LTR repaid"),
+    ("cash", "out", "   Loans repaid (directors, group, others)"),
+    ("cash", "out", "   Loans given (group, directors, others)"),
+    ("cash", "out", "   Income tax & VAT"),
+    ("cash", "out", "   Interest & bank charges"),
+    ("cash", "out", "   Capital expenditure (assets)"),
+    ("cash", "out", "   GI cash passing through HMBR (09060001)"),
+    ("cash", "out", "   C&F and clearing charges"),
+    # not in the workbook: GI pays accrued expenses (0901xxxx) and the total would not foot without it
+    ("cash", "out", "   Accrued expenses paid"),
+    ("cash", "out", "   Operating expenses"),
+    ("cash", "out", "   Other outflows"),
+    ("cash", "out", "TOTAL CASH OUT"),
+    ("", None, None),
+    ("cash", None, "Opening cash & CE (app)"),
+    ("cash", "net", "NET CHANGE IN CASH"),
+    ("cash", "net", "Closing cash — model (opening + net change)"),
+    ("cash", "net", "Closing cash & CE — APP (source of truth)"),
+    ("cash", "net", "Difference (model − app)"),
+]
+
+_CASH_SECTION_STARTS = (("COLLECTIONS", "coll"), ("ADDITIONAL INFLOWS", "add"), ("PAYMENTS", "out"),
+                        ("TRANSFERS BETWEEN", "xfer"), ("NET CHANGE", "net"), ("MEMO", "memo"))
+
+
+def build_final_model(purchases: pd.DataFrame, inventory: pd.DataFrame, cash: pd.DataFrame,
+                      cols: List[str]) -> pd.DataFrame:
+    """Fixed-layout monthly table (FINAL_MODEL_ROWS) assembled from the three section tables.
+
+    A label the business has no data for is shown as 0 so the layout never changes.
+    Duplicate labels (GI cash passing through HMBR is both an inflow and an outflow) are told
+    apart by the section of the cash statement they sit in.
+    """
+    def index(df: Optional[pd.DataFrame], sectioned: bool) -> Dict[Tuple[str, str], pd.Series]:
+        out: Dict[Tuple[str, str], pd.Series] = {}
+        if df is None or df.empty:
+            return out
+        sec = None
+        for _, r in df.iterrows():
+            line = str(r["Line"])
+            if sectioned:
+                for start, name in _CASH_SECTION_STARTS:
+                    if line.startswith(start):
+                        sec = name
+                        break
+            out.setdefault((sec or "", line.rstrip()), r)
+        return out
+
+    idx = {"purchases": index(purchases, False), "inventory": index(inventory, False),
+           "cash": index(cash, True)}
+    rows = []
+    for src, sec, label in FINAL_MODEL_ROWS:
+        if label is None:
+            rows.append({"Line": "", "kind": "blank", **{c: np.nan for c in cols}})
+            continue
+        hit = idx[src].get((sec or "", label.rstrip()))
+        if hit is None:
+            # a line the business has no data for (section headers always exist in the source)
+            rows.append({"Line": label, "kind": "line", **{c: 0.0 for c in cols}})
+        else:
+            rows.append({"Line": label, "kind": hit["kind"], **{c: hit[c] for c in cols}})
+
+    # Safety net: a cash line the template has no row for (a new account group) is added just
+    # above its section total, so the sections always add up to the totals.
+    known = {(sec or "", label.rstrip()) for src, sec, label in FINAL_MODEL_ROWS if src == "cash" and label}
+    totals = {"coll": "Total collections", "add": "Total additional inflows", "out": "TOTAL CASH OUT"}
+    for (sec, label), hit in idx["cash"].items():
+        if sec in totals and label.startswith("   ") and (sec, label) not in known:
+            pos = next(i for i, r in enumerate(rows) if r["Line"] == totals[sec])
+            rows.insert(pos, {"Line": label, "kind": hit["kind"], **{c: hit[c] for c in cols}})
+    return pd.DataFrame(rows, columns=["Line", "kind"] + list(cols))
+
+
 # ── export ───────────────────────────────────────────────────────────────────
 def to_excel_bytes(sections: Dict[str, pd.DataFrame]) -> bytes:
     buf = io.BytesIO()

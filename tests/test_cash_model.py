@@ -186,3 +186,63 @@ def test_packaging_margin_memo_is_receipt_value_minus_packaging_cost_and_outside
     assert row["kind"] == "memo" and row["Jan-25"] == 100.0 and row["Feb-25"] == 50.0
     # without a sister-business cost the memo is simply not shown
     assert not cm.build_purchases(purch, pd.DataFrame(), pd.DataFrame(), {}, months)["Line"].str.contains("Packaging margin").any()
+
+
+def _final_inputs():
+    cols = ["Jan-25"]
+    row = lambda line, kind, v: {"Line": line, "kind": kind, "Jan-25": v}
+    purchases = pd.DataFrame([row("INTERNATIONAL PURCHASES (import records, IP-- / IGRN)", "header", np.nan),
+                              row("   Vendor value of shipments received", "line", 100.0),
+                              row("Landed cost of shipments received", "subtotal", 130.0)])
+    inventory = pd.DataFrame([row("INVENTORY (real stock x average sales price)", "header", np.nan),
+                              row("Closing inventory", "total", 500.0)])
+    cash = pd.DataFrame([row("Opening cash & CE (app)", "total", 10.0),      # first row of the Cash tab, before any section
+                         row("COLLECTIONS (sales operations)", "header", np.nan),
+                         row("   Customer receipts", "line", 80.0),
+                         row("Total collections", "subtotal", 80.0),
+                         row("ADDITIONAL INFLOWS (not from sales operations)", "header", np.nan),
+                         row("   GI cash passing through HMBR (09060001)", "line", 7.0),
+                         row("Total additional inflows", "subtotal", 7.0),
+                         row("TOTAL CASH IN", "total", 87.0),
+                         row("PAYMENTS (cash out)", "header", np.nan),
+                         row("   GI cash passing through HMBR (09060001)", "line", -3.0),
+                         row("   A brand new payment group", "line", -9.0),
+                         row("TOTAL CASH OUT", "subtotal", -12.0),
+                         row("NET CHANGE IN CASH", "total", 75.0),
+                         row("Closing cash — model (opening + net change)", "total", 85.0),
+                         row("Closing cash & CE — APP (source of truth)", "total", 85.0),
+                         row("Difference (model − app)", "check", 0.0)])
+    return purchases, inventory, cash, cols
+
+
+def test_final_model_keeps_the_fixed_layout_and_zero_fills_missing_lines():
+    p, i, c, cols = _final_inputs()
+    f = cm.build_final_model(p, i, c, cols)
+    labels = [l for l in f["Line"]]
+    expected = [r[2] if r[2] is not None else "" for r in cm.FINAL_MODEL_ROWS]
+    assert [l for l in labels if l in expected] == [l for l in expected if l in labels]   # template order kept
+    get = lambda line, nth=0: float(f[f["Line"] == line]["Jan-25"].iloc[nth])
+    assert get("   Vendor value of shipments received") == 100.0
+    assert get("   Trading purchases received (items that are sold)") == 0.0      # not in the source -> 0, row kept
+    assert (f["kind"] == "blank").sum() == 3                                        # the three spacer rows
+
+
+def test_final_model_tells_apart_the_two_gi_through_hmbr_lines_and_never_drops_a_cash_line():
+    p, i, c, cols = _final_inputs()
+    f = cm.build_final_model(p, i, c, cols)
+    gi = f[f["Line"] == "   GI cash passing through HMBR (09060001)"]["Jan-25"].tolist()
+    assert gi == [7.0, -3.0]                       # inflow first, outflow second
+    new = f[f["Line"] == "   A brand new payment group"]
+    assert len(new) == 1 and float(new["Jan-25"].iloc[0]) == -9.0
+    pos = f.index[f["Line"] == "TOTAL CASH OUT"][0]
+    assert f.index[f["Line"] == "   A brand new payment group"][0] < pos     # inserted above its total
+
+
+def test_final_model_ends_with_opening_net_closing_app_and_difference_pulled_not_calculated():
+    p, i, c, cols = _final_inputs()
+    f = cm.build_final_model(p, i, c, cols)
+    tail = f["Line"].tolist()[-5:]
+    assert tail == ["Opening cash & CE (app)", "NET CHANGE IN CASH",
+                    "Closing cash — model (opening + net change)",
+                    "Closing cash & CE — APP (source of truth)", "Difference (model − app)"]
+    assert f["Jan-25"].tolist()[-5:] == [10.0, 75.0, 85.0, 85.0, 0.0]     # copied from the Cash tab as-is

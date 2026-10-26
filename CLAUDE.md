@@ -228,7 +228,7 @@ holds as cash is cash here). A second call for `year-1` supplies the opening of 
 movement from the GL and shows a **"Difference (model − app)" row plus a green/amber banner** — verified ≤ 0.09 (the app rounds each
 account balance to 0.1) for HMBR, GI, Zepto and Gulshan Packaging, windows 2024/2025/2026.
 
-Sections (tabs): **📦 Purchases** (import records `IP--`/`IGRN` with landed cost from the L/C settlement vouchers; local purchases split
+Sections (tabs): **📋 Final Model** (first tab, added 2026-10-25 — ONE fixed-layout monthly table in the row order of the user's `FinalModel.xlsx`: purchases → inventory & sales → collections → additional inflows → payments → net cash; `processing/cash_model.FINAL_MODEL_ROWS` / `build_final_model`; every figure is read from the other tabs' tables, a line with no activity shows 0 so the layout never changes — the base for projections. Two rows are beyond the workbook so it foots: inventory *Revaluation* and *Accrued expenses paid* (GI); any cash line the template lacks is auto-inserted above its section total), **📦 Purchases** (import records `IP--`/`IGRN` with landed cost from the L/C settlement vouchers; local purchases split
 into *trading* = the item is ever sold vs *excluded* operational/raw-material/packaging; manufacturing memo for GI/Zepto; 01050001
 advance balance memo), **🏬 Inventory & Sales** (real `imtrn` stock × each item's trailing-3-month average sales price, falling back
 to 12 months then standard price; ledger closes exactly via a "revaluation" line; sales = gross − discount − returns, returns from AR
@@ -251,6 +251,38 @@ hidden from the Business selector because it is folded into 100001. Eliminations
 - **Packaging margin (memo, non-cash):** Purchases tab shows 100009's cost of the transferred goods (`imtrn` `DO--` cost) and the margin = HMBR's receipt value − that cost
   (2025: 32.72M − 30.28M = 2.44M). It is in no total — the profit has no cash of its own; the matching cash is already in the combined (app) cash.
 - Sales/returns are 100001's only (100009's DOs go to HMBR). Verified: closing cash ties (max diff 0.08) for the 2024/2025/2026 windows.
+
+**📈 Projection + ⚙️ Settings tabs** (2026-10-26; `processing/cash_projection.py` engine, `views/cash_projection.py` both tabs, `views/shipment_plan.py` input).
+**Projection** is a CLEAN table: the WHOLE Final Model (every actual month up to the latest completed month — always, whatever month is picked above)
+with **12 projected months (P)** appended on the same rows, tinted, continuing from the app's closing cash, memo rows (no cash moved + debt balances)
+below the Final Model rows, and a Notes section at the end (content to be defined after the projection is studied). **⚙️ Settings is the LAST tab and holds
+every input** (shipments in the projection, import financing, drivers, other cash lines, known items, debts & priority, cash floor); its widgets run
+first in the script so the Projection reads their live values; only settings are saved (`data/cash_projection_settings.json`, finance) plus the
+shipment plan (`data/shipment_plan.json`, commercial officer) — both gitignored runtime JSON; results are always recomputed.
+Chain: open IPs + planned shipments (whole-shipment vendor value, arrival month) → landed cost (pay order / charges / VAT-AT rebate as % of vendor
+value over the **last 3 shipments**) → inventory receipts at average sales price → net sales = **% of opening inventory sold** (last 3 months), gross =
+net/(1−returns−discount) → collections = % of net sales → payments. Every driver is "auto" or manual; other cash lines = 3-month average ×
+(1+adjust%); one-off lines default to zero and take **known items**.
+**Import financing (user-confirmed)** per shipment of whole value V: L/C value = 50–60% of V (default 55%); margin = 20% of L/C value paid when the L/C is
+opened (default 1 month before arrival); LTR = the rest of the L/C value, created when documents arrive (bank pays the supplier, no cash), repaid within
+≤ 3 months (the existing LTR balance 10010001 is run off over the same limit); TT = remaining ~45% of V, paid the month after the LTR; customs (pay order
+**plus** the reclaimable VAT/AT ≈ 30% of V) and charges in the arrival month. L/C limit 15M counts from L/C opening until its LTR is drawn.
+**Debt model (`run_debts`, HMBR group only for now — `HMBR_DEBTS` defaults; other businesses keep the 3-month averages).** Order each month: (1) L/C
+margin and customs go on the **Dhaka CC up to its headroom** (target 12.5M, not the 50M sanctioned limit unless `use_limit`), the rest in cash; (2) **deposits**
+straight into bank loans (e.g. the expected 30M hospital repayment) go ONLY to the destination entered for each (UCB CC / Dhaka CC / cash) — nothing spills
+over automatically, an excess over the loan balance is flagged, not applied; (3) **payouts come first**: obligations are paid in **priority order** from
+the cash on hand (instalment/lump = what is due plus arrears; sweeps take only cash above the floor); (4) then, if cash is below the **floor (1M, kept after
+payments)**, the Dhaka CC is drawn up to its headroom; (5) CC interest (14.55%) is added to the CC balance at **quarter-end** (non-cash). Default priority and
+terms: Malek Jobeda 1M/month incl. 12% interest (~750k principal + ~250k interest), Sunflower 0.5M/month, MD Sir loan 0.6M by Nov-2026, MD overdraft
+0.2M/month (400k split with GI), UCB CC **manual only** (mode off; 25M limit, at its limit, 14.55%), Dhaka CC sweep, director loan sweep, Fix-iT off (settled
+against goods). **LTR interest 14.55%** accrues monthly on the outstanding LTR and is paid in cash at quarter-end (assumption — confirm). Malek's interest part
+lands in "Interest & bank charges", principal in "Other-party loans (0904…)". Banners flag cash short of the floor, deposits exceeding their loan, and the L/C
+limit (15M, counted from L/C opening until its LTR is drawn).
+Funding of the margin/customs from CC vs cash is a setting (2026 actuals: CC). Open IPs: the date = expected arrival; a past date is treated as arriving in the first
+projected month; the commercial officer moves months for holidays (Chinese New Year, two Eids, Pooja) and **must put costs on the open purchase** (new
+items may have none in the ERP — `get_open_import_orders` flags lines without a cost, items not in the catalogue and lines not adding up to the total).
+Entered in Purchase Analysis → "🗓 Shipment Plan" (no Financial Statements access needed). Later radios inside the Projection tab: reverse-solve max
+shipment size, sensitivity grid, plain-average comparison.
 
 Cash mechanics worth knowing:
 - Flows = every non-cash line of a voucher that touches a cash account (restricted to the business `project`, like `get_gl_details`);

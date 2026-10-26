@@ -4042,6 +4042,32 @@ def get_cash_model_internal_transfer_cost(filters: Dict[str, Any]) -> Tuple[str,
     return sql, (filters["zid"][0], start, end)
 
 
+def get_open_import_orders(filters: Dict[str, Any]) -> Tuple[str, tuple]:
+    """Open (not yet received) import POs with a cost-completeness check, for the shipment plan.
+
+    The open IP carries the WHOLE shipment's value (it is split between 100001 and 100009 only
+    when the goods arrive). New items may not have cost data in the ERP, so the commercial
+    officer must put the cost on the open purchase: lines without a rate, items missing from the
+    catalogue and lines that do not add up to the order total are counted here and flagged.
+    """
+    sql = """
+        SELECT o.xpornum AS po, o.xcounterno AS shipment, o.xdate AS po_date,
+               o.xstatuspor AS status, o.xtotamt AS total, o.xcur AS currency,
+               COUNT(d.xitem)                                              AS lines,
+               COALESCE(SUM(CASE WHEN COALESCE(d.xrate, 0) <= 0 THEN 1 ELSE 0 END), 0) AS lines_no_rate,
+               COALESCE(SUM(CASE WHEN c.xitem IS NULL THEN 1 ELSE 0 END), 0)            AS lines_not_in_catalog,
+               COALESCE(SUM(d.xqtyord * d.xrate), 0)                       AS lines_value
+        FROM poord o
+        LEFT JOIN poodt d ON d.zid = o.zid AND d.xpornum = o.xpornum
+        LEFT JOIN caitem c ON c.zid = d.zid AND c.xitem = d.xitem
+        WHERE o.zid = %s AND o.xpornum LIKE 'IP--%%' AND o.xstatuspor = '1-Open'
+          AND COALESCE(o.xcounterno, '') <> ''          -- old stale opens carry no shipment number
+        GROUP BY o.xpornum, o.xcounterno, o.xdate, o.xstatuspor, o.xtotamt, o.xcur
+        ORDER BY o.xdate, o.xpornum
+    """
+    return sql, (filters["zid"][0],)
+
+
 def get_cash_model_sales_monthly(filters: Dict[str, Any]) -> Tuple[str, tuple]:
     """Item x month sales (units, gross altsales, discount) from the sales MV.
 

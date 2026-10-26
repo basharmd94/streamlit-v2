@@ -1,0 +1,718 @@
+"""Cash projection — pure pandas engine for the Cash Model's "📈 Projection" tab.
+
+Builds 12 projected months on the SAME rows as the Final Model, continuing from the last
+actual month. Nothing here is stored as a result: only the settings (finance) and the
+shipment plan (commercial officer) are saved (JSON); every figure is recomputed from actuals
+plus those settings.
+
+Chain (driver based, each driver defaults to the history and can be overridden):
+    shipment plan (whole-shipment vendor value + arrival month)
+      -> landed cost (pay order %, charges % of vendor value, last 3 shipments)
+      -> inventory receipts valued at average sales price (sales price per landed taka)
+      -> net sales = % of opening inventory sold (last 3 months); gross = net / (1 - returns - discount)
+      -> collections = ratio of net sales (last 3 months)
+      -> payments: shipment-driven import payments + averages of the other lines (adjustable)
+      -> cash
+
+Import financing (user-confirmed, per shipment of whole vendor value V):
+    L/C value = lc_pct * V (50-60% of V); margin = margin_pct * L/C value, paid when the L/C is
+    opened (`lc_lead` months before arrival). The rest of the L/C value is an LTR created when the
+    documents arrive (`ltr_doc_lead` before arrival; the bank pays the supplier, no cash) and repaid
+    within `ltr_months` (max 3). The balance of V (the TT part) is paid by TT the month after the
+    LTR (`tt_after_ltr`). Customs (pay order incl. the reclaimable VAT/AT) and charges fall in the
+    arrival month. The L/C margin and customs can be funded from cash or from the bank overdraft
+    (CC): from CC no cash moves (it shows as a memo and is repaid later through "CC repaid").
+
+No st.* calls (processing-layer rule).
+"""
+from __future__ import annotations
+
+import copy
+import json
+import os
+import tempfile
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+from processing import cash_model as cm
+
+SETTINGS_PATH = "data/cash_projection_settings.json"
+PLAN_PATH = "data/shipment_plan.json"
+HORIZON_MONTHS = 12
+AVG_N = 3                         # months / shipments averaged for every "auto" driver
+
+# ── defaults ────────────────────────────────────────────────────────────────
+# Lines that are lumpy (one-off) default to zero instead of a 3-month average, which would
+# repeat a single big payment every month; known amounts are added through `known_items`.
+_LUMPY_IN = {"   Hospital loan repayments (capital inflow)", "   Loans received (directors, group, others)",
+             "   Bank overdraft (CC) drawn", "   Other-party funds received (0904)",
+             "   Import advances refunded / VAT rebate received", "   Other income & interest",
+             "   Other inflows", "   GI cash passing through HMBR (09060001)"}
+_LUMPY_OUT = {"   Other-party loans (0904: Malek Jobeda, Water Lily …)", "   Loans given (group, directors, others)",
+              "   Loans repaid (directors, group, others)", "   Capital expenditure (assets)",
+              "   Other outflows", "   GI cash passing through HMBR (09060001)"}
+
+DEFAULT_SETTINGS: Dict = {
+    "horizon_months": HORIZON_MONTHS,
+    "imports": {
+        "lc_pct": 0.55,            # L/C value as a share of the shipment's vendor value (50-60%)
+        "margin_pct": 0.20,        # L/C margin paid in cash/CC when the L/C is opened
+        "lc_lead": 1,              # months before arrival that the L/C is opened (margin paid)
+        "ltr_doc_lead": 1,         # months before arrival that documents come in (LTR created)
+        "ltr_months": 3,           # LTR must be paid within this many months (max 3)
+        "tt_after_ltr": 1,         # TT balance paid this many months after the LTR is created
+        "ltr_rate": 0.1455,        # LTR interest p.a.; accrues monthly on the outstanding LTR, paid in cash at quarter-end
+        "margin_funding": "cc",    # 'cc' | 'cash'   (2026 actuals: the margin was paid from the overdraft)
+        "customs_funding": "cc",   # 'cc' | 'cash'
+    },
+    # each driver: auto = measured from the last 3 months/shipments, or a manual value
+    "drivers": {k: {"mode": "auto", "value": None} for k in
+                ("pay_order_pct", "charges_pct", "rebate_pct", "sales_price_per_landed", "pct_sold",
+                 "return_rate", "discount_rate", "delivery_per_gross", "sr_per_return", "collections_pct")},
+    "debts": {"enabled": False},   # see HMBR_DEBTS; only the HMBR group has its instruments configured so far
+    "lines": {},                   # label -> {"mode": "avg3"|"zero"|"fixed", "adjust_pct": 0, "fixed": 0}
+    "known_items": [],             # {"label", "direction": "in"|"out", "amount", "month": "YYYY-MM", "line"}
+    "cash_floor": 0.0,
+}
+
+
+# App accounts behind each debt instrument (balances are read from the app, liabilities are negative there)
+DEBT_ACCOUNTS = {"dhaka": "10010003", "ucb": "10010006", "mdod": "10010007", "malek": "09040007",
+                 "sunflower": "09040001", "mdloan": "10020001", "fixit": "10020002", "director": "10020016"}
+DEBT_NAMES = {"dhaka": "CC Dhaka Bank", "ucb": "CC UCB (bulk, over its limit)", "mdod": "Overdraft by MD Sir",
+              "malek": "Malek Jobeda Foundation", "sunflower": "Sunflower", "mdloan": "Loan from MD Sir",
+              "fixit": "Loan from Fix-iT", "director": "Loan from Director (Md Anil Saddat)"}
+# Row of the cash statement each instrument's CASH repayment lands in
+DEBT_CASH_ROW = {"dhaka": "   Bank overdraft (CC) repaid", "ucb": "   Bank overdraft (CC) repaid",
+                 "mdod": "   Bank overdraft (CC) repaid", "malek": "   Other-party loans (0904: Malek Jobeda, Water Lily …)",
+                 "sunflower": "   Other-party loans (0904: Malek Jobeda, Water Lily …)",
+                 "mdloan": "   Loans repaid (directors, group, others)", "fixit": "   Loans repaid (directors, group, others)",
+                 "director": "   Loans repaid (directors, group, others)"}
+
+# HMBR (100001 + 100009) terms as given by the owner. mode: instalment (a fixed total per month, interest
+# included) | lump (one amount in due_month) | sweep (takes whatever surplus cash is left) | off.
+HMBR_DEBTS: Dict = {
+    "enabled": True,
+    "lc_limit": 15_000_000,        # L/C limit; an L/C counts until its LTR is drawn
+    "items": {
+        "malek": {"mode": "instalment", "monthly": 1_000_000, "rate": 0.12, "balance": None},        # ~750k principal + ~250k interest
+        "sunflower": {"mode": "instalment", "monthly": 500_000, "rate": 0.0, "balance": None},
+        "mdloan": {"mode": "lump", "amount": 600_000, "due_month": "2026-11", "rate": 0.0, "balance": None},
+        "mdod": {"mode": "instalment", "monthly": 200_000, "rate": 0.0, "balance": None},            # 400k/month split 100001 / 100000
+        "ucb": {"mode": "off", "rate": 0.1455, "limit": 25_000_000, "balance": None},                # bulk, no longer used; paid by MANUAL entries only
+        "dhaka": {"mode": "sweep", "rate": 0.1455, "target": 12_500_000, "limit": 50_000_000,
+                  "use_limit": False, "balance": None},                                              # keep under the 12.5M target
+        "fixit": {"mode": "off", "rate": 0.0, "balance": None},                                      # settled against goods, no timeline
+        "director": {"mode": "sweep", "rate": 0.0, "balance": None},                                 # not a priority, paid when cash allows
+    },
+    "priority": ["malek", "sunflower", "mdloan", "mdod", "ucb", "dhaka", "director", "fixit"],
+    # money coming in that is deposited straight into a bank loan account (no cash): applied to UCB first, then Dhaka CC
+    # each deposit names its destination ('ucb' | 'dhaka' | 'cash'): nothing is spilled over automatically
+    "deposits": [{"label": "Hospital repayment", "amount": 30_000_000, "month": "", "dest": "ucb"}],
+}
+
+
+def default_settings_for(zid: str) -> Dict:
+    d = copy.deepcopy(DEFAULT_SETTINGS)
+    if str(zid) == "100001":
+        d["debts"] = copy.deepcopy(HMBR_DEBTS)
+        d["cash_floor"] = 1_000_000.0          # kept AFTER payments; payouts come first
+    return d
+
+
+def default_line_setting(label: str, direction: str) -> Dict:
+    lumpy = _LUMPY_IN if direction == "in" else _LUMPY_OUT
+    return {"mode": "zero" if label in lumpy else "avg3", "adjust_pct": 0.0, "fixed": 0.0}
+
+
+# ── JSON persistence (settings and plan; results are never saved) ───────────
+def _read(path: str) -> Dict:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def _write(path: str, data: Dict) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _merge(base: Dict, over: Dict) -> Dict:
+    out = copy.deepcopy(base)
+    for k, v in (over or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def load_settings(zid: str, path: str = SETTINGS_PATH) -> Dict:
+    """Saved settings of the business (defaults filled in for anything missing)."""
+    return _merge(default_settings_for(zid), _read(path).get(str(zid), {}))
+
+
+def save_settings(zid: str, settings: Dict, path: str = SETTINGS_PATH) -> None:
+    allv = _read(path)
+    allv[str(zid)] = settings
+    _write(path, allv)
+
+
+def load_plan(zid: str, path: str = PLAN_PATH) -> Dict:
+    p = _read(path).get(str(zid), {})
+    return {"overrides": p.get("overrides", {}), "planned": p.get("planned", []),
+            "holidays": p.get("holidays", []), "updated_by": p.get("updated_by"),
+            "updated_at": p.get("updated_at")}
+
+
+def save_plan(zid: str, plan: Dict, user: Optional[str] = None, path: str = PLAN_PATH) -> None:
+    allv = _read(path)
+    plan = dict(plan, updated_by=user, updated_at=datetime.now().isoformat(timespec="seconds"))
+    allv[str(zid)] = plan
+    _write(path, allv)
+
+
+# ── months ───────────────────────────────────────────────────────────────────
+def next_months(last: Tuple[int, int], n: int) -> List[Tuple[int, int]]:
+    y, m = last
+    out = []
+    for _ in range(n):
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+        out.append((y, m))
+    return out
+
+
+def parse_month(text: str) -> Optional[Tuple[int, int]]:
+    try:
+        y, m = str(text)[:7].split("-")
+        return int(y), int(m)
+    except (ValueError, AttributeError):
+        return None
+
+
+def month_str(ym: Tuple[int, int]) -> str:
+    return f"{ym[0]}-{ym[1]:02d}"
+
+
+# ── shipment schedule: open IPs + overrides + planned ones ───────────────────
+def build_shipment_schedule(open_orders: pd.DataFrame, plan: Dict,
+                            first_month: Tuple[int, int]) -> pd.DataFrame:
+    """One row per shipment in the projection: ref, source, value (WHOLE shipment), month, note, warning.
+
+    * Open IPs (status 1-Open, whole-shipment value) arrive in the month of their date; a date
+      before the first projected month is treated as arriving in the first projected month.
+    * The commercial officer's override can move the month (holidays, delays) or restate the value.
+    * Planned shipments are extra shipments entered in the plan.
+    A warning is attached when an open IP lacks cost data (zero rate, item not in the catalogue,
+    lines not adding up to the total) — new items must carry their cost on the open purchase.
+    """
+    cols = ["ref", "source", "value", "month", "note", "warning"]
+    rows = []
+    ov = (plan or {}).get("overrides", {})
+    if open_orders is not None and not open_orders.empty:
+        open_orders = open_orders.copy()
+        for c in ("total", "lines_value", "lines", "lines_no_rate", "lines_not_in_catalog"):
+            open_orders[c] = pd.to_numeric(open_orders[c], errors="coerce").fillna(0.0)
+        for r in open_orders.itertuples(index=False):
+            o = ov.get(str(r.po), {})
+            m = parse_month(o.get("month")) or (pd.Timestamp(r.po_date).year, pd.Timestamp(r.po_date).month)
+            if m < first_month:
+                m = first_month
+            value = o.get("value")
+            value = float(value) if value not in (None, "") else float(r.total or 0)
+            warn = []
+            if int(r.lines or 0) == 0:
+                warn.append("no item lines")
+            if int(r.lines_no_rate or 0) > 0:
+                warn.append(f"{int(r.lines_no_rate)} line(s) without a cost")
+            if int(r.lines_not_in_catalog or 0) > 0:
+                warn.append(f"{int(r.lines_not_in_catalog)} item(s) not in the catalogue")
+            if int(r.lines or 0) and abs(float(r.lines_value or 0) - float(r.total or 0)) > max(1.0, 0.001 * float(r.total or 0)):
+                warn.append("lines do not add up to the order total")
+            if str(getattr(r, "currency", "BDT") or "BDT") != "BDT":
+                warn.append(f"currency {r.currency}")
+            rows.append({"ref": f"{r.po} ({str(r.shipment).split(',')[0]})", "source": "Open IP", "value": value,
+                         "month": m, "note": o.get("note", ""), "warning": "; ".join(warn)})
+    for p in (plan or {}).get("planned", []):
+        m = parse_month(p.get("month"))
+        if m is None or not p.get("value"):
+            continue
+        rows.append({"ref": p.get("ref") or "Planned shipment", "source": "Planned", "value": float(p["value"]),
+                     "month": max(m, first_month), "note": p.get("note", ""), "warning": ""})
+    return pd.DataFrame(rows, columns=cols).sort_values("month").reset_index(drop=True) if rows else pd.DataFrame(columns=cols)
+
+
+# ── history -> automatic driver values ───────────────────────────────────────
+def _row(final: pd.DataFrame, label: str, cols: List[str], nth: int = 0) -> np.ndarray:
+    sel = final[final["Line"].str.rstrip() == label.rstrip()]
+    if len(sel) <= nth:
+        return np.zeros(len(cols))
+    return pd.to_numeric(sel.iloc[nth][cols], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+
+
+def _ratio(num: np.ndarray, den: np.ndarray, n: int = AVG_N) -> float:
+    d = float(den[-n:].sum())
+    return float(num[-n:].sum()) / d if abs(d) > 1e-9 else 0.0
+
+
+def shipment_cost_ratios(shipments: pd.DataFrame, n: int = AVG_N) -> Dict[str, float]:
+    """pay order / charges / rebate transfer as a share of vendor value over the last `n` settled shipments."""
+    out = {"pay_order_pct": 0.0, "charges_pct": 0.0, "rebate_pct": 0.0}
+    if shipments is None or shipments.empty:
+        return out
+    s = shipments[shipments["Settlement matched"].astype(bool)].sort_values("GRN date").tail(n)
+    v = float(pd.to_numeric(s["Vendor value"], errors="coerce").sum())
+    if v <= 0:
+        return out
+    for key, col in (("pay_order_pct", "Pay order (capitalised)"), ("charges_pct", "Other import costs"),
+                     ("rebate_pct", "VAT/AT rebate transfer")):
+        out[key] = float(pd.to_numeric(s[col], errors="coerce").fillna(0).sum()) / v
+    return out
+
+
+def auto_drivers(final: pd.DataFrame, actual_cols: List[str], shipments: pd.DataFrame) -> Dict[str, float]:
+    """Every driver measured from the last 3 actual months (or shipments)."""
+    g = lambda label, nth=0: _row(final, label, actual_cols, nth)
+    gross, net = g("   Gross sales (trade value)"), g("Net sales (after returns)")
+    opening = g("Opening inventory (prior month closing)")
+    ret, disc = -g("   − Customer returns (AR credits, SRJV/SRT-)"), -g("   − Discount")
+    d = {
+        "pct_sold": _ratio(net, opening), "return_rate": _ratio(ret, gross), "discount_rate": _ratio(disc, gross),
+        "delivery_per_gross": _ratio(-g("   Deliveries (DO--)"), gross),
+        "sr_per_return": _ratio(g("   Customer returns (SR--)"), ret),
+        "sales_price_per_landed": _ratio(g("   Goods received & other receipts"),
+                                         g("Landed cost of shipments received") + g("   Trading purchases received (items that are sold)")),
+        "collections_pct": _ratio(g("   Customer receipts"), net),
+    }
+    d.update(shipment_cost_ratios(shipments))
+    return d
+
+
+def resolve_drivers(auto: Dict[str, float], settings: Dict) -> Dict[str, float]:
+    out = {}
+    for k, a in auto.items():
+        o = (settings.get("drivers", {}) or {}).get(k, {})
+        out[k] = float(o["value"]) if o.get("mode") == "manual" and o.get("value") is not None else float(a)
+    return out
+
+
+# ── projection ───────────────────────────────────────────────────────────────
+def _idx(base: int, offset: int, T: int) -> Optional[int]:
+    i = base + offset
+    return i if 0 <= i < T else None
+
+
+def import_schedule(schedule: pd.DataFrame, proj_months: List[Tuple[int, int]], imp: Dict,
+                    drv: Dict[str, float], ltr_open: float) -> Dict[str, np.ndarray]:
+    """Monthly import arrays (length T) from the shipment schedule. All amounts are positive."""
+    T = len(proj_months)
+    pos = {m: i for i, m in enumerate(proj_months)}
+    z = lambda: np.zeros(T)
+    a = {k: z() for k in ("vendor", "pay_order", "charges", "rebate", "landed", "margin", "customs",
+                          "tt", "ltr_draw", "ltr_repay", "lc_exposure")}
+    for r in schedule.itertuples(index=False) if schedule is not None and not schedule.empty else []:
+        ia = pos.get(r.month)
+        if ia is None:
+            continue
+        V = float(r.value)
+        lc_value = imp["lc_pct"] * V
+        a["vendor"][ia] += V
+        a["pay_order"][ia] += drv["pay_order_pct"] * V
+        a["charges"][ia] += drv["charges_pct"] * V
+        a["rebate"][ia] += drv["rebate_pct"] * V
+        a["landed"][ia] += V * (1 + drv["pay_order_pct"] + drv["charges_pct"])
+        a["customs"][ia] += (drv["pay_order_pct"] + drv["rebate_pct"]) * V          # cash = duty + reclaimable VAT/AT
+        for key, off, amt in (("margin", -int(imp["lc_lead"]), imp["margin_pct"] * lc_value),
+                              ("ltr_draw", -int(imp["ltr_doc_lead"]), (1 - imp["margin_pct"]) * lc_value),
+                              ("tt", -int(imp["ltr_doc_lead"]) + int(imp["tt_after_ltr"]), V - lc_value)):
+            i = _idx(ia, off, T)
+            if i is not None:
+                a[key][i] += amt
+        o_idx, d_idx = ia - int(imp["lc_lead"]), ia - int(imp["ltr_doc_lead"])
+        for t in range(max(o_idx, 0), min(max(d_idx, o_idx), T - 1) + 1):    # open from the L/C opening until its LTR is drawn
+            a["lc_exposure"][t] += lc_value
+        if d_idx >= 0:                                    # an LTR drawn before the projection is in `ltr_open`
+            i = _idx(d_idx, int(imp["ltr_months"]), T)
+            if i is not None:
+                a["ltr_repay"][i] += (1 - imp["margin_pct"]) * lc_value
+    n = max(1, min(int(imp["ltr_months"]), T))        # LTR already outstanding is paid off within the limit
+    if ltr_open > 0:
+        a["ltr_repay"][:n] += ltr_open / n
+    # TT for a shipment whose TT month falls before the projection is treated as already paid
+    return a
+
+
+def run_debts(proj_months: List[Tuple[int, int]], base_net: np.ndarray, margin_req: np.ndarray,
+              customs_req: np.ndarray, opening_cash: float, balances: Dict[str, float],
+              debts: Dict, floor: float, margin_funding: str, customs_funding: str) -> Dict[str, np.ndarray]:
+    """Month-by-month cash / bank-debt engine for the HMBR group.
+
+    base_net      cash flow of everything that is NOT debt service and NOT the L/C margin / customs
+                  (collections, inflows, operating payments, TT, LTR repayments ...)
+    margin_req    L/C margin due this month; customs_req customs (duty + VAT/AT) due this month
+    Order each month:
+      1. margin / customs go on the Dhaka CC up to its headroom (target ceiling, or the sanctioned
+         limit when `use_limit`), the rest is paid in cash;
+      2. deposits (e.g. the hospital repayment) go to the destination ENTERED for each one (UCB CC,
+         Dhaka CC or cash) — nothing is spilled over automatically; no cash for the CC destinations;
+      3. payouts come first: the obligations are paid in PRIORITY order from the cash on hand (instalment /
+         lump: whatever is due plus arrears; sweep: only cash above the floor); unpaid amounts are arrears;
+      4. then, if cash is below the floor, Dhaka CC is drawn up to the headroom to restore it;
+      5. at quarter-end the accrued CC interest is added to the CC balances (no cash).
+    Returns arrays (length T), amounts positive unless stated.
+    """
+    T = len(proj_months)
+    items = debts["items"]
+    prio = [k for k in debts.get("priority", []) if k in items]
+    z = lambda: np.zeros(T)
+    keys = list(items)
+    out = {k: z() for k in ("cash", "draw", "cc_margin", "cc_customs", "cash_margin", "cash_customs", "dep_cash",
+                           "dep_noncash", "dep_unapplied", "int_cc", "malek_interest", "shortfall")}
+    out["pay"] = {k: z() for k in keys}                      # cash paid per instrument (incl. interest part for Malek)
+    out["princ"] = {k: z() for k in keys}                    # principal reduction per instrument
+    out["bal"] = {k: z() for k in keys}                      # month-end balance per instrument
+    bal = {k: float(balances.get(k, 0.0) or 0.0) for k in keys}
+    arrears = {k: 0.0 for k in keys}
+    accrued = {"dhaka": 0.0, "ucb": 0.0}
+    cash = float(opening_cash)
+    deps_by_month: Dict[Tuple[int, int], List[Dict]] = {}
+    for d in debts.get("deposits", []) or []:
+        m = parse_month(d.get("month"))
+        if m and float(d.get("amount") or 0) > 0:
+            deps_by_month.setdefault(m, []).append(d)
+
+    dh = items.get("dhaka", {})
+    ceiling = float(dh.get("limit") if dh.get("use_limit") else dh.get("target") or 0.0)
+    for t, ym in enumerate(proj_months):
+        # 1. L/C margin and customs: onto the Dhaka CC up to its headroom
+        headroom = max(ceiling - bal.get("dhaka", 0.0), 0.0)
+        cc_m = min(margin_req[t], headroom) if margin_funding == "cc" else 0.0
+        headroom -= cc_m
+        cc_c = min(customs_req[t], headroom) if customs_funding == "cc" else 0.0
+        out["cc_margin"][t], out["cc_customs"][t] = cc_m, cc_c
+        out["cash_margin"][t], out["cash_customs"][t] = margin_req[t] - cc_m, customs_req[t] - cc_c
+        bal["dhaka"] = bal.get("dhaka", 0.0) + cc_m + cc_c
+        # 2. deposits go where they were entered (no automatic spill-over)
+        for d in deps_by_month.get(ym, []):
+            amt, dest = float(d["amount"]), d.get("dest", "ucb")
+            if dest == "cash":
+                out["dep_cash"][t] += amt
+            else:
+                take = min(amt, bal.get(dest, 0.0))
+                bal[dest] = bal.get(dest, 0.0) - take
+                out["dep_noncash"][t] += take
+                out["dep_unapplied"][t] += amt - take
+        pre = cash + base_net[t] - out["cash_margin"][t] - out["cash_customs"][t] + out["dep_cash"][t]
+        # 3. payouts first, in priority order, from the cash on hand
+        avail = max(pre, 0.0)
+        for k in prio:
+            it = items[k]
+            mode = it.get("mode", "off")
+            rate_m = float(it.get("rate") or 0.0) / 12.0
+            if mode == "off" or bal[k] <= 0 and arrears[k] <= 0:
+                continue
+            if mode == "sweep":
+                pay = min(bal[k], max(avail - floor, 0.0))      # sweeps only take cash above the floor
+                out["pay"][k][t], out["princ"][k][t] = pay, pay
+                bal[k] -= pay
+                avail -= pay
+                continue
+            interest = bal[k] * rate_m if k not in ("dhaka", "ucb") else 0.0
+            sched = float(it.get("monthly") or 0.0) if mode == "instalment" else (
+                float(it.get("amount") or 0.0) if parse_month(it.get("due_month")) == ym else 0.0)
+            due = min(sched + arrears[k], bal[k] + interest)
+            pay = min(due, avail)
+            int_paid = min(interest, pay)
+            princ = pay - int_paid
+            bal[k] += interest - int_paid - princ          # unpaid interest is added to the balance
+            arrears[k] = max(due - pay, 0.0)
+            out["pay"][k][t], out["princ"][k][t] = pay, princ
+            if k == "malek":
+                out["malek_interest"][t] = int_paid
+            avail -= pay
+        paid = sum(out["pay"][k][t] for k in keys)
+        cash = pre - paid
+        # 4. below the floor after the payouts -> draw the Dhaka CC up to its headroom
+        if cash < floor:
+            avail_cc = max(ceiling - bal.get("dhaka", 0.0), 0.0)
+            draw = min(floor - cash, avail_cc)
+            out["draw"][t] = draw
+            bal["dhaka"] = bal.get("dhaka", 0.0) + draw
+            cash += draw
+        out["cash"][t] = cash
+        out["shortfall"][t] = max(floor - cash, 0.0)
+        # 5. quarterly CC interest is added to the balance at quarter-end (not paid in cash)
+        for k in ("dhaka", "ucb"):
+            accrued[k] += bal.get(k, 0.0) * float(items.get(k, {}).get("rate") or 0.0) / 12.0
+            if ym[1] in (3, 6, 9, 12):
+                bal[k] = bal.get(k, 0.0) + accrued[k]
+                out["int_cc"][t] += accrued[k]
+                accrued[k] = 0.0
+        for k in keys:
+            out["bal"][k][t] = bal[k]
+    return out
+
+
+def debt_opening_balances(debts: Dict, app_debts: Dict[str, float]) -> Dict[str, float]:
+    """Auto balance from the app (absolute value of the account balance) unless overridden in the settings."""
+    out = {}
+    for k, it in debts["items"].items():
+        o = it.get("balance")
+        out[k] = float(o) if o not in (None, "") else abs(float((app_debts or {}).get(DEBT_ACCOUNTS.get(k), 0.0) or 0.0))
+    return out
+
+
+def project(final: pd.DataFrame, actual_cols: List[str], last_actual: Tuple[int, int],
+            app_last_closing: float, schedule: pd.DataFrame, settings: Dict,
+            ltr_open: float = 0.0, shipments_hist: Optional[pd.DataFrame] = None,
+            app_debts: Optional[Dict[str, float]] = None
+            ) -> Tuple[pd.DataFrame, List[str], Dict]:
+    """Final Model rows with `horizon` projected columns appended (labelled 'Mon-YY (P)').
+
+    Returns (table, projected_column_names, info) where info carries the resolved drivers,
+    the lowest projected closing cash and the memo arrays.
+    """
+    T = int(settings.get("horizon_months", HORIZON_MONTHS))
+    proj_months = next_months(last_actual, T)
+    pcols = [cm.month_label(m) + " (P)" for m in proj_months]
+    imp = settings["imports"]
+    auto = auto_drivers(final, actual_cols, shipments_hist)
+    drv = resolve_drivers(auto, settings)
+    A = import_schedule(schedule, proj_months, imp, drv, ltr_open)
+
+    g = lambda label, nth=0: _row(final, label, actual_cols, nth)
+    avg3 = lambda label, nth=0: float(g(label, nth)[-AVG_N:].mean()) if len(actual_cols) else 0.0
+
+    P: Dict[Tuple[str, int], np.ndarray] = {}            # (label, nth) -> projected vector
+    def put(label, vec, nth=0):
+        P[(label, nth)] = np.asarray(vec, dtype=float)
+
+    zeros = lambda: np.zeros(T)
+    # purchases ---------------------------------------------------------------
+    local = np.full(T, avg3("   Trading purchases received (items that are sold)"))
+    put("   Vendor value of shipments received", A["vendor"])
+    put("   + Pay order — capitalised customs duty", A["pay_order"])
+    put("   + L/C charges & other import costs (insurance, C&F, freight, carrying)", A["charges"])
+    put("   VAT/AT on pay order transferred to rebate claim (reclaimable, not cost)", A["rebate"])
+    put("Landed cost of shipments received", A["landed"])
+    put("   Trading purchases received (items that are sold)", local)
+
+    # inventory & sales (month by month because opening depends on the previous closing) ----
+    opening, closing = zeros(), zeros()
+    gross, disc, rets, net = zeros(), zeros(), zeros(), zeros()
+    delivered, sr_in, recv = zeros(), zeros(), zeros()
+    manuf = np.full(T, avg3("   Manufactured (RE--)"))
+    other_iss = np.full(T, avg3("   Other issues, adjustments & returns to suppliers"))
+    prev = float(g("Closing inventory")[-1]) if len(actual_cols) else 0.0
+    for t in range(T):
+        opening[t] = prev
+        net[t] = drv["pct_sold"] * prev
+        denom = 1.0 - drv["return_rate"] - drv["discount_rate"]
+        gross[t] = net[t] / denom if denom > 0.05 else net[t]
+        disc[t], rets[t] = drv["discount_rate"] * gross[t], drv["return_rate"] * gross[t]
+        delivered[t] = -drv["delivery_per_gross"] * gross[t]
+        sr_in[t] = drv["sr_per_return"] * rets[t]
+        recv[t] = drv["sales_price_per_landed"] * (A["landed"][t] + local[t])
+        closing[t] = prev + delivered[t] + sr_in[t] + manuf[t] + recv[t] + other_iss[t]
+        prev = closing[t]
+    put("Opening inventory (prior month closing)", opening)
+    put("   Revaluation at this month's average prices", zeros())
+    put("   Deliveries (DO--)", delivered)
+    put("   Customer returns (SR--)", sr_in)
+    put("   Manufactured (RE--)", manuf)
+    put("   Goods received & other receipts", recv)
+    put("   Other issues, adjustments & returns to suppliers", other_iss)
+    put("   Internal transfers between the combined businesses (net)", zeros())
+    put("Closing inventory", closing)
+    put("   Gross sales (trade value)", gross)
+    put("   − Discount", -disc)
+    put("   − Customer returns (AR credits, SRJV/SRT-)", -rets)
+    put("Net sales (after returns)", net)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        put("% of opening inventory sold", np.where(opening > 0, net / opening, np.nan))
+
+    # cash ----------------------------------------------------------------------
+    line_cfg = settings.get("lines", {}) or {}
+    known = {}                                            # (line label) -> vector of known amounts
+    for k in settings.get("known_items", []) or []:
+        m = parse_month(k.get("month"))
+        if m not in proj_months:
+            continue
+        sign = 1.0 if k.get("direction") == "in" else -1.0
+        lab = k.get("line") or ("   Other inflows" if sign > 0 else "   Other outflows")
+        known.setdefault(lab, zeros())[proj_months.index(m)] += sign * abs(float(k.get("amount") or 0))
+
+    def line_vec(label, direction, nth=0):
+        cfg = {**default_line_setting(label, direction), **line_cfg.get(label, {})}
+        if cfg["mode"] == "zero":
+            v = zeros()
+        elif cfg["mode"] == "fixed":
+            v = np.full(T, float(cfg.get("fixed") or 0.0))
+        else:
+            v = np.full(T, avg3(label, nth))
+        return v * (1.0 + float(cfg.get("adjust_pct") or 0.0) / 100.0) + known.get(label, zeros())
+
+    coll = {"   Customer receipts": drv["collections_pct"] * net,
+            "   Recognized agents & other receivables": line_vec("   Recognized agents & other receivables", "in")}
+    for lab, v in coll.items():
+        put(lab, v + known.get(lab, zeros()) if lab == "   Customer receipts" else v)
+    put("Total collections", sum(coll.values()) + known.get("   Customer receipts", zeros()))
+
+    add_labels = [r[2] for r in cm.FINAL_MODEL_ROWS if r[0] == "cash" and r[1] == "add" and r[2].startswith("   ")]
+    add_vecs = {}
+    for lab in add_labels:
+        nth = 0
+        add_vecs[lab] = line_vec(lab, "in", nth)
+        put(lab, add_vecs[lab], nth)
+    tot_add = sum(add_vecs.values()) if add_vecs else zeros()
+    put("Total additional inflows", tot_add)
+    total_in = P[("Total collections", 0)] + tot_add
+    put("TOTAL CASH IN", total_in)
+
+    out_labels = [r[2] for r in cm.FINAL_MODEL_ROWS if r[0] == "cash" and r[1] == "out" and r[2].startswith("   ")]
+    debts = settings.get("debts", {}) or {}
+    use_debts = bool(debts.get("enabled"))
+    floor = float(settings.get("cash_floor") or 0.0)
+    cc_draw = zeros()
+    dbg = None
+    # rows the debt engine owns when enabled
+    engine_rows = {"   Bank overdraft (CC) repaid", "   Other-party loans (0904: Malek Jobeda, Water Lily …)",
+                   "   Loans repaid (directors, group, others)", "   Interest & bank charges",
+                   "   International: L/C margin & charges", "   International: pay order (customs tax & VAT)"}
+    driven = {
+        "   International: L/C margin & charges": -A["margin"] if imp["margin_funding"] == "cash" else zeros(),
+        "   International: TT / advances to vendors": -A["tt"],
+        "   International: pay order (customs tax & VAT)": -A["customs"] if imp["customs_funding"] == "cash" else zeros(),
+        "   Bank loans & LTR repaid": -A["ltr_repay"],
+    }
+    out_vecs = {}
+    for lab in out_labels:
+        nth = 1 if lab == "   GI cash passing through HMBR (09060001)" else 0
+        if use_debts and lab in engine_rows:
+            continue
+        v = driven[lab] + known.get(lab, zeros()) if lab in driven else line_vec(lab, "out", nth)
+        out_vecs[lab] = v
+        put(lab, v, nth)
+
+    if use_debts:
+        bal0 = debt_opening_balances(debts, app_debts or {})
+        in_nodebt = P[("Total collections", 0)] + tot_add                         # already without the CC draw
+        base_net = in_nodebt + sum(out_vecs.values())
+        bank_chg = line_vec("   Interest & bank charges", "out")                    # bank charges (3-month average)
+        ltr_out_open = np.concatenate([[ltr_open], np.maximum(ltr_open + np.cumsum(A["ltr_draw"]) - np.cumsum(A["ltr_repay"]), 0.0)[:-1]])
+        accr = ltr_out_open * float(imp.get("ltr_rate") or 0.0) / 12.0
+        ltr_int = np.zeros(T)
+        run = 0.0
+        for t, ym in enumerate(proj_months):                                            # accrues monthly, paid in cash at quarter-end
+            run += accr[t]
+            if ym[1] in (3, 6, 9, 12):
+                ltr_int[t], run = run, 0.0
+        bank_chg = bank_chg - ltr_int
+        dbg = run_debts(proj_months, base_net + bank_chg, A["margin"], A["customs"], app_last_closing, bal0,
+                        debts, floor, imp["margin_funding"], imp["customs_funding"])
+        pay = dbg["pay"]
+        grp = lambda row: sum(pay[k] for k in pay if DEBT_CASH_ROW.get(k) == row)
+        cc_draw = dbg["draw"]
+        eng = {
+            "   Bank overdraft (CC) repaid": -grp("   Bank overdraft (CC) repaid"),
+            "   Other-party loans (0904: Malek Jobeda, Water Lily …)": -(grp("   Other-party loans (0904: Malek Jobeda, Water Lily …)") - dbg["malek_interest"]),
+            "   Loans repaid (directors, group, others)": -grp("   Loans repaid (directors, group, others)"),
+            "   Interest & bank charges": bank_chg - dbg["malek_interest"],
+            "   International: L/C margin & charges": -dbg["cash_margin"],
+            "   International: pay order (customs tax & VAT)": -dbg["cash_customs"],
+        }
+        for lab, v in eng.items():
+            v = v + known.get(lab, zeros())
+            out_vecs[lab] = v
+            put(lab, v)
+        # the CC draw and any deposit left over after the loans are paid are cash inflows
+        put("   Bank overdraft (CC) drawn", add_vecs["   Bank overdraft (CC) drawn"] + cc_draw)
+        put("   Hospital loan repayments (capital inflow)", add_vecs["   Hospital loan repayments (capital inflow)"] + dbg["dep_cash"])
+        tot_add = tot_add + cc_draw + dbg["dep_cash"]
+        put("Total additional inflows", tot_add)
+        total_in = P[("Total collections", 0)] + tot_add
+        put("TOTAL CASH IN", total_in)
+    total_out = sum(out_vecs.values())
+    put("TOTAL CASH OUT", total_out)
+
+    net_change = total_in + total_out
+    open_cash, close_cash = zeros(), zeros()
+    prev_c = float(app_last_closing)
+    for t in range(T):
+        open_cash[t] = prev_c
+        close_cash[t] = prev_c + net_change[t]
+        prev_c = close_cash[t]
+    put("Opening cash & CE (app)", open_cash)
+    put("NET CHANGE IN CASH", net_change)
+    put("Closing cash — model (opening + net change)", close_cash)
+
+    # memo (projection only): nothing below moves cash
+    ltr_out = np.maximum(ltr_open + np.cumsum(A["ltr_draw"]) - np.cumsum(A["ltr_repay"]), 0.0)
+    if use_debts:
+        lim = float(debts.get("lc_limit") or 0.0)
+        cc_margin, cc_customs = -dbg["cc_margin"], -dbg["cc_customs"]
+    else:
+        lim = 0.0
+        cc_margin = -A["margin"] if imp["margin_funding"] == "cc" else zeros()
+        cc_customs = -A["customs"] if imp["customs_funding"] == "cc" else zeros()
+    memo = {
+        "MEMO — projected, no cash moved": None,
+        "   L/C margin paid from bank overdraft (CC)": cc_margin,
+        "   Customs (pay order incl. VAT/AT) paid from bank overdraft (CC)": cc_customs,
+        "   LTR drawn — bank pays the supplier": A["ltr_draw"],
+        "   LTR outstanding at month-end": ltr_out,
+        "   L/C value open (limit applies until its LTR is drawn)": A["lc_exposure"],
+    }
+    if use_debts:
+        memo.update({
+            "   Interest charged to the CC accounts (quarter-end, added to the balance)": -dbg["int_cc"],
+            "   Deposits straight into the CC accounts (e.g. hospital repayment)": dbg["dep_noncash"],
+            "DEBT BALANCES (month-end)": None,
+        })
+        for k in debts.get("priority", []) + [k for k in debts["items"] if k not in debts.get("priority", [])]:
+            if k in dbg["bal"]:
+                memo["   " + DEBT_NAMES.get(k, k)] = dbg["bal"][k]
+        memo["   Cash short of the floor (not covered by the CC)"] = dbg["shortfall"]
+
+    # assemble the table: every Final Model row, actual columns untouched, projected appended
+    seen: Dict[str, int] = {}
+    rows = []
+    for _, r in final.iterrows():
+        label = str(r["Line"])
+        key_label = label.rstrip() if label else ""
+        nth = seen.get(key_label, 0)
+        seen[key_label] = nth + 1
+        vec = P.get((label, nth)) if label else None
+        if vec is None and label:
+            vec = P.get((label.rstrip(), nth))
+        base = {c: r[c] for c in ["Line", "kind"] + list(actual_cols)}
+        for t, pc in enumerate(pcols):
+            base[pc] = (np.nan if vec is None or r["kind"] in ("header", "blank", "check") else round(float(vec[t]), 6) + 0.0)  # +0.0: never "-0"
+        rows.append(base)
+    table = pd.DataFrame(rows, columns=["Line", "kind"] + list(actual_cols) + pcols)
+    for label, vec in memo.items():
+        row = {"Line": label, "kind": "header" if vec is None else "memo", **{c: np.nan for c in actual_cols}}
+        for t, pc in enumerate(pcols):
+            row[pc] = np.nan if vec is None else round(float(vec[t]), 6) + 0.0
+        table = pd.concat([table, pd.DataFrame([row])], ignore_index=True)
+
+    info = {"auto": auto, "drivers": drv, "proj_months": proj_months, "closing_cash": close_cash,
+            "min_cash": float(close_cash.min()) if T else 0.0,
+            "min_cash_month": cm.month_label(proj_months[int(close_cash.argmin())]) if T else None,
+            "floor_breaches": [cm.month_label(m) for m, c in zip(proj_months, close_cash)
+                               if c < float(settings.get("cash_floor") or 0.0)],
+            "imports": A, "debts": dbg,
+            "lc_limit_breaches": ([cm.month_label(m) for m, e in zip(proj_months, A["lc_exposure"])
+                                   if e > float((settings.get("debts") or {}).get("lc_limit") or 0) > 0]),
+            "shortfall_months": ([cm.month_label(m) for m, x in zip(proj_months, dbg["shortfall"]) if x > 1.0] if dbg else [])}
+    return table, pcols, info

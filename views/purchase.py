@@ -1324,6 +1324,7 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
             "💰 Batch P&L",
             "📦 Inventory",
             "🚢 Upcoming",
+            "🗓 Shipment Plan",
             "⏱ Time to Sell",
             "📊 ABC-XYZ",
             "📑 Batch Con",
@@ -1351,6 +1352,14 @@ def display_purchase_analysis_page(current_page, zid, data_dict):
     # -----------------------------
     if mode == "🚢 Upcoming":
         _render_upcoming_shipment(str(zid), data_dict)
+        return
+
+    # -----------------------------
+    # MODE 3c: Shipment Plan (commercial officer's input to the cash projection)
+    # -----------------------------
+    if mode == "🗓 Shipment Plan":
+        from views import shipment_plan
+        shipment_plan.render_shipment_plan(str(zid))
         return
 
     # -----------------------------

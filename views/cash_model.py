@@ -58,7 +58,11 @@ def _app_cash_one(zid: str, project, year: int, end_month: int):
         return {c: float(r.iloc[0][c]) for c in r.columns if isinstance(c, tuple)}
 
     return {"closing": closing, "prev_closing": prev_closing,
-            "advance": bal("01050001"), "gi_custody": bal("09060001"), "gi_at_gtc": bal("01020003")}
+            "advance": bal("01050001"), "gi_custody": bal("09060001"), "gi_at_gtc": bal("01020003"),
+            "ltr": bal("10010001"),
+            # debt accounts for the projection (liabilities are negative in the app; callers take abs)
+            "debts": {code: bal(code) for code in ("10010003", "10010006", "10010007", "09040007", "09040001",
+                                                   "10020001", "10020002", "10020016")}}
 
 
 def _sum_maps(maps):
@@ -161,8 +165,9 @@ def build_cash_model(zids, projects, year: int, end_month: int) -> dict:
         if any(pd.notna(v) and abs(v) > 0.5 for v in vals.values()):
             memo.append({"Line": label, "kind": "memo", **vals})
     gi = pd.DataFrame(memo, columns=["Line", "kind"] + cols)
+    final = cm.build_final_model(purchases, inv, cash, cols)
     return {"months": months, "cols": cols, "cash": cash, "purchases": purchases, "inventory": inv,
-            "shipments": ships, "detail": detail, "gi": gi, "app": app, "info": info}
+            "shipments": ships, "detail": detail, "gi": gi, "app": app, "info": info, "final": final}
 
 
 # ── display helpers ──────────────────────────────────────────────────────────
@@ -260,7 +265,23 @@ def display_cash_model(zid):
     cols = m["cols"]
     _tie_banner(m["cash"], cols)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📦 Purchases", "🏬 Inventory & Sales", "💵 Cash", "🔎 Detail by account"])
+    tab0, tabp, tab1, tab2, tab3, tab4, tabs_ = st.tabs(["📋 Final Model", "📈 Projection", "📦 Purchases",
+                                                         "🏬 Inventory & Sales", "💵 Cash", "🔎 Detail by account",
+                                                         "⚙️ Settings"])
+    # The Settings tab is the last one, but its widgets must run first so the Projection reads their live values.
+    from views import cash_projection
+    ctx = cash_projection.prepare(str(zids[0]), zids, projects)
+    with tabs_:
+        proj_settings = cash_projection.render_settings(ctx) if ctx else None
+    with tabp:
+        if ctx:
+            cash_projection.render_projection(ctx, proj_settings)
+    with tab0:
+        st.caption("One fixed-layout table: purchases → inventory & sales → collections → additional inflows → payments → "
+                   "net cash. Every figure is taken from the other tabs (they stay as they are); a line with no activity "
+                   "shows 0 so the layout never changes. Includes one line beyond the template — the monthly "
+                   "revaluation of inventory — so opening plus movements adds up to closing.")
+        _show(m["final"], cols, height=min(35 * (len(m["final"]) + 1) + 3, 2600))
     with tab1:
         st.caption("International purchases come from the import records (IP-- POs / IGRN receipts) with the "
                    "pay order and other import costs found in the L/C settlement vouchers. Local purchases count as "
@@ -298,7 +319,7 @@ def display_cash_model(zid):
             num = [c for c in view.columns if c not in ("group", "label", "ac_code", "Account name", "Business")]
             st.dataframe(view.style.format({c: "{:,.0f}" for c in num}), use_container_width=True, hide_index=True)
 
-    sections = {"Purchases": m["purchases"], "Inventory & Sales": m["inventory"], "Cash": pd.concat([m["cash"], m["gi"]]),
+    sections = {"Final Model": m["final"], "Purchases": m["purchases"], "Inventory & Sales": m["inventory"], "Cash": pd.concat([m["cash"], m["gi"]]),
                 "Shipments": m["shipments"], "Detail by account": m["detail"]}
     st.download_button("⬇️ Download Excel", data=cm.to_excel_bytes(sections),
                        file_name=f"cash_model_{ent}_{year}_{int(end_month):02d}.xlsx",
