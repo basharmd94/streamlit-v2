@@ -981,6 +981,29 @@ One row per `final_items_view` item (~2,355 for 100001), sorted by Avg Monthly S
 
 ---
 
+## ERP importer for the online shop (`erp_import/`, rebuilt 2026-11-02)
+
+Standalone scripts (not part of the Streamlit app) that connect the Medusa shop (`medusa.utilitymart.shop`, live) to company **100007** in `da`.
+Agreed map: `erp_import/docs/CYCLE_MAP.md` (short) + `CYCLE_COLUMNS.md` (every column) + `CYCLE_VISUAL.html` (picture); run guide `erp_import/README.md` (folder layout: scripts at the top, `docs/ onetime/ sql/ tests/ dev_tools/`);
+what the shop session must build: `erp_import/docs/SHOP_CONTRACT.md`. Spec `erp_import/docs/ERP_INTEGRATION_SPEC.md` (v2.2) is superseded where they differ.
+Owner decisions: every online sale goes to ONE customer (`CUS-000073` UtilityMart) and one employee (`MR--000007`); shopper details never enter the ERP;
+the shop order number is `opmob.invoiceno` (`UM-1000001`, number in `invoicesl`) and the ERP copies it into `opord.xref`/`opdor.xref`;
+`xtra1` discount %, `xtra3` payment trail (COD / SSLCommerz transaction id), `xtra4` courier consignment id, `xtra5` JSON (delivery charge etc.);
+the ERP is master for SKU, barcode, price, cost, item group, stock, the shop for title/options/handle/category/images; returns, refunds and purchase returns are manual.
+`erp_import.py --job {run,po,products,price,check}` (all dry runs unless `--commit`): run = feed -> `caitem`/`opmob` + status/stock back (every 5 min);
+po = once a day, one `1-Open` PO per order per source business at source `xstdprice` less its `opspprc` tier for the day's total (Fixit: Central's sales rate, supplier SUP-000005);
+products = barcode/price/cost/group/stock to the shop (`POST /products`, new, the shop does not have it yet); price = REPORT of the in-ERP sell-price rule
+(100007 `xstdprice` = the source company's `caitem.xsrate` for HMBR/GI/Zepto — HMBR/GI `xsrate` was loaded ONCE from the shop's current prices by `erp_import/onetime/set_xsrate_from_json.py` (JSON made by `dev_tools/make_xsrate_json.py`: zid, SKU = xitem, price), Zepto's is its MRP — and Fixit = Gulshan std price; writes only if `[pricing] apply = true`); check = read-only health check.
+`erp_service.py` is the clock for the NSSM service (feed every 5 min; daily fixit 05:30, price 05:45, products 06:00, po 23:30; `--dry-run` / `--once`); nothing listens on the HMBR server, the importer only calls out. Server steps: `erp_import/docs/DEPLOY_HMBR_SERVER.md`; prep SQL in `erp_import/sql/` (delete the two stray `04-` items, optional least-privilege login, Fixit read-only login).
+`fixit_pull.py` reads the Fixit server's `final_items_view` for the shop's Fixit items into `um_fixit_item` (stock = sum over the 3 Fixit companies, price = Gulshan, cost = Central's sales rate).
+Fixit items: `xitemnew = 'Fixit'`, `04-nnnnn`, `xgitem = 'Fix iT Item'`, SKU = Fixit code (`18-018`). SKU is matched first; the ERP's SKU/barcode pairing wins.
+`[exceptions] skip_skus` (CF000003 Korean Putty: ERP unit kg, shop sells 100 g packs) keeps listed SKUs out of the stock/product push and the price rule. The one-time `xsrate` JSON uses the shop price, but 1.35 x `xstdprice` where the shop price is below the std price (4 GI ladders).
+Reminder (not built): rule for NEW Fixit items = stock above 5, sales not 0, prefix the shop already has.
+Tested locally with `erp_import/tests/run_local_test.py` (71 checks, restores the database) against `tests/fake_feed.py`, the stand-in for `/hooks/erp` that doubles as the contract.
+Live server is PostgreSQL 9.4 (no `ON CONFLICT` / `IF NOT EXISTS`); only tested on 14 so far. `dev_tools/medusa_snapshot.py` uses the Medusa ADMIN key (git-ignored `.env.live`): developer only, never on the ERP server.
+
+---
+
 ## Usage Stats (`views/usage_stats.py` → "Usage Stats" menu item, admin-only)
 
 App-owned table logging which page + primary radio-level mode each user opens, and when — designed and discussed with the user before building anything, per explicit ask. Same convention as `crm_call_log`/`marketing_leads`/`page_permissions`: written directly by this app via `core/db.py`, no separate role/grants needed (this app's single main-DB connection already has full access to its own database). Setup: `db/sql_scripts/create_view_usage_log_table.sql` — creates `view_usage_log` **and** grants the new "Usage Stats" menu item to `admin` via `page_permissions` (without that row, even an admin's sidebar menu won't show it — `app.py::navigation` filters the menu through `auth.check_page_access`, same as every other page).

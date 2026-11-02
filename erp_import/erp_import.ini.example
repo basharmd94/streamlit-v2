@@ -1,0 +1,87 @@
+# Copy to erp_import.ini (gitignored) and fill in. Never commit the real file.
+
+[shop]
+# Real shop feed:  https://medusa.utilitymart.shop/hooks/erp   (built by the shop session)
+# Local stand-in:  http://127.0.0.1:8099/hooks/erp             (python tests/fake_feed.py)
+base_url = http://127.0.0.1:8099/hooks/erp
+feed_key = test-feed-key
+shared_secret = test-shared-secret
+# The shop is live now (no staging copy). Only a stand-in or an old staging feed reports "staging".
+allow_staging_feed = true
+timeout = 30
+
+[database]
+host = localhost
+port = 5432
+dbname = da
+user = postgres
+password =
+
+[erp]
+zid = 100007
+# every online sale goes to this one customer and this one employee
+customer = CUS-000073
+customer_name = UtilityMart
+customer_address = UtilityMart online shop
+salesman = MR--000007
+username = utilitymart
+terminal = UTM
+# the shop order number becomes opmob.invoiceno, e.g. UM-1000001
+order_prefix = UM-
+warehouse = Sales Warehouse Online Shop
+project = HMBR Online Shop
+# zemail / xmember written on the purchase orders the importer creates (optional)
+user_email =
+
+[suppliers]
+# source business (caitem.xitemnew) -> supplier code in casup for zid 100007
+100001 = SUP-000001
+100000 = SUP-000002
+100005 = SUP-000003
+FIXIT = SUP-000005
+
+[behaviour]
+# daily: orders are queued and `--job po` (once a day) makes the open purchase orders
+# immediate: a PO is made as soon as the order arrives (tests only) | off: none
+po_mode = daily
+# DEV ONLY: lets --purge-test delete fake-feed data. Keep false anywhere real.
+allow_purge = false
+
+[schedule]
+# used by erp_service.py (the NSSM service). Server local time, 24 hour HH:MM.
+run_every_minutes = 5
+# Fixit stock/price/cost pull. The Fixit server must have refreshed its final_items_view BEFORE this time (see docs/DEPLOY_HMBR_SERVER.md, part B)
+fixit_time = 05:30
+# the sell-price rule (100007 price from the source xsrate / Fixit Gulshan price): a report only until [pricing] apply = true
+price_time = 05:45
+# barcode, price, cost, group, stock -> shop (after the Fixit pull and the price rule, so the shop gets today's figures)
+products_time = 06:00
+# open purchase orders for the day's orders (rates use the day's total per item for the opspprc tier)
+po_time = 23:30
+job_timeout_minutes = 20
+
+[exceptions]
+# SKUs the ERP must NOT push to the shop (stock, price, barcode, cost): the shop keeps its own figures.
+# CF000003 Korean Putty: the ERP unit is 1 kg, the shop sells 100 g packs. Remove it once the shop has a unit exception.
+skip_skus = CF000003
+
+[stock]
+push = true
+# first run after this hour each day sends every SKU once
+full_after_hour = 2
+
+[pricing]
+# The sell-price rule sets 100007 caitem.xstdprice from the SOURCE company's caitem.xsrate (HMBR 100001, GI 100000, Zepto 100005 MRP);
+# Fixit items use the Gulshan std price. HMBR/GI xsrate was loaded once from the shop's prices (onetime/set_xsrate_from_json.py); after that it is kept by hand in the ERP.
+# `--job price` is a REPORT. It only writes when apply = true AND --commit is given.
+apply = false
+
+[fixit]
+# read-only login to the Fixit server's database (fixit_pull.py)
+host = localhost
+port = 5432
+dbname = fixit
+user = postgres
+password =
+# the Fixit company whose std_price is the selling price (Gulshan)
+price_zid = 100001

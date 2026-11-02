@@ -53,6 +53,11 @@ temp/
 *.env
 .env.local
 .env.*.local
+.env.fixit
+.env.live
+# the shop-handoff folder: holds the live Medusa admin key and the owner's working notes, never committed
+UtilityMartERPIntegration/
+FixitFiles/*.backup
 config.py # or any other file containing sensitive configurations
 
 # Jupyter Notebook specific
@@ -99,3 +104,7 @@ data/product_images/
 # Local-only dev utilities — not part of the deployed app
 scripts/
 graphify-out/
+
+# ERP importer: real config (keys/passwords) and run logs
+erp_import/erp_import.ini
+erp_import/logs/

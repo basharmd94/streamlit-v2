@@ -1,0 +1,319 @@
+<title>UtilityMart ERP Flow Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one overview diagram (three servers, numbered flows), then one card per flow with the exact columns. */
+:root{
+  --bg:#f2f5f6; --surface:#ffffff; --ink:#14212b; --muted:#566874; --line:#d3dce2; --codebg:#eaf0f2;
+  --medusa:#5a49b0; --medusa-t:#ece9fa; --erp:#0e6a62; --erp-t:#dff1ee; --fixit:#94560a; --fixit-t:#f9ebd0;
+  --warn:#9a3412; --warn-t:#fdebdd; --badge:#14212b; --badge-ink:#ffffff;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e161c; --surface:#16212a; --ink:#e5ecf0; --muted:#94a5b0; --line:#2a3a46; --codebg:#1d2c36;
+  --medusa:#a89df1; --medusa-t:#262246; --erp:#62c9bc; --erp-t:#12372f; --fixit:#e4b361; --fixit-t:#3a2c11;
+  --warn:#f0a574; --warn-t:#3b2314; --badge:#e5ecf0; --badge-ink:#0e161c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e161c; --surface:#16212a; --ink:#e5ecf0; --muted:#94a5b0; --line:#2a3a46; --codebg:#1d2c36;
+  --medusa:#a89df1; --medusa-t:#262246; --erp:#62c9bc; --erp-t:#12372f; --fixit:#e4b361; --fixit-t:#3a2c11;
+  --warn:#f0a574; --warn-t:#3b2314; --badge:#e5ecf0; --badge-ink:#0e161c; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:28px 48px}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+h1{font-size:28px;font-weight:600;margin:0;letter-spacing:-.01em;text-wrap:balance}
+h2{font-size:19px;font-weight:600;margin:0 0 10px}
+h3{font-size:17px;font-weight:600;margin:0;text-wrap:balance}
+p{margin:0}
+code{font-family:var(--mono);font-size:.86em;background:var(--codebg);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+.lead{color:var(--muted);max-width:75ch;margin-top:6px}
+.keys{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:14px;font-size:13px;color:var(--muted)}
+.keys span{display:inline-flex;align-items:center;gap:7px}
+.sw{width:12px;height:12px;border-radius:3px;border:1.5px solid}
+.sw.m{background:var(--medusa-t);border-color:var(--medusa)} .sw.e{background:var(--erp-t);border-color:var(--erp)} .sw.f{background:var(--fixit-t);border-color:var(--fixit)}
+.diagram{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px;overflow-x:auto}
+.diagram svg{display:block;min-width:960px;width:100%;height:auto}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.chips a{display:inline-flex;align-items:center;gap:8px;text-decoration:none;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:5px 12px 5px 6px;font-size:13px}
+.chips a:hover{border-color:var(--ink)}
+.n{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--badge);color:var(--badge-ink);font-size:12px;font-weight:600;flex:none}
+.fixed{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px 22px;font-size:13.5px}
+.fixed div{min-width:0}
+.fixed b{display:block;font-weight:500;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
+.flow{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;scroll-margin-top:12px}
+.flow>header{display:flex;flex-wrap:wrap;align-items:center;gap:10px 12px}
+.when{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 10px}
+.route{font-size:13.5px;color:var(--muted);display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.tag{font-size:12px;font-weight:500;padding:1px 9px;border-radius:999px;border:1px solid}
+.tag.m{background:var(--medusa-t);color:var(--medusa);border-color:var(--medusa)} .tag.e{background:var(--erp-t);color:var(--erp);border-color:var(--erp)} .tag.f{background:var(--fixit-t);color:var(--fixit);border-color:var(--fixit)}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;min-width:760px;font-size:13.5px}
+th{text-align:left;font-weight:500;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;background:var(--codebg);padding:8px 12px;white-space:nowrap}
+td{padding:8px 12px;border-top:1px solid var(--line);vertical-align:top}
+td:nth-child(1){width:36%} td:nth-child(2){width:30%}
+.note{font-size:13.5px;color:var(--muted);max-width:90ch}
+.warn{font-size:13.5px;background:var(--warn-t);color:var(--warn);border-radius:8px;padding:9px 12px}
+.filter{font-size:13.5px;background:var(--codebg);border-radius:8px;padding:9px 12px}
+ol.open{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;max-width:100ch}
+svg text{font-family:var(--sans)}
+.lane{fill:none;stroke:var(--line);stroke-width:1.2;stroke-dasharray:5 4}
+.bx-m{fill:var(--medusa-t);stroke:var(--medusa);stroke-width:1}
+.bx-e{fill:var(--erp-t);stroke:var(--erp);stroke-width:1}
+.bx-f{fill:var(--fixit-t);stroke:var(--fixit);stroke-width:1}
+.bx-d{stroke-dasharray:5 3}
+.tt{font-size:13.5px;font-weight:600;fill:var(--ink)} .ts{font-size:11.5px;fill:var(--muted)} .tm{font-size:11.5px;fill:var(--ink);font-family:var(--mono)}
+.ar{stroke:var(--ink);stroke-width:1.4;fill:none}
+.bd{fill:var(--badge)} .bn{font-size:11.5px;font-weight:600;fill:var(--badge-ink);text-anchor:middle}
+@media (prefers-reduced-motion: reduce){*{scroll-behavior:auto!important}}
+</style>
+
+<div class="wrap">
+<header>
+  <h1>UtilityMart ERP flow map</h1>
+  <p class="lead">Three servers, nine flows. Postgres names are the real column names on the HMBR server (<code>da</code>, PostgreSQL 9.4) and on the Fixit server (<code>da</code>). The Medusa shop is described in plain words. Built and tested locally on 2 Nov 2026; the shop's hooks do not exist yet.</p>
+  <div class="keys"><span><i class="sw m"></i>Medusa shop (live, read-only for now)</span><span><i class="sw e"></i>HMBR ERP server, company 100007 is the hub</span><span><i class="sw f"></i>Fixit server</span></div>
+</header>
+
+<section>
+<div class="diagram">
+<svg viewBox="0 0 1200 500" role="img" aria-labelledby="dt dd">
+<title id="dt">Servers and flows</title>
+<desc id="dd">The Medusa shop on the left exchanges items, orders, prices, stock and status with company 100007 on the HMBR ERP server in the middle. Source companies feed prices into 100007. The Fixit server on the right feeds Fixit items into 100007.</desc>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+<rect class="lane" x="16" y="40" width="220" height="440" rx="12"/>
+<text class="tt" x="32" y="66">Medusa shop</text><text class="ts" x="32" y="84">medusa.utilitymart.shop, live</text>
+<rect class="bx-m" x="32" y="104" width="188" height="84" rx="6"/>
+<text class="tt" x="44" y="126">Catalogue</text><text class="ts" x="44" y="146">SKU, barcode, title</text><text class="ts" x="44" y="162">options, handle, price</text><text class="ts" x="44" y="178">cost, images, type</text>
+<rect class="bx-m" x="32" y="204" width="188" height="64" rx="6"/>
+<text class="tt" x="44" y="226">Inventory</text><text class="ts" x="44" y="246">stocked quantity</text><text class="ts" x="44" y="260">one location</text>
+<rect class="bx-m" x="32" y="284" width="188" height="100" rx="6"/>
+<text class="tt" x="44" y="306">Orders</text><text class="ts" x="44" y="326">number from 1000001</text><text class="ts" x="44" y="342">lines, discount, delivery</text><text class="ts" x="44" y="358">payment, courier id</text>
+<rect class="bx-m bx-d" x="32" y="400" width="188" height="64" rx="6"/>
+<text class="tt" x="44" y="422">ERP hooks, to build</text><text class="ts" x="44" y="440">/hooks/erp feed, ack</text><text class="ts" x="44" y="454">order-status, stock, products</text>
+
+<rect class="lane" x="340" y="40" width="540" height="440" rx="12"/>
+<text class="tt" x="356" y="66">HMBR ERP server</text><text class="ts" x="356" y="84">Windows 2016, PostgreSQL 9.4, database da</text>
+<rect class="bx-e" x="360" y="104" width="500" height="76" rx="6"/>
+<text class="tt" x="376" y="126">Source companies</text><text class="ts" x="376" y="146">100001 HMBR, 100000 GI, 100005 Zepto</text><text class="tm" x="376" y="164">caitem opspprc opddt final_items_view</text>
+<rect class="bx-e" x="360" y="236" width="500" height="160" rx="6"/>
+<text class="tt" x="376" y="258">Company 100007, the hub</text>
+<text class="tm" x="376" y="282">caitem  xcodes</text><text class="tm" x="376" y="300">opmob  opord  opdor</text><text class="tm" x="376" y="318">poord  poodt  pogrn  pogdt</text><text class="tm" x="376" y="336">imtrn  casup</text><text class="tm" x="376" y="354">cacus CUS-000073</text><text class="tm" x="376" y="372">prmst MR--000007</text>
+<text class="ts" x="624" y="258">Importer tables</text>
+<text class="tm" x="624" y="282">um_order_map</text><text class="tm" x="624" y="300">um_processed_events</text><text class="tm" x="624" y="318">um_product_sent</text><text class="tm" x="624" y="336">um_fixit_item</text><text class="tm" x="624" y="354">um_attention  um_sync_state</text>
+<rect class="bx-e" x="360" y="416" width="116" height="48" rx="6"/><text class="tt" x="372" y="436">erp_import.py</text><text class="ts" x="372" y="454">every 5 min</text>
+<rect class="bx-e" x="488" y="416" width="116" height="48" rx="6"/><text class="tt" x="500" y="436">price_sync</text><text class="ts" x="500" y="454">nightly</text>
+<rect class="bx-e" x="616" y="416" width="116" height="48" rx="6"/><text class="tt" x="628" y="436">product_push</text><text class="ts" x="628" y="454">daily, stock often</text>
+<rect class="bx-e" x="744" y="416" width="116" height="48" rx="6"/><text class="tt" x="756" y="436">fixit_pull.py</text><text class="ts" x="756" y="454">daily</text>
+
+<rect class="lane" x="984" y="40" width="200" height="440" rx="12"/>
+<text class="tt" x="1000" y="66">Fixit server</text><text class="ts" x="1000" y="84">PostgreSQL, database da</text>
+<rect class="bx-f" x="1000" y="104" width="168" height="76" rx="6"/>
+<text class="tt" x="1012" y="126">Fixit ERP tables</text><text class="tm" x="1012" y="146">caitem  imtrn</text><text class="tm" x="1012" y="164">pogrn  pogdt</text>
+<rect class="bx-f" x="1000" y="236" width="168" height="160" rx="6"/>
+<text class="tt" x="1012" y="258">final_items_view</text><text class="ts" x="1012" y="280">zid 100001 Gulshan</text><text class="ts" x="1012" y="296">zid 100002 Central</text><text class="ts" x="1012" y="312">zid 100003 Ecommerce</text>
+<text class="tm" x="1012" y="338">item_id  item_group</text><text class="tm" x="1012" y="356">stock  std_price</text><text class="tm" x="1012" y="374">store_buy_price</text>
+
+<line class="ar" x1="610" y1="182" x2="610" y2="233" marker-end="url(#ah)"/>
+<circle class="bd" cx="610" cy="207" r="11"/><text class="bn" x="610" y="211">1</text>
+<line class="ar" x1="998" y1="316" x2="863" y2="316" marker-end="url(#ah)"/>
+<circle class="bd" cx="931" cy="316" r="11"/><text class="bn" x="931" y="320">2</text>
+<line class="ar" x1="221" y1="120" x2="357" y2="252" marker-end="url(#ah)"/>
+<circle class="bd" cx="289" cy="186" r="11"/><text class="bn" x="289" y="190">3</text>
+<line class="ar" x1="357" y1="276" x2="223" y2="166" marker-end="url(#ah)"/>
+<circle class="bd" cx="290" cy="221" r="11"/><text class="bn" x="290" y="225">4</text>
+<line class="ar" x1="357" y1="300" x2="223" y2="238" marker-end="url(#ah)"/>
+<circle class="bd" cx="290" cy="269" r="11"/><text class="bn" x="290" y="273">4</text>
+<line class="ar" x1="221" y1="318" x2="357" y2="322" marker-end="url(#ah)"/>
+<circle class="bd" cx="289" cy="320" r="11"/><text class="bn" x="289" y="324">5</text>
+<line class="ar" x1="357" y1="352" x2="223" y2="350" marker-end="url(#ah)"/>
+<circle class="bd" cx="290" cy="351" r="11"/><text class="bn" x="290" y="355">8</text>
+</svg>
+</div>
+<div class="chips">
+  <a href="#f1"><span class="n">1</span>Sell price inside the ERP</a>
+  <a href="#f2"><span class="n">2</span>Fixit pull</a>
+  <a href="#f3"><span class="n">3</span>Shop item changes to ERP</a>
+  <a href="#f4"><span class="n">4</span>Prices, cost, barcode, stock to shop</a>
+  <a href="#f5"><span class="n">5</span>Order in</a>
+  <a href="#f6"><span class="n">6</span>Purchase orders</a>
+  <a href="#f7"><span class="n">7</span>What the ERP does next</a>
+  <a href="#f8"><span class="n">8</span>Status and trail back</a>
+  <a href="#f9"><span class="n">9</span>Cancel</a>
+</div>
+</section>
+
+<section>
+<h2>Fixed values the importer checks</h2>
+<div class="fixed">
+  <div><b>Customer</b><code>opmob.xcus</code> = CUS-000073, must exist in <code>cacus.xcus</code></div>
+  <div><b>Employee</b><code>opmob.xemp</code> = MR--000007, must exist in <code>prmst.xemp</code></div>
+  <div><b>Terminal</b><code>opmob.xterminal</code> = UTM</div>
+  <div><b>Warehouse and project</b><code>xwh</code> = Sales Warehouse Online Shop, <code>xproj</code> = HMBR Online Shop</div>
+  <div><b>Suppliers</b><code>casup.xsup</code> SUP-000001 (100001), -02 (100000), -03 (100005), -05 (Fixit)</div>
+  <div><b>Followed products</b>only shop variants: SKU = <code>caitem.xalias</code>, barcode = <code>caitem.xitem</code>, ERP pairing wins</div>
+</div>
+</section>
+
+<article class="flow" id="f1">
+  <header><span class="n">1</span><h3>Sell price inside the ERP</h3><span class="when">nightly, fixed time</span></header>
+  <div class="route"><span class="tag e">HMBR da, source companies</span> to <span class="tag e">HMBR da, company 100007</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>From</th><th>To</th><th>Rule and example</th></tr></thead>
+    <tbody>
+    <tr><td><code>caitem.xsrate</code> in zid 100001 (HMBR) or 100000 (GI), where <code>xitem</code> = 100007 <code>caitem.xalias</code></td><td><code>caitem.xstdprice</code>, zid 100007</td><td>the source sales rate as it is. <code>xsrate</code> was loaded once from the shop's own current prices (<code>onetime/set_xsrate_from_json.py</code>), so ERP and shop start identical; afterwards it is kept by hand</td></tr>
+    <tr><td><code>caitem.xsrate</code> (the MRP) in zid 100005, where <code>xitem</code> = 100007 <code>caitem.xalias</code></td><td><code>caitem.xstdprice</code>, zid 100007</td><td>Zepto MRP as it is. Example: FZ000005 becomes 210</td></tr>
+    <tr><td>Fixit <code>final_items_view.std_price</code> (Gulshan, zid 100001)</td><td><code>caitem.xstdprice</code>, zid 100007, items <code>04-</code></td><td>as it is (written by flow 2)</td></tr>
+    <tr><td>-</td><td><code>caitem.zutime</code></td><td>now, only when the price changed</td></tr>
+    </tbody></table></div>
+  <p class="warn">Report first, nothing written until <code>[pricing] apply = true</code>. After the one-time <code>xsrate</code> load (528 items: 455 HMBR, 73 GI), the price rule would leave 438 HMBR and 49 GI prices in 100007 unchanged; where 100007 held a different price from the shop, 16 HMBR and 20 GI would go down and 3 GI up. Zepto: 71 items already equal the MRP, 33 have no price in 100007 yet and would get it. The report is <code>erp_import.py --job price</code>.</p>
+</article>
+
+<article class="flow" id="f2">
+  <header><span class="n">2</span><h3>Fixit pull</h3><span class="when">daily, <code>fixit_pull.py</code> on the HMBR server</span></header>
+  <div class="route"><span class="tag f">Fixit da, final_items_view</span> to <span class="tag e">HMBR da, company 100007</span></div>
+  <p class="filter">Followed items = the Fixit items the shop sells (the master list, all in the shop). Only these are read, never the whole Fixit catalogue. The rule for NEW Fixit items (prefix the shop has today: 18, 20, 21, 23, 26, 27, 28, 30, 33, 36, 40, stock above 5, sales not 0) is parked as a reminder.</p>
+  <div class="tw"><table>
+    <thead><tr><th>From (Fixit)</th><th>To (HMBR)</th><th>Rule and example</th></tr></thead>
+    <tbody>
+    <tr><td><code>final_items_view.item_id</code></td><td><code>caitem.xalias</code>; the item itself has <code>xitemnew</code> = Fixit</td><td>followed items are the 100007 rows <code>04-nnnnn</code> with this code. Example: 18-018 is 04-00001</td></tr>
+    <tr><td><code>final_items_view.item_name</code></td><td><code>caitem.xdesc</code></td><td>new items only</td></tr>
+    <tr><td><code>final_items_view.item_group</code></td><td><code>um_fixit_item.item_group</code></td><td>goes to the shop's product type. <code>caitem.xgitem</code> = Fixit Item</td></tr>
+    <tr><td><code>final_items_view.std_price</code> (zid 100001 Gulshan, else 100003, else 100002)</td><td><code>um_fixit_item.std_price</code></td><td>selling price (copied to <code>caitem.xstdprice</code> by the price job)</td></tr>
+    <tr><td>sum of <code>final_items_view.stock</code> over the three zids</td><td><code>um_fixit_item.stock</code></td><td>whole units</td></tr>
+    <tr><td><code>final_items_view.store_buy_price</code> (zid 100001, else 100003): Central's sales rate, Gulshan's purchase price</td><td><code>um_fixit_item.cost</code></td><td>the cost price, and the PO rate in flow 6. If the shop's own cost price differs, the shop upload was wrong</td></tr>
+    <tr><td>sum of <code>final_items_view.avg_monthly_sales</code></td><td><code>um_fixit_item.sales</code></td><td>used by the rule</td></tr>
+    <tr><td>zid used, run time</td><td><code>um_fixit_item.fixit_zid</code>, <code>as_of</code></td><td></td></tr>
+    <tr><td>-</td><td><code>xcodes.xtype</code>, <code>xcode</code>, <code>xcodealt</code>, <code>xdescdet</code>, <code>zactive</code></td><td>Price Category, = xitem, = Fixit code, = name, 1</td></tr>
+    </tbody></table></div>
+  <p class="note">The two stray <code>04-</code> items that had an empty <code>xitemnew</code> were deleted from the local copy; the live copy still needs the same delete.</p>
+</article>
+
+<article class="flow" id="f3">
+  <header><span class="n">3</span><h3>Shop item changes to the ERP</h3><span class="when">every 5 min, feed event item.upserted</span></header>
+  <div class="route"><span class="tag m">Medusa shop</span> to <span class="tag e">HMBR da, company 100007</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>From (Medusa)</th><th>To (HMBR)</th><th>Rule and example</th></tr></thead>
+    <tbody>
+    <tr><td>Variant SKU (the item code in its source company)</td><td><code>caitem.xalias</code></td><td>match key</td></tr>
+    <tr><td>Variant barcode (the ERP item code)</td><td><code>caitem.xitem</code></td><td>match key. When SKU and barcode disagree with the ERP pair, the ERP pair stays and flow 4 corrects the shop</td></tr>
+    <tr><td>Variant title</td><td><code>caitem.xdesc</code></td><td>Hook--SS02 62**2mm</td></tr>
+    <tr><td>Product title</td><td><code>caitem.xlong</code></td><td>SS Hook</td></tr>
+    <tr><td>Variant options</td><td><code>caitem.xnote</code></td><td>Size:62mm,Thickness:2mm</td></tr>
+    <tr><td>Product handle</td><td><code>caitem.xlinks</code></td><td>ss-hook</td></tr>
+    <tr><td>Variant group (from the handle)</td><td><code>caitem.xscode</code></td><td>VG0094</td></tr>
+    <tr><td>Shop price</td><td>not written</td><td>the ERP is master for price</td></tr>
+    <tr><td>Variant not in the ERP yet</td><td><code>caitem.xitem</code> next code, <code>xitemnew</code>, <code>xgitem</code>, <code>xpricecat</code> = SKU, <code>xwh</code>, <code>xcatful</code> = Auto, rest copied from a template row; <code>xcodes</code> row</td><td>new items only</td></tr>
+    </tbody></table></div>
+</article>
+
+<article class="flow" id="f4">
+  <header><span class="n">4</span><h3>Prices, cost, barcode and stock to the shop</h3><span class="when">daily at a fixed time; stock about every 15 min</span></header>
+  <div class="route"><span class="tag e">HMBR da, company 100007</span> to <span class="tag m">Medusa shop</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>From (HMBR)</th><th>To (Medusa)</th><th>Rule and example</th></tr></thead>
+    <tbody>
+    <tr><td><code>caitem.xalias</code></td><td>Variant SKU</td><td>match key</td></tr>
+    <tr><td><code>caitem.xitem</code></td><td>Variant barcode</td><td>corrects shifted pairs and fills missing barcodes</td></tr>
+    <tr><td><code>caitem.xstdprice</code>, zid 100007</td><td>Variant selling price (BDT, VAT inclusive)</td><td>overwrites the shop price</td></tr>
+    <tr><td>cost: <code>poodt.xrate</code> of the newest PO line (<code>poord.xdate</code>), else <code>imtrn.xval</code> / <code>imtrn.xqty</code> of the latest <code>RE--</code> receipt, else the source company's <code>caitem.xstdprice</code>. Fixit: <code>um_fixit_item.cost</code></td><td>Variant cost price (variant metadata)</td><td>57. Used for discount and margin decisions in the shop</td></tr>
+    <tr><td><code>caitem.xgitem</code>; Fixit <code>um_fixit_item.item_group</code></td><td>Product type (item group)</td><td>Trading Item, Household</td></tr>
+    <tr><td><code>final_items_view.stock</code> where <code>zid</code> = <code>caitem.xitemnew</code> and <code>item_id</code> = <code>caitem.xalias</code>, floored at 0. Fixit: <code>um_fixit_item.stock</code></td><td>Inventory item, stocked quantity at the shop location</td><td>4190. Physical stock; the shop subtracts its own reserved units</td></tr>
+    <tr><td>-</td><td><code>um_product_sent.sku</code>, <code>on_hand</code>, <code>std_price</code>, <code>cost_price</code>, <code>sent_at</code></td><td>what was sent last, so only changes go</td></tr>
+    </tbody></table></div>
+  <p class="note">Calls: <code>POST /hooks/erp/stock</code> is in the spec. <code>POST /hooks/erp/products</code> (barcode, price, cost, item group) is new and must exist in the shop.</p>
+</article>
+
+<article class="flow" id="f5">
+  <header><span class="n">5</span><h3>Order in</h3><span class="when">every 5 min, feed events order.created and order.updated</span></header>
+  <div class="route"><span class="tag m">Medusa shop</span> to <span class="tag e">HMBR da, <code>opmob</code>, one row per line</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>From (Medusa)</th><th>To (HMBR)</th><th>Rule and example</th></tr></thead>
+    <tbody>
+    <tr><td>Order number</td><td><code>opmob.invoiceno</code></td><td>UM-1000001 on every line. The ERP copies it to <code>opord.xref</code> and <code>opdor.xref</code>. My key to find the rows again</td></tr>
+    <tr><td>Order number as a number</td><td><code>opmob.invoicesl</code></td><td>1000001</td></tr>
+    <tr><td>Line SKU</td><td><code>opmob.xitem</code> through <code>caitem.xalias</code></td><td>0718 becomes 01-00135</td></tr>
+    <tr><td>Line item name</td><td><code>opmob.xdesc</code></td><td>from <code>caitem.xdesc</code></td></tr>
+    <tr><td>Line quantity</td><td><code>opmob.xqty</code></td><td>2</td></tr>
+    <tr><td>Line unit price before discount</td><td><code>opmob.xprice</code></td><td>80</td></tr>
+    <tr><td>Line position</td><td><code>opmob.xroword</code></td><td>1, 2, 3</td></tr>
+    <tr><td>Quantity times price</td><td><code>opmob.xlinetotal</code></td><td>160 (whole taka)</td></tr>
+    <tr><td>Order date, Dhaka</td><td><code>opmob.xdate</code></td><td>2026-11-02</td></tr>
+    <tr><td>Order discount as a percent of the items</td><td><code>opmob.xtra1</code></td><td>5. Whole number, the column is integer</td></tr>
+    <tr><td>Order total after discount, before delivery</td><td><code>opmob.xtra2</code></td><td>745.75</td></tr>
+    <tr><td>Payment: card or mobile payment transaction id, or cash on delivery</td><td><code>opmob.xtra3</code></td><td>COD, or the SSLCommerz transaction id</td></tr>
+    <tr><td>Courier delivery id (Pathao consignment)</td><td><code>opmob.xtra4</code></td><td>set when the parcel is booked (flow 8)</td></tr>
+    <tr><td>Delivery charge, shop order id, shipping method, note, exact discount</td><td><code>opmob.xtra5</code></td><td>JSON. No customer details</td></tr>
+    <tr><td>fixed values</td><td><code>zid</code> 100007, <code>xemp</code> MR--000007, <code>username</code> utilitymart, <code>xcus</code> CUS-000073, <code>xcusname</code> UtilityMart, <code>xcusadd</code> fixed text, <code>xterminal</code> UTM, <code>xstatusord</code> New, <code>xordernum</code> empty, <code>xsl</code> new uuid, <code>ztime</code>, <code>zutime</code></td><td></td></tr>
+    <tr><td>-</td><td><code>um_order_map</code> (<code>external_order_id</code>, <code>display_id</code>, <code>invoiceno</code>, <code>invoicesl</code>, <code>po_numbers</code>, <code>state</code>), <code>um_processed_events</code></td><td>bookkeeping</td></tr>
+    </tbody></table></div>
+</article>
+
+<article class="flow" id="f6">
+  <header><span class="n">6</span><h3>Purchase orders</h3><span class="when">once a day at a fixed time</span></header>
+  <div class="route"><span class="tag e">HMBR da, <code>opmob</code> demand</span> to <span class="tag e">HMBR da, <code>poord</code> and <code>poodt</code>, one PO per order per source</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>From</th><th>To</th><th>Rule and example</th></tr></thead>
+    <tbody>
+    <tr><td><code>opmob.xitem</code>, <code>xqty</code> of the day's New orders</td><td>grouped by <code>caitem.xitemnew</code></td><td>Fixit lines are recognised by <code>caitem.xalias</code> shaped NN-nnn</td></tr>
+    <tr><td>source <code>caitem.xstdprice</code> less the <code>opspprc</code> tier (<code>xpricecat</code> = source <code>caitem.xpricecat</code>, <code>xqty</code> up to the day's total, <code>xdisc</code>)</td><td><code>poodt.xrate</code>, <code>xprice</code></td><td>57 before any tier. The tier rule is still to confirm</td></tr>
+    <tr><td>Fixit <code>um_fixit_item.cost</code></td><td><code>poodt.xrate</code>, <code>xprice</code></td><td>the central sales rate</td></tr>
+    <tr><td>ordered + other open demand - sum of <code>imtrn.xqty</code> x <code>xsign</code> (zid 100007) - open <code>poodt.xqtyord</code> minus <code>xqtygrn</code></td><td><code>poodt.xqtyord</code></td><td>shortfall only. None, no line</td></tr>
+    <tr><td>source company</td><td><code>poord.xsup</code></td><td>SUP-000001, -02, -03, or SUP-000005 for Fixit</td></tr>
+    <tr><td>order number</td><td><code>poord.xref</code>, <code>poord.xsupref</code>, <code>poord.xrem</code></td><td>UM-1000001 and the shop order id</td></tr>
+    <tr><td>constants</td><td><code>poord.xstatuspor</code> = 1-Open, <code>xpornum</code> next, <code>xdate</code>, <code>xwh</code>, <code>xproj</code>, <code>xdtwotax</code>, <code>xval</code>, <code>xtotamt</code></td><td>PO--000351</td></tr>
+    <tr><td>line</td><td><code>poodt.xpornum</code>, <code>xrow</code>, <code>xitem</code>, <code>xcode</code>, <code>xcodebasis</code>, <code>xstatuspdt</code>, <code>xstype</code>, <code>xwh</code>, <code>xlineamt</code>, <code>xdtwotax</code>, <code>xdatesch</code></td><td><code>xdatesch</code> = 2999-12-31, as real lines hold</td></tr>
+    <tr><td>PO numbers made for the order</td><td><code>um_order_map.po_numbers</code></td><td>which PO belongs to which order</td></tr>
+    </tbody></table></div>
+</article>
+
+<article class="flow" id="f7">
+  <header><span class="n">7</span><h3>What the ERP does next</h3><span class="when">staff and ERP, not built by the importer</span></header>
+  <div class="route"><span class="tag e">HMBR da, company 100007 and the source companies</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>Step</th><th>Tables and columns</th><th>What it shows</th></tr></thead>
+    <tbody>
+    <tr><td>Confirm the PO</td><td><code>pogrn</code>, <code>pogdt</code>, <code>imtrn</code> (<code>RE--</code>), voucher <code>SINV</code></td><td>stock arrives in 100007</td></tr>
+    <tr><td>Sell in the source company to its "HMBR Online Shop" customer</td><td>that company's <code>opord</code>, <code>opdor</code>, <code>imtrn</code>, voucher <code>INOP</code></td><td>source stock drops</td></tr>
+    <tr><td>Create the order in 100007</td><td><code>opmob.xordernum</code> = COMO..., <code>xstatusord</code> = Order Created; <code>opord.xref</code> and <code>opdor.xref</code> = Created From UM-1000001; <code>opord.xcus</code>, <code>xsp</code>; <code>opodt.xrate</code></td><td>the order number reaches the order and delivery order</td></tr>
+    <tr><td>Delivery order</td><td><code>opdor</code>, <code>opddt</code>, <code>imtrn</code>, voucher <code>INOP</code> (Dr 01030001 sub CUS-000073, Cr 08010001)</td><td>one receivable, UtilityMart</td></tr>
+    </tbody></table></div>
+</article>
+
+<article class="flow" id="f8">
+  <header><span class="n">8</span><h3>Status and trail back to the shop</h3><span class="when">every 5 min</span></header>
+  <div class="route"><span class="tag e">HMBR da</span> to <span class="tag m">Medusa shop, staff only</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>From</th><th>To</th><th>Rule and example</th></tr></thead>
+    <tbody>
+    <tr><td><code>opmob.xstatusord</code>, <code>opmob.xordernum</code></td><td>order status</td><td>New = entered. Order Created = order created</td></tr>
+    <tr><td><code>opdor.xordernum</code>, <code>opdor.xdornum</code></td><td>order status</td><td>confirmed. The shop stops holding the units back</td></tr>
+    <tr><td><code>opcrn.xdornum</code>, <code>opcrn.xcrnnum</code></td><td>order status</td><td>credited</td></tr>
+    <tr><td><code>um_order_map.last_status</code>, <code>last_status_at</code></td><td>-</td><td>only changes are sent</td></tr>
+    <tr><td>Payment captured (transaction id)</td><td><code>opmob.xtra3</code> on every line of the order</td><td>from the shop event, replaces COD</td></tr>
+    <tr><td>Courier booked (consignment id)</td><td><code>opmob.xtra4</code> on every line of the order</td><td>from the shop's fulfilment event</td></tr>
+    </tbody></table></div>
+</article>
+
+<article class="flow" id="f9">
+  <header><span class="n">9</span><h3>Cancel</h3><span class="when">feed event order.canceled</span></header>
+  <div class="route"><span class="tag m">Medusa shop</span> to <span class="tag e">HMBR da</span></div>
+  <div class="tw"><table>
+    <thead><tr><th>Case</th><th>Tables and columns</th><th>Result</th></tr></thead>
+    <tbody>
+    <tr><td>Staff have not touched it</td><td>delete <code>opmob</code> rows where <code>invoiceno</code> = UM-... and <code>xstatusord</code> = New; delete the PO numbers in <code>um_order_map.po_numbers</code> from <code>poodt</code>, <code>poord</code> while <code>xstatuspor</code> = 1-Open</td><td>clean</td></tr>
+    <tr><td>PO already confirmed, or order already created</td><td><code>um_attention.kind</code>, <code>order_ref</code>, <code>details</code></td><td>staff to-do. Returns and purchase returns are manual</td></tr>
+    </tbody></table></div>
+</article>
+
+<section>
+<h2>Still open</h2>
+<ol class="open">
+  <li>Price formula: decide later from the report (flow 1). The job does not write until <code>[pricing] apply = true</code>.</li>
+  <li>Hooks: my side is built and passes 71 local checks against the stand-in. The written contract (<code>SHOP_CONTRACT.md</code>) goes to the shop session.</li>
+  <li>The live HMBR server is PostgreSQL 9.4: run the check job and a dry run there before the first commit.</li>
+  <li>New Fixit items: the rule (prefix, stock above 5, sales not 0) is a reminder for later.</li>
+</ol>
+</section>
+</div>
