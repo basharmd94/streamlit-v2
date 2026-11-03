@@ -216,12 +216,11 @@ def setup_auth_tables():
             ('production', 'Manufacturing Analysis'),
             ('production', 'Inventory Analysis'),
             -- Intern (data analysis): everything except Collection Analysis,
-            -- Accounting Analysis, Financial Statements and Purchase Analysis.
-            -- Commissions (admin setup page) and Usage Stats are admin tools,
-            -- so they are not granted either.
+            -- Accounting Analysis, Financial Statements, Purchase Analysis and
+            -- Overall Margin Analysis. Commissions (admin setup page) and
+            -- Usage Stats are admin tools, so they are not granted either.
             ('intern', 'Home'),
             ('intern', 'Overall Sales Analysis'),
-            ('intern', 'Overall Margin Analysis'),
             ('intern', 'Basket Analysis'),
             ('intern', 'Manufacturing Analysis'),
             ('intern', 'Inventory Analysis'),
