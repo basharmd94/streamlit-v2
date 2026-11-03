@@ -4,7 +4,8 @@
  "use": "onetime/set_xsrate_from_json.py writes price into caitem.xsrate where zid and xitem match; xitem is the shop SKU",
  "rules": [
   "price = the shop's current BDT price",
-  "if the shop price is below the std price (xstdprice) of the source item, price = floor(xstdprice x 1.35) and the entry says so (basis)"
+  "if the shop price is below the std price (xstdprice) of the source item, price = floor(xstdprice x 1.35) and the entry says so (basis)",
+  "2026-11-03: the same rule was applied by hand to 01250, 1866, 2060 and 2182 (HMBR) using the std prices on the live server; the Mac copy of the database had lower std prices for them, so the generator had not caught them"
  ],
  "excluded": [
   {
@@ -470,8 +471,10 @@
   {
    "zid": 100001,
    "xitem": "01250",
-   "price": 200,
-   "name": "Ballpein Hammer Wh - 12oz"
+   "price": 290,
+   "name": "Ballpein Hammer Wh - 12oz",
+   "shop_price": 200,
+   "basis": "shop price 200 is below the std price 215: 1.35 x std price, rounded down"
   },
   {
    "zid": 100001,
@@ -1736,8 +1739,10 @@
   {
    "zid": 100001,
    "xitem": "1866",
-   "price": 235,
-   "name": "Nylon Rope X - 30m / 7mm"
+   "price": 357,
+   "name": "Nylon Rope X - 30m / 7mm",
+   "shop_price": 235,
+   "basis": "shop price 235 is below the std price 265: 1.35 x std price, rounded down"
   },
   {
    "zid": 100001,
@@ -2000,8 +2005,10 @@
   {
    "zid": 100001,
    "xitem": "2060",
-   "price": 425,
-   "name": "Pad Lock Obround - 60 mm / 6 Key / Silver"
+   "price": 580,
+   "name": "Pad Lock Obround - 60 mm / 6 Key / Silver",
+   "shop_price": 425,
+   "basis": "shop price 425 is below the std price 430: 1.35 x std price, rounded down"
   },
   {
    "zid": 100001,
@@ -2258,8 +2265,10 @@
   {
    "zid": 100001,
    "xitem": "2182",
-   "price": 1470,
-   "name": "Electric Blower - 600W"
+   "price": 2173,
+   "name": "Electric Blower - 600W",
+   "shop_price": 1470,
+   "basis": "shop price 1470 is below the std price 1610: 1.35 x std price, rounded down"
   },
   {
    "zid": 100001,
