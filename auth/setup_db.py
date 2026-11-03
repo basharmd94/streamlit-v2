@@ -40,7 +40,8 @@ def _load_dotenv_file(dotenv_path: Path) -> bool:
 
 # Roles to scan. For each prefix, setup_db looks for PREFIX_USERNAME_1,
 # PREFIX_USERNAME_2, ... until the env var is absent. Add as many numbered
-# entries as needed in .env — no code change required.
+# entries as needed in .env — no code change required. Entry 1 may also be
+# written without the number (PREFIX_USERNAME / PREFIX_PASSWORD).
 _ROLES = [
     ("ADMIN",      "admin"),
     ("SALES",      "sales"),
@@ -50,7 +51,16 @@ _ROLES = [
     ("SOP",        "SOP"),
     ("HR",         "HR"),
     ("PRODUCTION", "production"),
+    ("INTERN",     "intern"),
 ]
+
+
+def _env_names(prefix, i):
+    user_env = f"{prefix}_USERNAME_{i}"
+    pass_env = f"{prefix}_PASSWORD_{i}"
+    if i == 1 and not os.getenv(user_env) and not os.getenv(pass_env):
+        return f"{prefix}_USERNAME", f"{prefix}_PASSWORD"
+    return user_env, pass_env
 
 
 def _build_default_users():
@@ -59,8 +69,7 @@ def _build_default_users():
     for prefix, role in _ROLES:
         i = 1
         while True:
-            user_env = f"{prefix}_USERNAME_{i}"
-            pass_env = f"{prefix}_PASSWORD_{i}"
+            user_env, pass_env = _env_names(prefix, i)
             username = os.getenv(user_env, "").strip()
             password = os.getenv(pass_env, "").strip()
 
@@ -205,7 +214,21 @@ def setup_auth_tables():
             ('production', 'Home'),
             ('production', 'Overall Sales Analysis'),
             ('production', 'Manufacturing Analysis'),
-            ('production', 'Inventory Analysis')
+            ('production', 'Inventory Analysis'),
+            -- Intern (data analysis): everything except Collection Analysis,
+            -- Accounting Analysis, Financial Statements and Purchase Analysis.
+            -- Commissions (admin setup page) and Usage Stats are admin tools,
+            -- so they are not granted either.
+            ('intern', 'Home'),
+            ('intern', 'Overall Sales Analysis'),
+            ('intern', 'Overall Margin Analysis'),
+            ('intern', 'Basket Analysis'),
+            ('intern', 'Manufacturing Analysis'),
+            ('intern', 'Inventory Analysis'),
+            ('intern', 'Customer Data View'),
+            ('intern', 'Target Management'),
+            ('intern', 'Customer Support'),
+            ('intern', 'Marketing Analysis')
         """)
 
         default_users = _build_default_users()

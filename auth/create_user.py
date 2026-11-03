@@ -41,7 +41,7 @@ def create_user(username, password, role):
         if conn:
             conn.close()
 
-_VALID_ROLES = ['admin', 'sales', 'finance', 'purchase', 'crm', 'SOP', 'HR', 'production']
+_VALID_ROLES = ['admin', 'sales', 'finance', 'purchase', 'crm', 'SOP', 'HR', 'production', 'intern']
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:

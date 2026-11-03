@@ -126,10 +126,10 @@ def display_customer_support(zid, project):
     st.title("📞 Customer Support")
     st.markdown(_BLUE_CSS, unsafe_allow_html=True)
 
-    # Sales sees the activity feed only — Latest Sales & Collection (AR
-    # balances, collection status) is CRM/admin territory.
+    # Sales and interns see the activity feed only — Latest Sales & Collection
+    # (AR balances, collection status) is CRM/admin territory.
     view_opts = ["📋 90-Day Activity"]
-    if st.session_state.get("user_role") != "sales":
+    if st.session_state.get("user_role") not in ("sales", "intern"):
         view_opts.append("📊 Latest Sales & Collection")
 
     radio = st.radio(
