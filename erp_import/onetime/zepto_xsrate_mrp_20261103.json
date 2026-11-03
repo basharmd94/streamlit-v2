@@ -1,0 +1,3968 @@
+{
+ "purpose": "Zepto (zid 100005) caitem.xsrate = the MRP, as it was before something set all 792 values to 0 on 2026-11-03",
+ "source": "local copy of the ERP database; Zepto rows last changed 2026-08-31; owner confirmed the MRPs have not changed since",
+ "taken_at": "2026-11-03 18:07:42",
+ "zid": 100005,
+ "items": [
+  {
+   "xitem": "AZ00001",
+   "xsrate": "1",
+   "name": "Detergent Powder Hanger"
+  },
+  {
+   "xitem": "AZ00002",
+   "xsrate": "1",
+   "name": "Product Catalog"
+  },
+  {
+   "xitem": "AZ00003",
+   "xsrate": "1",
+   "name": "Zepto Leaflet"
+  },
+  {
+   "xitem": "AZ00006",
+   "xsrate": "1",
+   "name": "Zepto Tissue Bag"
+  },
+  {
+   "xitem": "AZ00007",
+   "xsrate": "1",
+   "name": "Zepto Tissue Bag"
+  },
+  {
+   "xitem": "FZ000001",
+   "xsrate": "1",
+   "name": "Bathroom Cleaner (New)"
+  },
+  {
+   "xitem": "FZ000002",
+   "xsrate": "130",
+   "name": "XX--Glass Cleaner(New)"
+  },
+  {
+   "xitem": "FZ000003",
+   "xsrate": "250",
+   "name": "Floor Cleaner New"
+  },
+  {
+   "xitem": "FZ000004",
+   "xsrate": "148",
+   "name": "Multi Surface Cleaner (New) with Spray Head"
+  },
+  {
+   "xitem": "FZ000005",
+   "xsrate": "210",
+   "name": "Kitchen Degreaser New"
+  },
+  {
+   "xitem": "FZ000006",
+   "xsrate": "180",
+   "name": "XX--Fabric Freshener (New)"
+  },
+  {
+   "xitem": "FZ000007",
+   "xsrate": "180",
+   "name": "XX--Fabric Freshener (New)"
+  },
+  {
+   "xitem": "FZ000008",
+   "xsrate": "180",
+   "name": "XX--Fabric Freshener (New)"
+  },
+  {
+   "xitem": "FZ000009",
+   "xsrate": "180",
+   "name": "XX--Fabric Freshener (New)"
+  },
+  {
+   "xitem": "FZ000010",
+   "xsrate": "180",
+   "name": "XX--Fabric Freshener (New)"
+  },
+  {
+   "xitem": "FZ000011",
+   "xsrate": "1",
+   "name": "Bathroom Cleaner (New)(Refill)"
+  },
+  {
+   "xitem": "FZ0000115",
+   "xsrate": "70",
+   "name": "XX--Hand Soap 250ml (Supreme) Refill without pump"
+  },
+  {
+   "xitem": "FZ000012",
+   "xsrate": "115",
+   "name": "Glass Cleaner (New)(Refill)"
+  },
+  {
+   "xitem": "FZ000013",
+   "xsrate": "125",
+   "name": "Multi Surface Cleaner 500 ml with Cap"
+  },
+  {
+   "xitem": "FZ000014",
+   "xsrate": "175",
+   "name": "Kitchen Degreaser 500 ml"
+  },
+  {
+   "xitem": "FZ000015",
+   "xsrate": "160",
+   "name": "Fabric Freshener (New)(Refill)"
+  },
+  {
+   "xitem": "FZ000016",
+   "xsrate": "160",
+   "name": "Fabric Freshener (New)(Refill)"
+  },
+  {
+   "xitem": "FZ000017",
+   "xsrate": "160",
+   "name": "Fabric Freshener (New)(Refill)"
+  },
+  {
+   "xitem": "FZ000018",
+   "xsrate": "160",
+   "name": "Fabric Freshener (New)(Refill)"
+  },
+  {
+   "xitem": "FZ000019",
+   "xsrate": "160",
+   "name": "Fabric Freshener (New)(Refill)"
+  },
+  {
+   "xitem": "FZ000020",
+   "xsrate": "525",
+   "name": "IPPL FinishGoods-500ml"
+  },
+  {
+   "xitem": "FZ000021",
+   "xsrate": "250",
+   "name": "IPPL FinishGoods-1000ml"
+  },
+  {
+   "xitem": "FZ000022",
+   "xsrate": "320",
+   "name": "ACET FinishGoods-1000ml"
+  },
+  {
+   "xitem": "FZ000023",
+   "xsrate": "140",
+   "name": "Zepto Steel Scrubber"
+  },
+  {
+   "xitem": "FZ000024",
+   "xsrate": "125",
+   "name": "Draino Powder"
+  },
+  {
+   "xitem": "FZ000025",
+   "xsrate": "150",
+   "name": "XX--Zepto Cockroach Killer"
+  },
+  {
+   "xitem": "FZ000026",
+   "xsrate": "500",
+   "name": "Marble Cleaner"
+  },
+  {
+   "xitem": "FZ000027",
+   "xsrate": "450",
+   "name": "ACTN Finished Goods 500 ml"
+  },
+  {
+   "xitem": "FZ000028",
+   "xsrate": "180",
+   "name": "Furniture Cleaner"
+  },
+  {
+   "xitem": "FZ000029",
+   "xsrate": "200",
+   "name": "Leather Cleaner"
+  },
+  {
+   "xitem": "FZ000030",
+   "xsrate": "150",
+   "name": "New Glass Cleaner"
+  },
+  {
+   "xitem": "FZ000031",
+   "xsrate": "50",
+   "name": "XX--Dish Washing 250ml"
+  },
+  {
+   "xitem": "FZ000032",
+   "xsrate": "100",
+   "name": "Blue Original Hand Soap 250ml (Supreme)"
+  },
+  {
+   "xitem": "FZ000033",
+   "xsrate": "180",
+   "name": "New Bathroom Cleaner"
+  },
+  {
+   "xitem": "FZ000034",
+   "xsrate": "110",
+   "name": "H202FinishedGoods - 500ml - 3%"
+  },
+  {
+   "xitem": "FZ000035",
+   "xsrate": "110",
+   "name": "ACETFinishedGoods - 500ml - 15%"
+  },
+  {
+   "xitem": "FZ000036",
+   "xsrate": "170",
+   "name": "XX--Dish washing  liquid 1 Litre"
+  },
+  {
+   "xitem": "FZ000037",
+   "xsrate": "850",
+   "name": "Dish washing  liquid 5 Litre"
+  },
+  {
+   "xitem": "FZ000038",
+   "xsrate": "1400",
+   "name": "Dish washing  liquid 10 Litre"
+  },
+  {
+   "xitem": "FZ000039",
+   "xsrate": "3000",
+   "name": "Dish washing  liquid 25 Litre"
+  },
+  {
+   "xitem": "FZ000040",
+   "xsrate": "270",
+   "name": "Liquid Hand soap 1 Litre (Supreme)"
+  },
+  {
+   "xitem": "FZ000041",
+   "xsrate": "1150",
+   "name": "Liquid Hand soap 5 Litre (Supreme)"
+  },
+  {
+   "xitem": "FZ000042",
+   "xsrate": "1600",
+   "name": "Liquid Hand soap 10 Litre (Supreme)"
+  },
+  {
+   "xitem": "FZ000043",
+   "xsrate": "3750",
+   "name": "Liquid Hand soap 25 Litre (Supreme)"
+  },
+  {
+   "xitem": "FZ000044",
+   "xsrate": "240",
+   "name": "New Glass Cleaner 1 Litre"
+  },
+  {
+   "xitem": "FZ000045",
+   "xsrate": "1150",
+   "name": "New Glass Cleaner 5 Litre"
+  },
+  {
+   "xitem": "FZ000046",
+   "xsrate": "2000",
+   "name": "New Glass Cleaner 10 Litre"
+  },
+  {
+   "xitem": "FZ000047",
+   "xsrate": "4500",
+   "name": "New Glass Cleaner 25 Litre"
+  },
+  {
+   "xitem": "FZ000048",
+   "xsrate": "370",
+   "name": "Kitchen Degreaser (New) 1 Litre"
+  },
+  {
+   "xitem": "FZ000049",
+   "xsrate": "1700",
+   "name": "Kitchen Degreaser (New) 5 Litre"
+  },
+  {
+   "xitem": "FZ000050",
+   "xsrate": "3300",
+   "name": "Kitchen Degreaser (New) 10 Litre"
+  },
+  {
+   "xitem": "FZ000051",
+   "xsrate": "7750",
+   "name": "Kitchen Degreaser (New) 25 Litre"
+  },
+  {
+   "xitem": "FZ000052",
+   "xsrate": "1100",
+   "name": "Floor Cleaner (New) 5 Litre (Supreme)"
+  },
+  {
+   "xitem": "FZ000053",
+   "xsrate": "1100",
+   "name": "Floor Cleaner(Lavender) 5 Litre (Supreme)"
+  },
+  {
+   "xitem": "FZ000054",
+   "xsrate": "1100",
+   "name": "Floor Cleaner (Lemon) 5 Litre (Supreme)"
+  },
+  {
+   "xitem": "FZ000055",
+   "xsrate": "1050",
+   "name": "Floor Cleaner (Bokul) 5 Litre (Supreme)"
+  },
+  {
+   "xitem": "FZ000056",
+   "xsrate": "1275",
+   "name": "Multi Surface Cleaner (New) 5 Litre"
+  },
+  {
+   "xitem": "FZ000057",
+   "xsrate": "2350",
+   "name": "Multi Surface Cleaner (New) 10 Litre"
+  },
+  {
+   "xitem": "FZ000058",
+   "xsrate": "5375",
+   "name": "Multi Surface Cleaner (New) 25 Litre"
+  },
+  {
+   "xitem": "FZ000059",
+   "xsrate": "2250",
+   "name": "Marble cleaner 5 Litre"
+  },
+  {
+   "xitem": "FZ000060",
+   "xsrate": "4000",
+   "name": "Marble cleaner 10 Litre"
+  },
+  {
+   "xitem": "FZ000061",
+   "xsrate": "8750",
+   "name": "Marble cleaner 25 Litre"
+  },
+  {
+   "xitem": "FZ000062",
+   "xsrate": "330",
+   "name": "Furniture Cleaner 1 Litre"
+  },
+  {
+   "xitem": "FZ000063",
+   "xsrate": "1550",
+   "name": "Furniture Cleaner 5 Litre"
+  },
+  {
+   "xitem": "FZ000064",
+   "xsrate": "2900",
+   "name": "Furniture Cleaner 10 Litre"
+  },
+  {
+   "xitem": "FZ000065",
+   "xsrate": "6750",
+   "name": "Furniture Cleaner 25 Litre"
+  },
+  {
+   "xitem": "FZ000066",
+   "xsrate": "380",
+   "name": "Leather Cleaner 1 Litre"
+  },
+  {
+   "xitem": "FZ000067",
+   "xsrate": "1600",
+   "name": "Leather Cleaner 5 Litre"
+  },
+  {
+   "xitem": "FZ000068",
+   "xsrate": "3400",
+   "name": "Leather Cleaner 10 Litre"
+  },
+  {
+   "xitem": "FZ000069",
+   "xsrate": "8000",
+   "name": "Leather Cleaner 25 Litre"
+  },
+  {
+   "xitem": "FZ000070",
+   "xsrate": "700",
+   "name": "Bathroom cleaner 5 Litre"
+  },
+  {
+   "xitem": "FZ000071",
+   "xsrate": "1200",
+   "name": "Bathroom cleaner 10 Litre"
+  },
+  {
+   "xitem": "FZ000072",
+   "xsrate": "2750",
+   "name": "Bathroom cleaner 25 Litre"
+  },
+  {
+   "xitem": "FZ000073",
+   "xsrate": "152",
+   "name": "Hospicare Hand Soap 1L Pine"
+  },
+  {
+   "xitem": "FZ000074",
+   "xsrate": "730",
+   "name": "Hospicare Hand Soap 5L Pine"
+  },
+  {
+   "xitem": "FZ000075",
+   "xsrate": "97",
+   "name": "Hospicare Acidic Cleaner 1L "
+  },
+  {
+   "xitem": "FZ000076",
+   "xsrate": "127",
+   "name": "Hospicare Floor Cleaner 1L New"
+  },
+  {
+   "xitem": "FZ000077",
+   "xsrate": "494",
+   "name": "Hospicare Floor Cleaner 5L New"
+  },
+  {
+   "xitem": "FZ000078",
+   "xsrate": "123",
+   "name": "Hospicare Floor Cleaner 1L Pine"
+  },
+  {
+   "xitem": "FZ000079",
+   "xsrate": "474",
+   "name": "Hospicare Floor Cleaner 5L Pine"
+  },
+  {
+   "xitem": "FZ000080",
+   "xsrate": "840",
+   "name": "Liquid Hand soap 5 Litre (Super)"
+  },
+  {
+   "xitem": "FZ000081",
+   "xsrate": "650",
+   "name": "Liquid Hand soap 5 Litre (Basic)"
+  },
+  {
+   "xitem": "FZ000082",
+   "xsrate": "800",
+   "name": "Floor Cleaner (New) 5 Litre (Super)"
+  },
+  {
+   "xitem": "FZ000083",
+   "xsrate": "210",
+   "name": "Liquid Hand soap 1 Litre (Super)"
+  },
+  {
+   "xitem": "FZ000084",
+   "xsrate": "1250",
+   "name": "Liquid Hand soap 10 Litre (Super)"
+  },
+  {
+   "xitem": "FZ000085",
+   "xsrate": "3000",
+   "name": "Liquid Hand soap 25 Litre (Super)"
+  },
+  {
+   "xitem": "FZ000086",
+   "xsrate": "185",
+   "name": "Liquid Hand soap 1 Litre (Basic)"
+  },
+  {
+   "xitem": "FZ000087",
+   "xsrate": "950",
+   "name": "Liquid Hand soap 10 Litre (Basic)"
+  },
+  {
+   "xitem": "FZ000088",
+   "xsrate": "2300",
+   "name": "Liquid Hand soap 25 Litre (Basic)"
+  },
+  {
+   "xitem": "FZ000089",
+   "xsrate": "10",
+   "name": "Hand Soap 20ml (Supreme) Sample"
+  },
+  {
+   "xitem": "FZ000090",
+   "xsrate": "9",
+   "name": "Hand Soap 20ml (Super) Sample"
+  },
+  {
+   "xitem": "FZ000091",
+   "xsrate": "8",
+   "name": "Hand Soap 20ml (Basic) Sample"
+  },
+  {
+   "xitem": "FZ000092",
+   "xsrate": "12",
+   "name": "Floor Cleaner 20ml (Supreme) Sample"
+  },
+  {
+   "xitem": "FZ000093",
+   "xsrate": "11",
+   "name": "Floor Cleaner 20ml (Super) Sample"
+  },
+  {
+   "xitem": "FZ000094",
+   "xsrate": "10",
+   "name": "Floor Cleaner 20ml (Basic) Sample"
+  },
+  {
+   "xitem": "FZ000095",
+   "xsrate": "9",
+   "name": "Dish Washing Liquid 20ml Sample"
+  },
+  {
+   "xitem": "FZ000096",
+   "xsrate": "9",
+   "name": "Bathroom Cleaner 20ml Sample"
+  },
+  {
+   "xitem": "FZ000097",
+   "xsrate": "570",
+   "name": "Floor Cleaner 5L Jasmine Basic"
+  },
+  {
+   "xitem": "FZ000098",
+   "xsrate": "50",
+   "name": "CTAD 50g Sachet Pack"
+  },
+  {
+   "xitem": "FZ000099",
+   "xsrate": "40",
+   "name": "SBC 50g Sachet Pack"
+  },
+  {
+   "xitem": "FZ000100",
+   "xsrate": "40",
+   "name": "STD 50g Sachet Pack"
+  },
+  {
+   "xitem": "FZ000101",
+   "xsrate": "200",
+   "name": "Tiles Cleaner 1L Zepto"
+  },
+  {
+   "xitem": "FZ000102",
+   "xsrate": "550",
+   "name": "XX--500ml Zepto Hand Sanitizer"
+  },
+  {
+   "xitem": "FZ000103",
+   "xsrate": "70",
+   "name": "XX--50ml Zepto Hand Sanitizer"
+  },
+  {
+   "xitem": "FZ000104",
+   "xsrate": "24",
+   "name": "50ml Hospicare Hand Sanitizer"
+  },
+  {
+   "xitem": "FZ000105",
+   "xsrate": "100",
+   "name": "XX--Black Spray Head"
+  },
+  {
+   "xitem": "FZ000106",
+   "xsrate": "80",
+   "name": "XX--70ml Zepto Hand Sanitizer"
+  },
+  {
+   "xitem": "FZ000107",
+   "xsrate": "90",
+   "name": "Hospicare Hand Sanitizer 250ml"
+  },
+  {
+   "xitem": "FZ000108",
+   "xsrate": "90",
+   "name": "Square Hand Sanitizer 250ml"
+  },
+  {
+   "xitem": "FZ000109",
+   "xsrate": "500",
+   "name": "XX--500ml Zepto Hand Sanitizer without cap"
+  },
+  {
+   "xitem": "FZ000110",
+   "xsrate": "110",
+   "name": "H202FinishedGoods - 500ml - 3%"
+  },
+  {
+   "xitem": "FZ000111",
+   "xsrate": "300",
+   "name": "6ml hospicare vial filling"
+  },
+  {
+   "xitem": "FZ000112",
+   "xsrate": "800",
+   "name": "XX--1L Zepto Hand Sanitizer"
+  },
+  {
+   "xitem": "FZ000113",
+   "xsrate": "2800",
+   "name": "XX--5L Zepto Hand Sanitizer"
+  },
+  {
+   "xitem": "FZ000114",
+   "xsrate": "60",
+   "name": "500ml spray bottle"
+  },
+  {
+   "xitem": "FZ000116",
+   "xsrate": "25",
+   "name": "Sanitizing wipes 10pcs Box"
+  },
+  {
+   "xitem": "FZ000117",
+   "xsrate": "160",
+   "name": "XX--Disinfectant Spray 500ml"
+  },
+  {
+   "xitem": "FZ000118",
+   "xsrate": "15",
+   "name": "XX--Powder Disinfectant 25gm"
+  },
+  {
+   "xitem": "FZ000119",
+   "xsrate": "100",
+   "name": "New Pink Hand Soap 250ml (Supreme)"
+  },
+  {
+   "xitem": "FZ000120",
+   "xsrate": "100",
+   "name": "Yellow Lime Hand Soap 250ml (Supreme)"
+  },
+  {
+   "xitem": "FZ000121",
+   "xsrate": "90",
+   "name": "XX--New Green Hand Soap 250ml (Supreme)"
+  },
+  {
+   "xitem": "FZ000122",
+   "xsrate": "160",
+   "name": "Blue Original Hand Soap 500ml (Supreme)"
+  },
+  {
+   "xitem": "FZ000123",
+   "xsrate": "250",
+   "name": "XX--Zepto Hand Sanitizer 250ml"
+  },
+  {
+   "xitem": "FZ000124",
+   "xsrate": "1660",
+   "name": "General Disinfectant by Zepto"
+  },
+  {
+   "xitem": "FZ000125",
+   "xsrate": "1150",
+   "name": "Liquid Hand soap 5 Litre (Supreme) Pink New"
+  },
+  {
+   "xitem": "FZ000126",
+   "xsrate": "850",
+   "name": "Liquid Hand soap 5 Litre (Supreme) Green New"
+  },
+  {
+   "xitem": "FZ000127",
+   "xsrate": "55",
+   "name": "Dish Washing Liquid 250ml w/o spout"
+  },
+  {
+   "xitem": "FZ000128",
+   "xsrate": "3000",
+   "name": "IPPL 5000 ml 70%"
+  },
+  {
+   "xitem": "FZ000130",
+   "xsrate": "1400",
+   "name": "Disinfectant Spray 5L"
+  },
+  {
+   "xitem": "FZ000131",
+   "xsrate": "90",
+   "name": "Zepto Laundry Detergent 500g"
+  },
+  {
+   "xitem": "FZ000132",
+   "xsrate": "200",
+   "name": "Zepto Purchase Club gift hamper"
+  },
+  {
+   "xitem": "FZ000133",
+   "xsrate": "200",
+   "name": "Kitchen Degreaser Supreme Lime Purchase Club"
+  },
+  {
+   "xitem": "FZ000134",
+   "xsrate": "150",
+   "name": "XX--Multi-surface Cleaner Supreme Lavender Purchase Club"
+  },
+  {
+   "xitem": "FZ000135",
+   "xsrate": "160",
+   "name": "XX--Furniture Cleaner Supreme Lemon  Purchase Club"
+  },
+  {
+   "xitem": "FZ000136",
+   "xsrate": "190",
+   "name": "Leather Cleaner Supreme Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000137",
+   "xsrate": "130",
+   "name": "Bathroom Cleaner Supreme  Purchase Club"
+  },
+  {
+   "xitem": "FZ000138",
+   "xsrate": "140",
+   "name": "XX--Tiles Cleaner Supreme  Purchase Club"
+  },
+  {
+   "xitem": "FZ000139",
+   "xsrate": "112",
+   "name": "XX--Liquid Hand Soap Basic Original  Purchase Club"
+  },
+  {
+   "xitem": "FZ000140",
+   "xsrate": "136",
+   "name": "Liquid Hand Soap Super Original  Purchase Club"
+  },
+  {
+   "xitem": "FZ000141",
+   "xsrate": "190",
+   "name": "Liquid Hand Soap Supreme Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000142",
+   "xsrate": "112",
+   "name": "Liquid Hand Soap Basic Lemon Purchase Club"
+  },
+  {
+   "xitem": "FZ000143",
+   "xsrate": "136",
+   "name": "Liquid Hand Soap Super Lemon Purchase Club"
+  },
+  {
+   "xitem": "FZ000144",
+   "xsrate": "190",
+   "name": "Liquid Hand Soap Supreme Lemon Purchase Club"
+  },
+  {
+   "xitem": "FZ000145",
+   "xsrate": "112",
+   "name": "Liquid Hand Soap Basic Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000146",
+   "xsrate": "136",
+   "name": "Liquid Hand Soap Super Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000147",
+   "xsrate": "190",
+   "name": "Liquid Hand Soap Supreme Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000148",
+   "xsrate": "112",
+   "name": "Liquid Hand Soap Basic Original  Purchase Club"
+  },
+  {
+   "xitem": "FZ000149",
+   "xsrate": "136",
+   "name": "Liquid Hand Soap Super Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000150",
+   "xsrate": "190",
+   "name": "Liquid Hand Soap Supreme Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000151",
+   "xsrate": "120",
+   "name": "XX--Dish Washing Liquid Supreme Lemon Purchase Club"
+  },
+  {
+   "xitem": "FZ000152",
+   "xsrate": "470",
+   "name": "Hand Sanitizer Supreme Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000153",
+   "xsrate": "190",
+   "name": "Spray Disinfectant Supreme Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000154",
+   "xsrate": "380",
+   "name": "Disinfectant Supreme Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000155",
+   "xsrate": "115",
+   "name": "Glass Cleaner Supreme Original Purchase Club"
+  },
+  {
+   "xitem": "FZ000156",
+   "xsrate": "80",
+   "name": "Floor Cleaner Basic Pine Purchase Club"
+  },
+  {
+   "xitem": "FZ000157",
+   "xsrate": "120",
+   "name": "Floor Cleaner Super Pine Purchase Club"
+  },
+  {
+   "xitem": "FZ000158",
+   "xsrate": "144",
+   "name": "XX--Floor Cleaner Supreme Pine Purchase Club"
+  },
+  {
+   "xitem": "FZ000159",
+   "xsrate": "350",
+   "name": "Marble Cleaner Supreme Purchase Club"
+  },
+  {
+   "xitem": "FZ000160",
+   "xsrate": "60",
+   "name": "Long Clear Bottle 500 ml Purchase Club"
+  },
+  {
+   "xitem": "FZ000161",
+   "xsrate": "40",
+   "name": "Round Bottle 250 ml Purchase Club"
+  },
+  {
+   "xitem": "FZ000162",
+   "xsrate": "60",
+   "name": "Bottle 500 ml Purchase Club"
+  },
+  {
+   "xitem": "FZ000163",
+   "xsrate": "60",
+   "name": "Hand soap pump Purchase club"
+  },
+  {
+   "xitem": "FZ000164",
+   "xsrate": "40",
+   "name": "Bottle-1000ml Purchase club"
+  },
+  {
+   "xitem": "FZ000165",
+   "xsrate": "250",
+   "name": "Bottle-5L Purchase club"
+  },
+  {
+   "xitem": "FZ000166",
+   "xsrate": "5",
+   "name": "Zepto Laundry Detergent 30g"
+  },
+  {
+   "xitem": "FZ000167",
+   "xsrate": "50",
+   "name": "100ml Zepto Kitchen Degreaser"
+  },
+  {
+   "xitem": "FZ000168",
+   "xsrate": "36",
+   "name": "100ml Zepto Glass Cleaner"
+  },
+  {
+   "xitem": "FZ000169",
+   "xsrate": "40",
+   "name": "100ml Zepto MultiSurface Cleaner"
+  },
+  {
+   "xitem": "FZ000170",
+   "xsrate": "45",
+   "name": "100ml Zepto Furniture Cleaner"
+  },
+  {
+   "xitem": "FZ000171",
+   "xsrate": "50",
+   "name": "100ml Zepto Leather Cleaner"
+  },
+  {
+   "xitem": "FZ000172",
+   "xsrate": "60",
+   "name": "100ml Zepto Disinfectant"
+  },
+  {
+   "xitem": "FZ000173",
+   "xsrate": "5",
+   "name": "XX--Zepto Laundry Detergent 30g"
+  },
+  {
+   "xitem": "FZ000174",
+   "xsrate": "840",
+   "name": "Liquid Hand soap 5 Litre (Super) Lavender"
+  },
+  {
+   "xitem": "FZ000175",
+   "xsrate": "840",
+   "name": "Liquid Hand soap 5 Litre (Super) Lemon"
+  },
+  {
+   "xitem": "FZ000176",
+   "xsrate": "650",
+   "name": "Liquid Hand soap 5 Litre (Basic) Lemon"
+  },
+  {
+   "xitem": "FZ000177",
+   "xsrate": "650",
+   "name": "Liquid Hand soap 5 Litre (Basic) Lavender"
+  },
+  {
+   "xitem": "FZ000178",
+   "xsrate": "650",
+   "name": "Liquid Hand soap 5 Litre (Basic) Jasmine"
+  },
+  {
+   "xitem": "FZ000179",
+   "xsrate": "163",
+   "name": "CleanX 1000 ML"
+  },
+  {
+   "xitem": "FZ000180",
+   "xsrate": "150",
+   "name": "Furniture Cleaner Refill  500 ml"
+  },
+  {
+   "xitem": "FZ000181",
+   "xsrate": "175",
+   "name": "Leather Cleaner Refill 500 ml"
+  },
+  {
+   "xitem": "FZ000182",
+   "xsrate": "115",
+   "name": "Glass Cleaner 500 ml Refill"
+  },
+  {
+   "xitem": "FZ000183",
+   "xsrate": "1150",
+   "name": "Liquid Hand Soap 5 Liter Supreme [Lemon]"
+  },
+  {
+   "xitem": "FZ000184",
+   "xsrate": "110",
+   "name": "Dish Washing Liquid 500ml"
+  },
+  {
+   "xitem": "FZ000185",
+   "xsrate": "190",
+   "name": "White Phenyle 3 Litre"
+  },
+  {
+   "xitem": "FZ000186",
+   "xsrate": "120",
+   "name": "White Phenyle 1 Litre"
+  },
+  {
+   "xitem": "FZ000187",
+   "xsrate": "350",
+   "name": "XX--Kitchen Degreaser 1 Litre"
+  },
+  {
+   "xitem": "FZ000188",
+   "xsrate": "150",
+   "name": "Grand Prix Car Wash Zepto 250g"
+  },
+  {
+   "xitem": "FZ000189",
+   "xsrate": "50",
+   "name": "Kitchen Paste Zepto 150g"
+  },
+  {
+   "xitem": "FZ000190",
+   "xsrate": "800",
+   "name": "Floor Cleaner (Lemon) 5 Litre (Super)"
+  },
+  {
+   "xitem": "FZ000191",
+   "xsrate": "800",
+   "name": "Floor Cleaner (Lavender) 5 Litre (Super)"
+  },
+  {
+   "xitem": "FZ000192",
+   "xsrate": "750",
+   "name": "Floor Cleaner (Bokul) 5 Litre (Super)"
+  },
+  {
+   "xitem": "FZ000193",
+   "xsrate": "570",
+   "name": "Floor Cleaner (Lemon) 5 Litre (Basic)"
+  },
+  {
+   "xitem": "FZ000194",
+   "xsrate": "570",
+   "name": "Floor Cleaner (Lavender) 5 Litre (Basic)"
+  },
+  {
+   "xitem": "FZ000195",
+   "xsrate": "550",
+   "name": "Floor Cleaner (Bokul) 5 Litre (Basic)"
+  },
+  {
+   "xitem": "FZ000196",
+   "xsrate": "250",
+   "name": "Floor Cleaner (Lemon Flavour ) 1 Litre"
+  },
+  {
+   "xitem": "FZ000197",
+   "xsrate": "250",
+   "name": "Floor Cleaner (Lavender Flavour ) 1 Litre"
+  },
+  {
+   "xitem": "FZ000198",
+   "xsrate": "240",
+   "name": "Floor Cleaner (Bokul Flavour ) 1 Litre"
+  },
+  {
+   "xitem": "FZ000199",
+   "xsrate": "270",
+   "name": "Hand Soap Supreme (Lemon Flavour ) 1 Litre"
+  },
+  {
+   "xitem": "FZ000200",
+   "xsrate": "210",
+   "name": "Hand Soap Super (Lemon Flavour ) 1 Litre"
+  },
+  {
+   "xitem": "FZ000201",
+   "xsrate": "185",
+   "name": "Hand Soap Basic (Lemon Flavour ) 1 Litre"
+  },
+  {
+   "xitem": "FZ000202",
+   "xsrate": "800",
+   "name": "Liquid Toilet Cleaner 5 Litre"
+  },
+  {
+   "xitem": "FZ000203",
+   "xsrate": "110",
+   "name": "Liquid Toilet Cleaner 500 ml"
+  },
+  {
+   "xitem": "FZ000204",
+   "xsrate": "150",
+   "name": "Liquid Toilet Cleaner 750 ml"
+  },
+  {
+   "xitem": "FZ000205",
+   "xsrate": "160",
+   "name": "Pink Original Hand Soap 500ml (Supreme)"
+  },
+  {
+   "xitem": "FZ000206",
+   "xsrate": "270",
+   "name": "Pink Original Hand Soap 1 Litre(Supreme)"
+  },
+  {
+   "xitem": "FZ000207",
+   "xsrate": "210",
+   "name": "Pink Original Hand Soap 1 Litre(Super)"
+  },
+  {
+   "xitem": "FZ000208",
+   "xsrate": "185",
+   "name": "Pink Original Hand Soap 1 Litre (Basic)"
+  },
+  {
+   "xitem": "FZ000209",
+   "xsrate": "165",
+   "name": "Clean OL 1 Litre"
+  },
+  {
+   "xitem": "FZ000210",
+   "xsrate": "350",
+   "name": "Clean OL 3 Litre"
+  },
+  {
+   "xitem": "FZ000211",
+   "xsrate": "499",
+   "name": "Combo Pack (F000005, 184, 24, 131, 23, 122)"
+  },
+  {
+   "xitem": "FZ000212",
+   "xsrate": "160",
+   "name": "Hand Soap (Supreme) Lemon 500 ml"
+  },
+  {
+   "xitem": "FZ000213",
+   "xsrate": "320",
+   "name": "White Phenyle 5 Litre"
+  },
+  {
+   "xitem": "FZ000214",
+   "xsrate": "510",
+   "name": "Disinfectant gel 1 Litre"
+  },
+  {
+   "xitem": "FZ000215",
+   "xsrate": "260",
+   "name": "Disinfectant spray 500 ml"
+  },
+  {
+   "xitem": "FZ000216",
+   "xsrate": "320",
+   "name": "Zepto Tank Cleaner 500g"
+  },
+  {
+   "xitem": "FZ000217",
+   "xsrate": "220",
+   "name": "Zepto limescale remover (Ceramic & Glass) 225ml"
+  },
+  {
+   "xitem": "FZ000218",
+   "xsrate": "250",
+   "name": "Zepto limescale remover (Steel) 225ml"
+  },
+  {
+   "xitem": "FZ000219",
+   "xsrate": "200",
+   "name": "Zepto limescale preventer 500ml"
+  },
+  {
+   "xitem": "FZ000220",
+   "xsrate": "180",
+   "name": "Zepto Car and Bike Gel Shampoo 250ml"
+  },
+  {
+   "xitem": "FZ000221",
+   "xsrate": "70",
+   "name": "Zepto Screen Cleaner 100ml"
+  },
+  {
+   "xitem": "FZ000222",
+   "xsrate": "70",
+   "name": "Zepto Car and Bike Shampoo 5 L"
+  },
+  {
+   "xitem": "FZ000223",
+   "xsrate": "700",
+   "name": "Zepto Hand Soap Basic Blue (Silk) 5 L"
+  },
+  {
+   "xitem": "FZ000224",
+   "xsrate": "700",
+   "name": "Zepto Hand Soap Basic Lavender (Silk) 5 L"
+  },
+  {
+   "xitem": "FZ000225",
+   "xsrate": "700",
+   "name": "Zepto Hand Soap Basic Lemon (Silk) 5 L"
+  },
+  {
+   "xitem": "FZ000226",
+   "xsrate": "765",
+   "name": "Zepto Dishwashing Liquid 4.5 L"
+  },
+  {
+   "xitem": "FZ000227",
+   "xsrate": "765",
+   "name": "Zepto Dishwashing Liquid 100 mL"
+  },
+  {
+   "xitem": "FZ000228",
+   "xsrate": "765",
+   "name": "Zepto handsoap basic HB 100 mL"
+  },
+  {
+   "xitem": "FZ000229",
+   "xsrate": "765",
+   "name": "Zepto handsoap basic lemon 100 mL"
+  },
+  {
+   "xitem": "FZ000230",
+   "xsrate": "765",
+   "name": "Zepto handsoap basic LV100 mL"
+  },
+  {
+   "xitem": "FZ000231",
+   "xsrate": "765",
+   "name": "Zepto handsoap Super HB100 mL"
+  },
+  {
+   "xitem": "FZ000232",
+   "xsrate": "765",
+   "name": "Zepto handsoap Super Lemon100 mL"
+  },
+  {
+   "xitem": "FZ000233",
+   "xsrate": "765",
+   "name": "Zepto handsoap Super LV 100 mL"
+  },
+  {
+   "xitem": "FZ000234",
+   "xsrate": "765",
+   "name": "Zepto handsoap Supreme HB 100 mL"
+  },
+  {
+   "xitem": "FZ000235",
+   "xsrate": "765",
+   "name": "Zepto handsoap Supreme Lemon 100 mL"
+  },
+  {
+   "xitem": "FZ000236",
+   "xsrate": "765",
+   "name": "Zepto handsoap Supreme LV 100 mL"
+  },
+  {
+   "xitem": "FZ000237",
+   "xsrate": "765",
+   "name": "Zepto Floor cleaner basic Pine 100 mL"
+  },
+  {
+   "xitem": "FZ000238",
+   "xsrate": "1",
+   "name": "Zepto Floor cleaner basic Lemon 100 mL"
+  },
+  {
+   "xitem": "FZ000239",
+   "xsrate": "1",
+   "name": "Zepto Floor cleaner basic LV 100 mL"
+  },
+  {
+   "xitem": "FZ000240",
+   "xsrate": "1",
+   "name": "Zepto Floor cleaner Super Pine 100 mL"
+  },
+  {
+   "xitem": "FZ000241",
+   "xsrate": "1",
+   "name": "Zepto Floor cleaner Super Lemon 100 mL"
+  },
+  {
+   "xitem": "FZ000242",
+   "xsrate": "1",
+   "name": "Zepto Floor cleaner Super LV 100 mL"
+  },
+  {
+   "xitem": "FZ000243",
+   "xsrate": "1",
+   "name": "Zepto floor cleaner supreme Pine 100 ml"
+  },
+  {
+   "xitem": "FZ000244",
+   "xsrate": "1",
+   "name": "Clean OL 100 ml"
+  },
+  {
+   "xitem": "FZ000245",
+   "xsrate": "1",
+   "name": "Phenyl 100 ml"
+  },
+  {
+   "xitem": "FZ000246",
+   "xsrate": "1",
+   "name": "Marble cleaner 100 ml"
+  },
+  {
+   "xitem": "FZ000247",
+   "xsrate": "1",
+   "name": "Limescale Remover Steel 100ml"
+  },
+  {
+   "xitem": "FZ000248",
+   "xsrate": "1",
+   "name": "Limescale Remover Ceramics100ml"
+  },
+  {
+   "xitem": "FZ000249",
+   "xsrate": "1",
+   "name": "Limescale preventer 100ml"
+  },
+  {
+   "xitem": "FZ000250",
+   "xsrate": "1",
+   "name": "Zepto floor cleaner supreme LS100 ml"
+  },
+  {
+   "xitem": "FZ000251",
+   "xsrate": "1",
+   "name": "Zepto floor cleaner supreme LV 100 ml"
+  },
+  {
+   "xitem": "FZ000252",
+   "xsrate": "1",
+   "name": "Zepto Toilet Cleaner 100 ml"
+  },
+  {
+   "xitem": "GZ000002",
+   "xsrate": "1",
+   "name": "Sticker-3 Litters Bottle Fix iT Basic"
+  },
+  {
+   "xitem": "GZ000003",
+   "xsrate": "1",
+   "name": "HDP Bottle-3 Litters Fix iT Basic"
+  },
+  {
+   "xitem": "GZ00001",
+   "xsrate": "1",
+   "name": "Musk"
+  },
+  {
+   "xitem": "GZ000010",
+   "xsrate": "1",
+   "name": "Blank Cartoon"
+  },
+  {
+   "xitem": "GZ000011",
+   "xsrate": "1",
+   "name": "Zepto Master Carton Small"
+  },
+  {
+   "xitem": "GZ000012",
+   "xsrate": "1",
+   "name": "Zepto Master Carton Big"
+  },
+  {
+   "xitem": "GZ00002",
+   "xsrate": "1",
+   "name": "Zepto Brochure"
+  },
+  {
+   "xitem": "GZ00003",
+   "xsrate": "1",
+   "name": "Zepto Cash Memo(Blue)"
+  },
+  {
+   "xitem": "GZ00004",
+   "xsrate": "1",
+   "name": "Zepto Cash Memo(White)"
+  },
+  {
+   "xitem": "GZ00005",
+   "xsrate": "1",
+   "name": "Zepto Order & Bill  Book"
+  },
+  {
+   "xitem": "GZ00006",
+   "xsrate": "1",
+   "name": "T-Shirt"
+  },
+  {
+   "xitem": "GZ00007",
+   "xsrate": "1",
+   "name": "Visiting Card"
+  },
+  {
+   "xitem": "GZ00008",
+   "xsrate": "1",
+   "name": "Gloves"
+  },
+  {
+   "xitem": "GZ00009",
+   "xsrate": "1",
+   "name": "Zepto Coronavirus Flyer"
+  },
+  {
+   "xitem": "GZ00010",
+   "xsrate": "1",
+   "name": "Hand Sanitizer Caution Sticker"
+  },
+  {
+   "xitem": "GZ00011",
+   "xsrate": "1",
+   "name": "Dish Washing Liquid Free Tag"
+  },
+  {
+   "xitem": "GZ00012",
+   "xsrate": "1",
+   "name": "Customer Visit Book"
+  },
+  {
+   "xitem": "GZ00013",
+   "xsrate": "1",
+   "name": "Detergent Powder Outlet Sticker"
+  },
+  {
+   "xitem": "GZ00014",
+   "xsrate": "1",
+   "name": "Detergent Powder big Poster"
+  },
+  {
+   "xitem": "GZ00015",
+   "xsrate": "1",
+   "name": "Detergent Powder Leaflet"
+  },
+  {
+   "xitem": "GZ00016",
+   "xsrate": "1",
+   "name": "Adhesive Tape"
+  },
+  {
+   "xitem": "RZ000001",
+   "xsrate": "1",
+   "name": "SDSF0490"
+  },
+  {
+   "xitem": "RZ000002",
+   "xsrate": "201",
+   "name": "IPPL4250"
+  },
+  {
+   "xitem": "RZ000003",
+   "xsrate": "501",
+   "name": "MELA8574"
+  },
+  {
+   "xitem": "RZ000004",
+   "xsrate": "351",
+   "name": "EDTN5017"
+  },
+  {
+   "xitem": "RZ000005",
+   "xsrate": "201",
+   "name": "STD2413"
+  },
+  {
+   "xitem": "RZ000006",
+   "xsrate": "201",
+   "name": "GLYC6200"
+  },
+  {
+   "xitem": "RZ000007",
+   "xsrate": "71",
+   "name": "AMHD0481"
+  },
+  {
+   "xitem": "RZ000008",
+   "xsrate": "191",
+   "name": "XX--SPTD1075"
+  },
+  {
+   "xitem": "RZ000009",
+   "xsrate": "151",
+   "name": "CTAD3650"
+  },
+  {
+   "xitem": "RZ000010",
+   "xsrate": "61",
+   "name": "SBC9910"
+  },
+  {
+   "xitem": "RZ000011",
+   "xsrate": "201",
+   "name": "SULF0000"
+  },
+  {
+   "xitem": "RZ000012",
+   "xsrate": "201",
+   "name": "ACET0000"
+  },
+  {
+   "xitem": "RZ000013",
+   "xsrate": "0.4",
+   "name": "ACTN0001"
+  },
+  {
+   "xitem": "RZ000014",
+   "xsrate": "211",
+   "name": "Alizarin"
+  },
+  {
+   "xitem": "RZ000015",
+   "xsrate": "13",
+   "name": "AMCL0001"
+  },
+  {
+   "xitem": "RZ000016",
+   "xsrate": "0.4",
+   "name": "BCPD0001"
+  },
+  {
+   "xitem": "RZ000017",
+   "xsrate": "31",
+   "name": "BRG00015"
+  },
+  {
+   "xitem": "RZ000018",
+   "xsrate": "61",
+   "name": "BSAL0001"
+  },
+  {
+   "xitem": "RZ000019",
+   "xsrate": "11",
+   "name": "BZAH5037"
+  },
+  {
+   "xitem": "RZ000020",
+   "xsrate": "13",
+   "name": "BZBZ4752"
+  },
+  {
+   "xitem": "RZ000021",
+   "xsrate": "2",
+   "name": "BZCD2041"
+  },
+  {
+   "xitem": "RZ000022",
+   "xsrate": "0.9",
+   "name": "CACH0001"
+  },
+  {
+   "xitem": "RZ000023",
+   "xsrate": "0.9",
+   "name": "CAO00001"
+  },
+  {
+   "xitem": "RZ000024",
+   "xsrate": "0.9",
+   "name": "CAOH0001"
+  },
+  {
+   "xitem": "RZ000025",
+   "xsrate": "11",
+   "name": "XX--CNAL0001"
+  },
+  {
+   "xitem": "RZ000026",
+   "xsrate": "56",
+   "name": "CNMN0001"
+  },
+  {
+   "xitem": "RZ000027",
+   "xsrate": "33",
+   "name": "Crystal Violet"
+  },
+  {
+   "xitem": "RZ000028",
+   "xsrate": "11",
+   "name": "XX--CTAL8820"
+  },
+  {
+   "xitem": "RZ000029",
+   "xsrate": "11",
+   "name": "XX--CTOL0003"
+  },
+  {
+   "xitem": "RZ000030",
+   "xsrate": "1.5",
+   "name": "DIW"
+  },
+  {
+   "xitem": "RZ000031",
+   "xsrate": "1.5",
+   "name": "DLLA1120"
+  },
+  {
+   "xitem": "RZ000032",
+   "xsrate": "11",
+   "name": "XX--DLMN0004"
+  },
+  {
+   "xitem": "RZ000033",
+   "xsrate": "2",
+   "name": "DPGME451"
+  },
+  {
+   "xitem": "RZ000034",
+   "xsrate": "11",
+   "name": "EGNL7652"
+  },
+  {
+   "xitem": "RZ000035",
+   "xsrate": "6",
+   "name": "EMK00001"
+  },
+  {
+   "xitem": "RZ000036",
+   "xsrate": "9",
+   "name": "GCAD6561"
+  },
+  {
+   "xitem": "RZ000037",
+   "xsrate": "11",
+   "name": "XX--GRNL9840"
+  },
+  {
+   "xitem": "RZ000038",
+   "xsrate": "1.8",
+   "name": "HO000001"
+  },
+  {
+   "xitem": "RZ000039",
+   "xsrate": "13",
+   "name": "HXCMNL01"
+  },
+  {
+   "xitem": "RZ000040",
+   "xsrate": "26",
+   "name": "HXGL3576"
+  },
+  {
+   "xitem": "RZ000041",
+   "xsrate": "13",
+   "name": "IAMLACT01"
+  },
+  {
+   "xitem": "RZ000042",
+   "xsrate": "383",
+   "name": "IDKV4049"
+  },
+  {
+   "xitem": "RZ000043",
+   "xsrate": "11",
+   "name": "IEGL0006"
+  },
+  {
+   "xitem": "RZ000044",
+   "xsrate": "1.7",
+   "name": "IPMR0001"
+  },
+  {
+   "xitem": "RZ000045",
+   "xsrate": "31",
+   "name": "JSM00016"
+  },
+  {
+   "xitem": "RZ000046",
+   "xsrate": "11",
+   "name": "LAB2AMP5712"
+  },
+  {
+   "xitem": "RZ000047",
+   "xsrate": "7",
+   "name": "LAB2BOE2171"
+  },
+  {
+   "xitem": "RZ000048",
+   "xsrate": "21",
+   "name": "LAB2PET7010"
+  },
+  {
+   "xitem": "RZ000049",
+   "xsrate": "14",
+   "name": "LABAGPD2775"
+  },
+  {
+   "xitem": "RZ000050",
+   "xsrate": "5",
+   "name": "LABAMHD0481"
+  },
+  {
+   "xitem": "RZ000051",
+   "xsrate": "13",
+   "name": "LABANSF4945"
+  },
+  {
+   "xitem": "RZ000052",
+   "xsrate": "21",
+   "name": "LABAPAD5623"
+  },
+  {
+   "xitem": "RZ000053",
+   "xsrate": "6",
+   "name": "LABATAD1250"
+  },
+  {
+   "xitem": "RZ000054",
+   "xsrate": "29",
+   "name": "LABBNSL3257"
+  },
+  {
+   "xitem": "RZ000055",
+   "xsrate": "12",
+   "name": "LABBZAH5037"
+  },
+  {
+   "xitem": "RZ000056",
+   "xsrate": "20",
+   "name": "LABBZBZ4752"
+  },
+  {
+   "xitem": "RZ000057",
+   "xsrate": "32",
+   "name": "LABBZCD2041"
+  },
+  {
+   "xitem": "RZ000058",
+   "xsrate": "86",
+   "name": "LABBZCL6020"
+  },
+  {
+   "xitem": "RZ000059",
+   "xsrate": "56",
+   "name": "LABBZCM7162"
+  },
+  {
+   "xitem": "RZ000060",
+   "xsrate": "28",
+   "name": "LABCHCL5310"
+  },
+  {
+   "xitem": "RZ000061",
+   "xsrate": "22",
+   "name": "LABCMN76137"
+  },
+  {
+   "xitem": "RZ000062",
+   "xsrate": "33",
+   "name": "LABCNMA5041"
+  },
+  {
+   "xitem": "RZ000063",
+   "xsrate": "8",
+   "name": "LABCTAD3650"
+  },
+  {
+   "xitem": "RZ000064",
+   "xsrate": "47",
+   "name": "LABCTAL8820"
+  },
+  {
+   "xitem": "RZ000065",
+   "xsrate": "42",
+   "name": "LABCTNL0770"
+  },
+  {
+   "xitem": "RZ000067",
+   "xsrate": "50",
+   "name": "LABDASS5517"
+  },
+  {
+   "xitem": "RZ000068",
+   "xsrate": "37",
+   "name": "LABDGDE0851"
+  },
+  {
+   "xitem": "RZ000069",
+   "xsrate": "7",
+   "name": "LABDGMEE646"
+  },
+  {
+   "xitem": "RZ000070",
+   "xsrate": "20",
+   "name": "LABDIPA8377"
+  },
+  {
+   "xitem": "RZ000071",
+   "xsrate": "11",
+   "name": "LABDLLA1120"
+  },
+  {
+   "xitem": "RZ000072",
+   "xsrate": "94",
+   "name": "LABDLMN4200"
+  },
+  {
+   "xitem": "RZ000073",
+   "xsrate": "18",
+   "name": "LABDMHO6803"
+  },
+  {
+   "xitem": "RZ000074",
+   "xsrate": "12",
+   "name": "LABDPGME451"
+  },
+  {
+   "xitem": "RZ000075",
+   "xsrate": "38",
+   "name": "LABDSAM5950"
+  },
+  {
+   "xitem": "RZ000076",
+   "xsrate": "47",
+   "name": "LABEDDN1660"
+  },
+  {
+   "xitem": "RZ000077",
+   "xsrate": "8",
+   "name": "LABEDTN5017"
+  },
+  {
+   "xitem": "RZ000078",
+   "xsrate": "70",
+   "name": "LABEGDE1374"
+  },
+  {
+   "xitem": "RZ000079",
+   "xsrate": "59",
+   "name": "LABEGNL7652"
+  },
+  {
+   "xitem": "RZ000080",
+   "xsrate": "261",
+   "name": "LABFSNL9576"
+  },
+  {
+   "xitem": "RZ000081",
+   "xsrate": "61",
+   "name": "LABGCAD6561"
+  },
+  {
+   "xitem": "RZ000082",
+   "xsrate": "3",
+   "name": "LABGLYC6200"
+  },
+  {
+   "xitem": "RZ000083",
+   "xsrate": "379",
+   "name": "LABGRNL9840"
+  },
+  {
+   "xitem": "RZ000084",
+   "xsrate": "62",
+   "name": "LABIEGL0378"
+  },
+  {
+   "xitem": "RZ000085",
+   "xsrate": "9",
+   "name": "LABIPPL4250"
+  },
+  {
+   "xitem": "RZ000086",
+   "xsrate": "179",
+   "name": "LABLNL3415"
+  },
+  {
+   "xitem": "RZ000087",
+   "xsrate": "171",
+   "name": "LABLSSS5481"
+  },
+  {
+   "xitem": "RZ000088",
+   "xsrate": "148",
+   "name": "LABMBA9223"
+  },
+  {
+   "xitem": "RZ000089",
+   "xsrate": "124",
+   "name": "LABMELA8574"
+  },
+  {
+   "xitem": "RZ000090",
+   "xsrate": "12.55",
+   "name": "LABMGHD5520"
+  },
+  {
+   "xitem": "RZ000091",
+   "xsrate": "46",
+   "name": "LABMIT89503"
+  },
+  {
+   "xitem": "RZ000092",
+   "xsrate": "46",
+   "name": "LABMPRD8172"
+  },
+  {
+   "xitem": "RZ000093",
+   "xsrate": "22.2",
+   "name": "LABMTML9019"
+  },
+  {
+   "xitem": "RZ000094",
+   "xsrate": "8.55",
+   "name": "LABMTPP7252"
+  },
+  {
+   "xitem": "RZ000095",
+   "xsrate": "1.56",
+   "name": "LABNNDNO"
+  },
+  {
+   "xitem": "RZ000096",
+   "xsrate": "70",
+   "name": "LABPDS3910"
+  },
+  {
+   "xitem": "RZ000097",
+   "xsrate": "9",
+   "name": "LABPGTOE547"
+  },
+  {
+   "xitem": "RZ000098",
+   "xsrate": "4.67",
+   "name": "LABPPDL7950"
+  },
+  {
+   "xitem": "RZ000099",
+   "xsrate": "51",
+   "name": "LABPPG38190"
+  },
+  {
+   "xitem": "RZ000100",
+   "xsrate": "13.66",
+   "name": "LABPTCB1440"
+  },
+  {
+   "xitem": "RZ000101",
+   "xsrate": "13.1",
+   "name": "LABPTHD5921"
+  },
+  {
+   "xitem": "RZ000102",
+   "xsrate": "5.5",
+   "name": "LABSBC89910"
+  },
+  {
+   "xitem": "RZ000103",
+   "xsrate": "11.1",
+   "name": "LABSCA65692"
+  },
+  {
+   "xitem": "RZ000104",
+   "xsrate": "7.77",
+   "name": "LABSCTD4993"
+  },
+  {
+   "xitem": "RZ000105",
+   "xsrate": "11",
+   "name": "LABSDBZ8496"
+  },
+  {
+   "xitem": "RZ000106",
+   "xsrate": "13.36",
+   "name": "LABSDCL4043"
+  },
+  {
+   "xitem": "RZ000107",
+   "xsrate": "7.34",
+   "name": "LABSDGC8693"
+  },
+  {
+   "xitem": "RZ000108",
+   "xsrate": "7.54",
+   "name": "LABSDHC7752"
+  },
+  {
+   "xitem": "RZ000109",
+   "xsrate": "11.16",
+   "name": "LABSDSF0490"
+  },
+  {
+   "xitem": "RZ000110",
+   "xsrate": "11.16",
+   "name": "LABSFAD2543"
+  },
+  {
+   "xitem": "RZ000111",
+   "xsrate": "142.9",
+   "name": "LABSMTS7391"
+  },
+  {
+   "xitem": "RZ000112",
+   "xsrate": "2923",
+   "name": "LABSNOS9363"
+  },
+  {
+   "xitem": "RZ000113",
+   "xsrate": "63.29",
+   "name": "LABSPDD5783"
+  },
+  {
+   "xitem": "RZ000114",
+   "xsrate": "4.86",
+   "name": "LABSPTD1075"
+  },
+  {
+   "xitem": "RZ000115",
+   "xsrate": "12.46",
+   "name": "LABSSA06082"
+  },
+  {
+   "xitem": "RZ000116",
+   "xsrate": "13.25",
+   "name": "LABSTD12913"
+  },
+  {
+   "xitem": "RZ000117",
+   "xsrate": "14.17",
+   "name": "LABSTPP3443"
+  },
+  {
+   "xitem": "RZ000118",
+   "xsrate": "2538",
+   "name": "LABTCAT8663"
+  },
+  {
+   "xitem": "RZ000119",
+   "xsrate": "16.7",
+   "name": "LABTMBZ1789"
+  },
+  {
+   "xitem": "RZ000120",
+   "xsrate": "11.15",
+   "name": "LABTRPT7099"
+  },
+  {
+   "xitem": "RZ000121",
+   "xsrate": "15.35",
+   "name": "LABTSPD5882"
+  },
+  {
+   "xitem": "RZ000122",
+   "xsrate": "33.8",
+   "name": "LABYSTE5203"
+  },
+  {
+   "xitem": "RZ000123",
+   "xsrate": "10.72",
+   "name": "XX--LLAT0008"
+  },
+  {
+   "xitem": "RZ000124",
+   "xsrate": "21",
+   "name": "LMN00013"
+  },
+  {
+   "xitem": "RZ000125",
+   "xsrate": "10.72",
+   "name": "XX--LNL3415"
+  },
+  {
+   "xitem": "RZ000126",
+   "xsrate": "12.7",
+   "name": "LNLACT001"
+  },
+  {
+   "xitem": "RZ000127",
+   "xsrate": "12.7",
+   "name": "LNLL0007"
+  },
+  {
+   "xitem": "RZ000128",
+   "xsrate": "41",
+   "name": "LVD00014"
+  },
+  {
+   "xitem": "RZ000129",
+   "xsrate": "121",
+   "name": "metanil Yellow"
+  },
+  {
+   "xitem": "RZ000130",
+   "xsrate": "21",
+   "name": "Methyl Orange Powder"
+  },
+  {
+   "xitem": "RZ000131",
+   "xsrate": "21",
+   "name": "Methyl Red"
+  },
+  {
+   "xitem": "RZ000132",
+   "xsrate": "71",
+   "name": "MNT00001"
+  },
+  {
+   "xitem": "RZ000133",
+   "xsrate": "12.8",
+   "name": "XX--NRL00009"
+  },
+  {
+   "xitem": "RZ000134",
+   "xsrate": "21",
+   "name": "OGE00012"
+  },
+  {
+   "xitem": "RZ000135",
+   "xsrate": "71",
+   "name": "PAT00001"
+  },
+  {
+   "xitem": "RZ000136",
+   "xsrate": "1.45",
+   "name": "PDMS3910"
+  },
+  {
+   "xitem": "RZ000137",
+   "xsrate": "0.8",
+   "name": "PFFNO001"
+  },
+  {
+   "xitem": "RZ000138",
+   "xsrate": "0.7",
+   "name": "PHAD0001"
+  },
+  {
+   "xitem": "RZ000139",
+   "xsrate": "0.3",
+   "name": "PPG38190"
+  },
+  {
+   "xitem": "RZ000140",
+   "xsrate": "1.3",
+   "name": "PTCL0001"
+  },
+  {
+   "xitem": "RZ000141",
+   "xsrate": "0.4",
+   "name": "XX--PTHD5921"
+  },
+  {
+   "xitem": "RZ000142",
+   "xsrate": "2",
+   "name": "QRTZ0001"
+  },
+  {
+   "xitem": "RZ000143",
+   "xsrate": "103",
+   "name": "Rose Bengal"
+  },
+  {
+   "xitem": "RZ000144",
+   "xsrate": "51",
+   "name": "RSMRY001"
+  },
+  {
+   "xitem": "RZ000145",
+   "xsrate": "0.2",
+   "name": "SDHC7752"
+  },
+  {
+   "xitem": "RZ000146",
+   "xsrate": "37",
+   "name": "SDL00011"
+  },
+  {
+   "xitem": "RZ000147",
+   "xsrate": "0.7",
+   "name": "SLEM0001"
+  },
+  {
+   "xitem": "RZ000148",
+   "xsrate": "0.2",
+   "name": "SMTS7391"
+  },
+  {
+   "xitem": "RZ000149",
+   "xsrate": "0.6",
+   "name": "STER0001"
+  },
+  {
+   "xitem": "RZ000150",
+   "xsrate": "0.3",
+   "name": "TLC00001"
+  },
+  {
+   "xitem": "RZ000151",
+   "xsrate": "4",
+   "name": "TLN00001"
+  },
+  {
+   "xitem": "RZ000152",
+   "xsrate": "0.8",
+   "name": "TO000001"
+  },
+  {
+   "xitem": "RZ000153",
+   "xsrate": "2.4",
+   "name": "TSPD 5882"
+  },
+  {
+   "xitem": "RZ000154",
+   "xsrate": "169",
+   "name": "Victoria Blue"
+  },
+  {
+   "xitem": "RZ000155",
+   "xsrate": "72",
+   "name": "VTVR0001"
+  },
+  {
+   "xitem": "RZ000156",
+   "xsrate": "91",
+   "name": "YLGYLG01"
+  },
+  {
+   "xitem": "RZ000157",
+   "xsrate": "1",
+   "name": "Spray Head"
+  },
+  {
+   "xitem": "RZ000158",
+   "xsrate": "1",
+   "name": "PRFLS001"
+  },
+  {
+   "xitem": "RZ000159",
+   "xsrate": "1",
+   "name": "PRFVKI01"
+  },
+  {
+   "xitem": "RZ000160",
+   "xsrate": "1",
+   "name": "PRFLVD01"
+  },
+  {
+   "xitem": "RZ000161",
+   "xsrate": "1",
+   "name": "XX--PRFONG01"
+  },
+  {
+   "xitem": "RZ000162",
+   "xsrate": "1",
+   "name": "XX--PRFJSMN1"
+  },
+  {
+   "xitem": "RZ000163",
+   "xsrate": "1",
+   "name": "XX--PRFVNL01"
+  },
+  {
+   "xitem": "RZ000164",
+   "xsrate": "1",
+   "name": "XX--PRFCHL01"
+  },
+  {
+   "xitem": "RZ000165",
+   "xsrate": "1",
+   "name": "XX--PRFK0K01"
+  },
+  {
+   "xitem": "RZ000166",
+   "xsrate": "1",
+   "name": "XX--PRFDFD01"
+  },
+  {
+   "xitem": "RZ000167",
+   "xsrate": "1",
+   "name": "XX--PRFCCNT1"
+  },
+  {
+   "xitem": "RZ000168",
+   "xsrate": "1",
+   "name": "XX--PRFRJN01"
+  },
+  {
+   "xitem": "RZ000169",
+   "xsrate": "1",
+   "name": "XX--PRFKBL01"
+  },
+  {
+   "xitem": "RZ000170",
+   "xsrate": "1",
+   "name": "XX--PRFRNG01"
+  },
+  {
+   "xitem": "RZ000171",
+   "xsrate": "1",
+   "name": "XX--PRFBKL01"
+  },
+  {
+   "xitem": "RZ000172",
+   "xsrate": "1",
+   "name": "XX--Bathroom Cleaner Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000173",
+   "xsrate": "1",
+   "name": "XX--Bathroom Cleaner Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000174",
+   "xsrate": "1",
+   "name": "XX--Glass Cleaner Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000175",
+   "xsrate": "1",
+   "name": "XX--Glass Cleaner Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000176",
+   "xsrate": "1",
+   "name": "Floor Cleaner Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000177",
+   "xsrate": "1",
+   "name": "Floor Cleaner Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000178",
+   "xsrate": "1",
+   "name": "Multi Surface Cleaner Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000179",
+   "xsrate": "1",
+   "name": "Multi Surface Cleaner Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000180",
+   "xsrate": "1",
+   "name": "Kitchen Degreaser Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000181",
+   "xsrate": "1",
+   "name": "Kitchen Degreaser Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000182",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000183",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000184",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000185",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000186",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000187",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000188",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000189",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000190",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000191",
+   "xsrate": "1",
+   "name": "Fabric Freshener Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000192",
+   "xsrate": "1",
+   "name": "XX--Bottle-500ml (Zepto)"
+  },
+  {
+   "xitem": "RZ000193",
+   "xsrate": "1",
+   "name": "Bottle-1000ml (Zepto)"
+  },
+  {
+   "xitem": "RZ000194",
+   "xsrate": "1",
+   "name": "XX--Carton Sticker 6 X 500ml"
+  },
+  {
+   "xitem": "RZ000195",
+   "xsrate": "1",
+   "name": "XX--Carton Sticker 6 X 1000ml"
+  },
+  {
+   "xitem": "RZ000196",
+   "xsrate": "1",
+   "name": "Zepto Master Carton Big 6pcs"
+  },
+  {
+   "xitem": "RZ000197",
+   "xsrate": "1",
+   "name": "XX--Zepto Master Carton Small 6pcs"
+  },
+  {
+   "xitem": "RZ000198",
+   "xsrate": "0.1",
+   "name": "Washer"
+  },
+  {
+   "xitem": "RZ000199",
+   "xsrate": "1",
+   "name": "Bottle Cap"
+  },
+  {
+   "xitem": "RZ000200",
+   "xsrate": "0.1",
+   "name": "XX--Ring Washer"
+  },
+  {
+   "xitem": "RZ000201",
+   "xsrate": "500",
+   "name": "NTAD0001"
+  },
+  {
+   "xitem": "RZ000202",
+   "xsrate": "500",
+   "name": "OXAD0001"
+  },
+  {
+   "xitem": "RZ000203",
+   "xsrate": "1",
+   "name": "CPMTH001"
+  },
+  {
+   "xitem": "RZ000204",
+   "xsrate": "1",
+   "name": "LDCL0001"
+  },
+  {
+   "xitem": "RZ000205",
+   "xsrate": "1",
+   "name": "PSDZ0001"
+  },
+  {
+   "xitem": "RZ000206",
+   "xsrate": "0.1",
+   "name": "XX--Two Layer Strip Foil-30mm"
+  },
+  {
+   "xitem": "RZ000207",
+   "xsrate": "1",
+   "name": "ATFA0001"
+  },
+  {
+   "xitem": "RZ000208",
+   "xsrate": "1",
+   "name": "CSTOL001"
+  },
+  {
+   "xitem": "RZ000209",
+   "xsrate": "1",
+   "name": "JJBOL001"
+  },
+  {
+   "xitem": "RZ000210",
+   "xsrate": "1",
+   "name": "ALMDOL01"
+  },
+  {
+   "xitem": "RZ000211",
+   "xsrate": "1",
+   "name": "XNTNGMO1"
+  },
+  {
+   "xitem": "RZ000212",
+   "xsrate": "1",
+   "name": "HXYCLS01"
+  },
+  {
+   "xitem": "RZ000213",
+   "xsrate": "1",
+   "name": "PVA00001"
+  },
+  {
+   "xitem": "RZ000214",
+   "xsrate": "1",
+   "name": "XX--Shrink Polly 5.5\""
+  },
+  {
+   "xitem": "RZ000215",
+   "xsrate": "1",
+   "name": "DVAL0001"
+  },
+  {
+   "xitem": "RZ000216",
+   "xsrate": "1",
+   "name": "URA00001"
+  },
+  {
+   "xitem": "RZ000217",
+   "xsrate": "1",
+   "name": "SOMTBST1"
+  },
+  {
+   "xitem": "RZ000218",
+   "xsrate": "1",
+   "name": "DCLPGSD1"
+  },
+  {
+   "xitem": "RZ000219",
+   "xsrate": "1",
+   "name": "PURTN001"
+  },
+  {
+   "xitem": "RZ000220",
+   "xsrate": "1",
+   "name": "LRLRGSD1"
+  },
+  {
+   "xitem": "RZ000221",
+   "xsrate": "1",
+   "name": "PLMTAD01"
+  },
+  {
+   "xitem": "RZ000222",
+   "xsrate": "1",
+   "name": "SLCT0001"
+  },
+  {
+   "xitem": "RZ000223",
+   "xsrate": "1",
+   "name": "CMPBTN01"
+  },
+  {
+   "xitem": "RZ000224",
+   "xsrate": "1",
+   "name": "XX--SRBTL001"
+  },
+  {
+   "xitem": "RZ000225",
+   "xsrate": "1.8",
+   "name": "SDALST01"
+  },
+  {
+   "xitem": "RZ000226",
+   "xsrate": "1.8",
+   "name": "TELA0001"
+  },
+  {
+   "xitem": "RZ000227",
+   "xsrate": "1.8",
+   "name": "MITZLON1"
+  },
+  {
+   "xitem": "RZ000228",
+   "xsrate": "1.8",
+   "name": "PNOL0001"
+  },
+  {
+   "xitem": "RZ000229",
+   "xsrate": "1.8",
+   "name": "SDHS0001"
+  },
+  {
+   "xitem": "RZ000230",
+   "xsrate": "1.8",
+   "name": "SDCTRT01"
+  },
+  {
+   "xitem": "RZ000231",
+   "xsrate": "1.8",
+   "name": "DVAT0001"
+  },
+  {
+   "xitem": "RZ000232",
+   "xsrate": "1.8",
+   "name": "SDPCNTO1"
+  },
+  {
+   "xitem": "RZ000233",
+   "xsrate": "1.8",
+   "name": "WMOL0001"
+  },
+  {
+   "xitem": "RZ000234",
+   "xsrate": "1.8",
+   "name": "PRFNOL01"
+  },
+  {
+   "xitem": "RZ000235",
+   "xsrate": "1.8",
+   "name": "SLES0001"
+  },
+  {
+   "xitem": "RZ000236",
+   "xsrate": "1.8",
+   "name": "SDPAC001"
+  },
+  {
+   "xitem": "RZ000237",
+   "xsrate": "1.8",
+   "name": "KLNCL001"
+  },
+  {
+   "xitem": "RZ000238",
+   "xsrate": "1.8",
+   "name": "ACHD0001"
+  },
+  {
+   "xitem": "RZ000239",
+   "xsrate": "1.8",
+   "name": "OCTHC001"
+  },
+  {
+   "xitem": "RZ000240",
+   "xsrate": "1.8",
+   "name": "MTHOL001"
+  },
+  {
+   "xitem": "RZ000241",
+   "xsrate": "1.8",
+   "name": "SDSFT001"
+  },
+  {
+   "xitem": "RZ000242",
+   "xsrate": "1.8",
+   "name": "LNLWX001"
+  },
+  {
+   "xitem": "RZ000243",
+   "xsrate": "1.8",
+   "name": "SLRN0001"
+  },
+  {
+   "xitem": "RZ000244",
+   "xsrate": "1.8",
+   "name": "S2BS0001"
+  },
+  {
+   "xitem": "RZ000245",
+   "xsrate": "1.8",
+   "name": "SOLSNT01"
+  },
+  {
+   "xitem": "RZ000246",
+   "xsrate": "1.8",
+   "name": "CTROL001"
+  },
+  {
+   "xitem": "RZ000247",
+   "xsrate": "1.8",
+   "name": "PEG00001"
+  },
+  {
+   "xitem": "RZ000248",
+   "xsrate": "1.8",
+   "name": "TPP00001"
+  },
+  {
+   "xitem": "RZ000249",
+   "xsrate": "1.8",
+   "name": "LDRSN001"
+  },
+  {
+   "xitem": "RZ000250",
+   "xsrate": "1.8",
+   "name": "CLHG0001"
+  },
+  {
+   "xitem": "RZ000251",
+   "xsrate": "1.8",
+   "name": "LAMD0001"
+  },
+  {
+   "xitem": "RZ000252",
+   "xsrate": "1.8",
+   "name": "FLDYD001"
+  },
+  {
+   "xitem": "RZ000253",
+   "xsrate": "1",
+   "name": "NGAR0001"
+  },
+  {
+   "xitem": "RZ000254",
+   "xsrate": "1",
+   "name": "SRBTL002"
+  },
+  {
+   "xitem": "RZ000255",
+   "xsrate": "1",
+   "name": "XX--HXYCLS01"
+  },
+  {
+   "xitem": "RZ000256",
+   "xsrate": "1",
+   "name": "XX--DZNON001"
+  },
+  {
+   "xitem": "RZ000257",
+   "xsrate": "1",
+   "name": "XX--SGUR0001"
+  },
+  {
+   "xitem": "RZ000258",
+   "xsrate": "1",
+   "name": "XX--CPMTHN01"
+  },
+  {
+   "xitem": "RZ000259",
+   "xsrate": "1",
+   "name": "Litmus paper"
+  },
+  {
+   "xitem": "RZ000260",
+   "xsrate": "1",
+   "name": "XX--ESSGM001"
+  },
+  {
+   "xitem": "RZ000261",
+   "xsrate": "1",
+   "name": "Disposable Syringe 20ml"
+  },
+  {
+   "xitem": "RZ000262",
+   "xsrate": "1",
+   "name": "XX--Cockroach Killer Packet"
+  },
+  {
+   "xitem": "RZ000263",
+   "xsrate": "1",
+   "name": "XX--Cockroach Killer Sticker"
+  },
+  {
+   "xitem": "RZ000264",
+   "xsrate": "1",
+   "name": "XX--Cockroach Killer Leaflet"
+  },
+  {
+   "xitem": "RZ000265",
+   "xsrate": "1.8",
+   "name": "CTMD0001"
+  },
+  {
+   "xitem": "RZ000266",
+   "xsrate": "1.8",
+   "name": "XX--CBPL0001"
+  },
+  {
+   "xitem": "RZ000267",
+   "xsrate": "1.8",
+   "name": "AMNT0001"
+  },
+  {
+   "xitem": "RZ000268",
+   "xsrate": "1.8",
+   "name": "AMCL0001"
+  },
+  {
+   "xitem": "RZ000269",
+   "xsrate": "1.8",
+   "name": "PLQTM001"
+  },
+  {
+   "xitem": "RZ000270",
+   "xsrate": "1.8",
+   "name": "PRFBIM01"
+  },
+  {
+   "xitem": "RZ000271",
+   "xsrate": "1.8",
+   "name": "XX--PRFHBM01"
+  },
+  {
+   "xitem": "RZ000272",
+   "xsrate": "1.8",
+   "name": "ETH0001"
+  },
+  {
+   "xitem": "RZ000273",
+   "xsrate": "1.8",
+   "name": "SDCL0001"
+  },
+  {
+   "xitem": "RZ000274",
+   "xsrate": "1",
+   "name": "Marble Cleaner Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000275",
+   "xsrate": "1",
+   "name": "Marble Cleaner Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000276",
+   "xsrate": "1",
+   "name": "Furniture Cleaner Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000277",
+   "xsrate": "1",
+   "name": "Furniture Cleaner Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000278",
+   "xsrate": "1",
+   "name": "Leather Cleaner Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000279",
+   "xsrate": "1",
+   "name": "Leather Cleaner Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000280",
+   "xsrate": "1",
+   "name": "XX--PRFLM001"
+  },
+  {
+   "xitem": "RZ000281",
+   "xsrate": "1",
+   "name": "HO000001"
+  },
+  {
+   "xitem": "RZ000282",
+   "xsrate": "1",
+   "name": "ASSA0001"
+  },
+  {
+   "xitem": "RZ000283",
+   "xsrate": "1",
+   "name": "DLMT0001"
+  },
+  {
+   "xitem": "RZ000284",
+   "xsrate": "1",
+   "name": "SDCHL001"
+  },
+  {
+   "xitem": "RZ000285",
+   "xsrate": "1",
+   "name": "UNGLTN01"
+  },
+  {
+   "xitem": "RZ000286",
+   "xsrate": "1",
+   "name": "BHTC0001"
+  },
+  {
+   "xitem": "RZ000287",
+   "xsrate": "1",
+   "name": "HGCBPL01"
+  },
+  {
+   "xitem": "RZ000288",
+   "xsrate": "1",
+   "name": "PEG70001"
+  },
+  {
+   "xitem": "RZ000289",
+   "xsrate": "1",
+   "name": "GUHXPL01"
+  },
+  {
+   "xitem": "RZ000290",
+   "xsrate": "1",
+   "name": "ETHAL001"
+  },
+  {
+   "xitem": "RZ000291",
+   "xsrate": "1",
+   "name": "DMHDT001"
+  },
+  {
+   "xitem": "RZ000292",
+   "xsrate": "1",
+   "name": "STRAL001"
+  },
+  {
+   "xitem": "RZ000293",
+   "xsrate": "1",
+   "name": "GLYMST01"
+  },
+  {
+   "xitem": "RZ000294",
+   "xsrate": "1",
+   "name": "PLMOL001"
+  },
+  {
+   "xitem": "RZ000295",
+   "xsrate": "1",
+   "name": "XX--CLRED001"
+  },
+  {
+   "xitem": "RZ000296",
+   "xsrate": "1",
+   "name": "CLYLW001"
+  },
+  {
+   "xitem": "RZ000297",
+   "xsrate": "1",
+   "name": "PEG45M01"
+  },
+  {
+   "xitem": "RZ000298",
+   "xsrate": "1",
+   "name": "TDCTH001"
+  },
+  {
+   "xitem": "RZ000299",
+   "xsrate": "1",
+   "name": "DMTHCNL1"
+  },
+  {
+   "xitem": "RZ000300",
+   "xsrate": "1",
+   "name": "ECLYPTS1"
+  },
+  {
+   "xitem": "RZ000301",
+   "xsrate": "1",
+   "name": "CTNLAOL01"
+  },
+  {
+   "xitem": "RZ000302",
+   "xsrate": "1",
+   "name": "LMGRSOL01"
+  },
+  {
+   "xitem": "RZ000303",
+   "xsrate": "1",
+   "name": "PWDGRN01"
+  },
+  {
+   "xitem": "RZ000304",
+   "xsrate": "1",
+   "name": "PWDBLU01"
+  },
+  {
+   "xitem": "RZ000305",
+   "xsrate": "1",
+   "name": "PWDYLW01"
+  },
+  {
+   "xitem": "RZ000306",
+   "xsrate": "1",
+   "name": "SCBNT001"
+  },
+  {
+   "xitem": "RZ000307",
+   "xsrate": "1",
+   "name": "XX--MPP00001"
+  },
+  {
+   "xitem": "RZ000308",
+   "xsrate": "1",
+   "name": "XX--PPP00001"
+  },
+  {
+   "xitem": "RZ000309",
+   "xsrate": "1",
+   "name": "SDBZ0001"
+  },
+  {
+   "xitem": "RZ000310",
+   "xsrate": "1",
+   "name": "PRFHB001"
+  },
+  {
+   "xitem": "RZ000311",
+   "xsrate": "1",
+   "name": "PRFDFDL1"
+  },
+  {
+   "xitem": "RZ000312",
+   "xsrate": "1",
+   "name": "Hand Soap Bottle 250ml"
+  },
+  {
+   "xitem": "RZ000313",
+   "xsrate": "1",
+   "name": "XX--Blue Spray head"
+  },
+  {
+   "xitem": "RZ000314",
+   "xsrate": "1",
+   "name": "XX--CMPHR001"
+  },
+  {
+   "xitem": "RZ000315",
+   "xsrate": "1",
+   "name": "New Clear Bottle 500ml-48gm"
+  },
+  {
+   "xitem": "RZ000316",
+   "xsrate": "1",
+   "name": "Dish Washing 250ml Spout Packet"
+  },
+  {
+   "xitem": "RZ000317",
+   "xsrate": "1",
+   "name": "Master Carton Dish Washing 250ml"
+  },
+  {
+   "xitem": "RZ000318",
+   "xsrate": "1",
+   "name": "XX--Reducer"
+  },
+  {
+   "xitem": "RZ000319",
+   "xsrate": "1",
+   "name": "New Glass Cleaner Front Side Label"
+  },
+  {
+   "xitem": "RZ000320",
+   "xsrate": "1",
+   "name": "New Glass Cleaner Back Side Label"
+  },
+  {
+   "xitem": "RZ000321",
+   "xsrate": "1",
+   "name": "XX--Master Carton New Glass Cleaner"
+  },
+  {
+   "xitem": "RZ000322",
+   "xsrate": "1",
+   "name": "Master Carton Hand Soap"
+  },
+  {
+   "xitem": "RZ000323",
+   "xsrate": "1",
+   "name": "New Bathroom Cleaner Front Side Label"
+  },
+  {
+   "xitem": "RZ000324",
+   "xsrate": "1",
+   "name": "New Bathroom Cleaner Back Side Label"
+  },
+  {
+   "xitem": "RZ000325",
+   "xsrate": "1",
+   "name": "HCL00001"
+  },
+  {
+   "xitem": "RZ000326",
+   "xsrate": "1",
+   "name": "Blue Original Hand Soap 250ml bottle label"
+  },
+  {
+   "xitem": "RZ000327",
+   "xsrate": "1",
+   "name": "XX--ETACT001"
+  },
+  {
+   "xitem": "RZ000328",
+   "xsrate": "1",
+   "name": "XX--Spray Head (Dark Blue)"
+  },
+  {
+   "xitem": "RZ000329",
+   "xsrate": "1",
+   "name": "H2O20001"
+  },
+  {
+   "xitem": "RZ000330",
+   "xsrate": "1",
+   "name": "XX--Foil Paper 1.5 Inch"
+  },
+  {
+   "xitem": "RZ000331",
+   "xsrate": "1",
+   "name": "XX--Washer 1.5 Inch"
+  },
+  {
+   "xitem": "RZ000332",
+   "xsrate": "1",
+   "name": "Plastic Bottle 5 Liter"
+  },
+  {
+   "xitem": "RZ000333",
+   "xsrate": "1",
+   "name": "XX--Hospicare Hand Soap Front Side Label 1 Litre"
+  },
+  {
+   "xitem": "RZ000334",
+   "xsrate": "1",
+   "name": "XX--Hospicare Hand Soap Back Side Label 1 Litre"
+  },
+  {
+   "xitem": "RZ000335",
+   "xsrate": "1",
+   "name": "XX--Hospicare Floor Cleaner Front side Label 1 Litre"
+  },
+  {
+   "xitem": "RZ000336",
+   "xsrate": "1",
+   "name": "XX--Hospicare Floor Cleaner Back side Label 1 Litre"
+  },
+  {
+   "xitem": "RZ000337",
+   "xsrate": "1",
+   "name": "XX--Hospicare Acidic Cleaner Front side Label 1 Litre"
+  },
+  {
+   "xitem": "RZ000338",
+   "xsrate": "1",
+   "name": "XX--Hospicare Acidic Cleaner Back side Label 1 Litre"
+  },
+  {
+   "xitem": "RZ000339",
+   "xsrate": "1",
+   "name": "XX--Hospicare Hand soap front side label 5 Litre"
+  },
+  {
+   "xitem": "RZ000340",
+   "xsrate": "1",
+   "name": "XX--Hospicare Hand soap Back side label 5 Litre"
+  },
+  {
+   "xitem": "RZ000341",
+   "xsrate": "1",
+   "name": "XX--Hospicare Floor Cleaner Front Side Label 5 Litre"
+  },
+  {
+   "xitem": "RZ000342",
+   "xsrate": "1",
+   "name": "XX--Hospicare Floor Cleaner Back Side Label 5 Litre"
+  },
+  {
+   "xitem": "RZ000343",
+   "xsrate": "1",
+   "name": "Hand soap front side label 5 Litre"
+  },
+  {
+   "xitem": "RZ000344",
+   "xsrate": "1",
+   "name": "Hand soap Back side label 5 Litre"
+  },
+  {
+   "xitem": "RZ000345",
+   "xsrate": "1",
+   "name": "Hand Soap Front Side Label 1 Litre"
+  },
+  {
+   "xitem": "RZ000346",
+   "xsrate": "1",
+   "name": "Hand Soap Back Side Label 1 Litre"
+  },
+  {
+   "xitem": "RZ000347",
+   "xsrate": "1",
+   "name": "Floor Cleaner Front Side Label 5 Litre"
+  },
+  {
+   "xitem": "RZ000348",
+   "xsrate": "1",
+   "name": "Floor Cleaner Back Side Label 5 Litre"
+  },
+  {
+   "xitem": "RZ000349",
+   "xsrate": "1",
+   "name": "Bathroom Cleaner Front Side Label 5 Litre"
+  },
+  {
+   "xitem": "RZ000350",
+   "xsrate": "1",
+   "name": "Bathroom Cleaner Back Side Label 5 Litre"
+  },
+  {
+   "xitem": "RZ000351",
+   "xsrate": "1",
+   "name": "Dish washing liquid front side label 5 litre"
+  },
+  {
+   "xitem": "RZ000352",
+   "xsrate": "1",
+   "name": "Dish washing liquid back side label 5 litre"
+  },
+  {
+   "xitem": "RZ000353",
+   "xsrate": "1",
+   "name": "XX--Dish washing liquid front side label 1 litre"
+  },
+  {
+   "xitem": "RZ000354",
+   "xsrate": "1",
+   "name": "XX--Dish washing liquid back side label 1 litre"
+  },
+  {
+   "xitem": "RZ000355",
+   "xsrate": "1",
+   "name": "Zepto Basics Bottle 500 ml "
+  },
+  {
+   "xitem": "RZ000356",
+   "xsrate": "1",
+   "name": "XX--Sample Sachet White Color"
+  },
+  {
+   "xitem": "RZ000357",
+   "xsrate": "0.1",
+   "name": "XX--Zepto Basics Sachet Label Front (CTAD,SBC,STD)"
+  },
+  {
+   "xitem": "RZ000358",
+   "xsrate": "0.1",
+   "name": "XX--Zepto Basics Sachet Label Back (CTAD,SBC,STD)"
+  },
+  {
+   "xitem": "RZ000359",
+   "xsrate": "0.1",
+   "name": "XX--SBC Sachet Sample Label Front"
+  },
+  {
+   "xitem": "RZ000360",
+   "xsrate": "0.1",
+   "name": "XX--SBC Sachet Sample Label Back"
+  },
+  {
+   "xitem": "RZ000361",
+   "xsrate": "0.1",
+   "name": "XX--STD Sachet Sample Label Front"
+  },
+  {
+   "xitem": "RZ000362",
+   "xsrate": "0.1",
+   "name": "XX--STD Sachet Sample Label Back"
+  },
+  {
+   "xitem": "RZ000363",
+   "xsrate": "0.1",
+   "name": "XX--ACTN 500ml Clear Bottle Label"
+  },
+  {
+   "xitem": "RZ000364",
+   "xsrate": "0.1",
+   "name": "ACET 15% 500ml Clear Bottle Label"
+  },
+  {
+   "xitem": "RZ000365",
+   "xsrate": "0.1",
+   "name": "IPPL 500ml Clear Bottle Label"
+  },
+  {
+   "xitem": "RZ000366",
+   "xsrate": "0.1",
+   "name": "XX--50ml Hand Sanitizer Bottle"
+  },
+  {
+   "xitem": "RZ000367",
+   "xsrate": "0.1",
+   "name": "Tiles Cleaner Front Side label"
+  },
+  {
+   "xitem": "RZ000368",
+   "xsrate": "0.1",
+   "name": "Tiles Cleaner Back Side label"
+  },
+  {
+   "xitem": "RZ000369",
+   "xsrate": "0.1",
+   "name": "XX--Hospicare Hand Sanitizer Front Size Label 50ml"
+  },
+  {
+   "xitem": "RZ000370",
+   "xsrate": "0.1",
+   "name": "XX--Hospicare Hand Sanitizer Back Size Label 50ml"
+  },
+  {
+   "xitem": "RZ000371",
+   "xsrate": "0.1",
+   "name": "XX--Zepto Hand Sanitizer Front Size Label 50ml"
+  },
+  {
+   "xitem": "RZ000372",
+   "xsrate": "0.1",
+   "name": "XX--Zepto Hand Sanitizer Back Size Label 50ml"
+  },
+  {
+   "xitem": "RZ000373",
+   "xsrate": "1",
+   "name": "Zepto Carton Small From Packaging"
+  },
+  {
+   "xitem": "RZ000374",
+   "xsrate": "1",
+   "name": "XX--Zepto 500ml Hand Sanitizer Label"
+  },
+  {
+   "xitem": "RZ000375",
+   "xsrate": "1",
+   "name": "Hospicare 250ml clear bottle savlon type"
+  },
+  {
+   "xitem": "RZ000376",
+   "xsrate": "1",
+   "name": "Hospicare 250ml clear hand pump milk white for savlon type"
+  },
+  {
+   "xitem": "RZ000377",
+   "xsrate": "1",
+   "name": "Hospicare 250ml clear bottle square type"
+  },
+  {
+   "xitem": "RZ000378",
+   "xsrate": "1",
+   "name": "Hospicare 250ml hand pump ice white "
+  },
+  {
+   "xitem": "RZ000379",
+   "xsrate": "1",
+   "name": "XX--Zepto 70ml blue cap bottle "
+  },
+  {
+   "xitem": "RZ000380",
+   "xsrate": "1",
+   "name": "Carton Recycle"
+  },
+  {
+   "xitem": "RZ000381",
+   "xsrate": "1",
+   "name": "Hospicare 250ml Label  Front Side"
+  },
+  {
+   "xitem": "RZ000382",
+   "xsrate": "1",
+   "name": "Hospicare 250ml Label  Back Side"
+  },
+  {
+   "xitem": "RZ000383",
+   "xsrate": "1",
+   "name": "Zepto 500ml hand Pump "
+  },
+  {
+   "xitem": "RZ000384",
+   "xsrate": "1",
+   "name": "Zepto Hand Sanitizer Front Side Label 70ml"
+  },
+  {
+   "xitem": "RZ000385",
+   "xsrate": "1",
+   "name": "Zepto Hand Sanitizer Back Side Label 70ml"
+  },
+  {
+   "xitem": "RZ000386",
+   "xsrate": "1",
+   "name": "XX--Zepto Hand Sanitizer Front Side Label 1000ml"
+  },
+  {
+   "xitem": "RZ000387",
+   "xsrate": "1",
+   "name": "XX--Zepto Hand Sanitizer Back Side Label 1000ml"
+  },
+  {
+   "xitem": "RZ000388",
+   "xsrate": "1",
+   "name": "XX--Zepto Peroxi Clean Fornt Side Label 1000ml"
+  },
+  {
+   "xitem": "RZ000389",
+   "xsrate": "1",
+   "name": "XX--Zepto Peroxi Clean Back Side Label 1000ml"
+  },
+  {
+   "xitem": "RZ000390",
+   "xsrate": "1",
+   "name": "XX--Zepto Hand Sanitizer Back Side Label 5 Litres"
+  },
+  {
+   "xitem": "RZ000391",
+   "xsrate": "1",
+   "name": "XX--Zepto Hand Sanitizer Front Side Label 5 Litres"
+  },
+  {
+   "xitem": "RZ000392",
+   "xsrate": "1",
+   "name": "XX--Sanitize Wipes Poly"
+  },
+  {
+   "xitem": "RZ000393",
+   "xsrate": "1",
+   "name": "XX--KMNO4001"
+  },
+  {
+   "xitem": "RZ000394",
+   "xsrate": "1",
+   "name": "XX--CAHPCLO1"
+  },
+  {
+   "xitem": "RZ000395",
+   "xsrate": "1",
+   "name": "XX--Sanitizing Wipes Cloth"
+  },
+  {
+   "xitem": "RZ000396",
+   "xsrate": "1",
+   "name": "XX--Hand Soap Refill Bottle 250ml"
+  },
+  {
+   "xitem": "RZ000397",
+   "xsrate": "1",
+   "name": "XX--Sanitizing Wipes Box"
+  },
+  {
+   "xitem": "RZ000398",
+   "xsrate": "1",
+   "name": "Disinfectant Spray Sticker Label"
+  },
+  {
+   "xitem": "RZ000399",
+   "xsrate": "1",
+   "name": "XX--Disinfectant Powder Front side Sticker Label"
+  },
+  {
+   "xitem": "RZ000400",
+   "xsrate": "1",
+   "name": "XX--Disinfectant Powder Back side Sticker Label"
+  },
+  {
+   "xitem": "RZ000401",
+   "xsrate": "1",
+   "name": "XX--H2O23%- 500ml bottle_label"
+  },
+  {
+   "xitem": "RZ000402",
+   "xsrate": "1",
+   "name": "XX--Lavender Pink Hand Soap 250ml bottle label"
+  },
+  {
+   "xitem": "RZ000403",
+   "xsrate": "1",
+   "name": "XX--Yellow Lime Hand Soap 250ml bottle label"
+  },
+  {
+   "xitem": "RZ000404",
+   "xsrate": "1",
+   "name": "XX--Jasmine Green Hand Soap 250ml bottle label"
+  },
+  {
+   "xitem": "RZ000405",
+   "xsrate": "1",
+   "name": "Blue Original Hand Soap 500ml bottle label"
+  },
+  {
+   "xitem": "RZ000406",
+   "xsrate": "1",
+   "name": "XX--Zepto Hand Sanitizer 250ml bottle label"
+  },
+  {
+   "xitem": "RZ000407",
+   "xsrate": "1",
+   "name": "Zepto General Disinfectant 5L Front Side Label"
+  },
+  {
+   "xitem": "RZ000408",
+   "xsrate": "1",
+   "name": "Zepto General Disinfectant 5L Back Side Label"
+  },
+  {
+   "xitem": "RZ000409",
+   "xsrate": "1",
+   "name": "Shrink Poly 5 Liter"
+  },
+  {
+   "xitem": "RZ000410",
+   "xsrate": "1",
+   "name": "Shrink Poly 1 Liter"
+  },
+  {
+   "xitem": "RZ000411",
+   "xsrate": "1",
+   "name": "Shrink Poly 500ml Long"
+  },
+  {
+   "xitem": "RZ000412",
+   "xsrate": "1",
+   "name": "Shrink Poly 500ml  Round"
+  },
+  {
+   "xitem": "RZ000413",
+   "xsrate": "1",
+   "name": "XX--Shrink Poly 250ml  "
+  },
+  {
+   "xitem": "RZ000414",
+   "xsrate": "1",
+   "name": "XX--Dish Washing Liquid w/o spout pouch"
+  },
+  {
+   "xitem": "RZ000415",
+   "xsrate": "1",
+   "name": "PWDRED01"
+  },
+  {
+   "xitem": "RZ000416",
+   "xsrate": "1",
+   "name": "Zepto Kitchen Degreaser 5L Front Side Label"
+  },
+  {
+   "xitem": "RZ000417",
+   "xsrate": "1",
+   "name": "Zepto Kitchen Degreaser 5L Back Side Label"
+  },
+  {
+   "xitem": "RZ000418",
+   "xsrate": "11.1",
+   "name": "SDCBNT01"
+  },
+  {
+   "xitem": "RZ000419",
+   "xsrate": "11.1",
+   "name": "TSDPH001"
+  },
+  {
+   "xitem": "RZ000420",
+   "xsrate": "11.1",
+   "name": "SDTPLPH1"
+  },
+  {
+   "xitem": "RZ000421",
+   "xsrate": "11.1",
+   "name": "CBMTCL01"
+  },
+  {
+   "xitem": "RZ000422",
+   "xsrate": "11.1",
+   "name": "CPLENZNL"
+  },
+  {
+   "xitem": "RZ000423",
+   "xsrate": "11.1",
+   "name": "SDPBRT01"
+  },
+  {
+   "xitem": "RZ000424",
+   "xsrate": "11.1",
+   "name": "PRFSXL01"
+  },
+  {
+   "xitem": "RZ000425",
+   "xsrate": "1",
+   "name": "TNPL0002"
+  },
+  {
+   "xitem": "RZ000426",
+   "xsrate": "1",
+   "name": "CDLGRED1"
+  },
+  {
+   "xitem": "RZ000427",
+   "xsrate": "1",
+   "name": "CDLGBLU1"
+  },
+  {
+   "xitem": "RZ000428",
+   "xsrate": "1",
+   "name": "CDLGDBLU1"
+  },
+  {
+   "xitem": "RZ000429",
+   "xsrate": "30",
+   "name": "XX--Zepto Purchase Club Gift Box"
+  },
+  {
+   "xitem": "RZ000430",
+   "xsrate": "30",
+   "name": "Funnel for Purchase club gift box"
+  },
+  {
+   "xitem": "RZ000431",
+   "xsrate": "30",
+   "name": "Zepto Detergent Powder 500g Foil"
+  },
+  {
+   "xitem": "RZ000432",
+   "xsrate": "1",
+   "name": "Detergent Carrying Bag for 60pcs"
+  },
+  {
+   "xitem": "RZ000433",
+   "xsrate": "1",
+   "name": "Detergent Carrying Bag for 30 pcs"
+  },
+  {
+   "xitem": "RZ000434",
+   "xsrate": "1",
+   "name": "Leather Cleaner 5L Label (Front Side)"
+  },
+  {
+   "xitem": "RZ000435",
+   "xsrate": "1",
+   "name": "Leather Cleaner 5L Label (Back Side)"
+  },
+  {
+   "xitem": "RZ000436",
+   "xsrate": "1",
+   "name": "Zepto Detergent Powder 30g Foil"
+  },
+  {
+   "xitem": "RZ000437",
+   "xsrate": "1",
+   "name": "ACDBLU"
+  },
+  {
+   "xitem": "RZ000438",
+   "xsrate": "1",
+   "name": "ACDRED"
+  },
+  {
+   "xitem": "RZ000439",
+   "xsrate": "1",
+   "name": "ACDPNK"
+  },
+  {
+   "xitem": "RZ000440",
+   "xsrate": "1",
+   "name": "Bottle 100ml Transparent -Height 4.5 Inch Wide 1.5 Inch -Weight 14 Gm."
+  },
+  {
+   "xitem": "RZ000441",
+   "xsrate": "1",
+   "name": "XX--Spray Head-Fingertip-Milky White-Pipe 3.5 Inch-Weight 4gm"
+  },
+  {
+   "xitem": "RZ000442",
+   "xsrate": "1",
+   "name": "Glass Cleaner Label 100 ml"
+  },
+  {
+   "xitem": "RZ000443",
+   "xsrate": "1",
+   "name": "Kitchen Degreaser Label 100 ml"
+  },
+  {
+   "xitem": "RZ000444",
+   "xsrate": "1",
+   "name": "Leather Cleaner Label 100 ml"
+  },
+  {
+   "xitem": "RZ000445",
+   "xsrate": "1",
+   "name": "Multi Surface Cleaner Label 100 ml"
+  },
+  {
+   "xitem": "RZ000446",
+   "xsrate": "1",
+   "name": "Furniture Cleaner Label 100 ml"
+  },
+  {
+   "xitem": "RZ000447",
+   "xsrate": "1",
+   "name": "Disinfectant Label 100 ml"
+  },
+  {
+   "xitem": "RZ000448",
+   "xsrate": "1",
+   "name": "Cartoon-for 100ml bottle-12pcs"
+  },
+  {
+   "xitem": "RZ000449",
+   "xsrate": "1",
+   "name": "XX--AMPRSFT1"
+  },
+  {
+   "xitem": "RZ000450",
+   "xsrate": "1",
+   "name": "New Clear Bottle 500ml-32gm"
+  },
+  {
+   "xitem": "RZ000451",
+   "xsrate": "1",
+   "name": "Dish Wash Cap- 500ml"
+  },
+  {
+   "xitem": "RZ000452",
+   "xsrate": "1",
+   "name": "Dish Wash Sticker- 500ml"
+  },
+  {
+   "xitem": "RZ000453",
+   "xsrate": "1",
+   "name": "High Powder"
+  },
+  {
+   "xitem": "RZ000454",
+   "xsrate": "1",
+   "name": "NP000010"
+  },
+  {
+   "xitem": "RZ000455",
+   "xsrate": "1",
+   "name": "HDP Bottle 3 Litter- Phenyl"
+  },
+  {
+   "xitem": "RZ000456",
+   "xsrate": "1",
+   "name": "Sticker for HDP Bottle 3 Litter- Phenyl"
+  },
+  {
+   "xitem": "RZ000457",
+   "xsrate": "1",
+   "name": "TRO"
+  },
+  {
+   "xitem": "RZ000458",
+   "xsrate": "1",
+   "name": "Phenyl 1 Litre Sticker"
+  },
+  {
+   "xitem": "RZ000459",
+   "xsrate": "1",
+   "name": "Phenyl Shake Sticker"
+  },
+  {
+   "xitem": "RZ000460",
+   "xsrate": "1",
+   "name": "150 gm Kitchen Paste Sticker"
+  },
+  {
+   "xitem": "RZ000461",
+   "xsrate": "1",
+   "name": "250 gm Powder Shampoo Sticker Car"
+  },
+  {
+   "xitem": "RZ000462",
+   "xsrate": "1",
+   "name": "XX--Kitchen Degreaser Sticker- 1 Litre"
+  },
+  {
+   "xitem": "RZ000463",
+   "xsrate": "1",
+   "name": "150 gm Kitchen Paste Box"
+  },
+  {
+   "xitem": "RZ000464",
+   "xsrate": "1",
+   "name": "250 gm Powder Shampoo Box"
+  },
+  {
+   "xitem": "RZ000465",
+   "xsrate": "1",
+   "name": "COCOL001"
+  },
+  {
+   "xitem": "RZ000466",
+   "xsrate": "1",
+   "name": "PLML0001"
+  },
+  {
+   "xitem": "RZ000467",
+   "xsrate": "1",
+   "name": "SMTSGL01"
+  },
+  {
+   "xitem": "RZ000468",
+   "xsrate": "1",
+   "name": "Glass Cleaner 5 Ltr Sticker"
+  },
+  {
+   "xitem": "RZ000469",
+   "xsrate": "1",
+   "name": "XX--SGR00001"
+  },
+  {
+   "xitem": "RZ000470",
+   "xsrate": "1",
+   "name": "XX--Spray Head (Local)"
+  },
+  {
+   "xitem": "RZ000471",
+   "xsrate": "1",
+   "name": "XX--5L Plastic Bottle -Basic"
+  },
+  {
+   "xitem": "RZ000472",
+   "xsrate": "1",
+   "name": "PRFBKL01"
+  },
+  {
+   "xitem": "RZ000473",
+   "xsrate": "1",
+   "name": "ACTH0001"
+  },
+  {
+   "xitem": "RZ000474",
+   "xsrate": "1",
+   "name": "CACO0003"
+  },
+  {
+   "xitem": "RZ000475",
+   "xsrate": "1",
+   "name": "Toilet Cleaner Bottle 750 ml"
+  },
+  {
+   "xitem": "RZ000476",
+   "xsrate": "1",
+   "name": "Toilet Cleaner Bottle 500 ml"
+  },
+  {
+   "xitem": "RZ000477",
+   "xsrate": "1",
+   "name": "Liquid Toilet Cleaner (750 ml) Sticker"
+  },
+  {
+   "xitem": "RZ000478",
+   "xsrate": "1",
+   "name": "Liquid Toilet Cleaner (500 ml) Sticker"
+  },
+  {
+   "xitem": "RZ000479",
+   "xsrate": "1",
+   "name": "Liquid Toilet Cleaner (5 Liter) Sticker"
+  },
+  {
+   "xitem": "RZ000480",
+   "xsrate": "1",
+   "name": "PRFMNTL"
+  },
+  {
+   "xitem": "RZ000481",
+   "xsrate": "1",
+   "name": "PRFMNT"
+  },
+  {
+   "xitem": "RZ000482",
+   "xsrate": "1",
+   "name": "Cartoon for Toilet Cleaner (14 pcs)"
+  },
+  {
+   "xitem": "RZ000483",
+   "xsrate": "1",
+   "name": "Sticker for Phenyl 5 Litre"
+  },
+  {
+   "xitem": "RZ000484",
+   "xsrate": "1",
+   "name": "Clean OL Bottle 1000 ml with blue cap"
+  },
+  {
+   "xitem": "RZ000485",
+   "xsrate": "1",
+   "name": "5L Zepto Cartoon"
+  },
+  {
+   "xitem": "RZ000486",
+   "xsrate": "1",
+   "name": "Cleanol 1000ml bottle sticker"
+  },
+  {
+   "xitem": "RZ000487",
+   "xsrate": "1",
+   "name": "Cleanol 1000ml 12 pcs cartoon"
+  },
+  {
+   "xitem": "RZ000488",
+   "xsrate": "1",
+   "name": "Gel Disinfectant 1 Litre Sticker"
+  },
+  {
+   "xitem": "RZ000489",
+   "xsrate": "1",
+   "name": "Spray Disinfectant 500 ml Sticker"
+  },
+  {
+   "xitem": "RZ000490",
+   "xsrate": "1",
+   "name": "Special Discount Offer Sticker "
+  },
+  {
+   "xitem": "RZ000491",
+   "xsrate": "1",
+   "name": "Furniture Cleaner 5L  Sticker"
+  },
+  {
+   "xitem": "RZ000492",
+   "xsrate": "1",
+   "name": "PRFPCH01"
+  },
+  {
+   "xitem": "RZ000493",
+   "xsrate": "1",
+   "name": "XNTNGMO2"
+  },
+  {
+   "xitem": "RZ000494",
+   "xsrate": "1",
+   "name": "SULFMC01"
+  },
+  {
+   "xitem": "RZ000495",
+   "xsrate": "1",
+   "name": "PLYSRBT02"
+  },
+  {
+   "xitem": "RZ000496",
+   "xsrate": "1",
+   "name": "PHNXOL01"
+  },
+  {
+   "xitem": "RZ000497",
+   "xsrate": "1",
+   "name": "Limescale Remover Bottle 200 ml"
+  },
+  {
+   "xitem": "RZ000498",
+   "xsrate": "1",
+   "name": "Car & Bike Shampoo 225ml"
+  },
+  {
+   "xitem": "RZ000499",
+   "xsrate": "1",
+   "name": "Screen Cleaner 100 ml Sticker"
+  },
+  {
+   "xitem": "RZ000500",
+   "xsrate": "1",
+   "name": "Limescale Preventer 500 ml Sticker"
+  },
+  {
+   "xitem": "RZ000501",
+   "xsrate": "1",
+   "name": "Limescale Remover SS and Brass 200 ml sticker "
+  },
+  {
+   "xitem": "RZ000502",
+   "xsrate": "1",
+   "name": "Limescale Remover Glass and Ceramic 200 ml sticker"
+  },
+  {
+   "xitem": "RZ000503",
+   "xsrate": "1",
+   "name": "Zepto Car and Bike Shampoo 225ml sticker"
+  },
+  {
+   "xitem": "RZ000504",
+   "xsrate": "1",
+   "name": "SLCA0001"
+  },
+  {
+   "xitem": "RZ000505",
+   "xsrate": "1",
+   "name": "Shrink Poly 200 ml "
+  },
+  {
+   "xitem": "RZ000506",
+   "xsrate": "1",
+   "name": "Shrink Poly 225 ml"
+  },
+  {
+   "xitem": "RZ000507",
+   "xsrate": "1",
+   "name": "Zepto Car and Bike Shampoo 5 L sticker"
+  },
+  {
+   "xitem": "RZ000508",
+   "xsrate": "1",
+   "name": "PRLQD001"
+  },
+  {
+   "xitem": "RZ000509",
+   "xsrate": "1",
+   "name": "PWDRED02"
+  },
+  {
+   "xitem": "RZ000510",
+   "xsrate": "1",
+   "name": "DLGLSD01"
+  },
+  {
+   "xitem": "RZ000511",
+   "xsrate": "1",
+   "name": "SLS00001"
+  },
+  {
+   "xitem": "RZ000512",
+   "xsrate": "1",
+   "name": "EDDN00001"
+  },
+  {
+   "xitem": "RZ000513",
+   "xsrate": "1",
+   "name": "PQT00007"
+  },
+  {
+   "xitem": "RZ000514",
+   "xsrate": "1",
+   "name": "CTAL0001"
+  },
+  {
+   "xitem": "RZ000515",
+   "xsrate": "1",
+   "name": "DMC00001"
+  },
+  {
+   "xitem": "RZ000516",
+   "xsrate": "1",
+   "name": "OLVOL001"
+  }
+ ]
+}
