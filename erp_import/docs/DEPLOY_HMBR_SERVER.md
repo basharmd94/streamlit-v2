@@ -126,7 +126,7 @@ nssm start UtilityMartERP
 **ERP** = you on the HMBR server (`D:\streamlit-v2\erp_import`, venv active). **SHOP** = the shop session / Coolify. Each step says what to check before the next one. Stop at the first surprise and send the output.
 Do not switch the service to live before Phase 5: a live service would push whatever 100007 holds to the shop on its first products run.
 
-**Before you start (SHOP).** The code is committed and deployed with `ERP_FEED_KEY` and `ERP_SHARED_SECRET` set and `ERP_SYNC_ENABLED` NOT set (the shop is unchanged). The shop session has answered: which orders the backfill sends (items, plus orders placed from the switch-on; not history) and what happens to the variants without a SKU. Bundles go out as parts (`SHOP_CONTRACT.md` point 8).
+**Before you start (SHOP).** The code is committed and deployed with `ERP_FEED_KEY` and `ERP_SHARED_SECRET` set and `ERP_SYNC_ENABLED` NOT set (the shop is unchanged). The shop session answered on 4 Nov (`ERP_SHOP_SIDE.md` section 9): the backfill sends every order the link has no record of except cancelled ones, and the live shop has only one cancelled test order, so no order goes; `RUN_ONCE_ARGS="commit items"` sends only the items. Variants without a SKU: 82, of which 29 belong to bundles and need none; the other **53 ordinary variants need a SKU typed in the Medusa admin** (32 are on sale; "Clean Ol" 5 Litre and "Zepto Liquid Dish Wash" 1 Liter / Green matter most, they are parts of two on-sale bundles). Until a SKU is typed such an item is not sent and an order containing it waits in the shop (listed on its ERP sync page). Bundles go out as parts (`SHOP_CONTRACT.md` point 8).
 
 **Phase 1: connect, the shop link still off (nothing changes in the shop)**
 1. `git pull origin main`, then `venv\Scripts\python erp_import.py --job check` must say `OK shop /health ... environment=live` (404 = the shop is not deployed; 401/403 = key, secret or server clock).
@@ -137,7 +137,7 @@ Do not switch the service to live before Phase 5: a live service would push what
 **Phase 2: switch the shop link on (SHOP, after telling the ERP side)**
 5. SHOP: the backfill dry run (`RUN_ONCE_TASK=erp-backfill`, no args), read the report, fix what it lists, delete the variable.
 6. ERP: back up the item table: `"C:\Program Files\PostgreSQL\9.4\bin\pg_dump.exe" -U postgres -h 127.0.0.1 -Fc -t caitem -f D:\backups\caitem_before_um_load.backup da` (the folder must exist; the nightly full backup is the other safety net).
-7. SHOP: `ERP_SYNC_ENABLED=true`, restart, then the backfill with `commit`. The outbox now holds about 2,200 item events plus the orders in the window. The ERP service is still in `--dry-run`, so nothing is consumed yet. Real orders placed from now on wait in the outbox too.
+7. SHOP: `ERP_SYNC_ENABLED=true`, restart, then the backfill with `RUN_ONCE_ARGS="commit items"` (items only; orders reach the ERP as events from now on). The outbox now holds about 2,200 item events. The ERP service is still in `--dry-run`, so nothing is consumed yet. Real orders placed from now on wait in the outbox too.
 
 **Phase 3: load the items into the ERP (ERP)**
 8. `venv\Scripts\python erp_import.py` (dry run on the real feed; nothing is acknowledged, so repeat it as often as you like). Expect about 2,100 item events, 0 failures, about 17 `barcode_mismatch` warnings (the ERP pairing wins) and about 1,466 NEW Fixit items (`04-00001` upward). Send the output.
