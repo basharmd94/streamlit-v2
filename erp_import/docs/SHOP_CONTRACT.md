@@ -55,6 +55,8 @@ Response `200`: `{"ok": true, "applied": 118, "unknown_skus": ["..."], "conflict
    * Order-level discounts stay in `totals.discount` as today. Bundle stock in the shop (the lowest of each part's stock divided by its quantity in the bundle) is the shop's own business; the ERP never receives a stock figure for a bundle.
    * A line that still arrives with `bundle: true` and no ERP item fails the order with code `bundle_not_expanded` (it shows on the ERP sync page). Fix the expansion and send `order.updated`; the ERP then enters it.
 
+9. **`?dry_run=1` on `/stock` and `/products`** (added by the shop session, used by the ERP since 2026-11-04 as `erp_import.py --job products --shop-dry-run`): the shop answers what it WOULD change (`would_change`, plus `unknown_skus`, `conflicts`, `skipped`) and writes nothing, even while its ERP link is switched off. A `would_change` that is a list of objects (one per change, with at least `sku`) is also saved by the ERP as a table.
+
 ## Idempotency and order of events (unchanged)
 Events are processed in `seq` order, each in its own transaction, and acknowledged with `ok` or `failed` (a failed one never blocks the rest). A replayed event is re-acknowledged without changing anything.
 

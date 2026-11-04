@@ -268,9 +268,15 @@ class Handler(BaseHTTPRequestHandler):
         err = validate(path, body)
         if err:
             return self._send(422, {"error": err})
+        dry = parse_qs(urlparse(self.path).query).get("dry_run", ["0"])[0] == "1"
         os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
         with open(os.path.join(ROOT, "logs", "fake_feed_posts.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps({"path": path, "body": body}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"path": path, "body": body, **({"dry_run": True} if dry else {})}, ensure_ascii=False) + "\n")
+        if dry and path.endswith("/products"):      # what the real shop does: say what would change, write nothing
+            return self._send(200, {"ok": True, "dry_run": True, "applied": len(body["items"]), "changed": 0,
+                                    "would_change": [{"sku": i["sku"], "field": k, "to": v}
+                                                     for i in body["items"] for k, v in i.items() if k != "sku"],
+                                    "unknown_skus": [], "conflicts": [], "skipped": []})
         self._send(200, {"ok": True})
 
 

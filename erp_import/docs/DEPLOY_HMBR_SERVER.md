@@ -128,10 +128,11 @@ Do not start the service in live mode before step 5: a live service would push w
 2. `venv\Scripts\python erp_import.py` (dry run on the real feed) and read it: expect about 2,100 item events, 0 failures, ~17 `barcode_mismatch` warnings (the ERP pairing wins), and about 1,466 NEW Fixit items (`04-00001` upward).
 3. `venv\Scripts\python erp_import.py --commit` (repeat until it says 0 events; one run takes up to 1000).
 4. `venv\Scripts\python fixit_pull.py --commit` (needs the Fixit items from step 3).
-5. `venv\Scripts\python erp_import.py --job price`, open `logs\price_report_<date>.csv`, decide, then set `[pricing] apply = true` and run `--job price --commit` (writes 100007 `xstdprice`: Zepto from its `xsrate`, HMBR/GI from their `xstdprice` x 1.40, Fixit from Gulshan). **Read the `review` rows first**: they are moves over 25% (usually a placeholder source price such as 1) and are not written; fix the source price or raise `[pricing] max_change_pct`. Check a few Fixit items in the ERP screens too (`xitemnew = 'Fixit'` is text in a column that otherwise holds company numbers).
-6. `venv\Scripts\python erp_import.py --job products --commit` (first push of barcode, price, cost, group, stock to the shop; the shop price is overwritten by the ERP price, which after step 5 equals what the shop already had).
-7. One real test order on the shop; follow it: `opmob` rows (invoice `UM-<number>`), status and stock back to the shop, the daily PO.
-8. Switch the service to live (A11) and leave it on.
+5. `venv\Scripts\python erp_import.py --job price`, open `logs\price_report_<date>.csv`, decide, then set `[pricing] apply = true` and run `--job price --commit` (writes 100007 `xstdprice`: Zepto from its `xsrate`, HMBR/GI from their `xstdprice` x 1.40 rounded down to a whole taka, Fixit from Gulshan). **Read the `review` rows first**: they are moves over 25% (usually a placeholder source price such as 1) and are not written; fix the source price or raise `[pricing] max_change_pct`. Check a few Fixit items in the ERP screens too (`xitemnew = 'Fixit'` is text in a column that otherwise holds company numbers).
+6. **Look before the first push:** `venv\Scripts\python erp_import.py --job products --shop-dry-run`. It asks the shop what the push WOULD change (every price, barcode, cost and stock figure) and the shop writes nothing; the answer is saved as `logs\shop_dry_run_products_<time>.json` and `.csv`. Read it, and send the file back if anything looks wrong.
+7. `venv\Scripts\python erp_import.py --job products --commit` (first push of barcode, price, cost, group, stock to the shop; the shop price is overwritten by the ERP price, which after step 5 equals what the shop already had).
+8. One real test order on the shop; follow it: `opmob` rows (invoice `UM-<number>`), status and stock back to the shop, the daily PO.
+9. Switch the service to live (A11) and leave it on.
 
 ---
 

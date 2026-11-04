@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 import uuid
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
 
 import psycopg2
 import psycopg2.extras
@@ -183,8 +183,10 @@ class Shop(object):
     def stock(self, items, full):
         return self._call("POST", "/stock", {"as_of": utc_now_iso(), "items": items, "full": full})
 
-    def products(self, items, full):
-        return self._call("POST", "/products", {"as_of": utc_now_iso(), "items": items, "full": full})
+    def products(self, items, full, dry_run=False):
+        # ?dry_run=1: the shop answers what it WOULD change and writes nothing (even while its ERP link is switched off)
+        return self._call("POST", "/products", {"as_of": utc_now_iso(), "items": items, "full": full},
+                          query={"dry_run": 1} if dry_run else None)
 
 
 def utc_now_iso():
@@ -1085,6 +1087,35 @@ def collect_products(cur, st, only=None):
     return out
 
 
+def shop_dry_run_products(shop, todo, full):
+    """POST /products?dry_run=1 for every item: the shop says what it WOULD change and writes nothing. Nothing is kept here either."""
+    chunks = [todo[i:i + 500] for i in range(0, len(todo), 500)]
+    answers = [shop.products(chunk, bool(full) and len(chunks) == 1, dry_run=True) for chunk in chunks]
+    os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
+    path = os.path.join(HERE, "logs", "shop_dry_run_products_%s.json" % dt.datetime.now().strftime("%Y%m%d_%H%M%S"))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(answers, f, ensure_ascii=False, indent=1)
+    LOG.info("shop dry run: %d call(s), the shop wrote nothing; its full answer: %s", len(answers), path)
+    for n, a in enumerate(answers, 1):
+        for k, v in sorted(a.items()):
+            if isinstance(v, (list, dict)):
+                first = (v[0] if isinstance(v, list) else next(iter(v.items()))) if v else None
+                LOG.info("   call %d  %-14s %d%s", n, k, len(v), "" if first is None else "   e.g. " + json.dumps(first, ensure_ascii=False)[:150])
+            else:
+                LOG.info("   call %d  %-14s %s", n, k, v)
+    rows = [x for a in answers for x in (a.get("would_change") or []) if isinstance(x, dict)]
+    if rows:                                    # the shop's own list of changes, flattened for a spreadsheet
+        cols = sorted({k for r in rows for k in r}, key=lambda c: (c != "sku", c))
+        csv_path = path[:-len(".json")] + ".csv"
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for r in rows:
+                w.writerow([r.get(c, "") for c in cols])
+        LOG.info("   the changes as a table: %s (%d rows)", csv_path, len(rows))
+    return len(todo)
+
+
 def products_job(cur, conn, st, shop, args, commit):
     cur.execute("SELECT * FROM um_product_sent")
     sent = {r["sku"]: r for r in cur.fetchall()}
@@ -1107,6 +1138,8 @@ def products_job(cur, conn, st, shop, args, commit):
     miss_price = sum(1 for p in cur_items.values() if p["price"] is None)
     if miss_cost or miss_price:
         LOG.warning("   without cost: %d, without price: %d", miss_cost, miss_price)
+    if args.shop_dry_run:
+        return shop_dry_run_products(shop, todo, args.full) if todo else 0
     if not commit or not todo:
         return len(todo)
     chunks = [todo[i:i + 500] for i in range(0, len(todo), 500)]
@@ -1148,8 +1181,10 @@ def price_rows(cur, st):
             # HMBR / GI: their standard price x the markup. Their xsrate is never read or written here: the ERP itself
             # uses it for its own calculations (the one-time shop-price load of 3 Nov 2026 broke that and was reverted)
             if it["src_std"] and it["src_std"] > 0:
-                new = (d(it["src_std"]) * st.price_markup).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                rule = "source xstdprice x %s" % st.price_markup
+                new = (d(it["src_std"]) * st.price_markup).quantize(Decimal("1"), rounding=ROUND_FLOOR)      # whole taka, rounded down
+                rule = "source xstdprice x %s, rounded down" % st.price_markup
+                if new <= 0:
+                    new, rule = None, ""          # a source price under 1 taka would give a zero price: no price, never a guess
         elif src == FIXIT:
             if fixit.get(it["xalias"]):
                 new, rule = d(fixit[it["xalias"]]), "Fixit std price (Gulshan)"
@@ -1391,11 +1426,15 @@ def job_products(args):
         cur = dict_cur(conn)
         ensure_um_tables(cur)
         shop = Shop(st)
-        if args.commit:
+        if args.shop_dry_run:
+            args.full = True                    # ask about every followed item, whatever was sent before
+            h = shop.health()
+            LOG.info("shop health ok, environment=%s, sync_enabled=%s", h.get("environment"), h.get("sync_enabled"))
+        elif args.commit:
             shop.health()
         products_job(cur, conn, st, shop, args, args.commit)
         if not args.commit:
-            LOG.info("DRY-RUN: nothing posted to the shop")
+            LOG.info("DRY-RUN: nothing %s", "changed in the shop or recorded here (--shop-dry-run)" if args.shop_dry_run else "posted to the shop")
             conn.rollback()
         return 0
     except ShopUnavailable as e:
@@ -1540,9 +1579,13 @@ def main():
     ap.add_argument("--no-stock", action="store_true")
     ap.add_argument("--only-skus", default="", help="products: comma-separated SKUs to limit the push to")
     ap.add_argument("--full", action="store_true", help="products: send every followed item, not just the changes")
+    ap.add_argument("--shop-dry-run", action="store_true",
+                    help="products: send every followed item with ?dry_run=1; the shop answers what it WOULD change and writes nothing")
     ap.add_argument("--purge-test", action="store_true", help="DEV ONLY: delete fake-feed test data and reset cursor")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    if args.shop_dry_run and (args.commit or args.job != "products"):
+        ap.error("--shop-dry-run is only for --job products, and cannot be combined with --commit")
     if args.purge_test:
         sys.exit(purge_test(args))
     jobs = {"run": run, "po": job_po, "products": job_products, "price": job_price, "check": job_check}

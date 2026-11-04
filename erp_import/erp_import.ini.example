@@ -73,7 +73,7 @@ full_after_hour = 2
 [pricing]
 # The sell-price rule sets 100007 caitem.xstdprice (the price the shop shows) from the SOURCE company:
 #   Zepto 100005      -> its caitem.xsrate (the MRP)
-#   HMBR 100001 / GI 100000 -> their caitem.xstdprice x markup (their xsrate is never read or written: the ERP uses it for its own calculations)
+#   HMBR 100001 / GI 100000 -> their caitem.xstdprice x markup, rounded DOWN to a whole taka (their xsrate is never read or written: the ERP uses it for its own calculations)
 #   Fixit             -> the Gulshan std price
 # `--job price` is a REPORT. It only writes when apply = true AND --commit is given.
 apply = false

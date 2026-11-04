@@ -214,6 +214,19 @@ def main():
         rc, out = run("erp_import.py", "--job", "products", "--only-skus", skus, "--commit")
         check("0 to send" in out, "second push sends nothing (only changes go)", out[-200:])
 
+        print("\n[5b] --shop-dry-run: ask the shop what a push WOULD change; nothing is kept")
+        sent_before = q(cur, "SELECT sent_at FROM um_product_sent WHERE sku = %s", (tiered_sku,))[0]["sent_at"]
+        rc, out = run("erp_import.py", "--job", "products", "--only-skus", skus, "--shop-dry-run")
+        posts = [json.loads(l) for l in open(os.path.join(ROOT, "logs", "fake_feed_posts.jsonl"))]
+        dry = [p for p in posts if p["path"].endswith("/products") and p.get("dry_run")]
+        check(rc == 0 and len(dry) == 1 and len(dry[0]["body"]["items"]) == 3,
+              "one dry-run POST with every followed item, although nothing changed since the last push", out[-300:])
+        check("would_change" in out and "the shop wrote nothing" in out, "the shop's answer is summarised", out[-300:])
+        check(q(cur, "SELECT sent_at FROM um_product_sent WHERE sku = %s", (tiered_sku,))[0]["sent_at"] == sent_before, "nothing is recorded as sent")
+        check(any(f.startswith("shop_dry_run_products_") and f.endswith(".csv") for f in os.listdir(os.path.join(ROOT, "logs"))), "the changes are saved as a table")
+        rc, out = run("erp_import.py", "--job", "products", "--shop-dry-run", "--commit")
+        check(rc != 0 and "cannot be combined" in out, "--shop-dry-run together with --commit is refused", out[-200:])
+
         print("\n[6] sell-price report (writes nothing)")
         rc, out = run("erp_import.py", "--job", "price", "--commit")
         check(rc == 0 and "price rule" in out and "--commit ignored" in out, "report only; --commit ignored while apply = false", out[-300:])
@@ -242,6 +255,12 @@ def main():
             cur.execute("UPDATE caitem SET xstdprice = 100 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
             rc, rep = rep_of(tiered_sku)
             check(float(rep["new_price"]) == 140 and rep["flag"] == "review", "a move beyond max_change_pct is flagged review, not raise/lower", rep)
+            cur.execute("UPDATE caitem SET xstdprice = 1234 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
+            rc, rep = rep_of(tiered_sku)
+            check(float(rep["new_price"]) == 1727, "1234 x 1.40 = 1727.6 is rounded DOWN to 1727", rep)
+            cur.execute("UPDATE caitem SET xstdprice = 0.5 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
+            rc, rep = rep_of(tiered_sku)
+            check(rep["flag"] == "no_source_price" and rep["new_price"] == "", "a source price that rounds down to 0 gives no price", rep)
             cur.execute("UPDATE caitem SET xstdprice = NULL WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
             rc, rep = rep_of(tiered_sku)
             check(rep["flag"] == "no_source_price" and rep["new_price"] == "", "no source xstdprice -> no price (flagged, not guessed)", rep)
