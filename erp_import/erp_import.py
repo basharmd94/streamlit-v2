@@ -16,7 +16,7 @@ All online sales go to ONE ERP customer (config `customer`, CUS-000073 UtilityMa
 into opord.xref / opdor.xref. Shopper details are not stored in the ERP.
 
 Written for PostgreSQL 9.4 (no ON CONFLICT, no IF NOT EXISTS) and Python 3.6+ with only psycopg2 outside
-the standard library. See README.md (run guide) and docs/CYCLE_MAP.md (the agreed column map).
+the standard library (openpyxl only for `--job price --xlsx`). See README.md (run guide) and docs/CYCLE_MAP.md (the agreed column map).
 """
 import argparse
 import configparser
@@ -123,6 +123,8 @@ class Settings(object):
         self.price_apply = cfg_bool(cp, "pricing", "apply", False)
         self.price_markup = Decimal(cfg_get(cp, "pricing", "markup", "1.40"))      # HMBR / GI sell price = their xstdprice x this
         self.price_review_pct = float(cfg_get(cp, "pricing", "max_change_pct", "25"))   # a bigger move is flagged "review", not written (0 = off)
+        # SKUs whose rule price is accepted even when the move is bigger than max_change_pct (checked by the owner)
+        self.price_approve = {x.strip() for x in cfg_get(cp, "pricing", "approve_skus", "").split(",") if x.strip()}
         # SKUs the ERP must not push to the shop (stock, price, barcode, cost): the shop keeps its own figures for them
         self.skip_skus = {x.strip() for x in cfg_get(cp, "exceptions", "skip_skus", "").split(",") if x.strip()}
         self.fixit_price_zid = int(cfg_get(cp, "fixit", "price_zid", "100001"))
@@ -1162,7 +1164,7 @@ def products_job(cur, conn, st, shop, args, commit):
 
 def price_rows(cur, st):
     """What the scheduled in-ERP price rule would set on every followed 100007 item."""
-    cur.execute("SELECT c.xitem, c.xalias, c.xitemnew, c.xstdprice AS old, s.xsrate AS src_rate, s.xstdprice AS src_std"
+    cur.execute("SELECT c.xitem, c.xalias, c.xdesc, c.xitemnew, c.xstdprice AS old, s.xsrate AS src_rate, s.xstdprice AS src_std"
                 " FROM caitem c LEFT JOIN caitem s ON s.xitem = c.xalias"
                 " AND s.zid = (CASE WHEN c.xitemnew ~ '^[0-9]+$' THEN c.xitemnew::int END)"
                 " WHERE c.zid = %s AND coalesce(c.xalias,'') <> '' ORDER BY c.xitem", (st.zid,))
@@ -1192,20 +1194,20 @@ def price_rows(cur, st):
             continue
         old = d(it["old"]) if it["old"] is not None else None
         if it["xalias"] in st.skip_skus:
-            out.append({"xitem": it["xitem"], "sku": it["xalias"], "source": src, "old": old, "new": None, "flag": "skipped_exception",
+            out.append({"xitem": it["xitem"], "sku": it["xalias"], "name": it["xdesc"] or "", "source": src, "old": old, "new": None, "flag": "skipped_exception",
                         "rule": "[exceptions] skip_skus: the shop keeps its own price", "change_pct": None})
             continue
         flag = "no_source_price" if new is None else ("new_item" if not old else
                 ("same" if abs(new - old) < Decimal("0.005") else ("raise" if new > old else "lower")))
         pct = None if not old or new is None else float((new - old) / old * 100)
-        if flag in ("raise", "lower") and st.price_review_pct and abs(pct) > st.price_review_pct:
+        if flag in ("raise", "lower") and st.price_review_pct and abs(pct) > st.price_review_pct and it["xalias"] not in st.price_approve:
             flag = "review"             # a jump this big is usually a wrong source price (a placeholder 1, say): reported, never written unseen
-        out.append({"xitem": it["xitem"], "sku": it["xalias"], "source": src, "old": old, "new": new, "flag": flag,
+        out.append({"xitem": it["xitem"], "sku": it["xalias"], "name": it["xdesc"] or "", "source": src, "old": old, "new": new, "flag": flag,
                     "rule": rule, "change_pct": pct})
     return out
 
 
-def price_job(cur, conn, st, commit):
+def price_job(cur, conn, st, commit, xlsx=False):
     rows = price_rows(cur, st)
     by = {}
     for r in rows:
@@ -1222,19 +1224,66 @@ def price_job(cur, conn, st, commit):
             w.writerow([r["xitem"], r["sku"], r["source"], r["old"], r["new"],
                         "" if r["change_pct"] is None else round(r["change_pct"], 1), r["flag"], r["rule"]])
     LOG.info("price report written: %s (%d items)", path, len(rows))
+    if xlsx:
+        try:
+            import price_xlsx
+            xl = price_xlsx.write(os.path.join(HERE, "logs", "price_before_after_%s.xlsx" % dt.datetime.now().strftime("%Y%m%d_%H%M")),
+                                  rows, st.price_review_pct)
+            LOG.info("before/after Excel written: %s", xl)
+        except ImportError:
+            LOG.warning("--xlsx needs openpyxl: run  venv\\Scripts\\pip install openpyxl  and try again")
     if not commit:
         return 0
     if not st.price_apply:
         LOG.warning("--commit ignored: [pricing] apply is false in the config. The report is all that was done.")
         return 0
-    n = 0
-    for r in rows:
-        if r["new"] is not None and r["flag"] in ("raise", "lower", "new_item"):
+    todo = [r for r in rows if r["new"] is not None and r["flag"] in ("raise", "lower", "new_item")]
+    if todo:
+        # the old prices are saved first, so "--job price --undo" can put them back
+        cur.execute("SELECT to_regclass('public.um_price_backup')")
+        if list(cur.fetchone().values())[0] is None:
+            cur.execute("CREATE TABLE um_price_backup (id serial PRIMARY KEY, batch text, xitem text, sku text, old_price numeric,"
+                        " new_price numeric, saved_at timestamp DEFAULT now())")
+        batch = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        for r in todo:
+            cur.execute("INSERT INTO um_price_backup (batch, xitem, sku, old_price, new_price) VALUES (%s, %s, %s, %s, %s)",
+                        (batch, r["xitem"], r["sku"], r["old"], r["new"]))
             cur.execute("UPDATE caitem SET xstdprice = %s, zutime = now() WHERE zid = %s AND xitem = %s",
                         (r["new"], st.zid, r["xitem"]))
+    conn.commit()
+    LOG.info("prices written: %d%s", len(todo), (" (old prices saved in um_price_backup, batch %s; undo: --job price --undo --commit)" % batch) if todo else "")
+    return len(todo)
+
+
+def price_undo(cur, conn, st, commit):
+    """Put back the prices the latest `--job price --commit` replaced (only where 100007 still holds what that run wrote)."""
+    cur.execute("SELECT to_regclass('public.um_price_backup')")
+    if list(cur.fetchone().values())[0] is None:
+        LOG.info("no price backup (um_price_backup): the price job never wrote here")
+        return 0
+    cur.execute("SELECT max(batch) AS b FROM um_price_backup")
+    batch = cur.fetchone()["b"]
+    if not batch:
+        LOG.info("the price backup is empty: nothing to put back")
+        return 0
+    cur.execute("SELECT b.id, b.xitem, b.sku, b.old_price, b.new_price, c.xstdprice AS now FROM um_price_backup b"
+                " JOIN caitem c ON c.zid = %s AND c.xitem = b.xitem WHERE b.batch = %s ORDER BY b.id DESC", (st.zid, batch))
+    rows = cur.fetchall()
+    ok = [r for r in rows if r["now"] is not None and r["now"] == r["new_price"]]
+    LOG.info("price backup batch %s: %d rows; can be put back (price still what the run wrote): %d; changed since by someone: %d",
+             batch, len(rows), len(ok), len(rows) - len(ok))
+    if not commit:
+        LOG.info("DRY-RUN: nothing was put back. Add --commit to do it.")
+        return 0
+    n = 0
+    for r in ok:
+        cur.execute("UPDATE caitem SET xstdprice = %s, zutime = now() WHERE zid = %s AND xitem = %s AND xstdprice = %s",
+                    (r["old_price"], st.zid, r["xitem"], r["new_price"]))
+        if cur.rowcount == 1:
+            cur.execute("DELETE FROM um_price_backup WHERE id = %s", (r["id"],))
             n += 1
     conn.commit()
-    LOG.info("prices written: %d", n)
+    LOG.info("put back %d prices; their backup rows were removed", n)
     return n
 
 
@@ -1457,7 +1506,10 @@ def job_price(args):
     try:
         cur = dict_cur(conn)
         ensure_um_tables(cur)
-        price_job(cur, conn, st, args.commit)
+        if args.undo:
+            price_undo(cur, conn, st, args.commit)
+        else:
+            price_job(cur, conn, st, args.commit, args.xlsx)
         conn.rollback()
         return 0
     finally:
@@ -1579,6 +1631,8 @@ def main():
     ap.add_argument("--no-stock", action="store_true")
     ap.add_argument("--only-skus", default="", help="products: comma-separated SKUs to limit the push to")
     ap.add_argument("--full", action="store_true", help="products: send every followed item, not just the changes")
+    ap.add_argument("--xlsx", action="store_true", help="price: also write logs/price_before_after_<time>.xlsx (what is today / what the rule leaves); needs openpyxl")
+    ap.add_argument("--undo", action="store_true", help="price: put back the prices the latest `--job price --commit` replaced (add --commit to do it)")
     ap.add_argument("--shop-dry-run", action="store_true",
                     help="products: send every followed item with ?dry_run=1; the shop answers what it WOULD change and writes nothing")
     ap.add_argument("--purge-test", action="store_true", help="DEV ONLY: delete fake-feed test data and reset cursor")
@@ -1586,6 +1640,8 @@ def main():
     args = ap.parse_args()
     if args.shop_dry_run and (args.commit or args.job != "products"):
         ap.error("--shop-dry-run is only for --job products, and cannot be combined with --commit")
+    if (args.xlsx or args.undo) and args.job != "price":
+        ap.error("--xlsx and --undo are only for --job price")
     if args.purge_test:
         sys.exit(purge_test(args))
     jobs = {"run": run, "po": job_po, "products": job_products, "price": job_price, "check": job_check}

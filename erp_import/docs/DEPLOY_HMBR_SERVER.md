@@ -130,12 +130,8 @@ Do not switch the service to live before Phase 5: a live service would push what
 
 **Phase 1: connect, the shop link still off (nothing changes in the shop)**
 1. `git pull origin main`, then `venv\Scripts\python erp_import.py --job check` must say `OK shop /health ... environment=live` (404 = the shop is not deployed; 401/403 = key, secret or server clock).
-2. `venv\Scripts\python erp_import.py --job price` and read the report. A move over 25% is flagged `review` and is NOT written: that item keeps today's price. Decide those rows (fix the source price, or leave the price as it is).
-3. Back up 100007's prices, then apply the rule:
-   ```bat
-   "C:\Program Files\PostgreSQL\9.4\bin\psql.exe" -U postgres -h 127.0.0.1 -d da -c "CREATE TABLE um_price_backup_20261104 AS SELECT xitem, xalias, xstdprice, zutime FROM caitem WHERE zid = 100007;"
-   ```
-   Set `apply = true` under `[pricing]` in `erp_import.ini`, then `venv\Scripts\python erp_import.py --job price --commit`. **Undo:** `UPDATE caitem c SET xstdprice = b.xstdprice, zutime = now() FROM um_price_backup_20261104 b WHERE c.zid = 100007 AND c.xitem = b.xitem;`
+2. `venv\Scripts\pip install openpyxl` (once), then `venv\Scripts\python erp_import.py --job price --xlsx`. Open `logs\price_before_after_<time>.xlsx`: every item with what is in 100007 today ("Was"), the rule's price and what it will be ("Will be"), sorted with the HELD rows first. A move over 25% is HELD: it is NOT written and the item keeps today's price. Decide those rows: fix the source price in the ERP, accept the rule price by adding the SKU to `approve_skus` under `[pricing]`, or set the price you want by hand in 100007. Note that the first products push sends 100007's price to the shop, so a held item's old 100007 price goes to the shop as it is.
+3. Apply the rule: set `apply = true` under `[pricing]` in `erp_import.ini`, then `venv\Scripts\python erp_import.py --job price --commit`. It saves every old price in table `um_price_backup` BEFORE it writes; keep the Excel from step 2 as your own record. **Undo:** `venv\Scripts\python erp_import.py --job price --undo` (dry run: shows what would be put back), then the same with `--commit`. It puts back the latest run's prices, only where 100007 still holds what that run wrote.
 4. `venv\Scripts\python erp_import.py --job products --shop-dry-run`: the shop says what a push WOULD change (price, barcode, cost, group, stock) and writes nothing. Read `logs\shop_dry_run_products_<time>.csv` (and `.json`).
 
 **Phase 2: switch the shop link on (SHOP, after telling the ERP side)**
@@ -161,7 +157,7 @@ Do not switch the service to live before Phase 5: a live service would push what
 **Phase 5: the service goes live**
 14. `nssm set UtilityMartERP AppParameters "erp_service.py"` then `nssm restart UtilityMartERP` (`C:\caddy\nssm.exe`). Watch `logs\erp_service.log` and `logs\erp_import_<date>.log` for a day (05:30 Fixit, 05:45 prices, 06:00 products, 23:30 purchase orders; a run every 5 minutes).
 
-**Stopping and undoing.** ERP side: `nssm stop UtilityMartERP`. Shop side: remove `ERP_SYNC_ENABLED` and restart (no more events; real `/stock` and `/products` refused; nothing already in the outbox is lost). Prices: the undo in step 3. Items: restore from `caitem_before_um_load.backup`. Purchase orders the importer made are ordinary `1-Open` POs with `xref = UM-<order>`: staff can delete them.
+**Stopping and undoing.** ERP side: `nssm stop UtilityMartERP`. Shop side: remove `ERP_SYNC_ENABLED` and restart (no more events; real `/stock` and `/products` refused; nothing already in the outbox is lost). Prices: `--job price --undo --commit` (step 3). Items: restore from `caitem_before_um_load.backup`. Purchase orders the importer made are ordinary `1-Open` POs with `xref = UM-<order>`: staff can delete them.
 
 ## Part B: Fixit server
 

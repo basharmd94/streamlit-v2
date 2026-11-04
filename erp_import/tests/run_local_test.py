@@ -255,6 +255,12 @@ def main():
             cur.execute("UPDATE caitem SET xstdprice = 100 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
             rc, rep = rep_of(tiered_sku)
             check(float(rep["new_price"]) == 140 and rep["flag"] == "review", "a move beyond max_change_pct is flagged review, not raise/lower", rep)
+            cp3 = E.load_config(os.path.join(ROOT, "erp_import.ini"))
+            if not cp3.has_section("pricing"):
+                cp3.add_section("pricing")
+            cp3.set("pricing", "approve_skus", tiered_sku)
+            r3 = {r["sku"]: r for r in E.price_rows(cur, E.Settings(cp3))}[tiered_sku]
+            check(r3["flag"] == "lower" and float(r3["new"]) == 140, "[pricing] approve_skus lets a listed SKU through the review limit", r3)
             cur.execute("UPDATE caitem SET xstdprice = 1234 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
             rc, rep = rep_of(tiered_sku)
             check(float(rep["new_price"]) == 1727, "1234 x 1.40 = 1727.6 is rounded DOWN to 1727", rep)
@@ -275,6 +281,50 @@ def main():
             cur.execute("UPDATE caitem SET xstdprice = %s, xsrate = %s WHERE zid = %s AND xitem = %s", (s1["xstdprice"], s1["xsrate"], s1["zid"], s1["xitem"]))
             cur.execute("UPDATE caitem SET xsrate = %s WHERE zid = %s AND xitem = %s", (z1["xsrate"], z1["zid"], z1["xitem"]))
             cur.execute("UPDATE caitem SET xstdprice = %s WHERE zid = %s AND xalias = %s", (old7, Z, tiered_sku))
+
+        print("\n[6a] price --commit saves the old prices first; --undo puts them back; --xlsx writes the before/after Excel")
+        import openpyxl
+        apply_ini = os.path.join(ROOT, "logs", "test_apply.ini")
+        cp4 = E.load_config(os.path.join(ROOT, "erp_import.ini"))
+        if not cp4.has_section("pricing"):
+            cp4.add_section("pricing")
+        cp4.set("pricing", "apply", "true")
+        with open(apply_ini, "w") as f_:
+            cp4.write(f_)
+        keep7 = q(cur, "SELECT xstdprice FROM caitem WHERE zid = %s AND xalias = %s", (Z, tiered_sku))[0]["xstdprice"]
+        keep_s = q(cur, "SELECT xstdprice FROM caitem WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))[0]["xstdprice"]
+        try:
+            cur.execute("UPDATE caitem SET xstdprice = 1300 WHERE zid = %s AND xalias = %s", (Z, tiered_sku))
+            cur.execute("UPDATE caitem SET xstdprice = 1000 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
+            base_prices = q(cur, "SELECT xitem, xstdprice FROM caitem WHERE zid = %s ORDER BY xitem", (Z,))
+            rc, out = run("erp_import.py", "--job", "price", "--commit", "--xlsx", "--config", apply_ini)
+            now7 = q(cur, "SELECT xstdprice FROM caitem WHERE zid = %s AND xalias = %s", (Z, tiered_sku))[0]["xstdprice"]
+            check(rc == 0 and float(now7) == 1400, "price --commit writes the rule price (1000 x 1.40)", (now7, out[-300:]))
+            bk = q(cur, "SELECT * FROM um_price_backup WHERE sku = %s", (tiered_sku,))
+            check(len(bk) == 1 and float(bk[0]["old_price"]) == 1300 and float(bk[0]["new_price"]) == 1400, "the old price was saved first", bk)
+            xl = sorted(f for f in os.listdir(os.path.join(ROOT, "logs")) if f.startswith("price_before_after_") and f.endswith(".xlsx"))
+            check(bool(xl), "--xlsx wrote the before/after Excel")
+            if xl:
+                wb = openpyxl.load_workbook(os.path.join(ROOT, "logs", xl[-1]))
+                ws = wb["Before and after"]
+                row = [[c.value for c in r_] for r_ in ws.iter_rows(min_row=2) if r_[0].value == tiered_sku]
+                check(wb.sheetnames == ["Before and after", "Summary"] and row and float(row[0][4]) == 1300 and float(row[0][6]) == 1400,
+                      "the Excel shows was 1300 and will-be 1400 for the test item", row)
+            rc, out = run("erp_import.py", "--job", "price", "--undo", "--config", apply_ini)
+            check("can be put back" in out and "DRY-RUN" in out and
+                  float(q(cur, "SELECT xstdprice FROM caitem WHERE zid = %s AND xalias = %s", (Z, tiered_sku))[0]["xstdprice"]) == 1400,
+                  "--undo alone is a dry run", out[-250:])
+            rc, out = run("erp_import.py", "--job", "price", "--undo", "--commit", "--config", apply_ini)
+            check(rc == 0 and q(cur, "SELECT xitem, xstdprice FROM caitem WHERE zid = %s ORDER BY xitem", (Z,)) == base_prices,
+                  "--undo --commit puts every price back exactly", out[-250:])
+            check(q(cur, "SELECT count(*) n FROM um_price_backup")[0]["n"] == 0, "the backup rows are removed after the undo")
+        finally:
+            cur.execute("UPDATE caitem SET xstdprice = %s WHERE zid = %s AND xalias = %s", (keep7, Z, tiered_sku))
+            cur.execute("UPDATE caitem SET xstdprice = %s WHERE zid = %s AND xitem = %s", (keep_s, s1["zid"], s1["xitem"]))
+            cur.execute("DROP TABLE IF EXISTS um_price_backup")
+            for f_ in os.listdir(os.path.join(ROOT, "logs")):
+                if f_.startswith("price_before_after_") or f_ == "test_apply.ini":
+                    os.remove(os.path.join(ROOT, "logs", f_))
 
         print("\n[6b] one-time xsrate load from a JSON of shop prices (onetime/set_xsrate_from_json.py)")
         src = q(cur, "SELECT s.zid, s.xitem, s.xsrate FROM caitem c JOIN caitem s ON s.xitem = c.xalias AND s.zid = c.xitemnew::int"
