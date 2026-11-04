@@ -122,19 +122,46 @@ nssm start UtilityMartERP
 * Staff to-do list the importer writes: `SELECT created_at, kind, order_ref, details FROM um_attention WHERE NOT resolved ORDER BY id;` (refunds/returns to do by hand, cancels after shipping, missing Fixit items, locked orders).
 * Stop everything at once: `nssm stop UtilityMartERP`. Open POs the importer made are ordinary `1-Open` POs with `xref = UM-<order>`: staff can delete them like any other.
 
-### A13. First live day (by hand, in this order, once the shop's hooks exist)
-Do not start the service in live mode before step 5: a live service would push whatever 100007 prices exist today to the shop on its first products run.
-1. `venv\Scripts\python erp_import.py --job check` is fully green (shop `/health` says `live`, Fixit reachable).
-2. `venv\Scripts\python erp_import.py` (dry run on the real feed) and read it: expect about 2,100 item events, 0 failures, ~17 `barcode_mismatch` warnings (the ERP pairing wins), and about 1,466 NEW Fixit items (`04-00001` upward).
-3. `venv\Scripts\python erp_import.py --commit` (repeat until it says 0 events; one run takes up to 1000).
-4. `venv\Scripts\python fixit_pull.py --commit` (needs the Fixit items from step 3).
-5. `venv\Scripts\python erp_import.py --job price`, open `logs\price_report_<date>.csv`, decide, then set `[pricing] apply = true` and run `--job price --commit` (writes 100007 `xstdprice`: Zepto from its `xsrate`, HMBR/GI from their `xstdprice` x 1.40 rounded down to a whole taka, Fixit from Gulshan). **Read the `review` rows first**: they are moves over 25% (usually a placeholder source price such as 1) and are not written; fix the source price or raise `[pricing] max_change_pct`. Check a few Fixit items in the ERP screens too (`xitemnew = 'Fixit'` is text in a column that otherwise holds company numbers).
-6. **Look before the first push:** `venv\Scripts\python erp_import.py --job products --shop-dry-run`. It asks the shop what the push WOULD change (every price, barcode, cost and stock figure) and the shop writes nothing; the answer is saved as `logs\shop_dry_run_products_<time>.json` and `.csv`. Read it, and send the file back if anything looks wrong.
-7. `venv\Scripts\python erp_import.py --job products --commit` (first push of barcode, price, cost, group, stock to the shop; the shop price is overwritten by the ERP price, which after step 5 equals what the shop already had).
-8. One real test order on the shop; follow it: `opmob` rows (invoice `UM-<number>`), status and stock back to the shop, the daily PO.
-9. Switch the service to live (A11) and leave it on.
+### A13. Going live (by hand, in this order)
+**ERP** = you on the HMBR server (`D:\streamlit-v2\erp_import`, venv active). **SHOP** = the shop session / Coolify. Each step says what to check before the next one. Stop at the first surprise and send the output.
+Do not switch the service to live before Phase 5: a live service would push whatever 100007 holds to the shop on its first products run.
 
----
+**Before you start (SHOP).** The code is committed and deployed with `ERP_FEED_KEY` and `ERP_SHARED_SECRET` set and `ERP_SYNC_ENABLED` NOT set (the shop is unchanged). The shop session has answered: which orders the backfill sends (items, plus orders placed from the switch-on; not history) and what happens to the variants without a SKU. Bundles go out as parts (`SHOP_CONTRACT.md` point 8).
+
+**Phase 1: connect, the shop link still off (nothing changes in the shop)**
+1. `git pull origin main`, then `venv\Scripts\python erp_import.py --job check` must say `OK shop /health ... environment=live` (404 = the shop is not deployed; 401/403 = key, secret or server clock).
+2. `venv\Scripts\python erp_import.py --job price` and read the report. A move over 25% is flagged `review` and is NOT written: that item keeps today's price. Decide those rows (fix the source price, or leave the price as it is).
+3. Back up 100007's prices, then apply the rule:
+   ```bat
+   "C:\Program Files\PostgreSQL\9.4\bin\psql.exe" -U postgres -h 127.0.0.1 -d da -c "CREATE TABLE um_price_backup_20261104 AS SELECT xitem, xalias, xstdprice, zutime FROM caitem WHERE zid = 100007;"
+   ```
+   Set `apply = true` under `[pricing]` in `erp_import.ini`, then `venv\Scripts\python erp_import.py --job price --commit`. **Undo:** `UPDATE caitem c SET xstdprice = b.xstdprice, zutime = now() FROM um_price_backup_20261104 b WHERE c.zid = 100007 AND c.xitem = b.xitem;`
+4. `venv\Scripts\python erp_import.py --job products --shop-dry-run`: the shop says what a push WOULD change (price, barcode, cost, group, stock) and writes nothing. Read `logs\shop_dry_run_products_<time>.csv` (and `.json`).
+
+**Phase 2: switch the shop link on (SHOP, after telling the ERP side)**
+5. SHOP: the backfill dry run (`RUN_ONCE_TASK=erp-backfill`, no args), read the report, fix what it lists, delete the variable.
+6. ERP: back up the item table: `"C:\Program Files\PostgreSQL\9.4\bin\pg_dump.exe" -U postgres -h 127.0.0.1 -Fc -t caitem -f D:\backups\caitem_before_um_load.backup da` (the folder must exist; the nightly full backup is the other safety net).
+7. SHOP: `ERP_SYNC_ENABLED=true`, restart, then the backfill with `commit`. The outbox now holds about 2,200 item events plus the orders in the window. The ERP service is still in `--dry-run`, so nothing is consumed yet. Real orders placed from now on wait in the outbox too.
+
+**Phase 3: load the items into the ERP (ERP)**
+8. `venv\Scripts\python erp_import.py` (dry run on the real feed; nothing is acknowledged, so repeat it as often as you like). Expect about 2,100 item events, 0 failures, about 17 `barcode_mismatch` warnings (the ERP pairing wins) and about 1,466 NEW Fixit items (`04-00001` upward). Send the output.
+9. `venv\Scripts\python erp_import.py --commit --no-stock`; repeat until it reports 0 events (one run takes up to 1000). `--no-stock` keeps the first stock push for step 12. Real orders waiting in the outbox are entered by these runs.
+10. `venv\Scripts\python fixit_pull.py --commit`: `followed Fixit items in 100007` should now be about 1466; anything Fixit does not know is listed.
+11. `venv\Scripts\python erp_import.py --job price`, then `--job price --commit` (the new Fixit items get their Gulshan price). Check a few Fixit items in the ERP screens (`xitemnew = 'Fixit'` is text in a column that otherwise holds company numbers).
+12. `venv\Scripts\python erp_import.py --job products --shop-dry-run`, read it, then `--job products --commit`: the first real push of barcodes (the ERP item codes), price, cost, group and stock into Medusa. Look at the shop's "ERP sync" page and a few products.
+
+**Phase 4: test orders (the service is still in dry-run, so you decide when an order is entered)**
+13. Place test orders in the shop: one cash order with one item; one mixing HMBR, GI, Zepto and Fixit items; a bundle; an online payment; a discount code; fulfil one (Pathao parcel) and cancel one. After each, run `venv\Scripts\python erp_import.py --commit` and look:
+    ```sql
+    SELECT invoiceno, xitem, xqty, xprice, xlinetotal, xstatusord, xtra1 AS discount_pct, xtra3 AS payment, xtra4 AS consignment FROM opmob WHERE zid = 100007 ORDER BY ztime DESC LIMIT 20;
+    SELECT created_at, kind, order_ref, details FROM um_attention WHERE NOT resolved ORDER BY id;
+    ```
+    The order sits under customer `CUS-000073` as `UM-<number>`; staff process it in the ERP as usual (it shows in the DO Creation Audit while pending). Check: the totals and discount %, the payment trail, the courier id, the status and stock coming back to the shop, the purchase orders (`--job po` is a dry run; `--job po --commit` makes them).
+
+**Phase 5: the service goes live**
+14. `nssm set UtilityMartERP AppParameters "erp_service.py"` then `nssm restart UtilityMartERP` (`C:\caddy\nssm.exe`). Watch `logs\erp_service.log` and `logs\erp_import_<date>.log` for a day (05:30 Fixit, 05:45 prices, 06:00 products, 23:30 purchase orders; a run every 5 minutes).
+
+**Stopping and undoing.** ERP side: `nssm stop UtilityMartERP`. Shop side: remove `ERP_SYNC_ENABLED` and restart (no more events; real `/stock` and `/products` refused; nothing already in the outbox is lost). Prices: the undo in step 3. Items: restore from `caitem_before_um_load.backup`. Purchase orders the importer made are ordinary `1-Open` POs with `xref = UM-<order>`: staff can delete them.
 
 ## Part B: Fixit server
 
