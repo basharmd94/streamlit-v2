@@ -1089,10 +1089,29 @@ def collect_products(cur, st, only=None):
     return out
 
 
-def shop_dry_run_products(shop, todo, full):
-    """POST /products?dry_run=1 for every item: the shop says what it WOULD change and writes nothing. Nothing is kept here either."""
+def _skus_in(x):
+    """The SKUs named in a list of the shop's answer: plain strings, or objects with a `sku`."""
+    return {(i.get("sku") if isinstance(i, dict) else i) for i in (x or []) if i}
+
+
+def shop_dry_run_answers(shop, todo, full):
+    """POST /products?dry_run=1 for every item (in calls of 500): the shop says what it WOULD change and writes nothing."""
     chunks = [todo[i:i + 500] for i in range(0, len(todo), 500)]
     answers = [shop.products(chunk, bool(full) and len(chunks) == 1, dry_run=True) for chunk in chunks]
+    conflicts = [c for a in answers for c in (a.get("conflicts") or []) if isinstance(c, dict)]
+    if conflicts:
+        # a barcode wanted by one item is held by another that changes in a different call of 500; the real push sends the
+        # conflicting items together at the end, so ask the same way: them plus the items named as holding the barcode
+        names = _skus_in(conflicts) | {m for c in conflicts for m in re.findall(r"in use by (\S+)", str(c.get("reason", "")))}
+        again = [p for p in todo if p["sku"] in names]
+        LOG.info("barcode conflicts: %d; asking again with them and the items holding their barcodes together (%d items)", len(conflicts), len(again))
+        answers.append(shop.products(again, False, dry_run=True))
+    return answers
+
+
+def shop_dry_run_products(shop, todo, full):
+    """The dry run for `--job products --shop-dry-run`: asks, saves the shop's answer, prints a summary. Nothing is kept here."""
+    answers = shop_dry_run_answers(shop, todo, full)
     os.makedirs(os.path.join(HERE, "logs"), exist_ok=True)
     path = os.path.join(HERE, "logs", "shop_dry_run_products_%s.json" % dt.datetime.now().strftime("%Y%m%d_%H%M%S"))
     with open(path, "w", encoding="utf-8") as f:
@@ -1144,19 +1163,40 @@ def products_job(cur, conn, st, shop, args, commit):
         return shop_dry_run_products(shop, todo, args.full) if todo else 0
     if not commit or not todo:
         return len(todo)
+    def record(p):
+        row = (p["sku"], p.get("barcode"), p.get("price"), p.get("cost_price"), p.get("item_group"), p.get("on_hand"))
+        cur.execute("SELECT 1 FROM um_product_sent WHERE sku = %s", (p["sku"],))
+        if cur.fetchone():
+            cur.execute("UPDATE um_product_sent SET barcode=%s, std_price=%s, cost_price=%s, item_group=%s,"
+                        " on_hand=%s, sent_at=now() WHERE sku=%s", row[1:] + (p["sku"],))
+        else:
+            cur.execute("INSERT INTO um_product_sent (sku, barcode, std_price, cost_price, item_group, on_hand)"
+                        " VALUES (%s,%s,%s,%s,%s,%s)", row)
+
     chunks = [todo[i:i + 500] for i in range(0, len(todo), 500)]
+    retry, not_applied = [], {}
     for chunk in chunks:
-        shop.products(chunk, bool(args.full) and len(chunks) == 1)
+        ans = shop.products(chunk, bool(args.full) and len(chunks) == 1)
+        refused = _skus_in(ans.get("unknown_skus")) | _skus_in(ans.get("skipped"))
+        conflict = _skus_in(ans.get("conflicts"))
+        retry += [p for p in chunk if p["sku"] in conflict]
+        not_applied.update({s: "not in the shop / skipped" for s in refused})
         for p in chunk:
-            row = (p["sku"], p.get("barcode"), p.get("price"), p.get("cost_price"), p.get("item_group"), p.get("on_hand"))
-            cur.execute("SELECT 1 FROM um_product_sent WHERE sku = %s", (p["sku"],))
-            if cur.fetchone():
-                cur.execute("UPDATE um_product_sent SET barcode=%s, std_price=%s, cost_price=%s, item_group=%s,"
-                            " on_hand=%s, sent_at=now() WHERE sku=%s", row[1:] + (p["sku"],))
+            if p["sku"] not in refused and p["sku"] not in conflict:      # only what the shop took is recorded as sent
+                record(p)
+    if retry:
+        # a barcode taken from another item that changes in a LATER call of 500: send those items together, in one call
+        ans = shop.products(retry, False)
+        refused = _skus_in(ans.get("unknown_skus")) | _skus_in(ans.get("skipped")) | _skus_in(ans.get("conflicts"))
+        for p in retry:
+            if p["sku"] in refused:
+                not_applied[p["sku"]] = "barcode conflict or not in the shop"
             else:
-                cur.execute("INSERT INTO um_product_sent (sku, barcode, std_price, cost_price, item_group, on_hand)"
-                            " VALUES (%s,%s,%s,%s,%s,%s)", row)
+                record(p)
+        LOG.info("barcode conflicts sent again together: %d items, %d resolved", len(retry), len(retry) - sum(1 for p in retry if p["sku"] in refused))
     conn.commit()
+    if not_applied:
+        LOG.warning("not applied by the shop, tried again on the next run (%d): %s", len(not_applied), ", ".join(sorted(not_applied)[:20]))
     return len(todo)
 
 
@@ -1498,6 +1538,22 @@ def job_products(args):
         release(conn, lockconn, lc)
 
 
+def job_preflight(args):
+    """Read-only check of the HMBR source companies, the Fixit server, the 100007 items and the live shop (see preflight.py)."""
+    sess = locked_session(args, "preflight")
+    if not sess:
+        return 0
+    cp, st, conn, lockconn, lc = sess
+    try:
+        cur = dict_cur(conn)
+        ensure_um_tables(cur)
+        import preflight
+        return preflight.run(sys.modules[__name__], cur, st, cp, Shop(st), args)
+    finally:
+        conn.rollback()
+        release(conn, lockconn, lc)
+
+
 def job_price(args):
     sess = locked_session(args, "price")
     if not sess:
@@ -1621,7 +1677,7 @@ def purge_test(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--job", choices=["run", "po", "products", "price", "check"], default="run")
+    ap.add_argument("--job", choices=["run", "po", "products", "price", "check", "preflight"], default="run")
     ap.add_argument("--config", default=os.path.join(HERE, "erp_import.ini"))
     ap.add_argument("--commit", action="store_true", help="write to the database and post to the shop (default: dry run)")
     ap.add_argument("--after", type=int, default=None, help="run: start from this feed seq instead of the saved cursor")
@@ -1644,7 +1700,7 @@ def main():
         ap.error("--xlsx and --undo are only for --job price")
     if args.purge_test:
         sys.exit(purge_test(args))
-    jobs = {"run": run, "po": job_po, "products": job_products, "price": job_price, "check": job_check}
+    jobs = {"run": run, "po": job_po, "products": job_products, "price": job_price, "check": job_check, "preflight": job_preflight}
     sys.exit(jobs[args.job](args))
 
 

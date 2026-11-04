@@ -227,6 +227,36 @@ def main():
         rc, out = run("erp_import.py", "--job", "products", "--shop-dry-run", "--commit")
         check(rc != 0 and "cannot be combined" in out, "--shop-dry-run together with --commit is refused", out[-200:])
 
+        print("\n[5c] the push records only what the shop took; barcode conflicts are sent again together at the end")
+
+        class StubShop(object):
+            def __init__(self, conflict_first=None, unknown=None):
+                self.calls, self.conflict_first, self.unknown = [], conflict_first, unknown
+
+            def products(self, items, full, dry_run=False):
+                self.calls.append([i["sku"] for i in items])
+                ans = {"ok": True}
+                if len(self.calls) == 1 and self.conflict_first:
+                    ans["conflicts"] = [{"sku": self.conflict_first, "reason": "barcode in use by SOMEONE"}]
+                if self.unknown:
+                    ans["unknown_skus"] = [self.unknown]
+                return ans
+        two = (tiered_sku, zepto_sku)
+        ns = type("Args", (), dict(only_skus=",".join(two), full=True, shop_dry_run=False))()
+
+        def sent_skus():
+            return {r["sku"] for r in q(cur, "SELECT sku FROM um_product_sent WHERE sku IN %s", (two,))}
+        cur.execute("DELETE FROM um_product_sent WHERE sku IN %s", (two,))
+        stub = StubShop(conflict_first=tiered_sku)
+        E.products_job(cur, conn, st, stub, ns, True)
+        check(len(stub.calls) == 2 and stub.calls[1] == [tiered_sku], "an item refused for a barcode conflict is sent again, alone, at the end", stub.calls)
+        check(sent_skus() == set(two), "both are recorded once the shop has taken them", sent_skus())
+        cur.execute("DELETE FROM um_product_sent WHERE sku IN %s", (two,))
+        E.products_job(cur, conn, st, StubShop(unknown=zepto_sku), ns, True)
+        check(sent_skus() == {tiered_sku}, "an item the shop does not know is NOT recorded as sent (tried again next run)", sent_skus())
+        E.products_job(cur, conn, st, StubShop(), ns, True)
+        check(sent_skus() == set(two), "and is recorded once the shop knows it", sent_skus())
+
         print("\n[6] sell-price report (writes nothing)")
         rc, out = run("erp_import.py", "--job", "price", "--commit")
         check(rc == 0 and "price rule" in out and "--commit ignored" in out, "report only; --commit ignored while apply = false", out[-300:])
@@ -324,6 +354,27 @@ def main():
             cur.execute("DROP TABLE IF EXISTS um_price_backup")
             for f_ in os.listdir(os.path.join(ROOT, "logs")):
                 if f_.startswith("price_before_after_") or f_ == "test_apply.ini":
+                    os.remove(os.path.join(ROOT, "logs", f_))
+
+        print("\n[6e] preflight: one read-only report over the source companies, Fixit, 100007 and the shop")
+        cur.execute("UPDATE caitem SET xstdprice = 1 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
+        try:
+            rc, out = run("erp_import.py", "--job", "preflight")
+            check("PRE-FLIGHT" in out and "full list:" in out, "preflight prints its summary and names the file", out[-500:])
+            pf = sorted(f for f in os.listdir(os.path.join(ROOT, "logs")) if f.startswith("preflight_") and f.endswith(".xlsx"))
+            check(bool(pf), "preflight wrote the Excel")
+            if pf:
+                wb = openpyxl.load_workbook(os.path.join(ROOT, "logs", pf[-1]))
+                probs = [[c.value for c in r_] for r_ in wb["Problems"].iter_rows(min_row=2)]
+                codes = {p[2] for p in probs}
+                check(wb.sheetnames == ["Summary", "Problems", "Shop would change"], "the Excel has Summary, Problems and Shop would change", wb.sheetnames)
+                check(any(p[2] == "placeholder_price" and p[3] == tiered_sku for p in probs), "a source price of 1 is reported", sorted(codes))
+                check({"followed_items", "fixit_view", "shop_health"} <= codes, "the item count, the Fixit server and the shop were all read", sorted(codes))
+                check(len(list(wb["Shop would change"].iter_rows(min_row=2))) > 0, "the shop's would-change rows are listed")
+        finally:
+            cur.execute("UPDATE caitem SET xstdprice = %s WHERE zid = %s AND xitem = %s", (s1["xstdprice"], s1["zid"], s1["xitem"]))
+            for f_ in os.listdir(os.path.join(ROOT, "logs")):
+                if f_.startswith("preflight_"):
                     os.remove(os.path.join(ROOT, "logs", f_))
 
         print("\n[6b] one-time xsrate load from a JSON of shop prices (onetime/set_xsrate_from_json.py)")
