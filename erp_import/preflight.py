@@ -133,7 +133,7 @@ def run(E, cur, st, cp, shop, args):
     try:
         h = shop.health()
         add(A_SHOP, INFO, "shop_health", detail="environment=%s, sync_enabled=%s" % (h.get("environment"), h.get("sync_enabled")))
-        todo = [{k: v for k, v in p.items() if v is not None} for p in products.values()]
+        todo = [{k: v for k, v in p.items() if v is not None} for _, p in sorted(products.items())]      # SKU order, as the push sends them
         answers = E.shop_dry_run_answers(shop, todo, True)
         n_calls = -(-len(todo) // 500)
         main, retry = answers[:n_calls], answers[n_calls:]
@@ -141,15 +141,12 @@ def run(E, cur, st, cp, shop, args):
         for sku in unknown:
             xitem, name = names.get(sku, ("", ""))
             add(A_SHOP, WARN, "not_in_shop", sku, xitem, name, "an ERP item the shop does not have (typing error in the shop's SKU?)")
-        left = [c for a in (retry or main) for c in (a.get("conflicts") or [])]
+        left = (retry[-1].get("conflicts") or []) if retry else [c for a in main for c in (a.get("conflicts") or [])]
         for c in left:
             sku = c.get("sku") if isinstance(c, dict) else c
             xitem, name = names.get(sku, ("", ""))
             add(A_SHOP, WARN, "barcode_conflict", sku, xitem, name, "%s%s" % (c.get("reason", "") if isinstance(c, dict) else "", " (even when sent together)" if retry else ""))
-        for a in main:
-            for w in (a.get("would_change") or []):
-                if isinstance(w, dict):
-                    changes.append(w)
+        changes = E.would_change_rows(answers)
         counts = Counter()
         for w in changes:
             sku, field, old, new = w.get("sku"), w.get("field"), w.get("from"), w.get("to")
@@ -161,7 +158,7 @@ def run(E, cur, st, cp, shop, args):
                     add(A_SHOP, WARN, "shop_price_moves", sku, xitem, name, "the shop price would move %.0f%%: %s to %s" % (pct, old, new))
             elif field == "barcode" and old and old != new:
                 add(A_SHOP, WARN, "shop_barcode_replaced", sku, xitem, name, "the shop's barcode %s would become %s" % (old, new))
-            elif field == "on_hand" and _f(new) == 0 and _f(old):
+            elif field in ("on_hand", "stock") and _f(new) == 0 and _f(old):
                 add(A_SHOP, INFO, "shop_sold_out", sku, xitem, name, "stock %s in the shop would become 0" % old)
         add(A_SHOP, INFO, "shop_changes", detail="the shop would change %d values: %s" % (len(changes), ", ".join("%s %d" % kv for kv in sorted(counts.items()))))
     except (E.ShopUnavailable, E.ShopRejected) as e:

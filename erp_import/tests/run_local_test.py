@@ -257,6 +257,46 @@ def main():
         E.products_job(cur, conn, st, StubShop(), ns, True)
         check(sent_skus() == set(two), "and is recorded once the shop knows it", sent_skus())
 
+        print("\n[5d] a barcode chain across calls is followed in the dry run; a duplicated SKU uses one item everywhere")
+        import openpyxl
+
+        class ChainShop(object):
+            """A wants the barcode of B, B wants the barcode of C: only a call holding A, B and C together has no conflict."""
+            def __init__(self):
+                self.calls = []
+
+            def products(self, items, full, dry_run=False):
+                got = {i["sku"] for i in items}
+                self.calls.append(sorted(got))
+                if len(self.calls) == 1:
+                    return {"ok": True, "conflicts": [{"sku": "A", "reason": "barcode in use by B"}]}
+                if "B" in got and "C" not in got:
+                    return {"ok": True, "conflicts": [{"sku": "B", "reason": "barcode in use by C"}]}
+                return {"ok": True, "conflicts": [], "would_change": [{"sku": "A", "field": "barcode", "from": "1", "to": "2"}]}
+        chain = ChainShop()
+        ans = E.shop_dry_run_answers(chain, [{"sku": s_} for s_ in "ABCD"], True)
+        check(chain.calls == [["A", "B", "C", "D"], ["A", "B"], ["A", "B", "C"]] and not ans[-1]["conflicts"],
+              "the dry run asks again with each holder added until nothing conflicts", chain.calls)
+        check(len(E.would_change_rows(ans + ans)) == 1, "would-change rows are counted once however often they came back")
+
+        dup = dict(q(cur, "SELECT * FROM caitem WHERE zid = %s AND xalias = %s", (Z, tiered_sku))[0])
+        lowest = dup["xitem"]
+        dup["xitem"] = "99-99999"
+        cur.execute("INSERT INTO caitem (%s) VALUES (%s)" % (", ".join(dup), ", ".join(["%s"] * len(dup))), list(dup.values()))
+        try:
+            check(E.collect_products(cur, st)[tiered_sku]["barcode"] == lowest,
+                  "a SKU on two 100007 items: the push uses the lowest item code, like the order lines", lowest)
+            rc, out = run("erp_import.py", "--job", "preflight")
+            pf = sorted(f for f in os.listdir(os.path.join(ROOT, "logs")) if f.startswith("preflight_") and f.endswith(".xlsx"))
+            probs = [[c.value for c in r_] for r_ in openpyxl.load_workbook(os.path.join(ROOT, "logs", pf[-1]))["Problems"].iter_rows(min_row=2)] if pf else []
+            check(rc == 1 and any(p[1] == "FAIL" and p[2] == "duplicate_sku" and p[3] == tiered_sku for p in probs),
+                  "preflight reports the duplicated SKU as a FAIL (and exits 1)", (rc, [p for p in probs if p[1] == "FAIL"][:3]))
+        finally:
+            cur.execute("DELETE FROM caitem WHERE zid = %s AND xitem = '99-99999'", (Z,))
+            for f_ in os.listdir(os.path.join(ROOT, "logs")):
+                if f_.startswith("preflight_"):
+                    os.remove(os.path.join(ROOT, "logs", f_))
+
         print("\n[6] sell-price report (writes nothing)")
         rc, out = run("erp_import.py", "--job", "price", "--commit")
         check(rc == 0 and "price rule" in out and "--commit ignored" in out, "report only; --commit ignored while apply = false", out[-300:])

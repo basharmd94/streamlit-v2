@@ -1072,7 +1072,7 @@ def collect_products(cur, st, only=None):
     cur.execute("SELECT sku, cost, item_group FROM um_fixit_item WHERE found")
     fixit = {r["sku"]: r for r in cur.fetchall()}
     stock = current_stock(cur, st)
-    out = {}
+    out, dup_skus = {}, []
     for it in items:
         src, sku = source_of(it), it["xalias"]
         if not src or sku in st.skip_skus or (only and sku not in only):
@@ -1084,8 +1084,13 @@ def collect_products(cur, st, only=None):
             group = fx.get("item_group") or group
         else:
             cost = po_rate_of.get(it["xitem"]) or receipt_of.get(it["xitem"]) or source_price.get(it["xitem"])
+        if sku in out:                                        # a SKU on two 100007 items: the lowest item code wins, as in find_item
+            dup_skus.append(sku)
+            continue
         out[sku] = {"sku": sku, "barcode": it["xitem"], "price": r2(it["xstdprice"]) if it["xstdprice"] else None,
                     "cost_price": r2(cost) if cost else None, "item_group": group or None, "on_hand": stock.get(sku)}
+    if dup_skus:
+        LOG.warning("SKU on more than one 100007 item (the lowest item code is used): %s", ", ".join(sorted(set(dup_skus))[:10]))
     return out
 
 
@@ -1099,14 +1104,32 @@ def shop_dry_run_answers(shop, todo, full):
     chunks = [todo[i:i + 500] for i in range(0, len(todo), 500)]
     answers = [shop.products(chunk, bool(full) and len(chunks) == 1, dry_run=True) for chunk in chunks]
     conflicts = [c for a in answers for c in (a.get("conflicts") or []) if isinstance(c, dict)]
-    if conflicts:
-        # a barcode wanted by one item is held by another that changes in a different call of 500; the real push sends the
-        # conflicting items together at the end, so ask the same way: them plus the items named as holding the barcode
-        names = _skus_in(conflicts) | {m for c in conflicts for m in re.findall(r"in use by (\S+)", str(c.get("reason", "")))}
+    names = set()
+    for _ in range(5):
+        # a barcode wanted by one item is held by another that changes in a different call of 500 (and that one's by a third...);
+        # the real push sends the conflicting items together at the end, so ask the same way: them plus the items named as holders
+        new = _skus_in(conflicts) | {m for c in conflicts for m in re.findall(r"in use by (\S+)", str(c.get("reason", "")))}
+        if not conflicts or new <= names:
+            break
+        names |= new
         again = [p for p in todo if p["sku"] in names]
         LOG.info("barcode conflicts: %d; asking again with them and the items holding their barcodes together (%d items)", len(conflicts), len(again))
         answers.append(shop.products(again, False, dry_run=True))
+        conflicts = [c for c in (answers[-1].get("conflicts") or []) if isinstance(c, dict)]
     return answers
+
+
+def would_change_rows(answers):
+    """The shop's `would_change` entries over all its answers, each (sku, field, to) once (the second asking repeats some)."""
+    seen, out = set(), []
+    for a in answers:
+        for w in (a.get("would_change") or []):
+            if isinstance(w, dict):
+                k = (w.get("sku"), w.get("field"), json.dumps(w.get("to"), sort_keys=True))
+                if k not in seen:
+                    seen.add(k)
+                    out.append(w)
+    return out
 
 
 def shop_dry_run_products(shop, todo, full):
@@ -1124,7 +1147,7 @@ def shop_dry_run_products(shop, todo, full):
                 LOG.info("   call %d  %-14s %d%s", n, k, len(v), "" if first is None else "   e.g. " + json.dumps(first, ensure_ascii=False)[:150])
             else:
                 LOG.info("   call %d  %-14s %s", n, k, v)
-    rows = [x for a in answers for x in (a.get("would_change") or []) if isinstance(x, dict)]
+    rows = would_change_rows(answers)
     if rows:                                    # the shop's own list of changes, flattened for a spreadsheet
         cols = sorted({k for r in rows for k in r}, key=lambda c: (c != "sku", c))
         csv_path = path[:-len(".json")] + ".csv"
