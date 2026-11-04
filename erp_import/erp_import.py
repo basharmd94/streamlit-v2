@@ -140,7 +140,7 @@ class Shop(object):
     def __init__(self, st):
         self.st = st
 
-    def _call(self, method, path, body=None, query=None):
+    def _call(self, method, path, body=None, query=None, timeout=None):
         url = self.st.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
@@ -156,7 +156,7 @@ class Shop(object):
             data = raw
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            resp = urllib.request.urlopen(req, timeout=self.st.timeout)
+            resp = urllib.request.urlopen(req, timeout=timeout or self.st.timeout)
             text = resp.read().decode("utf-8")
             return json.loads(text) if text.strip() else {}
         except urllib.error.HTTPError as e:
@@ -183,12 +183,12 @@ class Shop(object):
         return self._call("POST", "/order-status", {"statuses": statuses})
 
     def stock(self, items, full):
-        return self._call("POST", "/stock", {"as_of": utc_now_iso(), "items": items, "full": full})
+        return self._call("POST", "/stock", {"as_of": utc_now_iso(), "items": items, "full": full}, timeout=max(self.st.timeout, 180))
 
     def products(self, items, full, dry_run=False):
         # ?dry_run=1: the shop answers what it WOULD change and writes nothing (even while its ERP link is switched off)
         return self._call("POST", "/products", {"as_of": utc_now_iso(), "items": items, "full": full},
-                          query={"dry_run": 1} if dry_run else None)
+                          query={"dry_run": 1} if dry_run else None, timeout=max(self.st.timeout, 180))     # the shop writes each of up to 500 items
 
 
 def utc_now_iso():
@@ -1198,8 +1198,10 @@ def products_job(cur, conn, st, shop, args, commit):
 
     chunks = [todo[i:i + 500] for i in range(0, len(todo), 500)]
     retry, not_applied = [], {}
-    for chunk in chunks:
+    for n, chunk in enumerate(chunks, 1):
+        t0 = time.time()
         ans = shop.products(chunk, bool(args.full) and len(chunks) == 1)
+        LOG.info("products call %d of %d: %d items sent, took %.0f s", n, len(chunks), len(chunk), time.time() - t0)
         refused = _skus_in(ans.get("unknown_skus")) | _skus_in(ans.get("skipped"))
         conflict = _skus_in(ans.get("conflicts"))
         retry += [p for p in chunk if p["sku"] in conflict]
