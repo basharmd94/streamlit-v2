@@ -121,6 +121,8 @@ class Settings(object):
         self.push_stock = cfg_bool(cp, "stock", "push", True)
         self.full_after_hour = int(cfg_get(cp, "stock", "full_after_hour", "2"))
         self.price_apply = cfg_bool(cp, "pricing", "apply", False)
+        self.price_markup = Decimal(cfg_get(cp, "pricing", "markup", "1.40"))      # HMBR / GI sell price = their xstdprice x this
+        self.price_review_pct = float(cfg_get(cp, "pricing", "max_change_pct", "25"))   # a bigger move is flagged "review", not written (0 = off)
         # SKUs the ERP must not push to the shop (stock, price, barcode, cost): the shop keeps its own figures for them
         self.skip_skus = {x.strip() for x in cfg_get(cp, "exceptions", "skip_skus", "").split(",") if x.strip()}
         self.fixit_price_zid = int(cfg_get(cp, "fixit", "price_zid", "100001"))
@@ -499,13 +501,15 @@ def order_numbers(st, data):
 
 
 def resolve_lines(cur, st, items):
-    out, missing = [], []
+    out, missing, bundles = [], [], []
     for ln in items:
         it = find_item(cur, st.zid, clean(ln.get("barcode")), clean(ln.get("sku")))
         if not it:
-            missing.append(clean(ln.get("sku")) or clean(ln.get("barcode")) or "?")
+            (bundles if ln.get("bundle") else missing).append(clean(ln.get("sku")) or clean(ln.get("barcode")) or clean(ln.get("name")) or "?")
             continue
         out.append((ln, it))
+    if bundles:
+        raise EventError("bundle_not_expanded", "bundle lines must arrive as their parts, the ERP has no bundle items: " + ", ".join(bundles))
     if missing:
         raise EventError("unknown_item", "no ERP item for: " + ", ".join(missing))
     return out
@@ -1125,7 +1129,7 @@ def products_job(cur, conn, st, shop, args, commit):
 
 def price_rows(cur, st):
     """What the scheduled in-ERP price rule would set on every followed 100007 item."""
-    cur.execute("SELECT c.xitem, c.xalias, c.xitemnew, c.xstdprice AS old, s.xsrate AS src_rate"
+    cur.execute("SELECT c.xitem, c.xalias, c.xitemnew, c.xstdprice AS old, s.xsrate AS src_rate, s.xstdprice AS src_std"
                 " FROM caitem c LEFT JOIN caitem s ON s.xitem = c.xalias"
                 " AND s.zid = (CASE WHEN c.xitemnew ~ '^[0-9]+$' THEN c.xitemnew::int END)"
                 " WHERE c.zid = %s AND coalesce(c.xalias,'') <> '' ORDER BY c.xitem", (st.zid,))
@@ -1136,11 +1140,16 @@ def price_rows(cur, st):
     for it in items:
         src = source_of(it)
         new, rule = None, ""
-        if src in ("100001", "100000", "100005"):
-            # one rule for all three source companies: the sales rate kept in the source company's caitem.xsrate
-            # (HMBR/GI: loaded once from the shop's prices by onetime/set_xsrate_from_json.py; Zepto: the MRP)
+        if src == "100005":
+            # Zepto: the sales rate (its MRP) kept in its own caitem.xsrate
             if it["src_rate"] and it["src_rate"] > 0:
-                new, rule = d(it["src_rate"]), "source company caitem.xsrate"
+                new, rule = d(it["src_rate"]), "Zepto caitem.xsrate (MRP)"
+        elif src in ("100001", "100000"):
+            # HMBR / GI: their standard price x the markup. Their xsrate is never read or written here: the ERP itself
+            # uses it for its own calculations (the one-time shop-price load of 3 Nov 2026 broke that and was reverted)
+            if it["src_std"] and it["src_std"] > 0:
+                new = (d(it["src_std"]) * st.price_markup).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                rule = "source xstdprice x %s" % st.price_markup
         elif src == FIXIT:
             if fixit.get(it["xalias"]):
                 new, rule = d(fixit[it["xalias"]]), "Fixit std price (Gulshan)"
@@ -1153,8 +1162,11 @@ def price_rows(cur, st):
             continue
         flag = "no_source_price" if new is None else ("new_item" if not old else
                 ("same" if abs(new - old) < Decimal("0.005") else ("raise" if new > old else "lower")))
+        pct = None if not old or new is None else float((new - old) / old * 100)
+        if flag in ("raise", "lower") and st.price_review_pct and abs(pct) > st.price_review_pct:
+            flag = "review"             # a jump this big is usually a wrong source price (a placeholder 1, say): reported, never written unseen
         out.append({"xitem": it["xitem"], "sku": it["xalias"], "source": src, "old": old, "new": new, "flag": flag,
-                    "rule": rule, "change_pct": (None if not old or new is None else float((new - old) / old * 100))})
+                    "rule": rule, "change_pct": pct})
     return out
 
 

@@ -222,21 +222,40 @@ def main():
         csvp = os.path.join(ROOT, "logs", "price_report_%s.csv" % time.strftime("%Y-%m-%d"))
         check(os.path.exists(csvp) and sum(1 for _ in open(csvp)) > 400, "CSV written", csvp)
 
-        # the rule: new price = the SOURCE company's caitem.xsrate (HMBR, GI and Zepto alike); no xsrate = no price, never a guess
-        s1 = q(cur, "SELECT s.zid, s.xitem, s.xsrate FROM caitem c JOIN caitem s ON s.xitem = c.xalias"
-                    " AND s.zid = c.xitemnew::int WHERE c.zid = %s AND c.xalias = %s", (Z, tiered_sku))[0]
+        # the rule: an HMBR / GI item = the source's xstdprice x 1.40 (its xsrate is never read); a Zepto item = the source's xsrate (the MRP);
+        # no source price = no price, never a guess; a move beyond max_change_pct is flagged "review" (and so never written)
+        src_sql = ("SELECT s.zid, s.xitem, s.xstdprice, s.xsrate FROM caitem c JOIN caitem s ON s.xitem = c.xalias"
+                   " AND s.zid = c.xitemnew::int WHERE c.zid = %s AND c.xalias = %s")
+        s1 = q(cur, src_sql, (Z, tiered_sku))[0]
+        z1 = q(cur, src_sql, (Z, zepto_sku))[0]
+        old7 = q(cur, "SELECT xstdprice FROM caitem WHERE zid = %s AND xalias = %s", (Z, tiered_sku))[0]["xstdprice"]
+
+        def rep_of(sku):
+            rc_, _ = run("erp_import.py", "--job", "price")
+            return rc_, {r["sku"]: r for r in csv.DictReader(open(csvp, encoding="utf-8"))}[sku]
         try:
-            for set_to, want_flag in ((4321, None), (None, "no_source_price")):
-                cur.execute("UPDATE caitem SET xsrate = %s WHERE zid = %s AND xitem = %s", (set_to, s1["zid"], s1["xitem"]))
-                rc, out = run("erp_import.py", "--job", "price")
-                rep = {r["sku"]: r for r in csv.DictReader(open(csvp, encoding="utf-8"))}[tiered_sku]
+            cur.execute("UPDATE caitem SET xstdprice = 1300 WHERE zid = %s AND xalias = %s", (Z, tiered_sku))
+            cur.execute("UPDATE caitem SET xstdprice = 1000, xsrate = 99999 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
+            rc, rep = rep_of(tiered_sku)
+            check(rc == 0 and float(rep["new_price"]) == 1400 and "xstdprice" in rep["rule"] and rep["flag"] == "raise",
+                  "HMBR/GI item: source xstdprice x 1.40 (an xsrate of 99999 is ignored)", rep)
+            cur.execute("UPDATE caitem SET xstdprice = 100 WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
+            rc, rep = rep_of(tiered_sku)
+            check(float(rep["new_price"]) == 140 and rep["flag"] == "review", "a move beyond max_change_pct is flagged review, not raise/lower", rep)
+            cur.execute("UPDATE caitem SET xstdprice = NULL WHERE zid = %s AND xitem = %s", (s1["zid"], s1["xitem"]))
+            rc, rep = rep_of(tiered_sku)
+            check(rep["flag"] == "no_source_price" and rep["new_price"] == "", "no source xstdprice -> no price (flagged, not guessed)", rep)
+            for set_to in (4321, None):
+                cur.execute("UPDATE caitem SET xsrate = %s WHERE zid = %s AND xitem = %s", (set_to, z1["zid"], z1["xitem"]))
+                rc, rep = rep_of(zepto_sku)
                 if set_to:
-                    check(rc == 0 and float(rep["new_price"]) == 4321 and "xsrate" in rep["rule"],
-                          "price report takes the source company's xsrate", rep)
+                    check(rc == 0 and float(rep["new_price"]) == 4321 and "xsrate" in rep["rule"], "Zepto item: price = its own xsrate (the MRP)", rep)
                 else:
-                    check(rep["flag"] == want_flag and rep["new_price"] == "", "no xsrate -> no price (flagged, not guessed)", rep)
+                    check(rep["flag"] == "no_source_price" and rep["new_price"] == "", "Zepto: no xsrate -> no price (flagged, not guessed)", rep)
         finally:
-            cur.execute("UPDATE caitem SET xsrate = %s WHERE zid = %s AND xitem = %s", (s1["xsrate"], s1["zid"], s1["xitem"]))
+            cur.execute("UPDATE caitem SET xstdprice = %s, xsrate = %s WHERE zid = %s AND xitem = %s", (s1["xstdprice"], s1["xsrate"], s1["zid"], s1["xitem"]))
+            cur.execute("UPDATE caitem SET xsrate = %s WHERE zid = %s AND xitem = %s", (z1["xsrate"], z1["zid"], z1["xitem"]))
+            cur.execute("UPDATE caitem SET xstdprice = %s WHERE zid = %s AND xalias = %s", (old7, Z, tiered_sku))
 
         print("\n[6b] one-time xsrate load from a JSON of shop prices (onetime/set_xsrate_from_json.py)")
         src = q(cur, "SELECT s.zid, s.xitem, s.xsrate FROM caitem c JOIN caitem s ON s.xitem = c.xalias AND s.zid = c.xitemnew::int"
@@ -255,8 +274,11 @@ def main():
         rc, out = run(script, "--json", jpath)
         check(rc == 0 and "DRY RUN" in out and xs() == before, "dry run changes nothing", out[-200:])
         rc, out = run(script, "--json", jpath, "--commit")
+        check(rc != 0 and "RETIRED" in out and xs() == before, "the retired load refuses --commit without its long flag", out[-200:])
+        retired_ok = "--i-know-xsrate-is-used-by-the-erp"
+        rc, out = run(script, "--json", jpath, "--commit", retired_ok)
         check(rc == 0 and [float(v) for v in xs()] == [float(p_) for p_ in prices], "commit writes the shop prices into xsrate", (xs(), out[-200:]))
-        rc, out = run(script, "--json", jpath, "--commit")
+        rc, out = run(script, "--json", jpath, "--commit", retired_ok)
         check(rc == 0 and "Nothing to write" in out, "second run writes nothing")
         rc, out = run(script, "--undo", "--commit")
         check(rc == 0 and xs() == before, "undo puts the old values back", (xs(), before))
@@ -265,6 +287,15 @@ def main():
         check(q(cur, "SELECT count(*) AS n FROM um_xsrate_backup")[0]["n"] == 0, "backup rows are removed after the undo")
         cur.execute("DROP TABLE um_xsrate_backup")
         os.remove(jpath)
+
+        print("\n[6d] bundles: the shop must send the parts; a bundle line gets its own failure code")
+        for line, want in (({"sku": "NO-SUCH-BUNDLE", "bundle": True, "name": "Starter bundle"}, "bundle_not_expanded"),
+                           ({"sku": "NO-SUCH-ITEM", "name": "x"}, "unknown_item")):
+            try:
+                E.resolve_lines(cur, st, [line])
+                check(False, "%s is refused" % want)
+            except E.EventError as e_:
+                check(e_.code == want, "%s -> %s" % ("bundle line" if line.get("bundle") else "plain unknown item", want), e_.code)
 
         print("\n[6c] exceptions: a SKU in [exceptions] skip_skus is never pushed to the shop")
         cp2 = E.load_config(os.path.join(ROOT, "erp_import.ini"))

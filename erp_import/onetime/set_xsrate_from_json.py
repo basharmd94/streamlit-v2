@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 """ONE-TIME LOAD: write the online shop's current sales prices into caitem.xsrate of 100001 (HMBR) and 100000 (GI).
 
+RETIRED 2026-11-03. Do not run the load again: the ERP uses xsrate of 100001/100000 for its own calculations, and this load
+broke them (it was undone with --undo; see fix_xsrate_zepto_gi.py). The sell-price rule no longer reads that column for
+HMBR/GI (it uses their xstdprice x markup). --undo still works; --commit now needs the long flag below, on purpose.
+
 Run it once, on the HMBR server, so that xsrate in both companies matches what the shop charges today. After that the importer's
 sell-price rule (erp_import.py --job price) reads xsrate from the source company, so 100007 and the shop stay consistent.
 
@@ -172,7 +176,12 @@ def main():
     ap.add_argument("--commit", action="store_true", help="write (default: dry run)")
     ap.add_argument("--undo", action="store_true", help="put the old xsrate values back from the backup table")
     ap.add_argument("--force", action="store_true", help="go on even if many JSON items are missing in the database")
+    ap.add_argument("--i-know-xsrate-is-used-by-the-erp", dest="retired_ok", action="store_true",
+                    help="needed for --commit: this load is retired")
     args = ap.parse_args()
+    if args.commit and not args.undo and not args.retired_ok:
+        sys.exit("RETIRED: this load changed xsrate values the ERP uses for its own calculations and was undone on 3 Nov 2026.\n"
+                 "Not writing. (--undo still works.)")
 
     conn, where = connect(args.config)
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)

@@ -52,7 +52,7 @@ allow_purge = false
 run_every_minutes = 5
 # Fixit stock/price/cost pull. The Fixit server must have refreshed its final_items_view BEFORE this time (see docs/DEPLOY_HMBR_SERVER.md, part B)
 fixit_time = 05:30
-# the sell-price rule (100007 price from the source xsrate / Fixit Gulshan price): a report only until [pricing] apply = true
+# the sell-price rule (100007 price from the source company, see [pricing]): a report only until [pricing] apply = true
 price_time = 05:45
 # barcode, price, cost, group, stock -> shop (after the Fixit pull and the price rule, so the shop gets today's figures)
 products_time = 06:00
@@ -71,10 +71,15 @@ push = true
 full_after_hour = 2
 
 [pricing]
-# The sell-price rule sets 100007 caitem.xstdprice from the SOURCE company's caitem.xsrate (HMBR 100001, GI 100000, Zepto 100005 MRP);
-# Fixit items use the Gulshan std price. HMBR/GI xsrate was loaded once from the shop's prices (onetime/set_xsrate_from_json.py); after that it is kept by hand in the ERP.
+# The sell-price rule sets 100007 caitem.xstdprice (the price the shop shows) from the SOURCE company:
+#   Zepto 100005      -> its caitem.xsrate (the MRP)
+#   HMBR 100001 / GI 100000 -> their caitem.xstdprice x markup (their xsrate is never read or written: the ERP uses it for its own calculations)
+#   Fixit             -> the Gulshan std price
 # `--job price` is a REPORT. It only writes when apply = true AND --commit is given.
 apply = false
+markup = 1.40
+# A move bigger than this many percent is flagged "review" in the report and is NOT written (usually a placeholder source price such as 1). 0 = off.
+max_change_pct = 25
 
 [fixit]
 # read-only login to the Fixit server's database (fixit_pull.py)

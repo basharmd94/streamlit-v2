@@ -162,12 +162,12 @@ svg text{font-family:var(--sans)}
   <div class="tw"><table>
     <thead><tr><th>From</th><th>To</th><th>Rule and example</th></tr></thead>
     <tbody>
-    <tr><td><code>caitem.xsrate</code> in zid 100001 (HMBR) or 100000 (GI), where <code>xitem</code> = 100007 <code>caitem.xalias</code></td><td><code>caitem.xstdprice</code>, zid 100007</td><td>the source sales rate as it is. <code>xsrate</code> was loaded once from the shop's own current prices (<code>onetime/set_xsrate_from_json.py</code>), so ERP and shop start identical; afterwards it is kept by hand</td></tr>
+    <tr><td><code>caitem.xstdprice</code> in zid 100001 (HMBR) or 100000 (GI), where <code>xitem</code> = 100007 <code>caitem.xalias</code></td><td><code>caitem.xstdprice</code>, zid 100007</td><td>the source standard price x 1.40 (<code>[pricing] markup</code>). Their <code>xsrate</code> is never read or written: the ERP uses it for its own calculations. A move over 25% is flagged <code>review</code> and not written</td></tr>
     <tr><td><code>caitem.xsrate</code> (the MRP) in zid 100005, where <code>xitem</code> = 100007 <code>caitem.xalias</code></td><td><code>caitem.xstdprice</code>, zid 100007</td><td>Zepto MRP as it is. Example: FZ000005 becomes 210</td></tr>
     <tr><td>Fixit <code>final_items_view.std_price</code> (Gulshan, zid 100001)</td><td><code>caitem.xstdprice</code>, zid 100007, items <code>04-</code></td><td>as it is (written by flow 2)</td></tr>
     <tr><td>-</td><td><code>caitem.zutime</code></td><td>now, only when the price changed</td></tr>
     </tbody></table></div>
-  <p class="warn">Report first, nothing written until <code>[pricing] apply = true</code>. After the one-time <code>xsrate</code> load (528 items: 455 HMBR, 73 GI), the price rule would leave 438 HMBR and 49 GI prices in 100007 unchanged; where 100007 held a different price from the shop, 16 HMBR and 20 GI would go down and 3 GI up. Zepto: 71 items already equal the MRP, 33 have no price in 100007 yet and would get it. The report is <code>erp_import.py --job price</code>.</p>
+  <p class="warn">Report first, nothing written until <code>[pricing] apply = true</code>. Zepto: 71 items already equal the MRP and 33 have no price in 100007 yet and would get it (local copy). The report is <code>erp_import.py --job price</code>; read its <code>review</code> lines before switching apply on.</p>
 </article>
 
 <article class="flow" id="f2">

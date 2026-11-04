@@ -50,8 +50,10 @@ For now only `[database]` matters (host, port, `dbname = da`, user, password). T
 ### A5. Prep 1: delete the two stray items
 `psql -U postgres -d da -f erp_import\sql\prep_01_delete_two_stray_items.sql` (or paste it into pgAdmin). Step 1 of the file shows 2 rows, the last check 0 rows. It stops with an error, deleting nothing, if any stock/order/PO row uses them. Do this before the first importer run: the importer numbers new Fixit items from `04-00001`.
 
-### A6. Prep 2: load the shop's current prices into `caitem.xsrate` (one time, Python)
-`xsrate` in 100001 (HMBR) and 100000 (GI) is set to the price the shop charges today, so ERP and shop start identical. The input is `onetime\xsrate_shop_prices_<date>.json`: one entry per shop item that is an HMBR or GI item, `{"zid": 100001, "xitem": "0718", "price": 80, "name": "..."}` (`xitem` is the shop SKU = the source company's `caitem.xitem`). Only those rows are touched. Two decisions are already in the file:
+### A6. RETIRED (2026-11-03): do NOT load shop prices into `caitem.xsrate`
+**This step was done on 3 Nov and undone the same day: the ERP uses `xsrate` of 100001/100000 for its own calculations and the load broke them.** The sell-price rule now uses HMBR/GI `xstdprice` x 1.40 and never touches their `xsrate`. The script refuses `--commit` without a long flag. The text below stays only as a record.
+
+`xsrate` in 100001 (HMBR) and 100000 (GI) was set to the price the shop charges, so ERP and shop start identical. The input is `onetime\xsrate_shop_prices_<date>.json`: one entry per shop item that is an HMBR or GI item, `{"zid": 100001, "xitem": "0718", "price": 80, "name": "..."}` (`xitem` is the shop SKU = the source company's `caitem.xitem`). Only those rows are touched. Two decisions are already in the file:
 * **Shop price below the ERP standard price** (4 aluminium ladders, SF000004/5/6/24): the price is `floor(1.35 x xstdprice)` (4252, 5103, 5953, 7290) instead of the shop's, and the entry says so (`shop_price`, `basis`). The first product push then raises them in the shop.
 * **CF000003 Korean Putty is left out** (the ERP unit is 1 kg, the shop sells 100 g packs, so the prices are not comparable). It is listed under `excluded` in the JSON and in `[exceptions] skip_skus` of the config, so the ERP never pushes its price, stock or cost to the shop. Remove it from the list when the shop has a unit exception.
 
@@ -126,7 +128,7 @@ Do not start the service in live mode before step 5: a live service would push w
 2. `venv\Scripts\python erp_import.py` (dry run on the real feed) and read it: expect about 2,100 item events, 0 failures, ~17 `barcode_mismatch` warnings (the ERP pairing wins), and about 1,466 NEW Fixit items (`04-00001` upward).
 3. `venv\Scripts\python erp_import.py --commit` (repeat until it says 0 events; one run takes up to 1000).
 4. `venv\Scripts\python fixit_pull.py --commit` (needs the Fixit items from step 3).
-5. `venv\Scripts\python erp_import.py --job price`, open `logs\price_report_<date>.csv`, decide, then set `[pricing] apply = true` and run `--job price --commit` (writes 100007 `xstdprice` from the source `xsrate`; Fixit from Gulshan). After the A6 load, 100007 changes only where it differed from the shop. Check a few Fixit items in the ERP screens too (`xitemnew = 'Fixit'` is text in a column that otherwise holds company numbers).
+5. `venv\Scripts\python erp_import.py --job price`, open `logs\price_report_<date>.csv`, decide, then set `[pricing] apply = true` and run `--job price --commit` (writes 100007 `xstdprice`: Zepto from its `xsrate`, HMBR/GI from their `xstdprice` x 1.40, Fixit from Gulshan). **Read the `review` rows first**: they are moves over 25% (usually a placeholder source price such as 1) and are not written; fix the source price or raise `[pricing] max_change_pct`. Check a few Fixit items in the ERP screens too (`xitemnew = 'Fixit'` is text in a column that otherwise holds company numbers).
 6. `venv\Scripts\python erp_import.py --job products --commit` (first push of barcode, price, cost, group, stock to the shop; the shop price is overwritten by the ERP price, which after step 5 equals what the shop already had).
 7. One real test order on the shop; follow it: `opmob` rows (invoice `UM-<number>`), status and stock back to the shop, the daily PO.
 8. Switch the service to live (A11) and leave it on.

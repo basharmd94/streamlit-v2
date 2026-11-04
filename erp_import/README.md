@@ -9,11 +9,11 @@ Where this file and `docs/ERP_INTEGRATION_SPEC.md` (the shop's original v2.2 spe
 erp_import/
   erp_import.py  fixit_pull.py  erp_service.py   the three scripts that run on the HMBR server
   erp_import.ini.example                         config template -> erp_import.ini (git-ignored: keys, passwords)
-  onetime/    ONE-TIME load of the shop's prices into caitem.xsrate of 100001/100000 (script + JSON, dry run by default, backup, --undo)
+  onetime/    RETIRED load of the shop's prices into caitem.xsrate of 100001/100000 (it broke the ERP's own xsrate use; undone), and fix_xsrate_zepto_gi.py, the repair of 3 Nov 2026 (dry run by default, backup, --undo)
   sql/        prep SQL: delete two stray items; optional least-privilege login; the Fixit server's read-only login
   docs/       cycle map, column reference, picture, shop contract, server step-by-step, the shop's original spec
   tests/      fake_feed.py (stand-in for the shop's /hooks/erp, also the contract) and run_local_test.py (71 checks on the LOCAL database)
-  dev_tools/  developer only, never deployed: medusa_snapshot.py (read-only copy of the live catalogue), make_xsrate_json.py (builds the onetime JSON)
+  dev_tools/  developer only, never deployed: medusa_snapshot.py (read-only copy of the live catalogue), make_xsrate_json.py (builds the retired load's JSON)
   logs/       run logs, price reports, the snapshot (git-ignored)
 ```
 
@@ -23,7 +23,7 @@ erp_import/
 | `python erp_import.py` (`--job run`) | every 5 min | shop feed -> ERP: items -> `caitem`/`xcodes`, orders -> `opmob`; changed stock and order status back to the shop |
 | `python erp_import.py --job po` | once a day, fixed time | open purchase orders `poord`/`poodt` (`1-Open`), one per order per source business, rate = source `xstdprice` less its `opspprc` tier for the day's total (Fixit: Central's sales rate) |
 | `python erp_import.py --job products` | once a day | barcode, price, cost, item group, stock -> shop `POST /products` (`--only-skus a,b`, `--full`) |
-| `python erp_import.py --job price` | once a day (05:45, after the Fixit pull) | the in-ERP sell-price rule: 100007 `xstdprice` = the source company's `caitem.xsrate` (HMBR, GI, Zepto MRP) or the Fixit Gulshan price. Always writes a REPORT (`logs/price_report_<date>.csv`); writes prices only when `[pricing] apply = true` AND `--commit` |
+| `python erp_import.py --job price` | once a day (05:45, after the Fixit pull) | the in-ERP sell-price rule: 100007 `xstdprice` = Zepto's own `caitem.xsrate` (the MRP), or HMBR/GI `caitem.xstdprice` x `[pricing] markup` (1.40), or the Fixit Gulshan price. Always writes a REPORT (`logs/price_report_<date>.csv`); writes prices only when `[pricing] apply = true` AND `--commit`; a move over `max_change_pct` (25) is flagged `review` and not written |
 | `python erp_import.py --job check` | any time | read-only health check: database, fixed codes, suppliers, shop `/health`, Fixit database |
 | `python fixit_pull.py` | once a day | Fixit stock, selling price (Gulshan) and cost (Central's sales rate) into `um_fixit_item` |
 
